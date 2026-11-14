@@ -34,7 +34,15 @@
 //! ```
 
 use crate::ast::{Node, NodeKind};
+use crate::tdd::generated_test_artifact::{
+    emit_subtest_close, emit_subtest_draft_fail, emit_subtest_open, emit_test_more_draft_fail,
+    emit_unsupported_stub,
+};
 use std::collections::HashMap;
+
+pub use crate::tdd::generated_test_artifact::{
+    FalseGreenPolicy, FalseGreenViolation, GeneratedTestReadiness, UnsupportedReason,
+};
 
 /// Test generator for creating unit tests from code
 ///
@@ -109,6 +117,17 @@ pub struct TestCase {
     pub code: String,
     /// Whether the test is marked as TODO (needs user input)
     pub is_todo: bool,
+    /// Capability-truthful readiness (#8154)
+    pub readiness: GeneratedTestReadiness,
+}
+
+fn make_test_case(
+    name: String,
+    description: String,
+    code: String,
+    readiness: GeneratedTestReadiness,
+) -> TestCase {
+    TestCase { name, description, code, is_todo: readiness.is_todo(), readiness }
 }
 
 impl TestGenerator {
@@ -216,94 +235,60 @@ impl TestGenerator {
         let test_name = format!("test_{}", sub.name);
         let description = format!("Basic test for {}", sub.name);
 
-        let code = match self.framework {
+        let (code, readiness) = match self.framework {
             TestFramework::TestMore => self.generate_test_more_basic(&sub.name, &sub.params),
             TestFramework::Test2V0 => self.generate_test2_basic(&sub.name, &sub.params),
             TestFramework::TestSimple => self.generate_test_simple_basic(&sub.name, &sub.params),
             TestFramework::TestClass => self.generate_test_class_basic(&sub.name, &sub.params),
         };
 
-        TestCase { name: test_name, description, code, is_todo: false }
+        make_test_case(test_name, description, code, readiness)
     }
 
-    fn generate_test_more_basic(&self, name: &str, params: &Option<Vec<String>>) -> String {
+    fn generate_test_more_basic(
+        &self,
+        name: &str,
+        _params: &Option<Vec<String>>,
+    ) -> (String, GeneratedTestReadiness) {
+        let reason = if self.options.expected_values.contains_key(name) {
+            format!("input oracle required for {name} (expected value alone is insufficient)")
+        } else {
+            format!("behavioral oracle required for {name}")
+        };
         let mut code = String::new();
         code.push_str("use Test::More;\n\n");
-
-        code.push_str(&format!("subtest '{}' => sub {{\n", name));
-
-        if let Some(params) = params {
-            let args = self.generate_sample_args(params.len());
-            code.push_str(&format!("    my $result = {}({});\n", name, args));
-        } else {
-            code.push_str(&format!("    my $result = {}();\n", name));
-        }
-
-        if let Some(expected) = self.options.expected_values.get(name) {
-            code.push_str(&format!("    is($result, {}, 'Returns expected value');\n", expected));
-        } else {
-            code.push_str("    ok(defined $result, 'Function returns defined value');\n");
-        }
-
-        if name.starts_with("is_") || name.starts_with("has_") {
-            code.push_str("    ok($result == 0 || $result == 1, 'Returns boolean');\n");
-        }
-
-        code.push_str("}};\n");
-        code
+        code.push_str(&emit_subtest_open(name));
+        code.push_str(&emit_subtest_draft_fail(&reason));
+        code.push_str(emit_subtest_close());
+        code.push_str("done_testing();\n");
+        (code, GeneratedTestReadiness::DraftNeedsOracle)
     }
 
-    fn generate_test2_basic(&self, name: &str, params: &Option<Vec<String>>) -> String {
-        let mut code = String::new();
-        code.push_str("use Test2::V0;\n\n");
-
-        code.push_str(&format!("subtest '{}' => sub {{\n", name));
-
-        if let Some(params) = params {
-            let args = self.generate_sample_args(params.len());
-            code.push_str(&format!("    my $result = {}({});\n", name, args));
-            code.push_str("    ok($result, 'Function returns value');\n");
-        } else {
-            code.push_str(&format!("    my $result = {}();\n", name));
-            code.push_str("    ok($result, 'Function returns value');\n");
-        }
-
-        code.push_str("}};\n");
-        code
+    fn generate_test2_basic(
+        &self,
+        name: &str,
+        _params: &Option<Vec<String>>,
+    ) -> (String, GeneratedTestReadiness) {
+        let reason = format!("Test2::V0 basic generation requires oracle for {name}");
+        (emit_unsupported_stub(&reason), GeneratedTestReadiness::Unsupported)
     }
 
-    fn generate_test_simple_basic(&self, name: &str, params: &Option<Vec<String>>) -> String {
-        let mut code = String::new();
-        code.push_str("use Test::Simple tests => 1;\n\n");
-
-        if let Some(params) = params {
-            let args = self.generate_sample_args(params.len());
-            code.push_str(&format!("ok({}({}), 'Test {}');\n", name, args, name));
-        } else {
-            code.push_str(&format!("ok({}(), 'Test {}');\n", name, name));
-        }
-
-        code
+    fn generate_test_simple_basic(
+        &self,
+        name: &str,
+        _params: &Option<Vec<String>>,
+    ) -> (String, GeneratedTestReadiness) {
+        let reason = format!("Test::Simple basic generation requires oracle for {name}");
+        (emit_unsupported_stub(&reason), GeneratedTestReadiness::Unsupported)
     }
 
-    fn generate_test_class_basic(&self, name: &str, params: &Option<Vec<String>>) -> String {
-        let mut code = String::new();
-        code.push_str("use Test::Class::Most;\n\n");
-
-        code.push_str(&format!("sub test_{} : Test {{\n", name));
-        code.push_str("    my $self = shift;\n");
-
-        if let Some(params) = params {
-            let args = self.generate_sample_args(params.len());
-            code.push_str(&format!("    my $result = $self->{}({});\n", name, args));
-        } else {
-            code.push_str(&format!("    my $result = $self->{}();\n", name));
-        }
-
-        code.push_str("    ok($result, 'Function works');\n");
-        code.push_str("}\n");
-
-        code
+    fn generate_test_class_basic(
+        &self,
+        name: &str,
+        _params: &Option<Vec<String>>,
+    ) -> (String, GeneratedTestReadiness) {
+        let reason = format!("Test::Class basic generation requires oracle for {name}");
+        (emit_unsupported_stub(&reason), GeneratedTestReadiness::Unsupported)
     }
 
     /// Generate edge case tests
@@ -327,82 +312,49 @@ impl TestGenerator {
     fn generate_undef_test(&self, sub: &SubroutineInfo) -> TestCase {
         let test_name = format!("test_{}_undef", sub.name);
         let description = format!("Test {} with undef parameters", sub.name);
-        let args = self.generate_edge_case_args(sub, "undef");
-
-        let code = match self.framework {
-            TestFramework::TestMore => {
-                format!(
-                    "use Test::More;\n\n\
-                     subtest '{} with undef' => sub {{\n    \
-                     eval {{ {}({}) }};\n    \
-                     ok(!$@, 'Handles undef gracefully');\n\
-                     }};\n",
-                    sub.name, sub.name, args
-                )
-            }
-            _ => String::new(), // Simplified for other frameworks
-        };
-
-        TestCase { name: test_name, description, code, is_todo: false }
+        let reason = format!("edge acceptance oracle required for {} with undef", sub.name);
+        let (code, readiness) = self.edge_case_code(&format!("{} with undef", sub.name), &reason);
+        make_test_case(test_name, description, code, readiness)
     }
 
     fn generate_empty_test(&self, sub: &SubroutineInfo) -> TestCase {
         let test_name = format!("test_{}_empty", sub.name);
         let description = format!("Test {} with empty parameters", sub.name);
-        let args = self.generate_edge_case_args(sub, "''");
-
-        let code = match self.framework {
-            TestFramework::TestMore => {
-                format!(
-                    "use Test::More;\n\n\
-                     subtest '{} with empty params' => sub {{\n    \
-                     eval {{ {}({}) }};\n    \
-                     ok(!$@, 'Handles empty values');\n\
-                     }};\n",
-                    sub.name, sub.name, args
-                )
-            }
-            _ => String::new(),
-        };
-
-        TestCase { name: test_name, description, code, is_todo: false }
+        let reason = format!("edge acceptance oracle required for {} with empty input", sub.name);
+        let (code, readiness) =
+            self.edge_case_code(&format!("{} with empty params", sub.name), &reason);
+        make_test_case(test_name, description, code, readiness)
     }
 
     fn generate_type_test(&self, sub: &SubroutineInfo) -> TestCase {
         let test_name = format!("test_{}_types", sub.name);
         let description = format!("Test {} with different types", sub.name);
-        let numeric_args = self.generate_edge_case_args(sub, "123");
-        let string_args = self.generate_edge_case_args(sub, "'string'");
-        let array_args = self.generate_edge_case_args(sub, "[1,2,3]");
-        let hash_args = self.generate_edge_case_args(sub, "{a=>1}");
+        let reason = format!("type acceptance oracle required for {}", sub.name);
+        let (code, readiness) =
+            self.edge_case_code(&format!("{} type checking", sub.name), &reason);
+        make_test_case(test_name, description, code, readiness)
+    }
 
-        let code = match self.framework {
+    fn edge_case_code(
+        &self,
+        subtest_label: &str,
+        reason: &str,
+    ) -> (String, GeneratedTestReadiness) {
+        match self.framework {
             TestFramework::TestMore => {
-                format!(
-                    "use Test::More;\n\n\
-                     subtest '{} type checking' => sub {{\n    \
-                     # Test with different types\n    \
-                     eval {{ {}({}) }};\n    \
-                     eval {{ {}({}) }};\n    \
-                     eval {{ {}({}) }};\n    \
-                     eval {{ {}({}) }};\n    \
-                     pass('Handles different types');\n\
-                     }};\n",
-                    sub.name,
-                    sub.name,
-                    numeric_args,
-                    sub.name,
-                    string_args,
-                    sub.name,
-                    array_args,
-                    sub.name,
-                    hash_args
-                )
+                let mut code = String::new();
+                code.push_str("use Test::More;\n\n");
+                code.push_str(&emit_subtest_open(subtest_label));
+                code.push_str(&emit_subtest_draft_fail(reason));
+                code.push_str(emit_subtest_close());
+                code.push_str("done_testing();\n");
+                (code, GeneratedTestReadiness::DraftNeedsOracle)
             }
-            _ => String::new(),
-        };
-
-        TestCase { name: test_name, description, code, is_todo: false }
+            TestFramework::Test2V0 | TestFramework::TestSimple | TestFramework::TestClass => {
+                let msg = format!("{subtest_label}: {reason}");
+                (emit_unsupported_stub(&msg), GeneratedTestReadiness::Unsupported)
+            }
+        }
     }
 
     /// Generate data-driven test
@@ -411,65 +363,42 @@ impl TestGenerator {
 
         let test_name = format!("test_{}_data_driven", sub.name);
         let description = format!("Data-driven test for {}", sub.name);
+        let reason = format!("data-driven oracle required for {}", sub.name);
 
-        let code = match self.framework {
+        let (code, readiness) = match self.framework {
             TestFramework::TestMore => {
-                format!(
-                    "use Test::More;\n\n\
-                     my @test_cases = (\n    \
-                     {{ input => 'test1', expected => 'result1' }},\n    \
-                     {{ input => 'test2', expected => 'result2' }},\n    \
-                     {{ input => 'test3', expected => 'result3' }},\n\
-                     );\n\n\
-                     for my $case (@test_cases) {{\n    \
-                     my $result = {}($case->{{input}});\n    \
-                     is($result, $case->{{expected}}, \n       \
-                     \"{}($case->{{input}}) returns $case->{{expected}}\");\n\
-                     }}\n",
-                    sub.name, sub.name
-                )
+                (emit_test_more_draft_fail(&reason), GeneratedTestReadiness::DraftNeedsOracle)
             }
-            _ => String::new(),
+            TestFramework::Test2V0 | TestFramework::TestSimple | TestFramework::TestClass => {
+                let msg = format!("data-driven test unsupported for {:?}", self.framework);
+                (emit_unsupported_stub(&msg), GeneratedTestReadiness::Unsupported)
+            }
         };
 
-        Some(TestCase {
-            name: test_name,
-            description,
-            code,
-            is_todo: true, // Mark as TODO since user needs to fill in test data
-        })
+        Some(make_test_case(test_name, description, code, readiness))
     }
 
     /// Generate performance test
     fn generate_perf_test(&self, sub: &SubroutineInfo, _source: &str) -> TestCase {
         let test_name = format!("test_{}_performance", sub.name);
         let description = format!("Performance test for {}", sub.name);
-
-        let code = match self.framework {
-            TestFramework::TestMore => {
-                let mut snippet = String::new();
-                snippet.push_str("use Test::More;\n");
-                snippet.push_str("use Benchmark qw(timeit);\n\n");
-                snippet.push_str(&format!("subtest '{} performance' => sub {{\n", sub.name));
-                snippet.push_str(&format!(
-                    "    my $result = timeit(1000, sub {{ {}() }});\n",
-                    sub.name
-                ));
-                if let Some(threshold) = self.options.perf_thresholds.get(&sub.name) {
-                    snippet.push_str(&format!(
-                        "    cmp_ok($result->real, '<', {}, 'Executes under threshold');\n",
-                        threshold
-                    ));
-                } else {
-                    snippet.push_str("    ok($result->real >= 0, 'Execution time recorded');\n");
-                }
-                snippet.push_str("}};\n");
-                snippet
-            }
-            _ => String::new(),
+        let reason = if self.options.perf_thresholds.contains_key(&sub.name) {
+            format!("performance threshold authority required for {}", sub.name)
+        } else {
+            format!("performance oracle required for {}", sub.name)
         };
 
-        TestCase { name: test_name, description, code, is_todo: true }
+        let (code, readiness) = match self.framework {
+            TestFramework::TestMore => {
+                (emit_test_more_draft_fail(&reason), GeneratedTestReadiness::DraftNeedsOracle)
+            }
+            TestFramework::Test2V0 | TestFramework::TestSimple | TestFramework::TestClass => {
+                let msg = format!("performance test unsupported for {:?}", self.framework);
+                (emit_unsupported_stub(&msg), GeneratedTestReadiness::Unsupported)
+            }
+        };
+
+        make_test_case(test_name, description, code, readiness)
     }
 
     /// Generate module-level tests
@@ -549,72 +478,72 @@ impl TestGenerator {
 
     fn generate_module_load_test(&self, package: &str) -> TestCase {
         let test_name = "test_module_loads".to_string();
-        let description = format!("Test that {} loads correctly", package);
+        let description = format!("Test that {package} loads correctly");
 
-        let code = match self.framework {
+        let (code, readiness) = match self.framework {
             TestFramework::TestMore => {
-                format!(
+                let code = format!(
                     "use Test::More;\n\n\
                      BEGIN {{\n    \
-                     use_ok('{}') || print \"Bail out!\\n\";\n\
+                     use_ok('{package}') || print \"Bail out!\\n\";\n\
                      }}\n\n\
-                     diag(\"Testing {} ${}::VERSION, Perl $], $^X\");\n",
-                    package, package, package
-                )
+                     diag(\"Testing {package} ${package}::VERSION, Perl $], $^X\");\n\
+                     done_testing();\n"
+                );
+                (code, GeneratedTestReadiness::Runnable)
             }
-            _ => String::new(),
+            TestFramework::Test2V0 | TestFramework::TestSimple | TestFramework::TestClass => {
+                let msg = format!("module load unsupported for {:?}", self.framework);
+                (emit_unsupported_stub(&msg), GeneratedTestReadiness::Unsupported)
+            }
         };
 
-        TestCase { name: test_name, description, code, is_todo: false }
+        make_test_case(test_name, description, code, readiness)
     }
 
     fn generate_export_test(&self, package: &str) -> TestCase {
         let test_name = "test_exports".to_string();
-        let description = format!("Test {} exports", package);
+        let description = format!("Test {package} exports");
+        let reason = format!("export oracle required for {package}");
 
-        let code = match self.framework {
+        let (code, readiness) = match self.framework {
             TestFramework::TestMore => {
-                format!(
-                    "use Test::More;\n\
-                     use {};\n\n\
-                     can_ok('main', @{}::EXPORT);\n",
-                    package, package
-                )
+                (emit_test_more_draft_fail(&reason), GeneratedTestReadiness::DraftNeedsOracle)
             }
-            _ => String::new(),
+            TestFramework::Test2V0 | TestFramework::TestSimple | TestFramework::TestClass => {
+                let msg = format!("export test unsupported for {:?}", self.framework);
+                (emit_unsupported_stub(&msg), GeneratedTestReadiness::Unsupported)
+            }
         };
 
-        TestCase { name: test_name, description, code, is_todo: false }
+        make_test_case(test_name, description, code, readiness)
     }
 
     fn generate_constructor_test(&self, package: &str) -> TestCase {
         let test_name = "test_constructor".to_string();
-        let description = format!("Test {} constructor", package);
+        let description = format!("Test {package} constructor");
+        let reason = format!("constructor oracle required for {package}");
 
-        let code = match self.framework {
+        let (code, readiness) = match self.framework {
             TestFramework::TestMore => {
-                format!(
-                    "use Test::More;\n\
-                     use {};\n\n\
-                     subtest 'constructor' => sub {{\n    \
-                     my $obj = {}->new();\n    \
-                     isa_ok($obj, '{}');\n    \
-                     can_ok($obj, 'new');\n\
-                     }};\n",
-                    package, package, package
-                )
+                (emit_test_more_draft_fail(&reason), GeneratedTestReadiness::DraftNeedsOracle)
             }
-            _ => String::new(),
+            TestFramework::Test2V0 | TestFramework::TestSimple | TestFramework::TestClass => {
+                let msg = format!("constructor test unsupported for {:?}", self.framework);
+                (emit_unsupported_stub(&msg), GeneratedTestReadiness::Unsupported)
+            }
         };
 
-        TestCase { name: test_name, description, code, is_todo: false }
+        make_test_case(test_name, description, code, readiness)
     }
 
+    #[allow(dead_code, reason = "reserved for future input-oracle runnable generation")]
     fn generate_sample_args(&self, count: usize) -> String {
         let args: Vec<String> = (0..count).map(|i| format!("'arg{}'", i + 1)).collect();
         args.join(", ")
     }
 
+    #[allow(dead_code, reason = "reserved for future arity-aware draft scaffolding")]
     fn generate_edge_case_args(&self, sub: &SubroutineInfo, value: &str) -> String {
         let count = sub.params.as_ref().map_or(0, Vec::len);
         vec![value; count].join(", ")
@@ -1184,7 +1113,7 @@ mod tests {
     }
 
     #[test]
-    fn test_edge_case_tests_preserve_signature_arity() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_edge_case_tests_emit_draft_not_false_green() -> Result<(), Box<dyn std::error::Error>> {
         let generator = TestGenerator::new(TestFramework::TestMore);
         let sub = SubroutineInfo {
             name: "add".to_string(),
@@ -1196,18 +1125,17 @@ mod tests {
             is_private: false,
         };
 
-        let undef_test = generator.generate_undef_test(&sub);
-        assert!(undef_test.code.contains("eval { add(undef, undef) };"));
-
-        let empty_test = generator.generate_empty_test(&sub);
-        assert!(empty_test.code.contains("eval { add('', '') };"));
-        assert!(!empty_test.code.contains("eval { add('', [], {}) };"));
-
-        let type_test = generator.generate_type_test(&sub);
-        assert!(type_test.code.contains("eval { add(123, 123) };"));
-        assert!(type_test.code.contains("eval { add('string', 'string') };"));
-        assert!(type_test.code.contains("eval { add([1,2,3], [1,2,3]) };"));
-        assert!(type_test.code.contains("eval { add({a=>1}, {a=>1}) };"));
+        let policy = FalseGreenPolicy;
+        for case in [
+            generator.generate_undef_test(&sub),
+            generator.generate_empty_test(&sub),
+            generator.generate_type_test(&sub),
+        ] {
+            assert_eq!(case.readiness, GeneratedTestReadiness::DraftNeedsOracle);
+            assert!(case.code.contains("TODO:"));
+            assert!(!case.code.contains("pass("));
+            assert!(policy.check(&case.code, case.readiness).is_empty());
+        }
 
         Ok(())
     }
