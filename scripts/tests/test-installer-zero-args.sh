@@ -11,6 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ROOT_INSTALLER="$ROOT/install.sh"
+UNINSTALL_HELPER="$ROOT/scripts/standalone_uninstall.py"
 CANONICAL_INSTALLER="$ROOT/scripts/install.sh"
 LEGACY_BASH_IMAGE="${PERL_LSP_LEGACY_BASH_IMAGE:-bash:3.2}"
 
@@ -94,12 +95,20 @@ if [[ -z "$out" ]]; then
     echo "fake curl expected --output <path>" >&2
     exit 2
 fi
-expected_url="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${PERL_LSP_INSTALLER_REF}/scripts/install.sh"
-if [[ "$url" != "$expected_url" ]]; then
-    echo "unexpected URL: $url" >&2
-    exit 3
-fi
-cp "$PERL_LSP_TEST_STUB_INSTALLER" "$out"
+expected_installer_url="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${PERL_LSP_INSTALLER_REF}/scripts/install.sh"
+expected_helper_url="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${PERL_LSP_INSTALLER_REF}/scripts/standalone_uninstall.py"
+case "$url" in
+    "$expected_installer_url")
+        cp "$PERL_LSP_TEST_STUB_INSTALLER" "$out"
+        ;;
+    "$expected_helper_url")
+        cp "$PERL_LSP_TEST_UNINSTALL_HELPER" "$out"
+        ;;
+    *)
+        echo "unexpected URL: $url" >&2
+        exit 3
+        ;;
+esac
 printf '200'
 CURL_EOF
 chmod +x "$FAKEBIN/curl"
@@ -120,6 +129,7 @@ test_identity_bound_pipe_zero_args() {
     env \
         PATH="$FAKEBIN:$PATH" \
         PERL_LSP_TEST_STUB_INSTALLER="$STUB" \
+        PERL_LSP_TEST_UNINSTALL_HELPER="$UNINSTALL_HELPER" \
         PERL_LSP_INSTALLER_REF="$TEST_REF" \
         PERL_LSP_INSTALLER_SHA256="$STUB_SHA256" \
         bash < "$ROOT_INSTALLER" >"$out" 2>&1
@@ -151,6 +161,7 @@ test_unbound_pipe_fails_closed() {
     env \
         PATH="$FAKEBIN:$PATH" \
         PERL_LSP_TEST_STUB_INSTALLER="$STUB" \
+        PERL_LSP_TEST_UNINSTALL_HELPER="$UNINSTALL_HELPER" \
         PERL_LSP_TEST_CURL_LOG="$curl_log" \
         bash < "$ROOT_INSTALLER" >"$out" 2>&1
     status=$?

@@ -147,8 +147,15 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
-printf '%s\n' "$url" > "$FAKE_CURL_LOG"
-cp "$FAKE_INSTALLER_PAYLOAD" "$out"
+printf '%s\n' "$url" >> "$FAKE_CURL_LOG"
+case "$url" in
+    */scripts/standalone_uninstall.py)
+        cp "${FAKE_UNINSTALL_HELPER_PAYLOAD:-$FAKE_INSTALLER_PAYLOAD}" "$out"
+        ;;
+    *)
+        cp "$FAKE_INSTALLER_PAYLOAD" "$out"
+        ;;
+esac
 printf '%s' "${FAKE_CURL_STATUS:-200}"
 CURL
 chmod +x "$FAKE_BIN/curl"
@@ -242,13 +249,15 @@ run_remote "$FAKE_BIN:$PATH" \
     "PERL_LSP_INSTALLER_REF=$COMMIT_REF" \
     "PERL_LSP_INSTALLER_SHA256=$DIGEST"
 EXPECTED_URL="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$COMMIT_REF/scripts/install.sh"
+EXPECTED_HELPER_URL="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$COMMIT_REF/scripts/standalone_uninstall.py"
 if [ "$LAST_STATUS" -eq 0 ] \
     && [ -f "$SENTINEL" ] \
     && grep -qx 'args=--probe' "$SENTINEL" \
-    && grep -qx "$EXPECTED_URL" "$CURL_LOG"; then
+    && grep -qx "$EXPECTED_URL" "$CURL_LOG" \
+    && grep -qx "$EXPECTED_HELPER_URL" "$CURL_LOG"; then
     pass "verified commit-bound installer executes with preserved arguments"
 else
-    fail_case "verified commit-bound installer executes with preserved arguments" "status=$LAST_STATUS output=$LAST_OUTPUT"
+    fail_case "verified commit-bound installer executes with preserved arguments" "status=$LAST_STATUS output=$LAST_OUTPUT curl_log=$(tr '\n' ' ' < "$CURL_LOG")"
 fi
 assert_lacks_unpublished_packet_pointer "verified success does not print the unpublished-packet pointer"
 
