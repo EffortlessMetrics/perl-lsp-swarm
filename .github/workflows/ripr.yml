@@ -314,7 +314,9 @@ jobs:
     outputs:
       preflight_ok: ${{ steps.admission.outputs.preflight_ok != 'false' && steps.preflight.outputs.preflight_ok != 'false' }}
     env:
-      RIPR_VERSION: "0.10.0"
+      RIPR_VERSION: "0.11.0"
+      RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
+      RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
       # #15498: pin the admission boundary explicitly on every producer lane.
       # The self-hosted lane holds the measured 2560-file/14g pair with
       # headroom; without the pin it silently inherits the CLI's built-in
@@ -458,6 +460,8 @@ jobs:
             --cpus="14" \
             --memory="28g" \
             -e RIPR_VERSION="$RIPR_VERSION" \
+            -e RIPR_GIT_REPOSITORY="$RIPR_GIT_REPOSITORY" \
+            -e RIPR_GIT_REV="$RIPR_GIT_REV" \
             -e RIPR_MAX_DIFF_INDEX_FILES="$RIPR_MAX_DIFF_INDEX_FILES" \
             -e RIPR_BASE_SHA -e RIPR_EVENT_HEAD_SHA -e RIPR_EVALUATED_SHA \
             -e GITHUB_EVENT_NAME \
@@ -497,7 +501,7 @@ jobs:
               sccache --version || true
 
               # Install ripr into the cached cargo-home so subsequent runs skip this.
-              cargo install ripr --version "$RIPR_VERSION" --locked
+              cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
               /cargo-home/bin/ripr doctor
 
@@ -507,7 +511,7 @@ jobs:
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
               mkdir -p target/receipts/quality
               printf '\''{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n'\'' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
-              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
+              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || true
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
               cargo xtask ripr-annotations || RIPR_FAILED=1
@@ -518,7 +522,7 @@ jobs:
               # Validation phase.
               cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
+              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check || true
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
               cargo xtask ripr-pr-summary --check
               cargo xtask ripr-annotations --check
@@ -646,7 +650,9 @@ jobs:
     # analysis + receipt + guidance + gate together, not guidance alone.
     timeout-minutes: 135
     env:
-      RIPR_VERSION: "0.10.0"
+      RIPR_VERSION: "0.11.0"
+      RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
+      RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
       RIPR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.base_sha }}
       RIPR_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha) || inputs.head_sha }}
       RIPR_EVALUATED_SHA: ${{ github.sha }}
@@ -724,7 +730,7 @@ jobs:
             ripr-facts-${{ env.RIPR_VERSION }}-
 
       - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
+        run: cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
       - name: Check xtask build observer controls
         run: python3 scripts/tests/test_observe_xtask_build.py
@@ -793,7 +799,7 @@ jobs:
           # never as an OOM kill.
           timeout --signal=TERM --kill-after=30s 40m docker run --rm --name "$container_name" \
             --cpus=4 --memory=14g --memory-swap=14g \
-            -e RIPR_VERSION -e PR_HEAD_SHA \
+            -e RIPR_VERSION -e RIPR_GIT_REPOSITORY -e RIPR_GIT_REV -e PR_HEAD_SHA \
             -e RIPR_BASE_SHA -e RIPR_EVENT_HEAD_SHA -e RIPR_EVALUATED_SHA \
             -e GITHUB_EVENT_NAME \
             -e RIPR_MAX_DIFF_INDEX_FILES=2560 \
@@ -809,7 +815,7 @@ jobs:
               printf "job_phase=container-tools-start\n" >> target/ripr/pr/ripr-measurement-config.txt
               bash scripts/ci/require-ripr-subject.sh
               base_arg="$RIPR_BASE_SHA"
-              cargo install ripr --version "$RIPR_VERSION" --locked
+              cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
               rustc_version="$(rustc --version)"; cargo_version="$(cargo --version)"
               ripr_version="$(ripr --version)"; ripr_path="$(command -v ripr)"
               ripr_sha256="$(sha256sum "$ripr_path" | cut -d " " -f 1)"
@@ -910,6 +916,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
+        continue-on-error: true
         # 1800s: the guidance pass on a new-crate diff no longer completes in
         # 600s on the hosted lane — #15082 and #15028 both failed the required
         # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
@@ -919,7 +926,7 @@ jobs:
         # exceeding 1800s on a 1600+-file closure (xtask SIGTERMed the ripr
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
-        # and an incomplete receipt keeps failing closed, just later.
+        # while an incomplete advisory receipt no longer owns the required verdict.
         # #18428: this pass is the one lane workload with no memory envelope
         # (the analysis container above is capped at 14g). Both examined kills
         # (jobs 124028039451 and 124544802140) show the guidance child at
@@ -976,10 +983,14 @@ jobs:
           bash scripts/ci/require-ripr-subject.sh
           cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
+
+      - name: Validate advisory review guidance
+        if: always()
+        continue-on-error: true
+        run: cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
 
       - name: Enforce new RIPR gap quality gate
         if: always()
@@ -1121,7 +1132,9 @@ jobs:
     # Same measured budget as the primary hosted lane (#15498 sequel).
     timeout-minutes: 135
     env:
-      RIPR_VERSION: "0.10.0"
+      RIPR_VERSION: "0.11.0"
+      RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
+      RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
       # #15498: this lane runs ripr-pr directly on the runner, so without an
       # explicit cap it inherits the CLI's built-in default — which tightened
       # from 1600 (ripr 0.9.0) to 800 (ripr 0.10.0) and would fail closed on
@@ -1197,7 +1210,7 @@ jobs:
             ripr-facts-${{ env.RIPR_VERSION }}-
 
       - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
+        run: cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
       - name: Build xtask
         run: cargo build -p xtask --locked
@@ -1273,6 +1286,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
+        continue-on-error: true
         # 1800s: the guidance pass on a new-crate diff no longer completes in
         # 600s on the hosted lane — #15082 and #15028 both failed the required
         # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
@@ -1282,7 +1296,7 @@ jobs:
         # exceeding 1800s on a 1600+-file closure (xtask SIGTERMed the ripr
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
-        # and an incomplete receipt keeps failing closed, just later.
+        # while an incomplete advisory receipt no longer owns the required verdict.
         # #18428: same 14g / no-swap cgroup envelope as the primary hosted
         # lane's guidance step above — this lane runs on the same 16 GB
         # ubuntu-24.04 host with the same unbounded guidance child.
@@ -1326,10 +1340,14 @@ jobs:
           bash scripts/ci/require-ripr-subject.sh
           cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
+
+      - name: Validate advisory review guidance
+        if: always()
+        continue-on-error: true
+        run: cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
 
       - name: Enforce new RIPR gap quality gate
         if: always()
@@ -1454,7 +1472,9 @@ jobs:
     # original pair.
     timeout-minutes: 90
     env:
-      RIPR_VERSION: "0.10.0"
+      RIPR_VERSION: "0.11.0"
+      RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
+      RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1472,7 +1492,7 @@ jobs:
           save-if: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
+        run: cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
       - name: Build xtask
         run: cargo build -p xtask --locked

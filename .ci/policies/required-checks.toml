@@ -150,7 +150,7 @@ policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts from the GitHub Actions integration; named new gaps in changed production files block, while sensor availability remains advisory."
+reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts from the GitHub Actions integration; diff-scoped ripr check findings and gaps block, raw-check and review-guidance limitations remain visible, and ripr-review-comments availability is advisory (#19240)."
 
 [[checks]]
 name = "Compile All Targets (bit-rot guard)"

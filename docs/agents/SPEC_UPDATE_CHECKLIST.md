@@ -110,7 +110,7 @@ verdict establish analysis evidence. A non-draft skipped route retains its exist
 result but does not establish analysis proof. Verify live protection and current
 run evidence rather than treating a skipped route or an older green check as proof.
 
-RIPR pin: `RIPR_VERSION=0.10.0` (`.github/workflows/ripr.yml`). Local ripr installs may differ — verify from the `ripr+ New Gap Gate` CI receipt, not local output.
+RIPR pin: `RIPR_VERSION=0.11.0` (`.github/workflows/ripr.yml`), built from `https://github.com/EffortlessMetrics/ripr-swarm.git` at `9b9143798615bbf1a14c2dbd23a2359a29942078`. Local ripr installs may differ — verify from the `ripr+ New Gap Gate` CI receipt, not local output.
 
 Codecov false-low: patch coverage is advisory and label/manual/nightly only.
 When you do run it, patch coverage counts `--lib` profdata only. Integration
