@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/.ci/receipts/schemas/dependency-hygiene.schema.json",
+  "title": "Dependency Hygiene Report",
+  "description": "Machine-readable result of `cargo xtask dependency-hygiene report` (authority #9364): cargo-machete unused-dependency analysis with explicit SUCCESS | POLICY_FINDING | NOT_PROVEN | NOT_APPLICABLE outcome vocabulary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "timestamp",
+    "outcome",
+    "outcome_detail",
+    "findings",
+    "instrument_version",
+    "native_output_ref",
+    "command_identity"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "dependency_hygiene.v1"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["SUCCESS", "POLICY_FINDING", "NOT_PROVEN", "NOT_APPLICABLE"]
+    },
+    "outcome_detail": {
+      "type": ["string", "null"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "crate_name",
+          "manifest_path",
+          "dep_name",
+          "dep_section",
+          "instrument",
+          "instrument_version",
+          "command_identity",
+          "finding_code",
+          "native_output_ref",
+          "limitations"
+        ],
+        "properties": {
+          "crate_name": { "type": "string", "minLength": 1 },
+          "manifest_path": { "type": "string", "minLength": 1 },
+          "dep_name": { "type": "string", "minLength": 1 },
+          "dep_section": { "type": ["string", "null"] },
+          "instrument": { "type": "string", "minLength": 1 },
+          "instrument_version": { "type": ["string", "null"] },
+          "command_identity": { "type": "string", "minLength": 1 },
+          "finding_code": { "type": "string", "minLength": 1 },
+          "native_output_ref": { "type": "string", "minLength": 1 },
+          "limitations": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "instrument_version": {
+      "type": ["string", "null"]
+    },
+    "native_output_ref": {
+      "type": ["string", "null"]
+    },
+    "command_identity": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
