@@ -83,4 +83,4 @@ if let Some(edit) = edit {
 - `IncrementalDocument` uses `SymbolPriority` (Critical > High > Medium > Low) for cache eviction after a fail-closed fresh parse -- package/use/sub nodes are evicted last. Cache hits are not parser work avoided.
 - `incremental_handler_v2.rs` is a deprecated stub; actual LSP handler lives in `perl-lsp`
 - Incremental mode in `DocumentParser` is gated by the `PERL_LSP_INCREMENTAL` environment variable
-- All tests are inline (`#[cfg(test)]` modules); no separate `tests/` directory
+- Unit tests are inline (`#[cfg(test)]` modules), but the crate also ships a `tests/` directory with 9 integration-test targets (`authority_disposition_contract`, `compatibility_forwarding`, `comprehensive_unit_tests`, `coverage_gaps_unit_tests`, `disposition_contract_falsifiers`, `extended_unit_tests`, `incremental_efficiency_tests`, `incremental_full_parse_equivalence`, `segment_cache_checkpoint_window_tests`) plus the shared `tests/disposition_contract/validate.rs` module.
