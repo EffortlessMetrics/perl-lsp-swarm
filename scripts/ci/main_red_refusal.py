@@ -315,7 +315,47 @@ def evaluate(
             f"{name}: main {main_conclusion} and candidate is not green "
             f"({_describe_probe_state(candidate)})"
         )
+
+    _append_candidate_policy_shard_required_routing(
+        decision,
+        candidate_by_name.get("CI Gate shard (policy)"),
+    )
     return decision
+
+
+def _append_candidate_policy_shard_required_routing(
+    decision: Decision,
+    candidate: dict[str, Any] | None,
+) -> None:
+    """Route policy-shard reds into the required Perl LSP lane (#17707).
+
+    Inner ``merge_gate`` rows fail the hosted ``policy`` shard, but GitHub does
+    not protect that context. When ``main`` is green, the main-red loop above
+    never runs; candidate-side policy shard failure must still block the
+    required ``Perl LSP Rust Small Result`` check.
+    """
+    if candidate is None:
+        decision.waiters.append(
+            "CI Gate shard (policy): required-context routing waiting for "
+            "exact-SHA candidate result"
+        )
+        return
+    if str(candidate.get("status") or "").lower() != "completed":
+        decision.waiters.append(
+            "CI Gate shard (policy): required-context routing waiting for "
+            f"completed candidate result ({_describe_probe_state(candidate)})"
+        )
+        return
+    conclusion = _conclusion(candidate)
+    if conclusion not in RED_CONCLUSIONS:
+        return
+    marker = "CI Gate shard (policy): candidate"
+    if any(blocker.startswith(marker) for blocker in decision.blockers):
+        return
+    decision.blockers.append(
+        f"CI Gate shard (policy): candidate {conclusion} "
+        f"(required-context routing #17707; {_describe_probe_state(candidate)})"
+    )
 
 
 def finalize(decision: Decision) -> Decision:

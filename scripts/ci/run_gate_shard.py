@@ -1403,6 +1403,7 @@ def _validate_receipt(
         "skip": "skipped",
         "timeout": "timeout",
         "error": "error",
+        "not_evaluated": "failed",
     }[status]
     if counts[count_key] != 1:
         raise ValueError(
