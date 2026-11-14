@@ -44,7 +44,7 @@ fn entry(path: &str, classification: &str, target: &str, lines: &[&str]) -> Stri
          path = \"{path}\"\n\
          classification = \"{classification}\"\n\
          migration_target = \"{target}\"\n\
-         owner_issue = 7192\n\
+         owner_issue = 8783\n\
          removal_condition = \"test fixture row\"\n\
          allowed_to_remain = true\n\
          reference_hashes = [{}]\n\n",
@@ -55,7 +55,7 @@ fn entry(path: &str, classification: &str, target: &str, lines: &[&str]) -> Stri
 const EXCLUDED_TARGET: &str = "\
 [[excluded_surface]]\n\
 pattern = \"target/**\"\n\
-owner_issue = 8752\n\
+owner_issue = 9248\n\
 reason = \"test: ephemeral build output\"\n\n";
 
 const HISTORICAL_LINE: &str = "The retired perl-kwalitee evaluator predates the rails.";
@@ -80,7 +80,7 @@ fn classified_tree() -> Result<TempDir, Box<dyn std::error::Error>> {
     let history_row = entry("docs/history.md", "historical_prose", "none", &[HISTORICAL_LINE]);
     let ledger = format!(
         "{}{}{}{}{}",
-        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n",
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 9248\n\n",
         EXCLUDED_TARGET,
         history_row,
         caller_row,
@@ -245,7 +245,7 @@ fn repeated_tokens_on_one_line_require_repeated_hash_claims() {
     let line = "cargo xtask perl-kwalitee and perl-kwalitee report";
     write(&dir, "ci/nightly.sh", &format!("{line}\n")).expect("write repeated caller");
     let ledger = format!(
-        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n{}",
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 9248\n\n{}",
         entry("ci/nightly.sh", "release_readiness", "independent_readiness_rails", &[line]),
     );
     write(&dir, "policy/kwalitee-namespace-inventory.toml", &ledger).expect("write ledger");
@@ -266,7 +266,7 @@ fn repeated_tokens_on_one_line_cannot_have_mixed_classifications() {
     write(&dir, "ci/nightly.sh", &format!("{line}\n")).expect("write repeated caller");
     let hash = hash_reference(line);
     let ledger = format!(
-        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n{}{}",
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 9248\n\n{}{}",
         entry("ci/nightly.sh", "release_readiness", "independent_readiness_rails", &[line]),
         entry("ci/nightly.sh", "legacy_compatibility", "legacy_receipt_readability", &[line]),
     );
@@ -306,7 +306,7 @@ fn closed_vocabularies_reject_unknown_values_and_pairings() {
         write(&dir, "a.txt", &format!("{CALLER_LINE}\n")).expect("write");
         let ledger = format!(
             "{}{}",
-            "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n",
+            "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 9248\n\n",
             entry("a.txt", classification, target, &[CALLER_LINE])
         );
         write(&dir, "policy/kwalitee-namespace-inventory.toml", &ledger).expect("ledger");
@@ -328,8 +328,8 @@ fn broad_exclusions_are_rejected_before_scanning() {
     let dir = tempfile::tempdir().expect("tempdir");
     write(&dir, "src/caller.rs", &format!("{CALLER_LINE}\n")).expect("write caller");
     let ledger = format!(
-        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n\
-         [[excluded_surface]]\npattern = \"*\"\nowner_issue = 8752\nreason = \"bad\"\n"
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 9248\n\n\
+         [[excluded_surface]]\npattern = \"*\"\nowner_issue = 9248\nreason = \"bad\"\n"
     );
     write(&dir, "policy/kwalitee-namespace-inventory.toml", &ledger).expect("ledger");
     let output = inventory(dir.path()).arg("--check").output().expect("run inventory");
@@ -354,7 +354,7 @@ fn in_root_symlinks_are_scanned_once_and_escape_or_cycles_are_safe() {
     write(
         &dir,
         "policy/kwalitee-namespace-inventory.toml",
-        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n",
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 9248\n",
     )
     .expect("write escape ledger");
     let output = inventory(dir.path()).arg("--check").output().expect("run inventory");
@@ -371,7 +371,7 @@ fn in_root_symlinks_are_scanned_once_and_escape_or_cycles_are_safe() {
     write(
         &dir,
         "policy/kwalitee-namespace-inventory.toml",
-        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n",
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 9248\n",
     )
     .expect("write cycle ledger");
     let output = inventory(dir.path()).arg("--check").output().expect("run cycle inventory");
@@ -385,7 +385,7 @@ fn in_root_symlinks_are_scanned_once_and_escape_or_cycles_are_safe() {
     write(&dir, "real/caller.sh", &format!("{CALLER_LINE}\n")).expect("write target");
     symlink(dir.path().join("real"), dir.path().join("alias")).expect("link in root");
     let ledger = format!(
-        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n{}",
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 9248\n\n{}",
         entry("real/caller.sh", "release_readiness", "independent_readiness_rails", &[CALLER_LINE]),
     );
     write(&dir, "policy/kwalitee-namespace-inventory.toml", &ledger).expect("write ledger");
@@ -486,6 +486,37 @@ fn scaffold_prints_hashes_but_writes_nothing() {
     let ledger = fs::read_to_string(dir.path().join("policy/kwalitee-namespace-inventory.toml"))
         .expect("read ledger");
     assert!(!ledger.contains("extra/new.md"), "scaffold must not mutate the ledger");
+}
+
+/// A closed `owner_issue` must fail `--check` even when digests reconcile.
+#[test]
+fn closed_owner_issue_fails_live_owner_check() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(&dir, "docs/history.md", &format!("{HISTORICAL_LINE}\n")).expect("write");
+    let ledger = format!(
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 9248\n\n\
+         {EXCLUDED_TARGET}\
+         {}",
+        entry("docs/history.md", "historical_prose", "none", &[HISTORICAL_LINE])
+            .replace("owner_issue = 8783", "owner_issue = 7192")
+    );
+    write(&dir, "policy/kwalitee-namespace-inventory.toml", &ledger).expect("ledger");
+    let output = inventory(dir.path()).arg("--check").output().expect("run kwalitee-inventory");
+    assert!(
+        !output.status.success(),
+        "closed owner_issue must fail --check:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("7192") && combined.to_ascii_lowercase().contains("closed"),
+        "expected a closed-owner diagnostic mentioning #7192:\n{combined}"
+    );
 }
 
 /// The committed ledger must reconcile the real working tree right now. This

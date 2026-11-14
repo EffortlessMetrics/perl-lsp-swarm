@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use color_eyre::eyre::{Context, Result, bail};
 use serde::Deserialize;
@@ -37,7 +38,7 @@ pub const LEDGER_REL: &str = "policy/kwalitee-namespace-inventory.toml";
 /// Schema identity enforced at parse time.
 pub const SCHEMA: &str = "kwalitee_namespace_inventory.v1";
 /// Controlling issue for the inventory itself.
-pub const CONTROLLER_ISSUE: u64 = 8752;
+pub const CONTROLLER_ISSUE: u64 = 9248;
 
 /// Lowercased spellings of the namespace that count as references. Every
 /// current occurrence is one of these three shapes modulo ASCII case
@@ -380,6 +381,72 @@ impl Ledger {
     }
 }
 
+/// Collect every governance issue referenced by the ledger.
+fn ledger_owner_issues(ledger: &Ledger) -> BTreeSet<u64> {
+    let mut issues = BTreeSet::from([ledger.controller_issue]);
+    for surface in &ledger.excluded_surfaces {
+        issues.insert(surface.owner_issue);
+    }
+    for entry in &ledger.entry {
+        issues.insert(entry.owner_issue);
+    }
+    issues
+}
+
+/// Query GitHub for whether `issue_number` exists and is still open.
+fn query_issue_open(issue_number: u64) -> Result<(bool, bool)> {
+    let url = format!(
+        "https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/issues/{issue_number}"
+    );
+    let out = Command::new("gh")
+        .args(["api", &url])
+        .output()
+        .with_context(|| format!("querying GitHub issue #{issue_number}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("404") {
+            return Ok((false, false));
+        }
+        bail!(
+            "gh api exited with status {:?} for issue #{issue_number}: {stderr}",
+            out.status.code()
+        );
+    }
+    let body: serde_json::Value =
+        serde_json::from_slice(&out.stdout).context("parsing gh api issue response")?;
+    let state = body["state"].as_str().unwrap_or("unknown");
+    Ok((true, state == "open"))
+}
+
+/// Under `--check`, every ledger `owner_issue` (including `controller_issue`
+/// and excluded-surface owners) must still be open on GitHub.
+fn validate_live_owner_issues(ledger: &Ledger) -> Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+    for issue in ledger_owner_issues(ledger) {
+        let (exists, open) = query_issue_open(issue)?;
+        if !exists {
+            errors.push(format!("#{issue} is referenced by the ledger but does not exist"));
+            continue;
+        }
+        if !open {
+            errors.push(format!("#{issue} is closed but still named as an owner_issue"));
+        }
+    }
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let mut msg = String::new();
+    let _ = writeln!(
+        msg,
+        "kwalitee namespace inventory rejected {} closed or missing owner issue(s):",
+        errors.len()
+    );
+    for error in &errors {
+        let _ = write!(msg, "\n  - {error}");
+    }
+    bail!("{msg}");
+}
+
 fn validate_path(path: &str) -> Result<()> {
     if path.is_empty()
         || path.starts_with('/')
@@ -629,6 +696,9 @@ pub fn run(check: bool, scaffold_mode: bool, root_override: Option<PathBuf>) -> 
     };
     let ledger = parse_ledger(&root)?;
     ledger.validate_static()?;
+    if check {
+        validate_live_owner_issues(&ledger)?;
+    }
 
     if scaffold_mode {
         if check {
