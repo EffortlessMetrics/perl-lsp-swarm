@@ -34,6 +34,7 @@ REQUIRED_PRECONDITIONS = (
     "exact-h-receipt",
     "shared-producer",
     "singleton-canary",
+    "merge-group-head-sha",
 )
 
 #: Phrases each precondition bullet must still carry, so that gutting the prose
@@ -45,6 +46,7 @@ PRECONDITION_TEXT = {
     "exact-h-receipt": ("exact-H admission receipt",),
     "shared-producer": ("required-merge-surface commands", "NOT_PROVEN"),
     "singleton-canary": ("exactly one pull request", "merge_group"),
+    "merge-group-head-sha": ("github.event.merge_group.head_sha", "Conflict marker check"),
 }
 
 #: The heading the precondition bullets must live under.

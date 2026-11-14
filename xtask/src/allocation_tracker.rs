@@ -103,7 +103,7 @@ fn add_current(size: usize) {
 }
 
 fn subtract_current(size: usize) {
-    let _ = CURRENT_BYTES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = CURRENT_BYTES.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_sub(size))
     });
 }

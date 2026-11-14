@@ -61,7 +61,7 @@ just devex
 just doctor
 ```
 
-The repository pins Rust channel `1.95.0` and currently requires MSRV 1.95.
+The repository pins Rust channel `1.100.0` and currently requires MSRV 1.100.
 
 On Windows, prefer `cargo xtask fmt` or package-scoped `cargo fmt`; bare
 `cargo fmt --all` can exceed the `CreateProcessW` command-line limit in this workspace.

@@ -11,8 +11,7 @@
 //!
 //! Affected corpus files: `JSON/PP.pm`, `JSON/backportPP.pm`
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // ---- Failing cases: sort $coderef in paren context ----
 

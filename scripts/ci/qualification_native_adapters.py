@@ -28,7 +28,7 @@ def invoke(owner, *arguments):
     environment = {key: value for key, value in os.environ.items()
         if not key.startswith('GIT_') and key not in {'GH_TOKEN', 'GITHUB_TOKEN',
             'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'PYTHONPATH', 'PYTHONHOME'}}
-    environment.update(RUSTUP_TOOLCHAIN='1.95.0', RUSTUP_AUTO_INSTALL='0', CARGO_NET_OFFLINE='true')
+    environment.update(RUSTUP_TOOLCHAIN='1.100.0', RUSTUP_AUTO_INSTALL='0', CARGO_NET_OFFLINE='true')
     result = subprocess.run([str(owner.verifier), '--worktree-root', str(owner.workspace), *arguments],
         cwd=owner.workspace, env=environment, capture_output=True, timeout=60, check=False)
     if owner.executable_identity() != identity or result.returncode != 0:

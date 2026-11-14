@@ -36,8 +36,16 @@ ORDINARY = {'pull_request', 'pull_request_target', 'merge_group', 'push'}
 
 def git(root, *args):
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    return subprocess.run(['git', '-C', str(root), *args], env=env, check=True,
-                          capture_output=True, text=True).stdout
+    command = ['git', '-C', str(root), *args]
+    result = subprocess.run(command, env=env, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        rendered = ' '.join(command)
+        raise AssertionError(
+            f"command failed ({result.returncode}): {rendered}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    return result.stdout
 
 
 def selected_patch(root):
