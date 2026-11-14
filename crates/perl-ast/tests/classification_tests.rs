@@ -618,8 +618,7 @@ fn instance_dependent_flags_phaseblock() {
 
 #[test]
 fn use_not_safe_for_breakpoint() {
-    let use_kind =
-        NodeKind::Use { module: "strict".to_string(), args: vec![], has_filter_risk: false };
+    let use_kind = NodeKind::use_directive("strict".to_string(), vec![], false);
     assert!(
         !use_kind.flags().safe_for_breakpoint,
         "Use must have safe_for_breakpoint=false (compile-time pragma)"
