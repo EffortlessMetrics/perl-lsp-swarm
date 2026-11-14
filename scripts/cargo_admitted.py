@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import selectors
 import shutil
 import socket
 import signal
@@ -30,6 +31,12 @@ def local_config_cli_args(worktree):
     if path.is_file():
         return ["--config", str(path)]
     return []
+class CapacityRefused(Denied):
+    """Observed disk headroom is insufficient for the selected policy."""
+
+
+class CargoConfigRefused(Denied):
+    """Noncompiling Cargo setup could not validate the child environment."""
 
 
 def native_path(value):
@@ -298,11 +305,14 @@ def proc_parent_child_ids():
                 raise Denied('proc-parent numeric/task projection is overmounted')
             if point == '/proc':
                 roots.append((fields, filesystem))
-        if len(roots) != 1 or roots[0][0][3] != '/' or roots[0][1][0] != 'proc':
-            raise Denied('proc-parent discovery requires one complete procfs root')
-        options = roots[0][0][5].split(',') + roots[0][1][2].split(',')
-        if any(option.startswith('hidepid=') and option != 'hidepid=0' for option in options):
-            raise Denied('proc-parent discovery refuses hidden PID visibility')
+        # Stacked mounts may share /proc; even a hidden layer must be complete.
+        if not roots or any(fields[3] != '/' or filesystem[0] != 'proc'
+                            for fields, filesystem in roots):
+            raise Denied('proc-parent discovery requires complete procfs roots at /proc')
+        for fields, filesystem in roots:
+            options = fields[5].split(',') + filesystem[2].split(',')
+            if any(option.startswith('hidepid=') and option != 'hidepid=0' for option in options):
+                raise Denied('proc-parent discovery refuses hidden PID visibility')
         root_identity = directory_identity(Path('/proc'))
         if time.monotonic() - started > 1:
             raise Denied('proc-parent discovery exceeds bounded turn')
@@ -434,7 +444,8 @@ class ClippyTree:
             raise
         self.handles[pid] = (fd, process)
 
-    def probe(self, command, env):
+    def probe(self, command, env, *, timeout=15, output_limit=16384):
+        deadline = time.monotonic() + timeout
         self.binding = True
         try:
             process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
@@ -442,9 +453,35 @@ class ClippyTree:
             self.track(process.pid, process)
         finally:
             self.binding = False
-        if self.cancelled:
-            raise KeyboardInterrupt("Clippy probe cancelled after child binding")
-        stdout, stderr = process.communicate(timeout=15)
+        output = {process.stdout: bytearray(), process.stderr: bytearray()}
+        observed = 0
+        try:
+            if self.cancelled:
+                raise KeyboardInterrupt("Clippy probe cancelled after child binding")
+            with selectors.DefaultSelector() as selector:
+                for stream in output:
+                    selector.register(stream, selectors.EVENT_READ)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    for key, _ in selector.select(remaining):
+                        chunk = os.read(key.fd, min(4096, output_limit - observed + 1))
+                        observed += len(chunk)
+                        if observed > output_limit:
+                            raise Denied("Cargo setup output exceeded its observation bound")
+                        if chunk:
+                            output[key.fileobj].extend(chunk)
+                        else:
+                            selector.unregister(key.fileobj)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                process.wait(timeout=remaining)
+            stdout, stderr = bytes(output[process.stdout]), bytes(output[process.stderr])
+        finally:
+            process.stdout.close()
+            process.stderr.close()
         result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         result.check_returncode()
         return result
@@ -808,11 +845,11 @@ def check_capacity(paths, env, budget=None):
         if usage.free < required:
             row["shortfall_bytes"] = required - usage.free
             row["used_pct"] = used_pct
-            raise Denied("insufficient disk headroom at " + str(path)
-                         + " free_bytes=" + str(usage.free)
-                         + " required_free_bytes=" + str(required)
-                         + " shortfall_bytes=" + str(row["shortfall_bytes"])
-                         + " used_pct=" + str(row["used_pct"]), row)
+            raise CapacityRefused("insufficient disk headroom at " + str(path)
+                                  + " free_bytes=" + str(usage.free)
+                                  + " required_free_bytes=" + str(required)
+                                  + " shortfall_bytes=" + str(row["shortfall_bytes"])
+                                  + " used_pct=" + str(row["used_pct"]), row)
         if policy == "percent" and ceiling is not None and used_pct >= ceiling:
             required_free_for_pct = usage.total * (100 - ceiling) / 100
             # Admission requires used_pct strictly below the ceiling, so the
@@ -823,34 +860,53 @@ def check_capacity(paths, env, budget=None):
             row["required_free_bytes_for_pct"] = required_free_for_pct
             row["pct_shortfall_bytes"] = additional_free_needed
             row["additional_free_bytes_needed"] = additional_free_needed
-            raise Denied("volume used percentage at or above MAX_USED_PCT at " + str(path)
-                         + " free_bytes=" + str(usage.free)
-                         + " used_pct=" + str(used_pct)
-                         + " max_used_pct=" + str(ceiling)
-                         + " required_free_bytes_for_pct=" + str(required_free_for_pct)
-                         + " additional_free_bytes_needed=" + str(additional_free_needed), row)
+            raise CapacityRefused("volume used percentage at or above MAX_USED_PCT at " + str(path)
+                                  + " free_bytes=" + str(usage.free)
+                                  + " used_pct=" + str(used_pct)
+                                  + " max_used_pct=" + str(ceiling)
+                                  + " required_free_bytes_for_pct=" + str(required_free_for_pct)
+                                  + " additional_free_bytes_needed=" + str(additional_free_needed), row)
         observations.append(row)
     report["destinations"] = observations
     return report
 
 
-def git_path(*args, env=None):
+def read_only_git_environment(env):
+    """Disable Git observation side effects without changing repository selection."""
+    result = {key: value for key, value in env.items()
+              if not key.startswith(("GIT_TRACE", "GIT_REDIRECT_"))}
+    result.update(GIT_OPTIONAL_LOCKS="0", GIT_TRACE2="0",
+                  GIT_TRACE2_EVENT="0", GIT_TRACE2_PERF="0")
+    return result
+
+
+def git_path(*args, env=None, output_reader=None):
     # Read bytes: text mode also translates CR/LF that may belong to a POSIX
     # filename. Git emits one terminal LF; preserve every preceding path byte.
-    output = subprocess.check_output(["git", "rev-parse", *args], env=env)
+    command = ["git", "rev-parse", *args]
+    output = (subprocess.check_output(command, env=env) if output_reader is None
+              else output_reader(command, env))
     if not output.endswith(b"\n"):
         raise Denied("Git path output is missing its terminal newline")
     return native_path(os.fsdecode(output[:-1]))
 
 
-def resource_plan(env):
+def private_worktree_root(slot, worktree):
+    """Resolve private storage from an already canonical native worktree path."""
+    return slot / "worktrees" / hashlib.sha256(os.fsencode(worktree)).hexdigest()
+
+
+def resource_plan(env, *, git_output_reader=None):
     # Cargo uses the invocation directory, not Git's repository-location
     # overrides. Refuse an ambiguous subject instead of silently retargeting it.
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
         if name in env:
             raise Denied(name + " repository-location override is unsupported; unset it and invoke from the intended worktree")
-    worktree = git_path("--show-toplevel", env=env)
-    common = git_path("--path-format=absolute", "--git-common-dir", env=env)
+    git_options = {"env": env}
+    if git_output_reader is not None:
+        git_options["output_reader"] = git_output_reader
+    worktree = git_path("--show-toplevel", **git_options)
+    common = git_path("--path-format=absolute", "--git-common-dir", **git_options)
     identity = str(common).casefold() if os.name == "nt" else str(common)
     key = hashlib.sha256(os.fsencode(identity)).hexdigest()[:16]
     base = native_path(env.get("DEVPLANE", str(Path.home() / ".cache" / "devplane")))
@@ -860,8 +916,7 @@ def resource_plan(env):
     slot = base / (socket.gethostname() + "-" + sys.platform + "-" + key)
     # native_path already resolves the actual root; do not invent Unicode/case
     # equivalence between distinct filesystem paths. fsencode is lossless on POSIX.
-    worktree_key = hashlib.sha256(os.fsencode(worktree)).hexdigest()
-    private = slot / "worktrees" / worktree_key
+    private = private_worktree_root(slot, worktree)
     target, build = private / "target", private / "build"
     for name, expected in (("CARGO_TARGET_DIR", target), ("CARGO_BUILD_BUILD_DIR", build)):
         if env.get(name) and native_path(env[name]) != expected:
@@ -905,6 +960,261 @@ def release_lease(lock, identity, marker=None, marker_identity=None):
         pass
 
 
+def child_environment_config(prefix, values, env, tree):
+    """Ask Cargo to merge only our fixed env entries, without loading/building a workspace.
+
+    Cargo accepts string or table [env] values, but cannot merge between those
+    shapes. A scalar never forces over the admitted process environment. Still
+    project its admitted value: a later type change must fail, not bypass policy.
+    """
+    deadline = time.monotonic() + 15
+    remaining_output = 65536
+    attempts, maximum = 0, 2 * len(values) + 3
+    last_error = None
+
+    def render(names, scalar=False):
+        result = []
+        for name in names:
+            key, value = "env." + name, json.dumps(values[name])
+            fields = [(key, value)] if scalar else [
+                (key + ".value", value), (key + ".force", "true"), (key + ".relative", "false")]
+            for key, value in fields:
+                result.extend(("--config", key + "=" + value))
+        return result
+
+    def refuse(reason):
+        diagnostic = (last_error.stderr or b"").decode("utf-8", "replace").strip() if last_error else ""
+        raise CargoConfigRefused("Cargo child environment setup: " + reason +
+                                 ("\n" + diagnostic[-4096:] if diagnostic else ""))
+
+    def accepts(projection):
+        nonlocal attempts, remaining_output, last_error
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or attempts >= maximum or remaining_output <= 0:
+            refuse("configuration observation bound exhausted")
+        attempts += 1
+        command = [*prefix, *projection, "locate-project", "--message-format=json"]
+        try:
+            if tree is not None:
+                result = tree.probe(command, env, timeout=remaining,
+                                    output_limit=min(16384, remaining_output))
+            else:
+                # Existing non-Linux routes retain their legacy settlement
+                # limitation. Discard output rather than capture without a bound.
+                result = subprocess.run(command, env=env, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=remaining, check=True)
+        except subprocess.CalledProcessError as error:
+            result = last_error = error
+            if error.returncode != 101:
+                refuse("configuration probe exited " + str(error.returncode))
+        except (Denied, OSError, subprocess.TimeoutExpired) as error:
+            raise CargoConfigRefused("Cargo child environment setup: " + str(error)) from error
+        remaining_output -= len(result.stdout or b"") + len(result.stderr or b"")
+        if remaining_output < 0 or time.monotonic() > deadline:
+            refuse("configuration observation bound exhausted")
+        return result.returncode == 0
+
+    projection = render(values)
+    if accepts(projection):
+        return projection
+    projection = render(values, scalar=True)
+    if accepts(projection):
+        return projection
+    projection = []
+    for name in values:
+        entry = render([name])
+        if not accepts(entry):
+            entry = render([name], scalar=True)
+            if not accepts(entry):
+                refuse("neither supported configuration shape for " + name)
+        projection.extend(entry)
+    if not accepts(projection):
+        refuse("combined configuration projection rejected")
+    return projection
+
+
+class PrivateAllocation:
+    """Creation evidence for two new roots, never consumer or cleanup authority.
+
+    Native Linux only. Existing unrecorded state remains usable but unknown. The
+    record is immutable and self-bound to its original file identity; copied
+    bytes cannot establish the creation evidence of a replacement object.
+    """
+    LIMIT = 16 * 1024
+    SCHEMA = "cargo_private_allocation.v1"
+
+    def __init__(self, worktree, slot, paths, env):
+        self.worktree, self.slot, self.paths, self.env = worktree, slot, paths, env
+        self.private = private_worktree_root(slot, worktree)
+        self.path = self.private / "allocation.json"
+        self.raw = None
+        self.source = None
+        self.receipt = {"status": "unknown", "reason": "platform_not_qualified",
+                        "consumer_custody": "unknown", "reclaim_eligibility": "unknown"}
+        self.supported = sys.platform == "linux"
+        if not self.supported:
+            return
+        if paths["target"] != self.private / "target" or paths["build"] != self.private / "build":
+            raise Denied("private allocation paths differ from the admitted worktree member")
+        if os.path.lexists(self.path):
+            self.raw, record = self._read()
+            self._receipt(record)
+        else:
+            absent = all(not os.path.lexists(paths[key]) for key in ("target", "build"))
+            self.receipt["reason"] = "private_roots_not_allocated" if absent else "preexisting_unrecorded_state"
+            if absent:
+                self.source = self._source()
+
+    @staticmethod
+    def _directory(path):
+        path = native_path(str(path))
+        identity = directory_identity(path)
+        if identity[0] < 0 or identity[1] <= 0:
+            raise Denied("private allocation directory identity is unavailable")
+        return {"path": str(path), "identity": list(identity)}
+
+    def _source(self):
+        outputs = {}
+
+        def read(command, env):
+            key = tuple(command)
+            if key not in outputs:
+                outputs[key] = subprocess.check_output([command[0], "-C", str(self.worktree), *command[1:]],
+                                                      env=env, timeout=5)
+            return outputs[key]
+
+        env = read_only_git_environment(self.env)
+        if resource_plan(env, git_output_reader=read) != (self.worktree, self.slot, self.paths):
+            raise Denied("private allocation resource plan changed during admission")
+        options = {"env": env, "output_reader": read}
+        common = git_path("--path-format=absolute", "--git-common-dir", **options)
+        administrative = git_path("--absolute-git-dir", **options)
+        return {"hostname": socket.gethostname(), "platform": sys.platform,
+                "worktree": self._directory(self.worktree), "common_dir": self._directory(common),
+                "git_dir": self._directory(administrative)}
+
+    def _subject(self):
+        return {**self._source(), "private_member": self._directory(self.private),
+                "target": self._directory(self.paths["target"]),
+                "build": self._directory(self.paths["build"])}
+
+    @staticmethod
+    def _file_facts(metadata):
+        return (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns,
+                metadata.st_ctime_ns, metadata.st_mode, metadata.st_nlink)
+
+    def _read(self):
+        native_path(str(self.path))
+        fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_ino <= 0
+                    or before.st_size > self.LIMIT):
+                raise Denied("private allocation record must be a bounded singly linked regular file")
+            raw = bytearray()
+            while len(raw) <= self.LIMIT:
+                chunk = os.read(fd, min(4096, self.LIMIT + 1 - len(raw)))
+                if not chunk:
+                    break
+                raw.extend(chunk)
+            if (len(raw) != before.st_size or len(raw) > self.LIMIT
+                    or self._file_facts(before) != self._file_facts(os.fstat(fd))
+                    or self._file_facts(before) != self._file_facts(self.path.lstat())):
+                raise Denied("private allocation record changed during observation")
+        finally:
+            os.close(fd)
+
+        def pairs(entries):
+            result = {}
+            for key, value in entries:
+                if key in result:
+                    raise Denied("duplicate private allocation record field")
+                result[key] = value
+            return result
+
+        try:
+            record = json.loads(bytes(raw), object_pairs_hook=pairs)
+        except (ValueError, UnicodeError, RecursionError) as error:
+            raise Denied("invalid private allocation record") from error
+        fields = {"schema_version", "allocation_id", "creator_source_sha256", "record_identity", "subject"}
+        if (not isinstance(record, dict) or set(record) != fields
+                or record["schema_version"] != self.SCHEMA
+                or not isinstance(record["allocation_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", record["allocation_id"])
+                or not isinstance(record["creator_source_sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", record["creator_source_sha256"])):
+            raise Denied("private allocation record schema is invalid")
+        # JSON equality preserves true-versus-1 and unknown fields as refusals.
+        expected_identity = [before.st_dev, before.st_ino]
+        if (json.dumps(record["record_identity"]) != json.dumps(expected_identity)
+                or json.dumps(record["subject"], sort_keys=True) != json.dumps(self._subject(), sort_keys=True)):
+            raise Denied("private allocation record no longer matches original filesystem identities")
+        return bytes(raw), record
+
+    def _receipt(self, record):
+        self.receipt = {"status": "matching_creation_record", "record_path": str(self.path),
+                        "allocation_id": record["allocation_id"],
+                        "record_sha256": hashlib.sha256(self.raw).hexdigest(),
+                        "consumer_custody": "unknown", "reclaim_eligibility": "unknown"}
+
+    def revalidate(self):
+        if not self.supported:
+            return
+        if self.raw is None:
+            if os.path.lexists(self.path):
+                raise Denied("private allocation record appeared during admission")
+            if self.source is not None and self._source() != self.source:
+                raise Denied("private allocation source identity changed during admission")
+        elif self._read()[0] != self.raw:
+            raise Denied("private allocation record changed during admission")
+
+    def record_created(self, created, lock, identity, marker, marker_identity):
+        if not self.supported or self.raw is not None:
+            return
+        self.revalidate()
+        if self.source is None or not all(created.get(key) for key in ("target", "build")):
+            self.receipt["reason"] = "preexisting_unrecorded_state"
+            return
+        if not owns_lease(lock, identity, marker, marker_identity):
+            raise Denied("lease ownership changed before private allocation recording")
+        subject = self._subject()
+        if any(subject[key]["identity"] != list(created[key]) for key in ("target", "build")):
+            raise Denied("new private allocation roots changed before recording")
+        creator = file_subject(Path(__file__))["sha256"]
+        parent = os.open(self.private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(parent)
+            if [opened.st_dev, opened.st_ino] != subject["private_member"]["identity"]:
+                raise Denied("private allocation container changed before recording")
+            fd = os.open(self.path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=parent)
+            try:
+                metadata = os.fstat(fd)
+                record = {"schema_version": self.SCHEMA, "allocation_id": uuid.uuid4().hex,
+                          "creator_source_sha256": creator,
+                          "record_identity": [metadata.st_dev, metadata.st_ino], "subject": subject}
+                raw = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+                if len(raw) > self.LIMIT:
+                    raise Denied("private allocation record exceeds its byte bound")
+                written = 0
+                while written < len(raw):
+                    count = os.write(fd, raw[written:])
+                    if count <= 0:
+                        raise OSError("private allocation record write made no progress")
+                    written += count
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        observed, record = self._read()
+        if observed != raw:
+            raise Denied("private allocation record readback differs from written bytes")
+        self.raw = observed
+        self._receipt(record)
+
+
 def main(args=None):
     args = sys.argv[1:] if args is None else args
     preflight, scope = False, None
@@ -917,9 +1227,9 @@ def main(args=None):
         env = os.environ.copy()
         env["RUSTUP_AUTO_INSTALL"] = "0"
         discovery_mode = env.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children')
-        if discovery_mode != 'proc-children':
-            if not owned_linux:
-                raise Denied('alternate owned-child discovery requires native Linux')
+        if discovery_mode != 'proc-children' and not owned_linux:
+            raise Denied('alternate owned-child discovery requires native Linux')
+        if managed and owned_linux:
             child_discovery_capability(discovery_mode)  # before scope/lease/allocation
         worktree, slot, paths = resource_plan(env)
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
@@ -941,12 +1251,14 @@ def main(args=None):
         budget = read_budget_file(budget_file, scope, env) if budget_file else None
         admission = check_capacity([slot, *paths.values()], env, budget)
         lock = slot / "cargo-active"
+        if preflight and os.path.lexists(lock):
+            raise Denied("slot is active or awaits owner verification: " + str(lock))
+        allocation = PrivateAllocation(worktree, slot, paths, env)
         if preflight:
-            if os.path.lexists(lock):
-                raise Denied("slot is active or awaits owner verification: " + str(lock))
             print("cargo-admitted preflight: " + json.dumps({
                 "verdict": "PASS", "scope": scope, "admission": admission,
                 "lease": str(lock), "lease_acquired": False,
+                "private_allocation_provenance": allocation.receipt,
                 "limitation": "read-only snapshot; not a reservation or a verified growth measurement",
             }), file=sys.stderr, flush=True)
             return 0
@@ -974,8 +1286,15 @@ def main(args=None):
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed after admission: " + str(path))
-            for path in paths.values():
-                path.mkdir(parents=True, exist_ok=True)
+            allocation.revalidate()
+            created = {}
+            for name, path in paths.items():
+                try:
+                    path.mkdir(parents=True)
+                    created[name] = directory_identity(path)
+                except FileExistsError:
+                    directory_identity(path)
+            allocation.record_created(created, lock, identity, marker, marker_identity)
             env.update(CARGO_TARGET_DIR=str(paths["target"]),
                        CARGO_BUILD_BUILD_DIR=str(paths["build"]),
                        CARGO_HOME=str(paths["cargo_home"]), CARGO_INCREMENTAL="0",
@@ -983,6 +1302,7 @@ def main(args=None):
                        TEMP=str(paths["temp"]), TMP=str(paths["temp"]))
             descriptor = {"worktree": str(worktree), "scope": scope,
                           "resources": {k: str(v) for k, v in paths.items()},
+                          "private_allocation_provenance": allocation.receipt,
                           "lease": str(lock), "pid": os.getpid(), "admission": admission, "disposition": "retained with reason: reusable bounded slot"}
             if owned_linux:
                 descriptor['child_discovery'] = discovery_mode
@@ -993,18 +1313,19 @@ def main(args=None):
                 descriptor.update(lease_identity=list(identity), lease_marker=str(marker),
                                   marker_identity=list(marker_identity))
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
-            command = ["cargo", *local_config_cli_args(worktree),
-                       "--config", "unstable.unstable-options=false",
-                       "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
-                       "--config", 'build.rustc-wrapper=""',
-                       "--config", 'build.rustc-workspace-wrapper=""',
-                       *args[:1], "--target-dir", str(paths["target"]), *args[1:]]
+            local_config = local_config_cli_args(worktree)
+            prefix = ["cargo", *local_config,
+                      "--config", "unstable.unstable-options=false",
+                      "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
+                      "--config", 'build.rustc-wrapper=""',
+                      "--config", 'build.rustc-workspace-wrapper=""']
             # Cargo's [env] force=true can override process environment for
-            # rustc/build scripts. Override those config entries as well.
-            for name in ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL"):
-                child_value = "0" if name == "RUSTUP_AUTO_INSTALL" else str(paths["temp"])
-                for field, value in (("value", json.dumps(child_value)), ("force", "true"), ("relative", "false")):
-                    command[1:1] = ["--config", "env." + name + "." + field + "=" + value]
+            # rustc/build scripts/tests. Nested Cargo must inherit the admitted
+            # paths, jobs and incremental policy too. These entries follow the
+            # local file; CARGO_HOME is forbidden in Cargo's [env] table.
+            child_values = {name: env[name] for name in (
+                "TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL", "CARGO_TARGET_DIR",
+                "CARGO_BUILD_BUILD_DIR", "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS")}
             if clippy:
                 exact = toolchain["subjects"]
                 controlled = {"CARGO": exact["cargo"]["path"],
@@ -1012,19 +1333,12 @@ def main(args=None):
                               "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": exact["clippy-driver"]["path"],
                               "SYSROOT": toolchain["root"],
                               "CARGO_ENCODED_RUSTFLAGS": "", "RUSTFLAGS": "",
-                              "CLIPPY_ARGS": CLIPPY_LINT_ARGS, "CLIPPY_CONF_DIR": str(worktree),
-                              "CARGO_TARGET_DIR": str(paths["target"]),
-                              "CARGO_BUILD_BUILD_DIR": str(paths["build"]),
-                              "CARGO_INCREMENTAL": "0", "CARGO_BUILD_JOBS": str(jobs)}
+                              "CLIPPY_ARGS": CLIPPY_LINT_ARGS, "CLIPPY_CONF_DIR": str(worktree)}
                 env.update(controlled)
                 # Override forced Cargo [env] as well, before nested Cargo sees
                 # compiler/lint inputs. Real lint fail/clean controls test this.
-                for name, value in controlled.items():
-                    for field, setting in (("value", json.dumps(value)), ("force", "true"), ("relative", "false")):
-                        command[1:1] = ["--config", "env." + name + "." + field + "=" + setting]
-                position = command.index("clippy")
-                command = [exact["cargo-clippy"]["path"], "clippy", "--message-format=json-render-diagnostics",
-                           *command[1:position], "--target", toolchain["host"], *command[position + 1:]]
+                child_values.update(controlled)
+                prefix[0] = exact["cargo"]["path"]
                 if clippy_configuration(worktree, paths) != scope["clippy_setup"]["configuration"]:
                     raise Denied("Clippy configuration changed after admission")
                 revalidate_clippy_toolchain(toolchain)
@@ -1046,12 +1360,21 @@ def main(args=None):
                 print("cargo-admitted Cargo tree: " + json.dumps({"owner_pid": os.getpid(),
                       "subreaper": True, "prior_children": "none", "single_native_thread": True,
                       "lease": str(lock)}), file=sys.stderr, flush=True)
+            launch_attempted = True
+            projection = child_environment_config(prefix, child_values, env, tree)
+            command = [*prefix, *projection, *args[:1], "--target-dir", str(paths["target"]), *args[1:]]
+            if clippy:
+                if clippy_configuration(worktree, paths) != scope["clippy_setup"]["configuration"]:
+                    raise Denied("Clippy configuration changed during setup")
+                position = command.index("clippy")
+                command = [exact["cargo-clippy"]["path"], "clippy", "--message-format=json-render-diagnostics",
+                           *command[1:position], "--target", toolchain["host"], *command[position + 1:]]
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed before launch: " + str(path))
             if not owns_lease(lock, identity, marker, marker_identity):
                 raise Denied("lease ownership changed before Cargo launch")
-            launch_attempted = True
+            allocation.revalidate()
             if clippy:
                 result = call_clippy(command, env, lock, tree)
             elif owned_linux:
@@ -1105,6 +1428,11 @@ def main(args=None):
         return result
     except (Denied, OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         print("cargo-admitted: DENY: " + str(error), file=sys.stderr)
+        if isinstance(error, CapacityRefused) and not preflight:
+            print("cargo-admitted: next: run scripts/cargo-admitted --preflight with the "
+                  "same admission options and exact Cargo arguments to inspect request scope "
+                  "and private output roots (read-only; no capacity reservation).",
+                  file=sys.stderr, flush=True)
         if preflight:
             print("cargo-admitted preflight: " + json.dumps({
                 "verdict": "DENY", "scope": scope, "lease_acquired": False,

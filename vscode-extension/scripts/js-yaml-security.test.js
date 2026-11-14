@@ -23,19 +23,23 @@ function mergeError(source, maxTotalMergeKeys) {
 }
 
 void test('counts empty merge sources against the configured merge budget', () => {
-  const parsed = yaml.load(EMPTY_MERGE_FIXTURE, {
-    schema: yaml.YAML11_SCHEMA,
-    maxTotalMergeKeys: 4,
-  });
+  const parsed = /** @type {{ target: unknown }} */ (
+    yaml.load(EMPTY_MERGE_FIXTURE, {
+      schema: yaml.YAML11_SCHEMA,
+      maxTotalMergeKeys: 4,
+    })
+  );
   assert.deepEqual(parsed.target, {});
   mergeError(EMPTY_MERGE_FIXTURE, 3);
 });
 
 void test('preserves valid nonempty merges at their exact budget', () => {
-  const parsed = yaml.load(NONEMPTY_MERGE_FIXTURE, {
-    schema: yaml.YAML11_SCHEMA,
-    maxTotalMergeKeys: 2,
-  });
+  const parsed = /** @type {{ target: { answer: unknown } }} */ (
+    yaml.load(NONEMPTY_MERGE_FIXTURE, {
+      schema: yaml.YAML11_SCHEMA,
+      maxTotalMergeKeys: 2,
+    })
+  );
   assert.equal(parsed.target.answer, 42);
   mergeError(NONEMPTY_MERGE_FIXTURE, 1);
 });

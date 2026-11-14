@@ -28,13 +28,13 @@ describe('feature activation metrics', () => {
     const metrics = new FeatureActivationMetrics();
     metrics.beginActivation();
     expect(() =>
-      metrics.measure('mcp', false, () => {
+      metrics.measure('debugger', false, () => {
         throw new Error('registration failed');
       }),
     ).toThrow('registration failed');
 
     expect(metrics.snapshot().measurements[0]).toMatchObject({
-      domain: 'mcp',
+      domain: 'debugger',
       registration_status: 'failed',
       error: 'registration failed',
     });
@@ -55,10 +55,10 @@ describe('feature activation metrics', () => {
   test('records deferred registration for smoke-only deferral experiments', () => {
     const metrics = new FeatureActivationMetrics();
     metrics.beginActivation();
-    metrics.recordDeferred('mcp', false);
+    metrics.recordDeferred('onboarding', false);
 
     expect(metrics.snapshot().measurements[0]).toMatchObject({
-      domain: 'mcp',
+      domain: 'onboarding',
       registration_status: 'deferred',
       registration_ms: 0,
       activation_critical: false,

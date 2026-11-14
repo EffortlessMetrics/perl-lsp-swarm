@@ -33,23 +33,38 @@ RECEIPT="$(cargo xtask freshness-check --mode warn --no-fetch 2>/dev/null)" || {
     exit 0
 }
 
-# Parse the receipt. Prefer jq; fall back to python; fall back to grep.
+# Parse once. Invalid receipts or unavailable/broken parsers must not turn this
+# advisory hook into a failing checkout. Do not use jq -e: false is valid data.
 if command -v jq &>/dev/null; then
-    SAFE="$(printf '%s' "$RECEIPT" | jq -r '.safe_for_code_state_claims')"
-    BEHIND="$(printf '%s' "$RECEIPT" | jq -r '.behind_by')"
-    BASE_REF="$(printf '%s' "$RECEIPT" | jq -r '.base_ref')"
-elif command -v python3 &>/dev/null; then
-    SAFE="$(printf '%s' "$RECEIPT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(str(d['safe_for_code_state_claims']).lower())")"
-    BEHIND="$(printf '%s' "$RECEIPT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['behind_by'])")"
-    BASE_REF="$(printf '%s' "$RECEIPT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['base_ref'])")"
-elif command -v python &>/dev/null; then
-    SAFE="$(printf '%s' "$RECEIPT" | python -c "import sys,json; d=json.load(sys.stdin); print(str(d['safe_for_code_state_claims']).lower())")"
-    BEHIND="$(printf '%s' "$RECEIPT" | python -c "import sys,json; d=json.load(sys.stdin); print(d['behind_by'])")"
-    BASE_REF="$(printf '%s' "$RECEIPT" | python -c "import sys,json; d=json.load(sys.stdin); print(d['base_ref'])")"
+    FIELDS="$(printf '%s' "$RECEIPT" | jq -r '
+        if type == "object" and
+           (.safe_for_code_state_claims | type) == "boolean" and
+           (.behind_by | type) == "number" and
+           (.base_ref | type) == "string"
+        then [.safe_for_code_state_claims, .behind_by, .base_ref] | @tsv
+        else error("invalid freshness receipt") end
+    ' 2>/dev/null)" || exit 0
 else
-    # Cannot parse JSON — skip the warning silently.
-    exit 0
+    if command -v python3 &>/dev/null; then
+        PYTHON=python3
+    elif command -v python &>/dev/null; then
+        PYTHON=python
+    else
+        exit 0
+    fi
+    FIELDS="$(printf '%s' "$RECEIPT" | "$PYTHON" -c '
+import sys, json
+d = json.load(sys.stdin)
+if (not isinstance(d, dict) or
+        type(d.get("safe_for_code_state_claims")) is not bool or
+        type(d.get("behind_by")) is not int or
+        not isinstance(d.get("base_ref"), (str, type(u"")))):
+    sys.exit(1)
+sys.stdout.write("%s\t%s\t%s\n" % (
+    str(d["safe_for_code_state_claims"]).lower(), d["behind_by"], d["base_ref"]))
+' 2>/dev/null)" || exit 0
 fi
+IFS=$'\t' read -r SAFE BEHIND BASE_REF <<< "$FIELDS" || exit 0
 
 if [ "$SAFE" = "false" ]; then
     echo "⚠  stale checkout: HEAD is ${BEHIND} commit(s) behind ${BASE_REF}" >&2

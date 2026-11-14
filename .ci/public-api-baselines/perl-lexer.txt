@@ -33,6 +33,7 @@ pub fn perl_lexer::api::code_slice(text: &str) -> &str
 pub fn perl_lexer::api::create_builtin_signatures() -> &'static std::collections::hash::map::HashMap<&'static str, perl_lexer::builtins::builtin_signatures::BuiltinSignature>
 pub fn perl_lexer::api::find_data_marker_byte(s: &str) -> core::option::Option<usize>
 pub fn perl_lexer::api::find_data_marker_byte_lexed(s: &str) -> core::option::Option<usize>
+pub fn perl_lexer::api::find_stray_cut_opens_lexed(s: &str) -> alloc::vec::Vec<(usize, bool)>
 pub fn perl_lexer::api::get_param_names(function_name: &str) -> &'static [&'static str]
 pub fn perl_lexer::api::is_builtin(function_name: &str) -> bool
 pub fn perl_lexer::api::is_dap_completion_keyword(token: &str) -> bool
@@ -380,6 +381,7 @@ pub mod perl_lexer::tokenizer::util
 pub fn perl_lexer::tokenizer::util::code_slice(text: &str) -> &str
 pub fn perl_lexer::tokenizer::util::find_data_marker_byte(s: &str) -> core::option::Option<usize>
 pub fn perl_lexer::tokenizer::util::find_data_marker_byte_lexed(s: &str) -> core::option::Option<usize>
+pub fn perl_lexer::tokenizer::util::find_stray_cut_opens_lexed(s: &str) -> alloc::vec::Vec<(usize, bool)>
 pub fn perl_lexer::tokenizer::util::split_code_and_data(text: &str) -> (&str, core::option::Option<&str>)
 pub struct perl_lexer::tokenizer::PositionTracker<'a>
 pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::byte_to_position(&self, byte: usize) -> perl_position_tracking::position::Position
@@ -610,6 +612,7 @@ pub fn perl_lexer::PerlLexer<'a>::next_token(&mut self) -> core::option::Option<
 pub fn perl_lexer::PerlLexer<'a>::peek_token(&mut self) -> core::option::Option<perl_lexer::token::Token>
 pub fn perl_lexer::PerlLexer<'a>::reset(&mut self)
 pub fn perl_lexer::PerlLexer<'a>::set_mode(&mut self, mode: perl_lexer::mode::LexerMode)
+pub fn perl_lexer::PerlLexer<'a>::stray_cut_opens(&self) -> &[perl_lexer::StrayCutOpen]
 pub fn perl_lexer::PerlLexer<'a>::with_body_tokens(input: &'a str) -> perl_lexer::PerlLexer<'a>
 pub fn perl_lexer::PerlLexer<'a>::with_config_and_body_tokens(input: &'a str, config: perl_lexer::config::LexerConfig) -> perl_lexer::PerlLexer<'a>
 pub fn perl_lexer::PerlLexer<'a>::new(input: &'a str) -> perl_lexer::PerlLexer<'a>
@@ -621,6 +624,12 @@ pub struct perl_lexer::PositionTracker<'a>
 pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::byte_to_position(&self, byte: usize) -> perl_position_tracking::position::Position
 pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::new(source: &'a str) -> perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>
 pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::wrap_token(&self, token: perl_lexer::token::Token) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub struct perl_lexer::StrayCutOpen
+pub perl_lexer::StrayCutOpen::cut_offset: usize
+pub perl_lexer::StrayCutOpen::runs_to_eof: bool
+pub fn perl_lexer::StrayCutOpen::clone(&self) -> perl_lexer::StrayCutOpen
+pub fn perl_lexer::StrayCutOpen::eq(&self, other: &perl_lexer::StrayCutOpen) -> bool
+pub fn perl_lexer::StrayCutOpen::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::Token
 pub perl_lexer::Token::end: usize
 pub perl_lexer::Token::start: usize
@@ -666,6 +675,7 @@ pub fn perl_lexer::code_slice(text: &str) -> &str
 pub fn perl_lexer::create_builtin_signatures() -> &'static std::collections::hash::map::HashMap<&'static str, perl_lexer::builtins::builtin_signatures::BuiltinSignature>
 pub fn perl_lexer::find_data_marker_byte(s: &str) -> core::option::Option<usize>
 pub fn perl_lexer::find_data_marker_byte_lexed(s: &str) -> core::option::Option<usize>
+pub fn perl_lexer::find_stray_cut_opens_lexed(s: &str) -> alloc::vec::Vec<(usize, bool)>
 pub fn perl_lexer::get_param_names(function_name: &str) -> &'static [&'static str]
 pub fn perl_lexer::is_builtin(function_name: &str) -> bool
 pub fn perl_lexer::is_dap_completion_keyword(token: &str) -> bool
@@ -675,5 +685,6 @@ pub fn perl_lexer::is_lsp_completion_keyword(token: &str) -> bool
 pub fn perl_lexer::is_lsp_runtime_completion_keyword(token: &str) -> bool
 pub fn perl_lexer::is_parser_lsp_keyword(token: &str) -> bool
 pub fn perl_lexer::is_perl_identifier_continue(ch: char) -> bool
+pub fn perl_lexer::is_perl_identifier_start(ch: char) -> bool
 pub fn perl_lexer::is_rename_keyword(token: &str) -> bool
 pub type perl_lexer::Result<T> = core::result::Result<T, perl_lexer::error::LexerError>

@@ -24,6 +24,10 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     // pin: nothing in the source tree has to change for the lint to stop being
     // enforced. Both level and status are pinned for that reason.
     ("clippy::decimal_bitwise_operands", Some("deny"), Some("active")),
+    // #14441 also promoted these lints on a zero-finding denominator. Pin both
+    // levels and statuses so a coordinated Cargo.toml/ledger rollback fails closed.
+    ("clippy::path_buf_push_overwrite", Some("deny"), Some("active")),
+    ("clippy::join_absolute_paths", Some("deny"), Some("active")),
     // The lock-guard invariant is split across two tools with non-overlapping
     // coverage (#14444), so both rows are pinned. Pinning only one would let a
     // rollback silently uncover either the standard-library guards or the

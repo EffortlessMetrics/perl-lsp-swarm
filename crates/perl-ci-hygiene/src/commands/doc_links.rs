@@ -1,3 +1,4 @@
+use crate::display_path;
 use color_eyre::eyre::{Context, Result, eyre};
 use regex::Regex;
 use std::collections::HashMap;
@@ -299,14 +300,6 @@ fn resolve_docs_path(repo_root: &Path, docs_dir: &str) -> PathBuf {
     } else {
         repo_root.join(docs_dir)
     }
-}
-
-fn display_path(repo_root: &Path, path: &Path) -> String {
-    let relative = match path.strip_prefix(repo_root) {
-        Ok(relative) => relative,
-        Err(_) => path,
-    };
-    relative.display().to_string().replace('\\', "/")
 }
 
 #[cfg(test)]
