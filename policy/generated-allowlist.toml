@@ -82,6 +82,21 @@ created = "2026-08-31"
 review_after = "2026-11-29"
 
 [[allow]]
+id = "generated-command-line-oneliner-corpus-coverage"
+path = "crates/perl-corpus/fixtures/command_line_oneliners/coverage_report.v1.json"
+kind = "status_page"
+generated_by = "cargo xtask command-line-oneliner-corpus"
+regenerate = "cargo xtask command-line-oneliner-corpus"
+owner = "perl-corpus"
+reason = "Machine-readable coverage scorecard for the licensed command-line one-liner fixture corpus (#13676)."
+covered_by = [
+  "cargo xtask command-line-oneliner-corpus --check",
+  "cargo test -p perl-corpus --test command_line_oneliner_corpus_contract",
+]
+created = "2026-11-02"
+review_after = "2027-02-02"
+
+[[allow]]
 id = "generated-release-trust-invariants-status"
 path = "docs/project/status/release_trust_invariants.md"
 kind = "status_page"
