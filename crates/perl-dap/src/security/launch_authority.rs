@@ -21,6 +21,11 @@
 //! acknowledgement type is only constructible from user-owned
 //! [`LaunchAuthoritySource`] inputs.
 //!
+//! Workspace-bound mode additionally confines **execution** — which interpreter
+//! binary runs and whether launch.json may supply code-loading environment
+//! variables — through [`LaunchExecutionPolicy`] (#14601). Source roots alone
+//! do not sandbox the debuggee process.
+//!
 //! The resolved [`LaunchAuthority`] stores one immutable authority identity for
 //! the session. Each launch begins a new session generation; the identity and
 //! mode themselves never change without a new adapter startup. Receipts expose
@@ -83,6 +88,18 @@ pub struct LaunchAuthorityStartup {
     pub trusted_roots: Vec<PathBuf>,
     /// Explicit unbounded acknowledgement, when the operator enabled it.
     pub allow_unbounded: Option<UnboundedAcknowledgement>,
+    /// Interpreter and launch-environment admission (#14601).
+    pub execution: LaunchExecutionStartup,
+}
+
+/// Operator-owned execution admission inputs for workspace-bound launches (#14601).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LaunchExecutionStartup {
+    /// Additional interpreter paths admitted at startup (repeatable CLI flag).
+    pub admitted_interpreters: Vec<PathBuf>,
+    /// When true, launch.json may supply code-loading env vars such as
+    /// `PERL5LIB` / `PERL5OPT`. Defaults to denied under workspace-bound mode.
+    pub allow_launch_code_loading_env: bool,
 }
 
 /// Authority mode for a session.
@@ -299,6 +316,9 @@ pub enum LaunchAuthorityError {
     /// The explicit unbounded acknowledgement is malformed.
     #[error("invalid unbounded acknowledgement: {0}")]
     InvalidAcknowledgement(String),
+    /// Workspace-bound execution admission could not be resolved at startup (#14601).
+    #[error(transparent)]
+    LaunchExecution(#[from] crate::security::launch_execution::LaunchExecutionError),
 }
 
 /// Resolved launch authority for the adapter.
@@ -312,6 +332,7 @@ pub struct LaunchAuthority {
     acknowledgement: Option<UnboundedAcknowledgement>,
     identity: String,
     generation: u64,
+    execution: Option<crate::security::launch_execution::LaunchExecutionPolicy>,
 }
 
 /// Bounded receipt describing the session authority without private paths.
@@ -403,6 +424,7 @@ impl LaunchAuthority {
                     Some(acknowledgement),
                 ),
                 generation: 1,
+                execution: None,
             });
         }
         if startup.trusted_roots.is_empty() {
@@ -443,13 +465,43 @@ impl LaunchAuthority {
         }
         roots.sort_by(|left, right| left.identity.cmp(&right.identity));
 
+        let execution = crate::security::launch_execution::LaunchExecutionPolicy::resolve(
+            &startup.execution,
+            &roots,
+        )?;
+
         Ok(Self {
             mode: LaunchAuthorityMode::WorkspaceBound,
             identity: Self::identity_input(LaunchAuthorityMode::WorkspaceBound, &roots, None),
             roots,
             acknowledgement: None,
             generation: 1,
+            execution: Some(execution),
         })
+    }
+
+    /// Admit the launch interpreter and environment under this authority (#14601).
+    pub fn admit_launch_execution(
+        &self,
+        launch_args: &serde_json::Value,
+        requested_interpreter: &str,
+        env_overrides: std::collections::HashMap<String, String>,
+    ) -> Result<crate::security::launch_execution::AdmittedLaunchExecution, String> {
+        match self.mode {
+            LaunchAuthorityMode::ExplicitUnbounded => {
+                crate::security::launch_execution::admit_launch_without_execution_policy(
+                    requested_interpreter,
+                    launch_args,
+                    env_overrides,
+                )
+            }
+            LaunchAuthorityMode::WorkspaceBound => {
+                let policy = self.execution.as_ref().ok_or_else(|| {
+                    "internal error: workspace-bound authority missing execution policy".to_string()
+                })?;
+                policy.admit_launch(launch_args, requested_interpreter, env_overrides, &self.roots)
+            }
+        }
     }
 
     fn identity_input(
@@ -673,6 +725,7 @@ mod tests {
         let startup = LaunchAuthorityStartup {
             trusted_roots: vec![root.clone()],
             allow_unbounded: Some(unbounded("operator")),
+            ..Default::default()
         };
         let error = LaunchAuthority::resolve(&startup).unwrap_err();
         assert_eq!(error, LaunchAuthorityError::AmbiguousAuthorityMode);
@@ -682,8 +735,11 @@ mod tests {
     #[test]
     fn one_trusted_root_resolves_deterministically() {
         let root = make_root("single");
-        let startup =
-            LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
+        let startup = LaunchAuthorityStartup {
+            trusted_roots: vec![root.clone()],
+            allow_unbounded: None,
+            ..Default::default()
+        };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
         assert_eq!(authority.mode(), LaunchAuthorityMode::WorkspaceBound);
         assert_eq!(authority.trusted_roots().len(), 1);
@@ -699,6 +755,7 @@ mod tests {
         let startup = LaunchAuthorityStartup {
             trusted_roots: vec![first.clone(), second.clone()],
             allow_unbounded: None,
+            ..Default::default()
         };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
         let identities: Vec<&str> =
@@ -714,8 +771,11 @@ mod tests {
     fn missing_and_non_directory_roots_reject() {
         let missing = tempfile_name("does-not-exist");
         let _ = std::fs::remove_dir_all(&missing);
-        let startup =
-            LaunchAuthorityStartup { trusted_roots: vec![missing.clone()], allow_unbounded: None };
+        let startup = LaunchAuthorityStartup {
+            trusted_roots: vec![missing.clone()],
+            allow_unbounded: None,
+            ..Default::default()
+        };
         assert_eq!(
             LaunchAuthority::resolve(&startup).unwrap_err(),
             LaunchAuthorityError::TrustedRootNotFound { path: missing }
@@ -724,8 +784,11 @@ mod tests {
         let file = tempfile_name("a-file");
         let _ = std::fs::remove_file(&file);
         std::fs::write(&file, b"not a directory").expect("test file");
-        let startup =
-            LaunchAuthorityStartup { trusted_roots: vec![file.clone()], allow_unbounded: None };
+        let startup = LaunchAuthorityStartup {
+            trusted_roots: vec![file.clone()],
+            allow_unbounded: None,
+            ..Default::default()
+        };
         assert_eq!(
             LaunchAuthority::resolve(&startup).unwrap_err(),
             LaunchAuthorityError::TrustedRootNotADirectory { path: file.clone() }
@@ -739,6 +802,7 @@ mod tests {
         let startup = LaunchAuthorityStartup {
             trusted_roots: vec![root.clone(), root.clone()],
             allow_unbounded: None,
+            ..Default::default()
         };
         assert_eq!(
             LaunchAuthority::resolve(&startup).unwrap_err(),
@@ -759,6 +823,7 @@ mod tests {
         let startup = LaunchAuthorityStartup {
             trusted_roots: vec![root.clone(), extended],
             allow_unbounded: None,
+            ..Default::default()
         };
         assert!(matches!(
             LaunchAuthority::resolve(&startup).unwrap_err(),
@@ -788,8 +853,11 @@ mod tests {
         let link = tempfile_name("symlink-link");
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&target, &link).expect("test symlink");
-        let startup =
-            LaunchAuthorityStartup { trusted_roots: vec![link.clone()], allow_unbounded: None };
+        let startup = LaunchAuthorityStartup {
+            trusted_roots: vec![link.clone()],
+            allow_unbounded: None,
+            ..Default::default()
+        };
         assert_eq!(
             LaunchAuthority::resolve(&startup).unwrap_err(),
             LaunchAuthorityError::TrustedRootSymlink { path: link.clone() }
@@ -803,6 +871,7 @@ mod tests {
         let startup = LaunchAuthorityStartup {
             trusted_roots: Vec::new(),
             allow_unbounded: Some(unbounded("   ")),
+            ..Default::default()
         };
         assert!(matches!(
             LaunchAuthority::resolve(&startup).unwrap_err(),
@@ -815,6 +884,7 @@ mod tests {
         let startup = LaunchAuthorityStartup {
             trusted_roots: Vec::new(),
             allow_unbounded: Some(unbounded("operator session")),
+            ..Default::default()
         };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
         assert_eq!(authority.mode(), LaunchAuthorityMode::ExplicitUnbounded);
@@ -829,12 +899,16 @@ mod tests {
         let unbounded_startup = LaunchAuthorityStartup {
             trusted_roots: Vec::new(),
             allow_unbounded: Some(unbounded("earlier session")),
+            ..Default::default()
         };
         let _ = LaunchAuthority::resolve(&unbounded_startup).expect("resolution");
 
         let root = make_root("later-bounded");
-        let bounded_startup =
-            LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
+        let bounded_startup = LaunchAuthorityStartup {
+            trusted_roots: vec![root.clone()],
+            allow_unbounded: None,
+            ..Default::default()
+        };
         let bounded = LaunchAuthority::resolve(&bounded_startup).expect("resolution");
         assert_eq!(bounded.mode(), LaunchAuthorityMode::WorkspaceBound);
         cleanup(&root);
@@ -845,6 +919,7 @@ mod tests {
         let startup = LaunchAuthorityStartup {
             trusted_roots: Vec::new(),
             allow_unbounded: Some(unbounded("operator session")),
+            ..Default::default()
         };
         let mut authority = LaunchAuthority::resolve(&startup).expect("resolution");
         let identity = authority.identity().to_string();
@@ -857,8 +932,11 @@ mod tests {
     #[test]
     fn workspace_bound_rejects_paths_outside_roots() {
         let root = make_root("admit");
-        let startup =
-            LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
+        let startup = LaunchAuthorityStartup {
+            trusted_roots: vec![root.clone()],
+            allow_unbounded: None,
+            ..Default::default()
+        };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
 
         let inside = root.join("script.pl");
@@ -875,8 +953,11 @@ mod tests {
     #[test]
     fn workspace_bound_rejects_root_replacement_after_startup() -> std::io::Result<()> {
         let root = make_root("retarget");
-        let startup =
-            LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
+        let startup = LaunchAuthorityStartup {
+            trusted_roots: vec![root.clone()],
+            allow_unbounded: None,
+            ..Default::default()
+        };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
         #[cfg(windows)]
         let (original_created, original_written) = {
@@ -933,8 +1014,11 @@ mod tests {
         // Directory object identity must stay current when children change,
         // unlike the rename-and-replace case above, which must stop admitting.
         let root = make_root("childwrite");
-        let startup =
-            LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
+        let startup = LaunchAuthorityStartup {
+            trusted_roots: vec![root.clone()],
+            allow_unbounded: None,
+            ..Default::default()
+        };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
         let child = root.join("later.pl");
         std::fs::write(&child, b"print 1;").expect("child script");
@@ -951,6 +1035,7 @@ mod tests {
         let startup = LaunchAuthorityStartup {
             trusted_roots: Vec::new(),
             allow_unbounded: Some(unbounded("operator session")),
+            ..Default::default()
         };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
         let anywhere = std::env::temp_dir().join("anywhere.pl");
@@ -983,7 +1068,11 @@ mod tests {
             } else {
                 vec![sub.clone(), ws.clone()]
             };
-            let startup = LaunchAuthorityStartup { trusted_roots: roots, allow_unbounded: None };
+            let startup = LaunchAuthorityStartup {
+                trusted_roots: roots,
+                allow_unbounded: None,
+                ..Default::default()
+            };
             let authority = LaunchAuthority::resolve(&startup).expect("resolution");
             let expected_inner = std::fs::canonicalize(&sub).expect("canonical inner root");
             let expected_outer = std::fs::canonicalize(&ws).expect("canonical outer root");
@@ -1038,8 +1127,11 @@ mod tests {
     #[test]
     fn receipts_never_contain_absolute_paths() {
         let root = make_root("receipt");
-        let startup =
-            LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
+        let startup = LaunchAuthorityStartup {
+            trusted_roots: vec![root.clone()],
+            allow_unbounded: None,
+            ..Default::default()
+        };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
         let rendered = format!("{:?}", authority.receipt());
         // The canonical directory name is unique per test run; a receipt that

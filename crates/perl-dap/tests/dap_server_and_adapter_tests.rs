@@ -44,6 +44,7 @@ fn dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
         launch_authority: perl_dap::LaunchAuthorityStartup {
             trusted_roots: vec![root.path().to_path_buf()],
             allow_unbounded: None,
+            ..Default::default()
         },
     };
     let server = DapServer::new(config)?;
@@ -99,6 +100,7 @@ fn dap_server_trusted_root_that_does_not_exist_is_rejected() {
         launch_authority: perl_dap::LaunchAuthorityStartup {
             trusted_roots: vec![missing],
             allow_unbounded: None,
+            ..Default::default()
         },
     };
     let error = match DapServer::new(config) {

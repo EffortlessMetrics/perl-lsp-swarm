@@ -3564,6 +3564,7 @@ pub fn install_unbounded_test_authority(adapter: &DebugAdapter) {
                 LaunchAuthoritySource::CommandLine,
                 "test: unbounded session",
             )),
+            ..Default::default()
         }),
         "test authority resolution",
     );

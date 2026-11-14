@@ -353,9 +353,23 @@ struct Args {
     /// Trusted root directory for workspace-bound launch authority (#8656).
     /// Repeatable. Every debugged `program` must live inside one trusted root
     /// unless `--allow-unbounded` is set. Mutually exclusive with
-    /// `--allow-unbounded`.
+    /// `--allow-unbounded`. Workspace-bound mode confines source paths only;
+    /// interpreter and code-loading launch environment admission are configured
+    /// separately (#14601).
     #[arg(long = "trusted-root", value_name = "DIR")]
     trusted_root: Vec<PathBuf>,
+
+    /// Additional Perl interpreter path admitted for workspace-bound launches
+    /// (#14601). Repeatable. Startup also admits the toolchain-resolved default
+    /// interpreter. Launch.json `perlPath` must select one of these identities.
+    #[arg(long = "admitted-interpreter", value_name = "PATH")]
+    admitted_interpreter: Vec<PathBuf>,
+
+    /// Allow launch.json `env` to supply code-loading variables such as
+    /// `PERL5LIB` and `PERL5OPT` under workspace-bound launch authority (#14601).
+    /// Without this flag those variables are refused before spawn.
+    #[arg(long = "allow-launch-code-loading-env", default_value_t = false)]
+    allow_launch_code_loading_env: bool,
 
     /// Explicitly allow unbounded launch paths (#8656). This is a user-owned
     /// acknowledgement recorded in the session authority receipt; launch
@@ -474,6 +488,10 @@ fn main() -> anyhow::Result<()> {
                 args.unbounded_note.clone(),
             )
         }),
+        execution: perl_dap::LaunchExecutionStartup {
+            admitted_interpreters: args.admitted_interpreter.clone(),
+            allow_launch_code_loading_env: args.allow_launch_code_loading_env,
+        },
     };
     let config = DapConfig {
         log_level: args.log_level,
