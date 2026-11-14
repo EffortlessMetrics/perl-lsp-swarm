@@ -7,8 +7,13 @@
 //! The resulting behavior is intentionally conservative: common non-source directories
 //! are skipped in both modes (`.git`, `.hg`, `.svn`, `target`, `node_modules`, `.cache`).
 //! Symlinked files and directories inside the workspace are followed so shared library
-//! trees remain visible; external targets require an explicit include path. `WalkDir`'s
-//! loop detection prevents cyclic links from making discovery unbounded.
+//! trees remain visible; external targets require an explicit include path. Each
+//! traversed path is checked after `std::fs::canonicalize` so followed symlinks and
+//! Windows directory junctions cannot expand discovery outside the workspace root
+//! unless the canonical target is listed in an explicit include root. Junction-specific
+//! fixtures are not maintained in CI; Unix symlink coverage exercises the same
+//! canonical boundary gate (`is_allowed_link_target`). `WalkDir`'s loop detection
+//! prevents cyclic links from making discovery unbounded.
 //! Explicit include roots can relax that skip only for configured Perl dependency
 //! trees such as `local/lib/perl5`.
 
@@ -570,6 +575,9 @@ fn git_ignored_paths(root: &Path, paths: &[PathBuf]) -> HashSet<PathBuf> {
         .collect()
 }
 
+/// Returns whether `link` resolves inside the workspace (or an explicit include root).
+///
+/// Used for symlink and junction boundary validation during discovery (#1771).
 fn is_allowed_link_target(root: &Path, link: &Path, allowlist: &DiscoveryIncludeAllowlist) -> bool {
     let Ok(target) = link.canonicalize() else {
         return false;
@@ -801,8 +809,9 @@ fn normalize_relative_path(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DiscoveryConfig, DiscoveryIncludeAllowlist, DiscoveryMethod, parse_git_ls_files_output,
-        parse_git_ls_files_output_with_allowlist, should_skip_dir, walk_discovery,
+        DiscoveryConfig, DiscoveryIncludeAllowlist, DiscoveryMethod, is_allowed_link_target,
+        parse_git_ls_files_output, parse_git_ls_files_output_with_allowlist, should_skip_dir,
+        walk_discovery,
     };
     use crate::ignore::path_contains_skipped_component;
     use std::fs;
@@ -818,6 +827,25 @@ mod tests {
             fs::create_dir_all(parent)?;
         }
         fs::write(path, "# synthetic\n")?;
+        Ok(())
+    }
+
+    /// #1771: canonical targets outside the workspace root must not pass the link gate.
+    #[cfg(unix)]
+    #[test]
+    fn is_allowed_link_target_rejects_symlink_outside_workspace_root() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let external = tempfile::tempdir()?;
+        let link = root.path().join("lib/escape_link");
+        if let Some(parent) = link.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        std::os::unix::fs::symlink(external.path(), &link)?;
+        let allowlist = DiscoveryIncludeAllowlist::default();
+        assert!(
+            !is_allowed_link_target(root.path(), &link, &allowlist),
+            "symlink resolving outside the workspace must be rejected"
+        );
         Ok(())
     }
 
