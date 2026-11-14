@@ -42,7 +42,8 @@ is decided in PR 15+ once actuals confirm the overlap.
 | `ci.yml` | `preflight-latest-check` | `pull_request`, `push` | yes | `ubuntu-24.04` | Skip superseded SHAs | 1 | `preflight_latest` | — | keep |
 | `ripr.yml` | `ripr` | `pull_request` (Rust paths), `workflow_dispatch` | no | `ubuntu-24.04` | Static oracle-gap detection | 4 | `ripr_advisory` | `nightly:mutation` | keep |
 | `methodology-gate.yml` | `methodology` | `pull_request` | yes | `ubuntu-24.04` | PR-shape and methodology lint | 2 | `methodology_gate` | — | keep |
-| `pr-title-check.yml` | `validate-title` | `pull_request` | yes | `ubuntu-24.04` | Real issue ref enforcement | 1 | `pr_title_check` | — | keep |
+| `pr-title-check.yml` | `validate-title` | `pull_request_target`, `workflow_dispatch` | yes | `ubuntu-24.04` | Real issue ref enforcement with preserved comment/label reconciliation (#18255) | 1 | `pr_title_check` | — | keep |
+| `merge-group-title-check.yml` | `validate-title` | `merge_group` | yes | `ubuntu-24.04` | Read-only queue-ref singleton title validation; no comment/label writes (#18255) | 1 | `merge_group_title_check` | — | keep |
 | `workflow-policy.yml` | `workflow-policy-lint` | `pull_request`, `workflow_dispatch` | yes | `ubuntu-24.04` | Workflow trigger / policy lint | 2 | _add in PR 11_ | — | keep, extend in PR 11 |
 | `workflow-trigger-lint.yml` | `workflow-trigger-lint` | `pull_request` | yes | `ubuntu-24.04` | Trigger policy lint (legacy) | 1 | _add in PR 11_ | `workflow:workflow-policy` | **decide PR 15** |
 | `droid-review.yml` | `droid` | `pull_request` (opened/ready/reopened) | no | `self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review` | External AI review | 4 | `droid_auto_review` | — | keep |

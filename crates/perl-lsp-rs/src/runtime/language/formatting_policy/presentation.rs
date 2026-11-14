@@ -475,6 +475,12 @@ mod tests {
     }
 
     #[test]
+    fn minimal_outcome_records_the_native_document_execution_strategy() {
+        let outcome = minimal_outcome(FormatDisposition::Applied, FormatReasonCode::Applied);
+        assert_eq!(outcome.execution, FormatExecutionStrategy::NativeDocument);
+    }
+
+    #[test]
     fn formatting_presentation_reason_code_registry_matches_enum() {
         assert_eq!(all_format_reason_codes().len(), 13);
     }

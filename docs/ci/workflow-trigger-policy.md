@@ -73,9 +73,10 @@ one and an unstated producer fails closed.
 
 For each `[[check]]` row with `required = true`, the workflow must:
 
-- define `pull_request`
-- define `merge_group`
-- define `push` with `branches: [master]`
+- define every ordinary lifecycle trigger named by its `events` list
+  (`pull_request` / `pull_request_target`, `merge_group`, and `push`); omitting
+  `events` retains the full three-event product contract, and a required `push`
+  must have `branches: [master]`
 - avoid top-level or event-level `paths` / `paths-ignore`
 - define event-aware concurrency:
   - `cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}`
@@ -89,9 +90,15 @@ For each `[[check]]` row with `required = true`, the workflow must:
 
 Not every required context is produced by a workflow the clauses above suit.
 `validate-title` is a metadata-only check that must run on
-`pull_request_target` and never checks out candidate contents; `ripr` keeps
-`cancel-in-progress: false` on purpose, because a cancelled run becomes a
-false red on a required context (#16087).
+`pull_request_target` and never checks out candidate contents. Since #18255 it
+has one producer per event: the `pull_request_target` workflow retains comment
+and label writes, while `merge-group-title-check.yml` holds only read scopes.
+The queue producer matches the full native queue ref, re-reads the named PR's
+current metadata and title, and fails closed on absent, ambiguous, or
+contradictory identity. Cross-event context registration must not duplicate a
+producer on the same event. `ripr` keeps `cancel-in-progress: false` on
+purpose, because a cancelled run becomes a false red on a required context
+(#16087).
 
 A `[[check]]` row may record such a divergence per clause:
 
