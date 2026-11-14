@@ -80,6 +80,10 @@
       "invocation_sha256": "84e08004cd58ac6b2aea241e72a494ee435b68a248995b9ab9a82785e4a67091"
     },
     {
+      "id": "parser.incremental.recovery_transitions",
+      "invocation_sha256": "2106485e9013de0edec61c4fa81e98dde4eb56ac96588c8e98bf9c4f8bd68c4a"
+    },
+    {
       "id": "parser.literals.structural",
       "invocation_sha256": "fced33575430f695ffe154bbbcf0fdb3fe026c6bed9a1ce116dd8927c9cd013c"
     },

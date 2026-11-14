@@ -254,6 +254,23 @@
       "boundedness": "focused"
     },
     {
+      "id": "parser.incremental.recovery_transitions",
+      "package": "perl-parser",
+      "target": "incremental_recovery_transitions",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#7008",
+      "reason": "Prove fresh versus incremental ParseSnapshot parity across clean/recovered edit transitions, atomic batches, and invalid-transaction rollback.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
       "id": "parser.concepts.magic_token_arguments",
       "package": "perl-parser-core",
       "target": "concept_magic_token_arguments",
