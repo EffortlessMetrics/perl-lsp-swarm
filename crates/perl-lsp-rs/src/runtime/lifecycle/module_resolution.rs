@@ -1099,11 +1099,15 @@ mod tests {
             let _ = resume_tx.send(());
         }
         let _ = request.join();
-        if selected.as_ref().ok() != Some(&Some(module_uri)) || !probe_entered {
+        let actual_uri =
+            selected.as_ref().ok().and_then(|outcome| outcome.as_deref()).map(perl_uri::uri_key);
+        let expected_uri = perl_uri::uri_key(&module_uri);
+        if actual_uri.as_deref() != Some(expected_uri.as_str()) || !probe_entered {
             let _ = resume_tx.send(());
-            return Err(
-                "definition must return its first winner while the observer is blocked".into()
-            );
+            return Err(format!(
+                "definition must return its first winner while the observer is blocked; got: {selected:?}; probe_entered: {probe_entered}"
+            )
+            .into());
         }
 
         let state = Arc::clone(&server.module_ambiguity_notices);
@@ -1350,7 +1354,7 @@ mod tests {
 
     #[test]
     fn build_effective_inc_roots_labels_perl5lib_paths() {
-        let perl5lib_path = "/home/user/perl5/lib/perl5".to_string();
+        let perl5lib_path = "/opt/perl5/lib/perl5".to_string();
         let include_paths = vec![perl5lib_path.clone(), "lib".to_string()];
         let roots = build_effective_inc_roots(
             &include_paths,
@@ -3116,7 +3120,8 @@ use Overlay::OpenDoc;
 
         let resolved = server.resolve_module_to_path("Foo::Bar");
         assert!(
-            resolved.as_deref() == Some(module_uri.as_str()),
+            resolved.as_ref().map(|uri| perl_uri::uri_key(uri)).as_deref()
+                == Some(perl_uri::uri_key(&module_uri).as_str()),
             "didCreateFiles must clear cached misses for new .pm files, got: {resolved:?}"
         );
 

@@ -169,8 +169,8 @@ def clippy_toolchain(env, worktree):
     pin = table.get("channel") if isinstance(table, dict) else None
     if not isinstance(pin, str) or not re.fullmatch(r"\d+\.\d+\.\d+", pin) or "path" in table:
         raise Denied("Clippy requires one numeric repository toolchain pin")
-    if pin != "1.95.0":
-        raise Denied("staged Clippy driver protocol is qualified only for repository pin 1.95.0")
+    if pin != "1.100.0":
+        raise Denied("staged Clippy driver protocol is qualified only for repository pin 1.100.0")
     machine = platform.machine().lower()
     machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
     host = {("linux", "x86_64"): "x86_64-unknown-linux-gnu",

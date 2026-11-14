@@ -225,7 +225,7 @@ impl<'a> DeclarationProvider<'a> {
         // For each node in the map, climb up to ensure we don't hit a cycle
         let cap = parent_map.len() + 1; // Max depth before assuming cycle
 
-        for (&child, _) in parent_map.iter() {
+        for &child in parent_map.keys() {
             let mut current = child;
             let mut depth = 0;
 

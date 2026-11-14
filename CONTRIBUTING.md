@@ -72,8 +72,8 @@ just devex
 just pr-fast
 ```
 
-The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
-requires MSRV 1.95.
+The repository pins Rust channel `1.100.0` in `rust-toolchain.toml` and currently
+requires MSRV 1.100.
 
 ### Windows shell for `just` recipes
 
@@ -228,7 +228,7 @@ just agent-check perl-token --lib
 | Plan build storage | `just devplane-init` — prints admitted paths without allocating directories or assessing capacity |
 | New agent package check/test | `scripts/cargo-admitted check -p <package> --profile agent --locked` / `scripts/cargo-admitted test -p <package> --profile agent --locked`, after exact-command preflight |
 | Focused agent shortcuts | `just agent-check <package> [args...]` / `just agent-test <package> <selector> [args...]` — the same admitted agent-profile commands |
-| Agent Clippy | Follow the separately qualified [staged native Clippy route](docs/agents/CARGO_STORAGE.md#staged-native-clippy): Linux, installed repository pin 1.95.0, exact supported command |
+| Agent Clippy | Follow the separately qualified [staged native Clippy route](docs/agents/CARGO_STORAGE.md#staged-native-clippy): Linux, installed repository pin 1.100.0, exact supported command |
 | Legacy compatibility callers | `just cached <cargo args>`, `just agent-clippy`, `just agent-nextest`, `just agent-pr-fast` — retain existing behavior; not host admission or the route for new agent work |
 | Build disk grew / stale target trees | `just target-gc` (advisory report), then request an exact owner-verified cleanup proposal; `--apply` is retired |
 | Parser or generated status changed | `just status-update` then `just status-check` |
