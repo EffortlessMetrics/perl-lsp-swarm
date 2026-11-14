@@ -1602,10 +1602,8 @@ fn parse_shell_cargo_probe_output(output: &str) -> Result<ShellCargoProbe, Strin
     let mut cargo_home = None;
     let mut cwd_state = None;
     let mut cwd = None;
-    for pair in fields.chunks_exact(2) {
-        let [key, value] = pair else {
-            return Err("shell cargo probe emitted an incomplete NUL-delimited field".to_string());
-        };
+    for pair in fields.as_chunks::<2>().0 {
+        let [key, value] = pair;
         let slot = match *key {
             "cargo_path" => &mut cargo_path,
             "cargo_version" => &mut version_output,
@@ -1690,8 +1688,12 @@ fn classify_windows_bash_path(path_text: &str) -> WindowsBashKind {
 /// ordinary children stay UTF-8, so both shapes must land as readable text.
 fn decode_shell_output(bytes: &[u8]) -> String {
     if looks_like_utf16le(bytes) {
-        let units: Vec<u16> =
-            bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
         String::from_utf16_lossy(&units)
     } else {
         String::from_utf8_lossy(bytes).into_owned()

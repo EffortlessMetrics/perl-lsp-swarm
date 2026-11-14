@@ -312,7 +312,7 @@ jobs:
       labels: [self-hosted, linux, x64, em-ci, rust-standard, trusted-pr]
     timeout-minutes: 60
     outputs:
-      preflight_ok: ${{ steps.preflight.outputs.preflight_ok || steps.admission.outputs.preflight_ok }}
+      preflight_ok: ${{ steps.admission.outputs.preflight_ok != 'false' && steps.preflight.outputs.preflight_ok != 'false' }}
     env:
       RIPR_VERSION: "0.10.0"
       # #15498: pin the admission boundary explicitly on every producer lane.

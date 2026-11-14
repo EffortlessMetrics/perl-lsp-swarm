@@ -288,8 +288,7 @@ impl PullDiagnosticsOrchestrator {
             }))
         };
 
-        let profile =
-            perlcritic_profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
+        let profile = perlcritic_profile.filter(|p| !p.trim().is_empty());
 
         let identity_root_path = workspace_root.clone();
 

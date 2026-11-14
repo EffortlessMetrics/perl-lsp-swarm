@@ -1864,7 +1864,9 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         .and_then(Value::as_str);
     assert_eq!(
         job_output,
-        Some("${{ steps.preflight.outputs.preflight_ok || steps.admission.outputs.preflight_ok }}"),
+        Some(
+            "${{ steps.admission.outputs.preflight_ok != 'false' && steps.preflight.outputs.preflight_ok != 'false' }}"
+        ),
         "job output must preserve either preflight refusal"
     );
     let checkout = workflow_step_value("ripr-selfhosted", "Checkout")?;

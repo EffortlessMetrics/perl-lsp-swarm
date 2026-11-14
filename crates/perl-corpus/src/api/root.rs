@@ -494,21 +494,18 @@ fn classify_root_io(path: PathBuf, error: io::Error) -> CorpusRootError {
 }
 
 fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
 
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
 
     #[cfg(not(windows))]
     {
-        false
+        metadata.file_type().is_symlink()
     }
 }
 
