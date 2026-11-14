@@ -595,7 +595,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         Global,
         Unsigned,
         CLIENT_GLOBAL,
-        Validation::UnsignedRange { minimum: 1, maximum: 32 },
+        Validation::UnsignedRange { minimum: 1, maximum: 16 },
         KeepLastValid,
         Ordinary,
         SafeValue,
