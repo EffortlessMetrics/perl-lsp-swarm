@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Workspace method rename excludes receiver bindings from other subroutines and clears stale constructor evidence after rebinding, while preserving valid constructor calls and initializer visibility."
+time: 2026-10-19T02:21:30Z
+custom:
+  PR: "18151"
+  Slug: rename-receiver-bindings-17447
+  Breaking: "no"
