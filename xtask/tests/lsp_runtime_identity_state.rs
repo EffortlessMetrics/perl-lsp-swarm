@@ -379,6 +379,31 @@ fn journey_relation_in_both_lists_is_refused() -> Result<()> {
     Ok(())
 }
 
+/// Falsifier: moving a rejected relation into the legal list is refused on
+/// kind alone, even though it no longer appears in both lists.
+#[test]
+fn journey_relation_moved_from_rejected_to_relations_is_refused() -> Result<()> {
+    for (journey_id, relation_id) in [
+        ("ordinary_success", "application_completed_forbids_publication"),
+        ("writer_failure", "output_failure_independent_terminal"),
+    ] {
+        let mut changed = value()?;
+        let journey = row_mut(&mut changed, "journeys", "id", journey_id)?;
+        let rejected = journey
+            .get_mut("rejected")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| eyre!("journey has no rejected relations"))?;
+        rejected.retain(|row| row.as_str() != Some(relation_id));
+        journey
+            .get_mut("relations")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| eyre!("journey has no legal relations"))?
+            .push(Value::String(relation_id.into()));
+        reject(&changed, "is neither requires, permits, nor precedes")?;
+    }
+    Ok(())
+}
+
 /// Falsifier: a blank axis proposition is refused.
 #[test]
 fn blank_axis_proposition_is_refused() -> Result<()> {

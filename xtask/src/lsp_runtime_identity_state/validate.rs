@@ -292,6 +292,16 @@ impl Vocabulary {
                         journey.id
                     );
                 }
+                if !matches!(
+                    relation.kind,
+                    RelationKind::Requires | RelationKind::Permits | RelationKind::Precedes
+                ) {
+                    bail!(
+                        "journey {} relation {} is neither requires, permits, nor precedes",
+                        journey.id,
+                        relation_id
+                    );
+                }
                 if relation.kind == RelationKind::Requires
                     && (!journey.facts.contains(&relation.from_id)
                         || !journey.facts.contains(&relation.to))

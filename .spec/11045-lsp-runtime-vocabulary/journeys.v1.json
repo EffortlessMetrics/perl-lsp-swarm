@@ -88,14 +88,14 @@
         "task_group_settled"
       ],
       "relations": [
-        "cleanup_requires_task_settlement",
-        "protocol_initialized_independent_readiness"
+        "cleanup_requires_task_settlement"
       ],
       "rejected": [
         "connection_closed_forbids_cleanup",
         "connection_closed_forbids_task_settlement",
         "protocol_exit_forbids_cleanup",
-        "protocol_exit_forbids_connection_closed"
+        "protocol_exit_forbids_connection_closed",
+        "protocol_initialized_independent_readiness"
       ],
       "source": 11045
     },
