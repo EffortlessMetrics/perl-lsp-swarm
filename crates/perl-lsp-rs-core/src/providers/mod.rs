@@ -47,6 +47,8 @@ pub mod type_hierarchy;
 // Wave G1b Phase 1 -- pure leaves
 pub mod diagnostics;
 pub mod inline_completion;
+/// Canonical regex read-only projections (#7030, #7048).
+pub mod regex;
 pub mod rename;
 pub mod semantic_tokens;
 
