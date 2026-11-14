@@ -2398,8 +2398,10 @@ fn validate_rows(
         // product extension, and does not equal the exact-path ledger entry
         // `clients/sublime/LSP-perllsp/plugin.py` (`entry_governs` compares with
         // `==`), so it classifies as unprotected — while `load_input`
-        // canonicalizes and opens the real plugin. Symlinked and `./`-prefixed
-        // spellings disagree the same way.
+        // canonicalizes and opens the real plugin. A symlinked spelling
+        // disagrees the same way. Dot-relative spellings do not reach here:
+        // `valid_repository_path` already rejects any `.` or `..` segment, so
+        // case folding and symlinks are the routes this guard answers.
         //
         // Require the two spellings to agree before any surface decision is
         // made. Only a path that actually resolves is checked: an absent path
