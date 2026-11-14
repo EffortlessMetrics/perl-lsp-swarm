@@ -1,0 +1,26 @@
+schema = "gold_project.v1"
+project_id = "local_special_var"
+topology_fingerprint = "96bcd2a859a29b5a09aa5606113d07dd56ea78d3756a250df273b27ba2b0207f"
+content_fingerprint = "077b82ce601210ff8db32badbfbdadc5f710339364a23e39a596fb7e21f1ef6f"
+
+[[members]]
+member_id = "expected_json"
+path = "expected.json"
+role = "generated_expectation_input"
+byte_length = 97
+sha256 = "ee955208b48f2193cd6c162a4a0198299baaf7f27fea1b7f603ac9774738ea85"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 223
+sha256 = "70cd8cea63d6a24b9fb96c23e0128e5ba1fc33a95b6ba6fbe437b1a964eeacc6"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
