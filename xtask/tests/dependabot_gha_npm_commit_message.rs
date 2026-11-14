@@ -307,6 +307,9 @@ fn both_governed_row_identities_are_distinct() -> Result<()> {
 }
 
 const REQUIRED_STEP: &str = "      - name: Dependabot GitHub Actions and npm commit-message contract (required merge surface)\n        run: cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture";
+const REQUIRED_COMMAND: &str =
+    "cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture";
+const SHARED_RUN: &str = "        run: bash scripts/ci/required-merge-surface.sh";
 
 fn check_all_targets_job(workflow: &str) -> Result<&str> {
     let start = workflow
@@ -324,11 +327,13 @@ fn check_all_targets_job(workflow: &str) -> Result<&str> {
     Ok(&section[..end])
 }
 
-fn required_wiring_is_present(workflow: &str) -> bool {
+fn required_wiring_is_present(workflow: &str, shared_producer: &str) -> bool {
     let Ok(job) = check_all_targets_job(workflow) else {
         return false;
     };
-    job.contains(REQUIRED_STEP) && !job.contains("continue-on-error: true")
+    (job.contains(REQUIRED_STEP) || job.lines().any(|line| line == SHARED_RUN))
+        && shared_producer.lines().any(|line| line.trim_start() == REQUIRED_COMMAND)
+        && !job.contains("continue-on-error: true")
 }
 
 /// `.github/dependabot.yml` is not in ci-scope's `CI_CONFIG_PATHS`, so this
@@ -345,22 +350,26 @@ fn required_merge_surface_executes_this_contract() -> Result<()> {
     let workflow = std::fs::read_to_string(&path)
         .map_err(|err| anyhow!("reading {}: {err}", path.display()))?
         .replace("\r\n", "\n");
-    if !required_wiring_is_present(&workflow) {
+    let producer = std::fs::read_to_string(
+        dependabot_gha_npm::project_root().join("scripts/ci/required-merge-surface.sh"),
+    )?;
+    if !required_wiring_is_present(&workflow, &producer) {
         bail!(
             "{DEPENDABOT_YML} edits do not reach the advisory routed lane, so this \
              contract must stay as a required `check-all-targets` step in \
              `.github/workflows/ci.yml` (#14180)"
         );
     }
-    let commented = workflow.replace(
-        REQUIRED_STEP,
-        "      # cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture",
-    );
-    if required_wiring_is_present(&commented) {
-        bail!(
-            "a comment containing the cargo test command must not satisfy the \
-             wiring contract (#14180)"
-        );
+    let commented =
+        workflow.replace(SHARED_RUN, "        # run: bash scripts/ci/required-merge-surface.sh");
+    assert_ne!(commented, workflow, "the comment mutant must alter the CI route");
+    if required_wiring_is_present(&commented, &producer) {
+        bail!("a commented-out producer invocation must not satisfy the wiring contract (#14180)");
+    }
+    let missing_command = producer.replace(REQUIRED_COMMAND, "");
+    assert_ne!(missing_command, producer, "the deletion mutant must remove the command");
+    if required_wiring_is_present(&workflow, &missing_command) {
+        bail!("deleting this contract from the producer must fail the wiring contract (#14180)");
     }
     Ok(())
 }

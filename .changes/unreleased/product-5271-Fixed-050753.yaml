@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "Variable completion now works inside string interpolation (e.g. \"Hello $na|me\") instead of returning nothing, and `package Foo 1.23 { }` no longer pollutes the package name with its version number in diagnostics and package-to-file mapping."
-time: 2026-07-29T05:07:53Z
-custom:
-  PR: "5271"
-  Slug: string-interp-completion-and-pkg-version
-  Breaking: "no"

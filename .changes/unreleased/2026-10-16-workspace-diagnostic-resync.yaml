@@ -1,0 +1,11 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: >-
+  Workspace diagnostic pulls clear stale findings after unsupported ranged edits
+  and recover after full resynchronization without clearing unrelated files.
+time: 2026-10-16T06:04:42Z
+custom:
+  PR: "17999"
+  Slug: workspace-diagnostic-resync
+  Breaking: "no"

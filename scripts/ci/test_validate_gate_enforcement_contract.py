@@ -280,7 +280,7 @@ class TrustedBaseRatchetRequiredShapeTests(unittest.TestCase):
     def test_context_identity_is_unique_and_static(self) -> None:
         self.assertEqual(RATCHET_CONTEXT_NAME, self.job.name)
         self.assertTrue(self.job.name_static)
-        producers = self.producers.get(RATCHET_CONTEXT_NAME, [])
+        producers = self.producers.get(RATCHET_CONTEXT_NAME, {}).get("pull_request_target", [])
         self.assertEqual(
             [(RATCHET_WORKFLOW_RELPATH, RATCHET_JOB_ID)],
             producers,
@@ -680,6 +680,161 @@ class ContractTests(unittest.TestCase):
             {finding["code"] for finding in result["findings"]},
         )
 
+    def test_disjoint_event_producers_are_registered_without_collision(self) -> None:
+        base_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  pull_request:",
+        )
+        second_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  merge_group: {}",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = fixture(
+                root,
+                REQUIRED.replace(
+                    '["pull_request", "merge_group"]',
+                    '["pull_request"]',
+                )
+                + REQUIRED.replace(
+                    'workflow = ".github/workflows/ci.yml"',
+                    'workflow = ".github/workflows/queue.yml"',
+                ).replace(
+                    '["pull_request", "merge_group"]',
+                    '["merge_group"]',
+                ),
+                workflow=base_workflow,
+            )
+            (root / ".github/workflows/queue.yml").write_text(
+                second_workflow,
+                encoding="utf-8",
+            )
+            commit_all(root, "disjoint queue producer")
+            result = contract.validate(root, policy)
+        self.assertEqual("SUCCESS", result["status"], result["findings"])
+        self.assertEqual(2, result["mapped_jobs"])
+
+    def test_one_producer_may_emit_non_ledger_events_without_a_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = fixture(
+                root,
+                REQUIRED.replace('["pull_request", "merge_group"]', '["pull_request"]'),
+            )
+            result = contract.validate(root, policy)
+        self.assertEqual("SUCCESS", result["status"], result["findings"])
+
+    def test_two_registered_producers_cannot_share_an_unregistered_event(self) -> None:
+        base_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  pull_request:\n  push: {}",
+        )
+        second_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  merge_group:\n  push: {}",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = fixture(
+                root,
+                REQUIRED.replace(
+                    '["pull_request", "merge_group"]',
+                    '["pull_request"]',
+                )
+                + REQUIRED.replace(
+                    'workflow = ".github/workflows/ci.yml"',
+                    'workflow = ".github/workflows/queue.yml"',
+                ).replace(
+                    '["pull_request", "merge_group"]',
+                    '["merge_group"]',
+                ),
+                workflow=base_workflow,
+            )
+            (root / ".github/workflows/queue.yml").write_text(
+                second_workflow,
+                encoding="utf-8",
+            )
+            commit_all(root, "registered producers share an unregistered event")
+            result = contract.validate(root, policy)
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertIn(
+            "duplicate_emitted_context",
+            {finding["code"] for finding in result["findings"]},
+        )
+
+    def test_cross_event_producer_must_be_registered(self) -> None:
+        base_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  pull_request:",
+        )
+        second_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  merge_group: {}",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = fixture(
+                root,
+                REQUIRED.replace('["pull_request", "merge_group"]', '["pull_request"]'),
+                workflow=base_workflow,
+            )
+            (root / ".github/workflows/queue.yml").write_text(
+                second_workflow,
+                encoding="utf-8",
+            )
+            commit_all(root, "unregistered queue producer")
+            result = contract.validate(root, policy)
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertIn(
+            "unregistered_emitted_context",
+            {finding["code"] for finding in result["findings"]},
+        )
+
+    def test_same_event_duplicate_still_fails_with_two_policy_rows(self) -> None:
+        base_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  pull_request:",
+        )
+        second_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  merge_group: {}",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = fixture(
+                root,
+                REQUIRED.replace(
+                    '["pull_request", "merge_group"]',
+                    '["pull_request"]',
+                )
+                + REQUIRED.replace(
+                    'workflow = ".github/workflows/ci.yml"',
+                    'workflow = ".github/workflows/queue.yml"',
+                ).replace(
+                    '["pull_request", "merge_group"]',
+                    '["merge_group"]',
+                ),
+                workflow=base_workflow,
+            )
+            (root / ".github/workflows/queue.yml").write_text(
+                second_workflow.replace("on:\n  merge_group: {}", "on:\n  pull_request:\n  merge_group: {}"),
+                encoding="utf-8",
+            )
+            commit_all(root, "same-event duplicate producer")
+            result = contract.validate(root, policy)
+        self.assertEqual("BLOCKED", result["status"])
+        codes = {finding["code"] for finding in result["findings"]}
+        self.assertIn("duplicate_emitted_context", codes)
+
+    def test_duplicate_policy_registration_on_one_event_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = fixture(root, REQUIRED + REQUIRED)
+            result = contract.validate(root, policy)
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertIn("duplicate_context", {finding["code"] for finding in result["findings"]})
+
     def test_external_producer_is_explicit_and_has_no_repository_job(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -887,6 +1042,41 @@ class ContractTests(unittest.TestCase):
             left["exact_source_sha256"],
             right["exact_source_sha256"],
         )
+
+    def test_same_name_event_registrations_have_order_independent_subjects(self) -> None:
+        base_policy = REQUIRED.replace('["pull_request", "merge_group"]', '["pull_request"]')
+        queue_policy = REQUIRED.replace(
+            'workflow = ".github/workflows/ci.yml"',
+            'workflow = ".github/workflows/queue.yml"',
+        ).replace('["pull_request", "merge_group"]', '["merge_group"]')
+        base_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  pull_request:",
+        )
+        queue_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  merge_group: {}",
+        )
+        with (
+            tempfile.TemporaryDirectory() as left_tmp,
+            tempfile.TemporaryDirectory() as right_tmp,
+        ):
+            roots = [Path(left_tmp), Path(right_tmp)]
+            policies = [base_policy + queue_policy, queue_policy + base_policy]
+            results = []
+            for root, policy_text in zip(roots, policies, strict=True):
+                policy = fixture(root, policy_text, workflow=base_workflow)
+                (root / ".github/workflows/queue.yml").write_text(
+                    queue_workflow,
+                    encoding="utf-8",
+                )
+                commit_all(root, "same-name event registrations")
+                results.append(contract.validate(root, policy))
+        left, right = results
+        self.assertEqual("SUCCESS", left["status"], left["findings"])
+        self.assertEqual("SUCCESS", right["status"], right["findings"])
+        self.assertEqual(left["semantic_subject"], right["semantic_subject"])
+        self.assertEqual(left["subject_sha256"], right["subject_sha256"])
 
     def test_binding_movement_changes_semantic_subject(self) -> None:
         bound = REQUIRED.replace(

@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "Rename now finds and renames $var references inside interpolated heredoc bodies instead of silently skipping them, and the debugger now displays ARRAY(0x..)/HASH(0x..)/CODE(0x..) reference values with their type and address instead of an empty, non-expandable container."
-time: 2026-07-28T08:52:53Z
-custom:
-  PR: "5152"
-  Slug: heredoc-rename-and-dap-ref-display
-  Breaking: "no"

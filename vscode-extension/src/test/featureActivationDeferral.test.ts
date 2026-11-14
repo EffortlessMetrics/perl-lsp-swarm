@@ -35,7 +35,7 @@ describe('feature activation deferral experiment env', () => {
     process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS = 'providers, onboarding';
     expect(parseDeferredActivationDomains()).toEqual(new Set(['providers', 'onboarding']));
     expect(isActivationDomainDeferred('providers')).toBe(true);
-    expect(isActivationDomainDeferred('providers')).toBe(false);
+    expect(isActivationDomainDeferred('debugger')).toBe(false);
   });
 
   test('rejects unknown domains', () => {

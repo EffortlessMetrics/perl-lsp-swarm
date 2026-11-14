@@ -334,9 +334,80 @@ fn workspace_symbol_disabled_parent_withdraws_resolve_advertisement() -> Result<
             response.pointer("/result/capabilities/workspaceSymbolProvider").is_none(),
             "disabled workspace-symbol parent remained advertised: {response}"
         );
+        // #18464: resolve enriches items from the parent request; with the
+        // parent withdrawn it must refuse with the same MethodNotFound shape
+        // instead of executing the un-advertised feature.
+        let resolve_id = json!("disabled-workspace-symbol-resolve");
+        let resolve = client.request(
+            resolve_id.clone(),
+            "workspace/symbol/resolve",
+            json!({
+                "name": "main",
+                "kind": 12,
+                "location": { "uri": "file:///not-open.pl", "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 4 }
+                } }
+            }),
+            timeout(),
+        )?;
+        ensure!(resolve.get("id") == Some(&resolve_id), "resolve ID mismatch: {resolve}");
+        ensure!(
+            resolve.pointer("/error/code") == Some(&json!(-32601)),
+            "resolve must refuse while the workspace-symbol parent is withdrawn: {resolve}"
+        );
         finish(&mut client)?;
     }
     Ok(())
+}
+
+#[test]
+fn workspace_symbol_resolve_disable_id_selects_simple_true_advertisement() -> Result<()> {
+    // #18464: `lsp.workspace_symbol_resolve` is a cataloged, suppressible ID.
+    // Disabling it must downgrade the advertisement to the simple-true shape
+    // the builder already implements while the parent route stays live.
+    let mut client = RealProcessClient::spawn_exact()?;
+    let response = initialize(
+        &mut client,
+        "capability-matrix",
+        json!({}),
+        Some(json!({ "disabledFeatures": ["lsp.workspace_symbol_resolve"] })),
+    )?;
+    ensure!(
+        response.pointer("/result/capabilities/workspaceSymbolProvider") == Some(&json!(true)),
+        "resolve-off advertisement must be the simple-true shape: {response}"
+    );
+
+    // The parent flat query stays enabled and must keep answering.
+    let id = json!("resolve-off-flat-query");
+    let symbols =
+        client.request(id.clone(), "workspace/symbol", json!({ "query": "" }), timeout())?;
+    assert_success_response(&symbols, &id, "workspace/symbol under resolve-off")?;
+
+    // Resolve itself still executes: the simple-true shape means the client
+    // will not call resolve, but the runtime lever must not disable the route
+    // (only `lsp.workspace_symbol` withdraws the parent).
+    let resolve_id = json!("resolve-off-resolve");
+    let resolve = client.request(
+        resolve_id.clone(),
+        "workspace/symbol/resolve",
+        json!({
+            "name": "main",
+            "kind": 12,
+            "location": { "uri": "file:///not-open.pl", "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 4 }
+            } }
+        }),
+        timeout(),
+    )?;
+    assert_success_response(&resolve, &resolve_id, "resolve under resolve-off")?;
+    ensure!(
+        resolve.pointer("/error").is_none(),
+        "resolve must stay live under lsp.workspace_symbol_resolve: {resolve}"
+    );
+
+    finish(&mut client)
 }
 
 #[test]

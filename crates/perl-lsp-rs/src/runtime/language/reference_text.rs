@@ -13,6 +13,9 @@
 //! bodies are not keys. Double-quoted `$name` stays a variable reference.
 
 use crate::util::byte_to_utf16_col;
+use perl_parser_core::syntax::source_context::{
+    RangeClassification, SourceRegionIndex, SourceRegionKind,
+};
 use serde_json::{Value, json};
 
 /// Line context of a candidate match. Quote/comment scanning is line-local and
@@ -244,6 +247,12 @@ where
     let mut out = Vec::new();
 
     'docs: for (doc_uri, doc_text, declarations) in documents {
+        // #18762: classify every candidate against the generation-bound region
+        // index built from the same text this scan reads (#5003/#4964), so a
+        // word shape inside a POD block, heredoc body, `__DATA__` tail,
+        // quote-like, or regex region stops answering as a code reference. The
+        // line-local context filter below cannot see multi-line regions.
+        let region_index = SourceRegionIndex::build(doc_text);
         let mut line_offset = 0;
         for (line_num, raw_line) in doc_text.split_inclusive('\n').enumerate() {
             let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
@@ -254,6 +263,12 @@ where
                 let byte_pos = start + idx;
                 let match_end = byte_pos + needle_bytes.len();
                 if is_reference_ident_boundary(line_bytes, byte_pos, needle_bytes.len())
+                    && text_match_region_is_reportable(
+                        &region_index,
+                        line_offset + byte_pos,
+                        line_offset + match_end,
+                        sigil,
+                    )
                     && keep_callable_declaration(
                         declarations,
                         line_offset + byte_pos,
@@ -284,6 +299,37 @@ where
     }
 
     finalize_reference_locations(out, cap)
+}
+
+/// A text-tier hit is reportable only inside proven executable code, or inside
+/// a string literal — where the line-local interpolation rules in
+/// [`keep_text_reference_match`] remain the authority for interpolated
+/// variables (#16638). POD blocks, heredoc bodies, `__DATA__` tails, comments,
+/// and recovery regions are not references regardless of word shape, and a
+/// range straddling region kinds is not proven either (#18762).
+///
+/// Interpolating quote-like and regex bodies (`qq{hello $name}`, `/^$name/`)
+/// stay reportable for **sigiled variable** queries only: the interpolation
+/// binds the variable at runtime, and the pre-gate line-local logic kept those
+/// occurrences because it did not model quote-like bodies (#18762 review).
+/// Literal words and sigil-less (sub) queries inside them stay excluded, as do
+/// all queries in POD, heredoc, and `__DATA__` regions.
+fn text_match_region_is_reportable(
+    region_index: &SourceRegionIndex,
+    start: usize,
+    end: usize,
+    sigil: Option<char>,
+) -> bool {
+    let interpolating_variable = matches!(sigil, Some('$' | '@' | '%'));
+    match region_index.classify_range(start, end) {
+        RangeClassification::Proven {
+            kind: SourceRegionKind::Code | SourceRegionKind::StringLiteral,
+        } => true,
+        RangeClassification::Proven {
+            kind: SourceRegionKind::QuoteLike | SourceRegionKind::RegexLike,
+        } => interpolating_variable,
+        _ => false,
+    }
 }
 
 // Only proven declaration anchors participate. Unknown/parser-error regions keep
@@ -1065,6 +1111,79 @@ mod tests {
             TextReferenceQuery { needle, sigil, include_declaration: true, package: None },
             cap,
         )
+    }
+
+    /// Text-tier word shapes inside POD blocks, heredoc bodies, and `__DATA__`
+    /// tails are not code references (#18762): the line-local context filter
+    /// cannot see multi-line regions, so the generation-bound region index
+    /// gates every candidate before the word-kind rules run.
+    #[test]
+    fn text_tier_drops_pod_heredoc_and_data_mentions() -> Result<(), Box<dyn Error>> {
+        let doc = concat!(
+            "package Store::Order;\n",                                // 0
+            "sub total_cents { return 0 }\n",                         // 1 declaration
+            "my $sum = $self->total_cents + $other->total_cents;\n",  // 2 two real calls
+            "my $z = $order->total_cents;\n",                         // 3 real call
+            "=pod\n",                                                 // 4 POD block
+            "Sum of C<< $order->total_cents >> across all orders.\n", // 5 POD mention
+            "=cut\n",                                                 // 6
+            "my $body = <<\"END_DOC\";\n",                            // 7
+            "Total: @{[ format_money($self->total_cents) ]}\n",       // 8 heredoc body
+            "END_DOC\n",                                              // 9
+            "__DATA__\n",                                             // 10
+            "hint: $inventory->total_cents to refill\n",              // 11 data tail
+        );
+        let hits = scan(&[("file:///regions.pm", doc)], "total_cents", None, 50);
+        let lines: Vec<u64> = hits
+            .iter()
+            .map(|hit| start_of(hit).map(|(line, _)| line))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            lines,
+            vec![1, 2, 2, 3],
+            "POD, heredoc-body, and __DATA__ mentions must not answer as references: {hits:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Sigiled variable mentions inside interpolating quote-like and regex
+    /// bodies stay references: the interpolation binds the variable at
+    /// runtime, and the pre-gate line-local logic kept them because it did not
+    /// model quote-like bodies (#18762 review). Literal words and sigil-less
+    /// (sub) queries inside those bodies stay excluded.
+    #[test]
+    fn text_tier_keeps_interpolated_variables_in_quote_like_and_regex_bodies()
+    -> Result<(), Box<dyn Error>> {
+        let doc = concat!(
+            "package Store::Order;\n",          // 0
+            "my $message = qq{hello $name};\n", // 1 quote-like, interpolated
+            "my $pattern = qr{^$name$};\n",     // 2 regex, interpolated
+            "my $label = qq{order status};\n",  // 3 quote-like, literal word
+            "my $docs = <<\"END_QQ\";\n",       // 4 heredoc
+            "usage: print $banner; quiet\n",    // 5 heredoc body
+            "END_QQ\n",                         // 6
+        );
+        // Variable query: interpolated quote-like and regex mentions survive…
+        let hits = scan(&[("file:///qq.pm", doc)], "$name", Some('$'), 50);
+        let lines: Vec<u64> = hits
+            .iter()
+            .map(|hit| start_of(hit).map(|(line, _)| line))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            lines,
+            vec![1, 2],
+            "interpolated variables in qq//qr bodies must stay references: {hits:?}"
+        );
+        // …while a sub query for the same word shape inside qq{} stays
+        // excluded, and heredoc bodies stay excluded for both.
+        let sub_hits = scan(&[("file:///qq.pm", doc)], "banner", None, 50);
+        assert!(
+            sub_hits.is_empty(),
+            "heredoc-body mentions must not answer as references: {sub_hits:?}"
+        );
+
+        Ok(())
     }
 
     #[test]

@@ -854,6 +854,66 @@ impl DebugAdapter {
         }
     }
 
+    /// Name the JSON kind of a malformed attach option so a typed refusal can
+    /// report what the client actually supplied, without echoing the value
+    /// (#17951).
+    fn json_type_name(value: &Value) -> &'static str {
+        match value {
+            Value::Null => "null",
+            Value::Bool(_) => "boolean",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
+        }
+    }
+
+    /// Read the native attach timeout aliases without coercion (#17951).
+    ///
+    /// Both supplied aliases are type-checked, so a malformed alias that
+    /// another alias shadows is still refused instead of being silently
+    /// discarded; `null` keeps its default semantics. Selection then stays
+    /// presence-based: a present `timeout`, including null, wins over
+    /// `timeoutMs`, and a shadowed alias is never range-checked.
+    fn typed_attach_timeout(args: &Value) -> Result<Option<u32>, String> {
+        for field in ["timeout", "timeoutMs"] {
+            if let Some(value) = args.get(field)
+                && !value.is_null()
+                && value.as_u64().is_none()
+            {
+                return Err(format!(
+                    "Invalid {field}: expected a non-negative integer in milliseconds, got JSON {}",
+                    Self::json_type_name(value)
+                ));
+            }
+        }
+        Ok(args
+            .get("timeout")
+            .or_else(|| args.get("timeoutMs"))
+            .and_then(|t| t.as_u64())
+            .map(Self::u64_to_u32_saturating))
+    }
+
+    /// Read `stopOnEntry` for the native attach path without coercion
+    /// (#17951): absent or null means false; any other non-boolean is a
+    /// typed refusal that names the JSON kind actually supplied.
+    ///
+    /// The attach path keeps its own reader instead of sharing
+    /// `typed_stop_on_entry`: the launch path's shorter message is the
+    /// launch contract (#18027), while the attach refusal has to name the
+    /// supplied JSON kind to stay diagnosable.
+    fn typed_attach_stop_on_entry(args: &Value) -> Result<bool, String> {
+        match args.get("stopOnEntry") {
+            None | Some(Value::Null) => Ok(false),
+            Some(value) => value.as_bool().ok_or_else(|| {
+                format!(
+                    "Invalid stopOnEntry: expected a boolean, got JSON {}",
+                    Self::json_type_name(value)
+                )
+            }),
+        }
+    }
+
     /// Admit the typed launch options without coercion (#18027), following
     /// the `parse_launch_script_args` precedent: a present-but-wrong-typed
     /// value fails the request instead of silently changing behavior.
@@ -1169,6 +1229,7 @@ impl DebugAdapter {
                     thread_id,
                     debuggee_cwd: debuggee_cwd.clone(),
                     last_resume_mode: ResumeMode::Unknown,
+                    reader_stop_epoch: 0,
                     entry_stop_pending: stop_on_entry,
                     initial_stop_pending: !stop_on_entry,
                     stopped_generation: 0,
@@ -2200,6 +2261,7 @@ impl DebugAdapter {
                                         // configurationDone handler will publish it only after
                                         // correlating the engine installation.
                                         s.state = DebugState::Stopped;
+                                        s.reader_stop_epoch = s.reader_stop_epoch.saturating_add(1);
                                         s.last_resume_mode = ResumeMode::Unknown;
                                         continue;
                                     }
@@ -2258,6 +2320,8 @@ impl DebugAdapter {
                                         } else if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
                                             s.state = DebugState::Stopped;
+                                            s.reader_stop_epoch =
+                                                s.reader_stop_epoch.saturating_add(1);
                                         } else if breakpoint_outcome.matched {
                                             logpoint_messages = breakpoint_outcome.log_messages;
 
@@ -2341,6 +2405,8 @@ impl DebugAdapter {
                                             if breakpoint_outcome.should_stop {
                                                 stop_reason = "breakpoint".to_string();
                                                 s.state = DebugState::Stopped;
+                                                s.reader_stop_epoch =
+                                                    s.reader_stop_epoch.saturating_add(1);
                                             } else {
                                                 if let Some(stdin) = s.process.stdin.as_mut() {
                                                     let _ = stdin.write_all(b"c\n");
@@ -2367,6 +2433,8 @@ impl DebugAdapter {
                                             should_auto_continue = true;
                                         } else {
                                             s.state = DebugState::Stopped;
+                                            s.reader_stop_epoch =
+                                                s.reader_stop_epoch.saturating_add(1);
                                         }
 
                                         if !should_auto_continue {
@@ -2460,8 +2528,18 @@ impl DebugAdapter {
                                     // already established this suspension's
                                     // generation — a prompt carrying that native
                                     // context must reuse it rather than advance
-                                    // a second time.
-                                    let context_established_suspension = prompt_has_native_context;
+                                    // a second time. A prompt that arrives
+                                    // without its context chunk but with a
+                                    // frame the context branch already admitted
+                                    // for the pending entry stop is the same
+                                    // suspension too: `DB<n>` output can be
+                                    // chunked apart from its context line, and
+                                    // advancing again would mint a second
+                                    // identity for one stop and let the
+                                    // fallback below discard the authoritative
+                                    // frame (#18491).
+                                    let context_established_suspension = prompt_has_native_context
+                                        || (s.entry_stop_pending && !s.stack_frames.is_empty());
                                     let current_frame_id = current_stopped_frame_id(
                                         s,
                                         matches!(s.state, DebugState::Running)
@@ -2505,21 +2583,49 @@ impl DebugAdapter {
                                         // the pending reason so the client is never left
                                         // waiting, and the prompt stop must remain
                                         // `stackTrace`-answerable.
-                                        let frame = StackFrame {
-                                            id: current_frame_id,
-                                            name: "main".to_string(),
-                                            source: Source {
-                                                name: Some("<unknown>".to_string()),
-                                                path: "<unknown>".to_string(),
-                                                source_reference: None,
-                                            },
-                                            line: 1,
-                                            column: 1,
-                                            end_line: None,
-                                            end_column: None,
-                                        };
-                                        s.stack_frames = vec![frame];
-                                        s.stack_frame_arguments.clear();
+                                        //
+                                        // A frame for THIS suspension may already exist: the
+                                        // context branch admitted an authoritative source
+                                        // frame for the entry stop before the prompt arrived,
+                                        // and a bare `DB<n>` chunk carries no context of its
+                                        // own (#18491). Downgrading that same-suspension frame
+                                        // to the `<unknown>` placeholder would trade a real
+                                        // location for a fabricated one, so keep it and admit
+                                        // the fallback only when no frame for this
+                                        // suspension exists yet.
+                                        //
+                                        // While the entry stop is pending, ANY admitted frame
+                                        // belongs to this suspension: frames start empty at
+                                        // launch and nothing else admits one inside the
+                                        // pending window. The id comparison alone misses the
+                                        // interleaving where an intervening context-shaped
+                                        // line without source (`func::__ANON__`) re-minted
+                                        // the suspension generation without re-admitting the
+                                        // frame (#18536 review thread on process.rs), so the
+                                        // pending-entry disjunct keeps the authoritative
+                                        // frame regardless of that re-mint.
+                                        let same_suspension_frame_present = (s.entry_stop_pending
+                                            && !s.stack_frames.is_empty())
+                                            || s.stack_frames
+                                                .first()
+                                                .is_some_and(|frame| frame.id == current_frame_id);
+                                        if !same_suspension_frame_present {
+                                            let frame = StackFrame {
+                                                id: current_frame_id,
+                                                name: "main".to_string(),
+                                                source: Source {
+                                                    name: Some("<unknown>".to_string()),
+                                                    path: "<unknown>".to_string(),
+                                                    source_reference: None,
+                                                },
+                                                line: 1,
+                                                column: 1,
+                                                end_line: None,
+                                                end_column: None,
+                                            };
+                                            s.stack_frames = vec![frame];
+                                            s.stack_frame_arguments.clear();
+                                        }
                                     }
                                     if was_running
                                         && matches!(s.last_resume_mode, ResumeMode::RunToBreakpoint)
@@ -2545,6 +2651,7 @@ impl DebugAdapter {
                                         let entry_stop = s.entry_stop_pending;
                                         s.entry_stop_pending = false;
                                         s.state = DebugState::Stopped;
+                                        s.reader_stop_epoch = s.reader_stop_epoch.saturating_add(1);
                                         should_emit_stopped = true;
                                         if entry_stop {
                                             stop_reason = "entry".to_string();
@@ -2781,6 +2888,15 @@ impl DebugAdapter {
     /// - `host`: Hostname or IP address (default: "localhost")
     /// - `port`: Port number (default: 13603)
     /// - `timeout`: Connection timeout in milliseconds (optional)
+    /// - `timeoutMs`: Accepted alias for `timeout` (optional)
+    ///
+    /// Supplied options are type-checked before any socket contact or session
+    /// replacement (#17951): a malformed non-null `stopOnEntry`, `timeout`, or
+    /// `timeoutMs` is refused with a diagnostic naming the field and the JSON
+    /// type, never echoing the supplied value. Both timeout aliases are
+    /// type-checked, so a malformed alias that another alias shadows is still
+    /// refused; selection stays presence-based, so a present `timeout`,
+    /// including null, wins over `timeoutMs`.
     ///
     /// # Current Implementation
     ///
@@ -2870,14 +2986,25 @@ impl DebugAdapter {
                     }
                 },
             };
-            let timeout = args
-                .get("timeout")
-                .or_else(|| args.get("timeoutMs"))
-                .and_then(|t| t.as_u64())
-                .map(Self::u64_to_u32_saturating);
-            // #18027: a present-but-non-boolean stopOnEntry is a typed
+            // #17951: a supplied malformed timeout alias is refused before any
+            // socket contact or session replacement, and the refusal names the
+            // field and JSON type instead of echoing the value.
+            let timeout = match Self::typed_attach_timeout(&args) {
+                Ok(timeout) => timeout,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
+            // #17951/#18027: a present-but-non-boolean stopOnEntry is a typed
             // refusal here too, never a silent false.
-            let stop_on_entry = match Self::typed_stop_on_entry(&args) {
+            let stop_on_entry = match Self::typed_attach_stop_on_entry(&args) {
                 Ok(value) => value,
                 Err(message) => {
                     return DapMessage::Response {
@@ -4024,8 +4151,9 @@ mod tests {
         assert!(stop && timeout == 30 && env.get("A").map(String::as_str) == Some("1"));
     }
 
-    /// #18027: the TCP attach handler refuses a string `stopOnEntry` before
-    /// any session is created or connected.
+    /// #18027/#17951: the TCP attach handler refuses a string `stopOnEntry`
+    /// before any session is created or connected, and the refusal names the
+    /// supplied JSON kind.
     #[test]
     fn attach_refuses_string_stop_on_entry_before_connecting() {
         let adapter = DebugAdapter::new();
@@ -4037,7 +4165,10 @@ mod tests {
         match message {
             DapMessage::Response { success, message, .. } => {
                 assert!(!success, "malformed attach stopOnEntry must fail");
-                assert_eq!(message.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
+                assert_eq!(
+                    message.as_deref(),
+                    Some("Invalid stopOnEntry: expected a boolean, got JSON string")
+                );
             }
             other => panic!("expected failed attach response, got {other:?}"),
         }
@@ -4045,6 +4176,60 @@ mod tests {
             lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
             "no TCP session may be created for a refused attach"
         );
+    }
+
+    /// #17951: a supplied malformed attach timeout alias is refused before
+    /// any socket contact, naming the field and JSON type. Both aliases are
+    /// type-checked, so a malformed alias shadowed by another alias is still
+    /// refused, and the launch path keeps its own shorter message (#18027).
+    #[test]
+    fn attach_refuses_malformed_timeout_aliases_before_connecting() {
+        for (options, expected) in [
+            (
+                json!({ "timeout": "bad" }),
+                "Invalid timeout: expected a non-negative integer in milliseconds, got JSON string",
+            ),
+            (
+                json!({ "timeoutMs": [] }),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON array",
+            ),
+            (
+                json!({ "timeout": null, "timeoutMs": [] }),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON array",
+            ),
+            (
+                json!({ "timeout": 5000, "timeoutMs": "bad" }),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON string",
+            ),
+            (
+                json!({ "timeout": "bad", "timeoutMs": 5000 }),
+                "Invalid timeout: expected a non-negative integer in milliseconds, got JSON string",
+            ),
+        ] {
+            let adapter = DebugAdapter::new();
+            let mut arguments = options.clone();
+            arguments["host"] = json!("127.0.0.1");
+            arguments["port"] = json!(13603);
+            let response = adapter.handle_attach(1, 7, Some(arguments));
+            assert!(
+                matches!(&response, DapMessage::Response { .. }),
+                "expected a failed attach response, got {response:?}"
+            );
+            if let DapMessage::Response { success, message, .. } = &response {
+                assert!(!*success, "malformed attach timeout must fail: {options:?}");
+                assert_eq!(message.as_deref(), Some(expected), "options: {options:?}");
+            }
+            assert!(
+                lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
+                "no TCP session may be created for a refused attach: {options:?}"
+            );
+        }
+
+        // The launch path keeps the shorter refusal: the attach path owns the
+        // JSON-kind diagnostic, the launch path does not (#18027).
+        let launch_refusal =
+            DebugAdapter::parse_launch_typed_options(&json!({ "stopOnEntry": "true" })).err();
+        assert_eq!(launch_refusal.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
     }
 
     fn launch_failure_message(response: super::DapMessage) -> Option<String> {
@@ -4389,6 +4574,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4534,6 +4720,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::RunToBreakpoint,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4683,6 +4870,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4755,6 +4943,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4838,6 +5027,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4874,6 +5064,111 @@ mod tests {
                     return Err(format!("context fixture timed out: {observed:?}"));
                 }
                 Err(RecvTimeoutError::Disconnected) => return Err("reader disconnected".into()),
+            }
+        }
+    }
+
+    /// Deterministic proof for the #18491 same-suspension frame preservation:
+    /// a bare `DB<n>` prompt arriving after the native context's per-stop
+    /// authority was already spent must not downgrade the frame the context
+    /// branch admitted for the pending entry stop to the `<unknown>:1`
+    /// placeholder. The polling e2e (`dap_entry_stop_stack_trace_18491`) can
+    /// pass through a transient downgrade and cannot force a prompt that lost
+    /// its context chunk; this fixture fixes the byte sequence instead.
+    ///
+    /// The intervening line that actually spends `native_context_pending_prompt`
+    /// is a context-shaped line without a file/line capture (`main::__ANON__`,
+    /// native-context block): a warning line does not match `context_re` and
+    /// leaves the pending authority intact, so the bare prompt would still
+    /// carry the native context through the prompt-branch front door. The
+    /// no-source context line also re-mints the suspension generation without
+    /// re-admitting the frame, which is exactly the interleaving the
+    /// pending-entry disjunct of `same_suspension_frame_present` covers.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_entry_frame_survives_contextless_prompt() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'main::(/tmp/dap-same-suspension-fixture.pl:4):\\tmy $entry = 1;\\nmain::__ANON__\\nDB<1>\\nSUSPENSION_READER_DONE\\n' >&2; sleep 1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn same-suspension fixture: {error}"))?;
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
+            last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
+            entry_stop_pending: true,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+        let mut observed = Vec::new();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str());
+                    if reason != Some("entry") {
+                        return Err(format!("expected entry stop, got {reason:?}"));
+                    }
+                    let guard = lock_or_recover(&adapter.session, "test.session");
+                    let session = guard.as_ref().ok_or("reader cleared test session")?;
+                    let frame = session.stack_frames.first().ok_or_else(|| {
+                        format!(
+                            "entry frame missing; observed={observed:?} generation={}",
+                            session.stopped_generation
+                        )
+                    })?;
+                    if frame.source.path != "/tmp/dap-same-suspension-fixture.pl" {
+                        return Err(format!(
+                            "contextless prompt downgraded the native entry frame: path={}, \
+                             line={}, frame_id={}, generation={}, observed={observed:?}",
+                            frame.source.path, frame.line, frame.id, session.stopped_generation
+                        ));
+                    }
+                    if frame.line != 4 {
+                        return Err(format!(
+                            "contextless prompt replaced the native entry line: line={}, \
+                             observed={observed:?}",
+                            frame.line
+                        ));
+                    }
+                    return Ok(());
+                }
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
+                    observed.push(format!("{event}:{body:?}"));
+                }
+                Ok(other) => observed.push(format!("message:{other:?}")),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(format!("same-suspension fixture timed out: {observed:?}"));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("same-suspension reader disconnected".into());
+                }
             }
         }
     }
@@ -5294,6 +5589,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -5426,6 +5722,7 @@ mod tests {
                 thread_id: 1,
                 debuggee_cwd: PathBuf::from("/tmp"),
                 last_resume_mode: ResumeMode::Unknown,
+                reader_stop_epoch: 0,
                 entry_stop_pending: true,
                 initial_stop_pending: false,
                 stopped_generation: 0,
@@ -7404,6 +7701,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -7881,6 +8179,7 @@ mod tests {
                 thread_id: 1,
                 debuggee_cwd: PathBuf::from("."),
                 last_resume_mode: ResumeMode::Unknown,
+                reader_stop_epoch: 0,
                 initial_stop_pending,
                 entry_stop_pending,
                 stopped_generation: 0,
@@ -8186,6 +8485,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,

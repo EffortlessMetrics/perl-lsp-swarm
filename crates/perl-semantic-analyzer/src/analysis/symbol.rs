@@ -872,7 +872,7 @@ impl SymbolExtractor {
                 }
             }
 
-            NodeKind::While { condition, body, continue_block: _, .. } => {
+            NodeKind::While { condition, body, .. } => {
                 self.visit_node(condition);
 
                 self.table.push_scope(ScopeKind::Block, body.location);
@@ -1084,7 +1084,7 @@ impl SymbolExtractor {
                 }
             }
 
-            NodeKind::No { module: _, args: _, .. } => {
+            NodeKind::No { .. } => {
                 // We don't currently track framework deactivation via `no`.
             }
 
@@ -1198,7 +1198,7 @@ impl SymbolExtractor {
                 self.table.pop_scope();
             }
 
-            NodeKind::Format { name, body: _, .. } => {
+            NodeKind::Format { name, .. } => {
                 let symbol = Symbol {
                     name: name.clone(),
                     qualified_name: format!("{}::{}", self.table.current_package, name),

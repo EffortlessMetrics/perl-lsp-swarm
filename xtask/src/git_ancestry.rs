@@ -1038,27 +1038,31 @@ mod tests {
 
     #[test]
     fn maintenance_lock_disappearing_does_not_break_listing_invariance() -> Result<()> {
-        // #15147: simulate the externally-observed flake class where
-        // `objects/maintenance.lock` appears or disappears while classification
-        // runs. The listing snapshot must remain stable across that churn
-        // because the classifier cannot own a `.lock` file (it is read-only).
-        let repository = initialized_repository()?;
-        let maintenance_lock = repository.path().join(".git/objects/maintenance.lock");
+        // #15147 / #17214: exercise the listing filter in a plain filesystem
+        // fixture so Git cannot race removal of our synthetic maintenance lock.
+        // The separate classification_does_not_mutate_refs_index_or_worktree
+        // test retains the live repository/classifier read-only witness.
+        let directory = tempfile::tempdir()?;
+        let git_dir = directory.path().join(".git");
+        fs::create_dir_all(git_dir.join("objects"))?;
+        fs::write(git_dir.join("ordinary"), "retained\n")?;
+        let maintenance_lock = git_dir.join("objects/maintenance.lock");
         fs::write(&maintenance_lock, "")?;
-        let listing_before = git_dir_listing(&repository.path().join(".git"))?;
+        assert!(maintenance_lock.is_file(), "synthetic lock must exist before the snapshot");
+        let listing_before = git_dir_listing(&git_dir)?;
 
-        // External `.lock` churn between the two snapshots must not flip the
-        // listing diff. The classifier is read-only; any difference here is a
-        // regression in either the classifier or the listing filter.
+        // Explicit lock churn must leave the filtered listing unchanged without
+        // hiding ordinary state or accepting an already-missing synthetic lock.
         fs::remove_file(&maintenance_lock)?;
-        let _receipt = classify_ancestry(repository.path(), "HEAD", "HEAD");
-        let listing_after = git_dir_listing(&repository.path().join(".git"))?;
+        assert!(!maintenance_lock.exists(), "synthetic lock must be absent after removal");
+        let listing_after = git_dir_listing(&git_dir)?;
 
         assert!(
             !listing_before.iter().any(|entry| entry.ends_with("maintenance.lock:0")),
             "lock-file filter must suppress maintenance.lock entries, got: {:?}",
             listing_before,
         );
+        assert_eq!(listing_before, vec!["ordinary:9"], "ordinary state must remain observable");
         assert_eq!(
             listing_before, listing_after,
             "listing diff must be invariant across `.lock` churn"

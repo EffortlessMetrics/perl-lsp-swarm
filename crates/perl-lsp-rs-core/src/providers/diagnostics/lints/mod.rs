@@ -140,13 +140,13 @@
 //!
 //! | Code | Severity | Description |
 //! |------|----------|-------------|
-//! | `PL306` | Warning | `->method` is not in the inferred in-file class method table |
+//! | `PL306` | Warning | `->method` missing from the receiver class's known method table — in-file tables first, then the workspace MRO index behind a `known_package` gate |
 //!
 //! ## Stray POD `=cut` (`stray_pod_cut.rs`)
 //!
 //! | Code | Severity | Description |
 //! |------|----------|-------------|
-//! | `PL412` | Warning | Line-initial `=cut` with no preceding POD opener hides the rest of the file |
+//! | `PL412` | Warning | Line-initial `=cut` with no preceding POD opener hides the rest of the file (reported from the lexer's own amputation record) |
 //!
 //! # Severity Levels
 //!
@@ -193,7 +193,7 @@ pub mod source_filter;
 /// Stray `=cut` that opens POD and hides trailing code (PL412, issue #18771)
 pub mod stray_pod_cut;
 pub mod strict_warnings;
-/// Undefined method calls on a known in-file class (PL306, issue #18771)
+/// Undefined method calls against the receiver's known method table (PL306, issue #18771)
 pub mod undefined_method;
 /// Unreachable code detection (PL406)
 pub mod unreachable_code;

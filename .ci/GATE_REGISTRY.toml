@@ -26,7 +26,7 @@ threshold = { type = "exit_code", pass = 0 }
 
 [gate.metadata]
 description = "Ensures consistent code formatting via rustfmt"
-docs_url = "CLAUDE.md#lint-and-format"
+docs_url = "CONTRIBUTING.md#4-run-focused-proof-first"
 cost_tier = "low"  # seconds
 failure_impact = "high"  # Blocks all merges
 
@@ -42,7 +42,7 @@ threshold = { type = "exit_code", pass = 0 }
 
 [gate.metadata]
 description = "Lint library code for common issues (missing_docs allowed during systematic resolution)"
-docs_url = "CLAUDE.md#lint-and-format"
+docs_url = "docs/CLIPPY_POLICY.md#workspace-posture"
 cost_tier = "low"  # ~1-2 minutes with cache
 failure_impact = "high"
 
@@ -58,7 +58,7 @@ threshold = { type = "exit_code", pass = 0 }
 
 [gate.metadata]
 description = "Runs all library unit tests (fast, essential)"
-docs_url = "CLAUDE.md#test"
+docs_url = "docs/reference/TEST_INFRASTRUCTURE_GUIDE.md#1-unit-tests-diataxis-tutorial"
 cost_tier = "medium"  # ~2-4 minutes
 failure_impact = "critical"
 
@@ -74,7 +74,7 @@ threshold = { type = "exit_code", pass = 0 }
 
 [gate.metadata]
 description = "Validates semantic-aware LSP definition resolution (4 test scenarios)"
-docs_url = "CLAUDE.md#semantic-definition-tests"
+docs_url = "crates/perl-lsp-rs/tests/semantic_definition.rs"
 cost_tier = "low"  # ~30-60 seconds
 failure_impact = "high"  # LSP protocol compliance
 
@@ -230,7 +230,7 @@ threshold = { type = "exit_code", pass = 0 }
 
 [gate.metadata]
 description = "Lint all targets including tests and benchmarks (may hit resource limits)"
-docs_url = "CLAUDE.md#lint-and-format"
+docs_url = "docs/CLIPPY_POLICY.md#workspace-posture"
 cost_tier = "medium"
 failure_impact = "medium"
 fallback_gate = "clippy-lib"  # Fall back to library-only on resource limits
@@ -247,7 +247,7 @@ threshold = { type = "exit_code", pass = 0 }
 
 [gate.metadata]
 description = "Comprehensive LSP E2E tests with adaptive threading"
-docs_url = "CLAUDE.md#test"
+docs_url = "crates/perl-lsp-rs/CLAUDE.md#test-threading"
 cost_tier = "medium"  # ~5-10 minutes
 failure_impact = "medium"
 
@@ -263,7 +263,7 @@ threshold = { type = "exit_code", pass = 0 }
 
 [gate.metadata]
 description = "Validates API documentation builds"
-docs_url = "CLAUDE.md#documentation"
+docs_url = "docs/reference/MISSING_DOCUMENTATION_GUIDE.md#3-run-documentation-proof"
 cost_tier = "low"
 failure_impact = "low"
 

@@ -88,25 +88,43 @@ Do not invent a parallel lifecycle or fixed model/agent roster.
 ## Proof
 
 Run the cheapest proof that can falsify the claim, then expand only when the changed
-surface or risk requires it.
+surface or risk requires it. After activating the task shell, start with the cheap
+repository-layout preflight:
+
+```bash
+just agent-preflight
+```
+
+That command does not admit a Cargo build or establish host capacity. Formatting remains
+separate from compiled proof:
 
 ```bash
 cargo fmt -p <package> -- --check
-cargo clippy -p <package> --all-targets --locked -- -D warnings
-cargo test -p <package> --all-targets --locked
-just pr-fast
 ```
 
-Useful repository checks:
+Before any resource-bearing Cargo command, read
+[Cargo storage admission](../docs/agents/CARGO_STORAGE.md), choose the smallest exact
+subject and target that can falsify the claim, then preflight and execute that same
+request through the admitted route. For example:
 
 ```bash
-just devex
-just doctor
-just ci-gate
-just status-check
-just ci-docs-check
-just release-check
+scripts/cargo-admitted --preflight check -p <package> --locked
+scripts/cargo-admitted check -p <package> --locked
+scripts/cargo-admitted --preflight test -p <package> --all-targets --locked
+scripts/cargo-admitted test -p <package> --all-targets --locked
 ```
+
+Clippy has a separately qualified
+[staged native route](../docs/agents/CARGO_STORAGE.md#staged-native-clippy). Do not
+substitute raw `cargo clippy` or legacy `just agent-clippy` for that qualification.
+Legacy `cargo-safe` and `just agent-*` commands retain compatibility behavior; they are
+not host admission for new agent work.
+
+Broad claim-level commands such as `just pr-fast`, `just ci-gate`, `just doctor`, and
+`just release-check` may perform compiled or wider proof. Run them only when the
+selected route and current implementation require them and the host is admitted for the
+actual work they perform. The shared command-role inventory is still being reconciled
+under #9542; do not infer current authority from a historical name alone.
 
 Do not claim that a passing local command proves hosted CI, another platform, a
 packaged artifact, or a different command. Missing, partial, cancelled, timed-out,

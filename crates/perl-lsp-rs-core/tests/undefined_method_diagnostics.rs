@@ -340,3 +340,249 @@ has 'sku' => (is => 'ro');
         pl306(source)
     );
 }
+
+// ── Workspace tier (#18771) ──
+//
+// The in-file tables cannot answer for a class that lives in another file.
+// The workspace tier joins the same `method_candidates` MRO table
+// hover/definition use, gated by `known_package` so an unindexed package's
+// empty result stays silent (empty ≠ absent).
+
+use perl_semantic_facts::{
+    AnchorId, Confidence, DefinitionCandidate, DefinitionRank, DefinitionRankReason, EntityFact,
+    EntityId, EntityKind, FileId, OccurrenceFact, Provenance, RenamePlan, SafeDeletePlan, ScopeId,
+    VisibleSymbol,
+};
+use perl_workspace::semantic::queries::{DynamicCallableEvidence, QueryContext, SemanticQueries};
+
+/// Workspace stub whose `known_package`/`method_candidates` answers are
+/// configured per test; every other query degrades to empty.
+struct WorkspaceStub {
+    /// `false` models a workspace with no package graph at all:
+    /// `known_package` answers `None` (no data → stay silent).
+    has_data: bool,
+    /// Packages the simulated index knows; everything else answers
+    /// `Some(false)` when `has_data`.
+    known_packages: Vec<String>,
+    /// `(package, method)` pairs the stub answers with one candidate.
+    provided: Vec<(String, String)>,
+}
+
+impl SemanticQueries for WorkspaceStub {
+    fn symbol_at(
+        &self,
+        _file_id: FileId,
+        _byte_offset: u32,
+    ) -> Option<(EntityFact, OccurrenceFact)> {
+        None
+    }
+
+    fn definitions(&self, _symbol: &str, _context: &QueryContext) -> Vec<DefinitionCandidate> {
+        Vec::new()
+    }
+
+    fn references(&self, _entity_id: EntityId) -> Vec<OccurrenceFact> {
+        Vec::new()
+    }
+
+    fn visible_symbols_at(
+        &self,
+        _file_id: FileId,
+        _byte_offset: u32,
+        _scope_id: Option<ScopeId>,
+    ) -> Vec<VisibleSymbol> {
+        Vec::new()
+    }
+
+    fn method_candidates(
+        &self,
+        receiver_package: &str,
+        method_name: &str,
+    ) -> Vec<DefinitionCandidate> {
+        let provided = self.provided.iter().any(|(p, m)| p == receiver_package && m == method_name);
+        if !provided {
+            return Vec::new();
+        }
+        vec![DefinitionCandidate::new(
+            EntityId(1),
+            AnchorId(1),
+            format!("{receiver_package}::{method_name}"),
+            method_name.to_string(),
+            Some(receiver_package.to_string()),
+            EntityKind::Method,
+            Provenance::ExactAst,
+            Confidence::High,
+            DefinitionRank::ExactQualified,
+            DefinitionRankReason::ExactQualifiedName,
+        )]
+    }
+
+    fn known_package(&self, package: &str) -> Option<bool> {
+        if !self.has_data {
+            return None;
+        }
+        Some(self.known_packages.iter().any(|known| known == package))
+    }
+
+    fn rename_plan(&self, entity_id: EntityId, new_name: &str) -> RenamePlan {
+        RenamePlan::new(entity_id, String::new(), new_name.to_string(), vec![], vec![], vec![])
+    }
+
+    fn safe_delete_plan(&self, entity_id: EntityId) -> SafeDeletePlan {
+        SafeDeletePlan::new(entity_id, String::new(), vec![], vec![])
+    }
+
+    fn dynamic_boundary_at(
+        &self,
+        _file_id: FileId,
+        _byte_offset: u32,
+        _symbol: Option<&str>,
+    ) -> Option<OccurrenceFact> {
+        None
+    }
+
+    fn dynamic_callable_may_be_visible_at(
+        &self,
+        _file_id: FileId,
+        _byte_offset: u32,
+        _symbol: &str,
+    ) -> Option<DynamicCallableEvidence> {
+        None
+    }
+}
+
+/// The receiver class lives in another (indexed) file: the workspace MRO
+/// table has no such method, so the typo warns even though this file never
+/// declares the class.
+#[test]
+fn workspace_known_class_typo_emits_pl306() {
+    let source = "use Inventory;\nInventory->find_skku('GIZMO-B');\n";
+    let queries = WorkspaceStub {
+        has_data: true,
+        known_packages: vec!["Inventory".to_string()],
+        provided: vec![("Inventory".into(), "find_sku".into())],
+    };
+    let output = Parser::new(source).parse_with_recovery();
+    let ast = Arc::new(output.ast);
+    let diags: Vec<Diagnostic> = DiagnosticsProvider::new()
+        .get_diagnostics_with_path_and_semantics(
+            &ast,
+            &output.diagnostics,
+            source,
+            None,
+            &[],
+            None,
+            FileId(1),
+            &queries,
+        );
+    let pl306: Vec<&Diagnostic> =
+        diags.iter().filter(|d| d.code.as_deref() == Some("PL306")).collect();
+    assert_eq!(pl306.len(), 1, "indexed class + absent method must warn: {diags:?}");
+    assert!(
+        pl306[0].message.contains("find_skku") && pl306[0].message.contains("Inventory"),
+        "the warning must name the method and class: {}",
+        pl306[0].message
+    );
+}
+
+/// The workspace table provides the method: silent.
+#[test]
+fn workspace_known_class_correct_method_is_silent() {
+    let source = "use Inventory;\nInventory->find_sku('GIZMO-B');\n";
+    let queries = WorkspaceStub {
+        has_data: true,
+        known_packages: vec!["Inventory".to_string()],
+        provided: vec![("Inventory".into(), "find_sku".into())],
+    };
+    let output = Parser::new(source).parse_with_recovery();
+    let ast = Arc::new(output.ast);
+    let diags = DiagnosticsProvider::new().get_diagnostics_with_path_and_semantics(
+        &ast,
+        &output.diagnostics,
+        source,
+        None,
+        &[],
+        None,
+        FileId(1),
+        &queries,
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_deref() != Some("PL306")),
+        "an indexed method must not warn: {diags:?}"
+    );
+}
+
+/// The index has data but never heard of the class: stay silent — an absent
+/// class is the unknown-receiver adjudication, not a missing method.
+#[test]
+fn workspace_unindexed_class_is_silent() {
+    let source = "use Invenory;\nInvenory->anything_at_all();\n";
+    let queries = WorkspaceStub { has_data: true, known_packages: vec![], provided: vec![] };
+    let output = Parser::new(source).parse_with_recovery();
+    let ast = Arc::new(output.ast);
+    let diags = DiagnosticsProvider::new().get_diagnostics_with_path_and_semantics(
+        &ast,
+        &output.diagnostics,
+        source,
+        None,
+        &[],
+        None,
+        FileId(1),
+        &queries,
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_deref() != Some("PL306")),
+        "a class the index has never seen must not warn: {diags:?}"
+    );
+}
+
+/// No workspace data at all (`known_package` → `None`): the null fallback —
+/// stay silent rather than fire on every unindexed file.
+#[test]
+fn workspace_without_data_is_silent() {
+    let source = "use Inventory;\nInventory->totally_unknown_method();\n";
+    let queries = WorkspaceStub { has_data: false, known_packages: vec![], provided: vec![] };
+    let output = Parser::new(source).parse_with_recovery();
+    let ast = Arc::new(output.ast);
+    let diags = DiagnosticsProvider::new().get_diagnostics_with_path_and_semantics(
+        &ast,
+        &output.diagnostics,
+        source,
+        None,
+        &[],
+        None,
+        FileId(1),
+        &queries,
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_deref() != Some("PL306")),
+        "without workspace data the lint must degrade to silent: {diags:?}"
+    );
+}
+
+/// An indexed AUTOLOAD on the receiver class may resolve anything: silent.
+#[test]
+fn workspace_autoload_is_silent() {
+    let source = "use Inventory;\nInventory->not_even_a_real_name();\n";
+    let queries = WorkspaceStub {
+        has_data: true,
+        known_packages: vec!["Inventory".to_string()],
+        provided: vec![("Inventory".into(), "AUTOLOAD".into())],
+    };
+    let output = Parser::new(source).parse_with_recovery();
+    let ast = Arc::new(output.ast);
+    let diags = DiagnosticsProvider::new().get_diagnostics_with_path_and_semantics(
+        &ast,
+        &output.diagnostics,
+        source,
+        None,
+        &[],
+        None,
+        FileId(1),
+        &queries,
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_deref() != Some("PL306")),
+        "AUTOLOAD means the call may resolve at runtime: {diags:?}"
+    );
+}
