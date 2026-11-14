@@ -21,7 +21,7 @@ pub struct NativeCriticCheckConfig {
     pub roots: Vec<PathBuf>,
     /// Native critic profile to run.
     pub profile: String,
-    /// Minimum native critic severity to report.
+    /// Minimum native critic severity to report, from 1 through 5.
     pub severity: u8,
     /// Native rule IDs to include. Empty means all selected-profile rules.
     pub include: Vec<String>,
@@ -70,6 +70,10 @@ struct NativeCriticFileResult {
 
 /// Run native critic rules over Perl source files and write JSON/markdown receipts.
 pub fn check(config: NativeCriticCheckConfig) -> Result<()> {
+    if !(1..=5).contains(&config.severity) {
+        return Err(eyre!("invalid native critic severity {}; expected 1..=5", config.severity));
+    }
+
     let roots = if config.roots.is_empty() { default_roots() } else { config.roots };
     let files = collect_paths(&roots)?;
     if files.is_empty() {
