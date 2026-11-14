@@ -1837,8 +1837,8 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     assert!(
         missing_image_guard < recorded_refusal
             && recorded_refusal < docker_cleanup
-            && cleanup.contains("exit 0"),
-        "missing-image admission must record preflight_ok=false and skip the image-dependent cleanup"
+            && cleanup.contains("exit 1"),
+        "missing-image admission must record preflight_ok=false, fail the primary lane, and skip the image-dependent cleanup"
     );
     assert!(
         workflow.contains(
@@ -1878,21 +1878,52 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
 
     let sandbox = tempfile::tempdir()?;
     let output_file = sandbox.path().join("admission-output");
+    let preflight_output = sandbox.path().join("preflight-output");
     let docker_calls = sandbox.path().join("docker-calls");
+    let inspect_count = sandbox.path().join("inspect-count");
+    let scratch = sandbox.path().join("scratch");
+    let cache = sandbox.path().join("cache");
+    fs::create_dir_all(&scratch)?;
+    fs::create_dir_all(&cache)?;
     let admission =
         workflow_run_block("ripr-selfhosted", "Fix workspace ownership (pre-checkout)")?;
+    let preflight = workflow_run_block("ripr-selfhosted", "Preflight disk")?;
+    // The first image inspection refuses admission; every later inspection would
+    // succeed. GitHub's ordinary success() gate must keep that later availability
+    // from reviving the primary lane after the admission step fails.
     let fake_docker = r#"
 docker() {
   printf '%s\n' "$*" >> "$DOCKER_CALLS"
-  return 1
+  if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+    inspections=$(cat "$DOCKER_INSPECT_COUNT" 2>/dev/null || echo 0)
+    inspections=$((inspections + 1))
+    printf '%s\n' "$inspections" > "$DOCKER_INSPECT_COUNT"
+    [ "$inspections" -gt 1 ]
+    return
+  fi
+  return 0
+}
+ci-disk-guard() {
+  return 0
 }
 "#;
+    let script = format!(
+        "{fake_docker}\n(\n{admission}\n)\nadmission_status=$?\nprimary_result=$admission_status\nif [ \"$admission_status\" -eq 0 ]; then\n  export GITHUB_OUTPUT=\"$PREFLIGHT_OUTPUT\"\n  (\n{preflight}\n  )\n  primary_result=$?\nfi\nprintf 'primary_result=%s\\n' \"$primary_result\""
+    );
     let mut child = Command::new(bash_executable())
         .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
         .env("GITHUB_WORKSPACE", sandbox.path())
         .env("GITHUB_OUTPUT", &output_file)
+        .env("PREFLIGHT_OUTPUT", &preflight_output)
         .env("DOCKER_CALLS", &docker_calls)
+        .env("DOCKER_INSPECT_COUNT", &inspect_count)
+        .env("SCCACHE_DIR", cache.join("sccache"))
+        .env("TMPDIR", scratch.join("tmp"))
+        .env("CARGO_TARGET_DIR", scratch.join("target"))
+        .env("CARGO_HOME", cache.join("cargo-home"))
+        .env("RIPR_CACHE_DIR", cache.join("ripr"))
+        .env("GITHUB_STEP_SUMMARY", sandbox.path().join("summary.md"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1901,20 +1932,36 @@ docker() {
         .stdin
         .take()
         .ok_or_else(|| anyhow!("pre-checkout bash stdin unavailable"))?
-        .write_all(format!("{fake_docker}\n{admission}").as_bytes())?;
+        .write_all(script.as_bytes())?;
     let output = child.wait_with_output()?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     ensure!(
-        output.status.success(),
-        "missing-image admission must leave a typed refusal for the fallback: {output:?}"
+        output.status.success() && combined.contains("primary_result=1"),
+        "missing-image admission must leave a failed primary lane for the fallback: {combined}"
     );
     ensure!(
         fs::read_to_string(&output_file)?.contains("preflight_ok=false"),
         "the real early step must record preflight_ok=false"
     );
+    ensure!(
+        !preflight_output.exists() && fs::read_to_string(&inspect_count)? == "1\n",
+        "later image availability must not execute or revive the refused primary preflight"
+    );
     let calls = fs::read_to_string(&docker_calls)?;
     ensure!(
         calls.contains("image inspect em-ci-rust:1.100") && !calls.contains("run --rm"),
         "missing-image admission must stop before image-dependent cleanup"
+    );
+    let (admission_fallback, admission_fallback_output) =
+        run_fallback_condition("selfhosted", "failure", "false")?;
+    ensure!(
+        admission_fallback.status.success()
+            && admission_fallback_output.contains("fallback_started=true"),
+        "the terminal admission refusal must select the hosted fallback: {admission_fallback_output}"
     );
 
     let (self_hosted_route, self_hosted_output) =

@@ -2472,7 +2472,7 @@ semver-diff package='perl-parser':
 _semver-check-install:
     @if ! command -v cargo-semver-checks >/dev/null 2>&1; then \
         echo "📦 Installing cargo-semver-checks..."; \
-        cargo install cargo-semver-checks --version 0.47.0 --locked; \
+        cargo install cargo-semver-checks --version 0.51.0 --locked; \
     fi
 
 # Private helper: install cargo-public-api if not present

@@ -367,12 +367,12 @@ jobs:
           # `mkdir target` failures on the next run. Fall back to a host-side rm -rf
           # in case the Docker image is unavailable. Check before invoking that
           # image: a missing-image refusal must reach the hosted fallback even
-          # when an earlier run left root-owned files. Skip checkout so that an
-          # inability to chown those files cannot hide the typed preflight output.
+          # when an earlier run left root-owned files. Fail the primary lane so
+          # later preflight/image availability cannot revive it or suppress fallback.
           if ! docker image inspect em-ci-rust:1.100 >/dev/null 2>&1; then
             echo "::error::Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner. Failover job will run on GitHub-hosted."
             echo "preflight_ok=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           # Safe on CI: CARGO_TARGET_DIR is set to /mnt/ci-scratch/... so the real
           # build artifacts are NOT in workspace/target/. Only xtask/ripr JSON
