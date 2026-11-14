@@ -75,7 +75,7 @@ class RustSmallOwners:
 
         def current_attempt():
             row = self.adapter.api.get(f'{self.adapter.root}/actions/runs/{elected["run_id"]}')
-            if (not self.adapter.matches(row, plan)
+            if (not self.adapter.matches(row, plan, run_id=elected['run_id'])
                     or row['run_attempt'] != elected['run_attempt']
                     or row.get('status') != 'in_progress' or row.get('conclusion') is not None):
                 raise Refused('native entry requires the current in-progress control attempt')

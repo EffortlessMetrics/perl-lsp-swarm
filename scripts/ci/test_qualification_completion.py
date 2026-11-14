@@ -85,6 +85,19 @@ class CompletionTests(unittest.TestCase):
         with mock.patch.object(self.api, 'get', side_effect=get), self.assertRaises(ValueError):
             completion.build(self.adapter, self.proof, check_run_id=45)
 
+    def test_other_run_after_check_readback_cannot_complete(self):
+        check_read = False
+        def get(path):
+            nonlocal check_read
+            row = self.native_get(path)
+            if path.endswith('/check-runs/45'):
+                check_read = True
+            if check_read and path.endswith('/actions/runs/21'):
+                return dict(row, id=22)
+            return row
+        with mock.patch.object(self.api, 'get', side_effect=get), self.assertRaises(ValueError):
+            completion.build(self.adapter, self.proof, check_run_id=45)
+
     def test_candidate_json_or_boolean_check_identity_never_certifies(self):
         with self.assertRaises(ValueError): completion.build(self.adapter, {'result': 'success'})
         with self.assertRaises(ValueError): self.manifest(check_id=True)
