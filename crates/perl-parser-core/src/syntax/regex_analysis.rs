@@ -4,7 +4,7 @@
 //! regex-body analysis. These types bind both planes to one immutable source
 //! snapshot so HIR, PIR, and providers can consume facts without rescanning.
 
-use perl_ast::SourceLocation;
+use perl_ast::{Node, NodeKind, SourceLocation};
 use perl_regex::{
     RegexAnalyzer, RegexValidator,
     analyzer::{
@@ -43,27 +43,7 @@ impl RegexSourceDigest {
     /// Derive a deterministic content identity from one complete source snapshot.
     #[must_use]
     pub fn for_source(source: &str) -> Self {
-        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-        const SECOND_OFFSET: u64 = 0x8422_2325_cbf2_9ce4;
-        const SECOND_PRIME: u64 = 0x0000_0100_0000_01c5;
-
-        let mut forward = FNV_OFFSET;
-        for byte in source.as_bytes() {
-            forward ^= u64::from(*byte);
-            forward = forward.wrapping_mul(FNV_PRIME);
-        }
-
-        let mut reverse = SECOND_OFFSET;
-        for byte in source.as_bytes().iter().rev() {
-            reverse ^= u64::from(*byte);
-            reverse = reverse.wrapping_mul(SECOND_PRIME);
-        }
-
-        let mut bytes = [0u8; 16];
-        bytes[..8].copy_from_slice(&forward.to_be_bytes());
-        bytes[8..].copy_from_slice(&reverse.to_be_bytes());
-        Self(bytes)
+        Self(fnv16(source.as_bytes()))
     }
 
     /// Return the normalized digest bytes.
@@ -83,6 +63,191 @@ impl RegexSourceDigest {
         }
         output
     }
+}
+
+/// Deterministic identity of one AST for regex-analysis provenance (#14752).
+///
+/// This is a bounded parser freshness key for tree identity, not a cryptographic
+/// authenticity proof. It hashes kind, source range, and the payloads that
+/// determine regex geometry and compile-time pragma state, so a foreign tree
+/// cannot silently share an identity with the parse that retained the table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RegexAstDigest([u8; 16]);
+
+impl RegexAstDigest {
+    /// Digest the identity-bearing structure of `ast`.
+    #[must_use]
+    pub fn from_ast(ast: &Node) -> Self {
+        Self(fnv16(&encode_ast_identity(ast)))
+    }
+
+    /// Return the normalized digest bytes.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 16] {
+        self.0
+    }
+}
+
+/// Identity of the parse that produced a retained regex-analysis table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegexParseIdentity {
+    session_id: u64,
+    operation_id: Option<u64>,
+    tree_digest: RegexAstDigest,
+}
+
+impl RegexParseIdentity {
+    pub(crate) const fn new(
+        session_id: u64,
+        operation_id: Option<u64>,
+        tree_digest: RegexAstDigest,
+    ) -> Self {
+        Self { session_id, operation_id, tree_digest }
+    }
+
+    /// Session that recorded the producing parse.
+    #[must_use]
+    pub const fn session_id(self) -> u64 {
+        self.session_id
+    }
+
+    /// Parser operation that produced the tree, when one completed.
+    #[must_use]
+    pub const fn operation_id(self) -> Option<u64> {
+        self.operation_id
+    }
+
+    /// Tree digest of the producing AST.
+    #[must_use]
+    pub const fn tree_digest(self) -> RegexAstDigest {
+        self.tree_digest
+    }
+}
+
+/// `finish` was given a tree that did not come from this session's parse.
+///
+/// The [`unbound`](Self::unbound_table) table is built without that tree, so a
+/// caller can continue without publishing another document's pragma profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AstProvenanceMismatch {
+    expected: Option<RegexParseIdentity>,
+    observed: Option<RegexParseIdentity>,
+    unbound: RegexAnalysisTable,
+}
+
+impl AstProvenanceMismatch {
+    pub(crate) fn new(
+        expected: Option<RegexParseIdentity>,
+        observed: Option<RegexParseIdentity>,
+        unbound: RegexAnalysisTable,
+    ) -> Self {
+        Self { expected, observed, unbound }
+    }
+
+    /// Identity the session bound, if a parse of its source completed.
+    #[must_use]
+    pub const fn expected(&self) -> Option<RegexParseIdentity> {
+        self.expected
+    }
+
+    /// Identity of the tree that was supplied.
+    #[must_use]
+    pub const fn observed(&self) -> Option<RegexParseIdentity> {
+        self.observed
+    }
+
+    /// Table built without the foreign tree.
+    #[must_use]
+    pub fn unbound_table(&self) -> &RegexAnalysisTable {
+        &self.unbound
+    }
+
+    /// Consume the mismatch and return the unbound table.
+    #[must_use]
+    pub fn into_unbound_table(self) -> RegexAnalysisTable {
+        self.unbound
+    }
+}
+
+fn fnv16(bytes: &[u8]) -> [u8; 16] {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    const SECOND_OFFSET: u64 = 0x8422_2325_cbf2_9ce4;
+    const SECOND_PRIME: u64 = 0x0000_0100_0000_01c5;
+
+    let mut forward = FNV_OFFSET;
+    for byte in bytes {
+        forward ^= u64::from(*byte);
+        forward = forward.wrapping_mul(FNV_PRIME);
+    }
+
+    let mut reverse = SECOND_OFFSET;
+    for byte in bytes.iter().rev() {
+        reverse ^= u64::from(*byte);
+        reverse = reverse.wrapping_mul(SECOND_PRIME);
+    }
+
+    let mut digest = [0u8; 16];
+    digest[..8].copy_from_slice(&forward.to_be_bytes());
+    digest[8..].copy_from_slice(&reverse.to_be_bytes());
+    digest
+}
+
+fn encode_ast_identity(root: &Node) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        write_node_identity(&mut out, node);
+        let mut children = Vec::new();
+        node.for_each_child(|child| children.push(child));
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+    out
+}
+
+fn write_node_identity(out: &mut Vec<u8>, node: &Node) {
+    write_bytes(out, node.kind.kind_name().as_bytes());
+    write_u64(out, node.location.start as u64);
+    write_u64(out, node.location.end as u64);
+    match &node.kind {
+        NodeKind::Regex { pattern, replacement, modifiers, .. } => {
+            write_bytes(out, pattern.as_bytes());
+            write_bytes(out, replacement.as_deref().unwrap_or_default().as_bytes());
+            write_bytes(out, modifiers.as_bytes());
+        }
+        NodeKind::Match { pattern, modifiers, .. } => {
+            write_bytes(out, pattern.as_bytes());
+            write_bytes(out, modifiers.as_bytes());
+        }
+        NodeKind::Substitution { pattern, replacement, modifiers, .. } => {
+            write_bytes(out, pattern.as_bytes());
+            write_bytes(out, replacement.as_bytes());
+            write_bytes(out, modifiers.as_bytes());
+        }
+        NodeKind::Transliteration { search, replace, modifiers, .. } => {
+            write_bytes(out, search.as_bytes());
+            write_bytes(out, replace.as_bytes());
+            write_bytes(out, modifiers.as_bytes());
+        }
+        NodeKind::Use { module, args, .. } | NodeKind::No { module, args, .. } => {
+            write_bytes(out, module.as_bytes());
+            for arg in args {
+                write_bytes(out, arg.as_bytes());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn write_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    write_u64(out, bytes.len() as u64);
+    out.extend_from_slice(bytes);
 }
 
 /// Why a parser-owned operator has no canonical regex-body analysis.
@@ -280,6 +445,8 @@ pub struct RegexAnalysisTable {
     /// Records in deterministic source order.
     pub records: Vec<RegexAnalysisRecord>,
     analysis_invocations: usize,
+    /// Parse that produced this table, when retention bound one.
+    parse_identity: Option<RegexParseIdentity>,
 }
 
 impl Default for RegexAnalysisTable {
@@ -298,6 +465,7 @@ impl RegexAnalysisTable {
             source_len: Some(source.len()),
             records: Vec::new(),
             analysis_invocations: 0,
+            parse_identity: None,
         }
     }
 
@@ -310,6 +478,7 @@ impl RegexAnalysisTable {
             source_len: None,
             records: Vec::new(),
             analysis_invocations: 0,
+            parse_identity: None,
         }
     }
 
@@ -318,6 +487,46 @@ impl RegexAnalysisTable {
     pub fn source_matches(&self, source: &str) -> bool {
         self.source_len == Some(source.len())
             && self.source_digest == Some(RegexSourceDigest::for_source(source))
+    }
+
+    /// Identity of the parse that produced this table, when one was bound.
+    #[must_use]
+    pub const fn parse_identity(&self) -> Option<RegexParseIdentity> {
+        self.parse_identity
+    }
+
+    pub(crate) fn set_parse_identity(&mut self, identity: RegexParseIdentity) {
+        self.parse_identity = Some(identity);
+    }
+
+    /// Whether `ast` is the tree this table was retained from.
+    #[must_use]
+    pub fn matches_ast(&self, ast: &Node) -> bool {
+        self.parse_identity
+            .is_some_and(|identity| identity.tree_digest() == RegexAstDigest::from_ast(ast))
+    }
+
+    /// Return this table only when `ast` is the producing tree.
+    ///
+    /// # Errors
+    ///
+    /// [`AstProvenanceMismatch`] when the table has no bound identity or the
+    /// tree digest does not match. The mismatch's unbound table keeps the
+    /// source digest so staleness against edits remains observable, and drops
+    /// every record so a caller cannot publish the refused tree's analysis.
+    pub fn require_ast(&self, ast: &Node) -> Result<&Self, AstProvenanceMismatch> {
+        if self.matches_ast(ast) {
+            return Ok(self);
+        }
+        let mut unbound = self.clone();
+        unbound.parse_identity = None;
+        unbound.records.clear();
+        unbound.analysis_invocations = 0;
+        Err(AstProvenanceMismatch::new(
+            self.parse_identity,
+            Some(RegexParseIdentity::new(0, None, RegexAstDigest::from_ast(ast))),
+            unbound,
+        ))
     }
 
     /// Find a retained record by stable identity.
@@ -582,6 +791,42 @@ mod tests {
         assert!(hex.chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()));
         let expected: String = digest.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
         assert_eq!(hex, expected);
+    }
+
+    #[test]
+    fn an_ast_digest_moves_with_pragma_payloads_and_is_stable_for_the_same_tree() {
+        let loc = SourceLocation { start: 0, end: 8 };
+        let use_utf8 = Node::new(
+            NodeKind::Use { module: "utf8".to_string(), args: vec![], has_filter_risk: false },
+            loc,
+        );
+        let no_utf8 = Node::new(
+            NodeKind::No { module: "utf8".to_string(), args: vec![], has_filter_risk: false },
+            loc,
+        );
+        assert_eq!(RegexAstDigest::from_ast(&use_utf8), RegexAstDigest::from_ast(&use_utf8));
+        assert_ne!(
+            RegexAstDigest::from_ast(&use_utf8),
+            RegexAstDigest::from_ast(&no_utf8),
+            "use utf8 and no utf8 must not share an identity"
+        );
+        let table = RegexAnalysisTable::for_source("use utf8;");
+        assert!(!table.matches_ast(&use_utf8), "a table with no parse identity matches no tree");
+
+        let mut bound = RegexAnalysisTable::for_source("use utf8;");
+        bound.set_parse_identity(RegexParseIdentity::new(
+            1,
+            Some(1),
+            RegexAstDigest::from_ast(&use_utf8),
+        ));
+        let _ = bound.retain_unavailable(loc, RegexAnalysisAvailability::Analyzed, profile());
+        let mismatch = bound.require_ast(&no_utf8).expect_err("foreign tree must mismatch");
+        let unbound = mismatch.into_unbound_table();
+        assert!(unbound.source_matches("use utf8;"), "source identity survives the mismatch");
+        assert!(
+            unbound.records.is_empty(),
+            "mismatch fallback must not keep the refused tree's records"
+        );
     }
 
     #[test]

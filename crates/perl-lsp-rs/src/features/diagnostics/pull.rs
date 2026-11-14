@@ -714,7 +714,7 @@ impl PullDiagnosticsProvider {
 
         match parser.parse() {
             Ok(mut ast) => {
-                let regex_analysis = std::sync::Arc::new(session.finish(Some(&mut ast)));
+                let regex_analysis = std::sync::Arc::new(session.finish_or_unbound(Some(&mut ast)));
                 // Retrieve any collected parse errors from error recovery
                 let parse_errors: Vec<ParseError> = parser.errors().to_vec();
                 let ast = std::sync::Arc::new(ast);
@@ -733,7 +733,7 @@ impl PullDiagnosticsProvider {
                 // Finish the session even with no tree: it retains the geometry the
                 // parser recorded before failing, and dropping it here would discard
                 // findings the suppressed legacy scan is no longer producing (#7024).
-                let regex_analysis = session.finish(None);
+                let regex_analysis = session.finish_or_unbound(None);
                 let mut diagnostics = vec![
                     self.parse_error_to_diagnostic_with_context(uri, content, &error, context),
                 ];
