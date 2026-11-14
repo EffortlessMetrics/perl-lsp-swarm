@@ -268,9 +268,13 @@ describe('resolveVersionSection', () => {
 
   test('resolves non-empty notes for 0.18.0 and its pre-releases from the shipped CHANGELOG', () => {
     const shipped = fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8');
+    // 0.18.0 is not released yet, so its entries are tracked under
+    // `## [Unreleased]` (#19381) and resolution must fall back to that section.
+    const unreleased = extractVersionSection(shipped, 'Unreleased');
+    expect(hasSectionBody(unreleased)).toBe(true);
     for (const version of ['0.18.0', '0.18.0-rc.1']) {
       const section = resolveVersionSection(shipped, version);
-      expect(section.startsWith('## [0.18.0]')).toBe(true);
+      expect(section).toBe(unreleased);
       expect(hasSectionBody(section)).toBe(true);
     }
   });
@@ -297,12 +301,16 @@ describe('WhatsNewManager.hasReleaseNotesContent', () => {
   test.each(['0.18.0', '0.18.0-rc.1'])(
     'installed %s with the shipped changelog has release notes to auto-open',
     (version) => {
-      const dir = packagedExtension(version, shippedChangelog());
+      const shipped = shippedChangelog();
+      const dir = packagedExtension(version, shipped);
       try {
         const mgr = new WhatsNewManager(makeContext({ extensionPath: dir }), makeOutputChannel());
         expect(mgr.currentVersion()).toBe(version);
         expect(mgr.hasReleaseNotesContent()).toBe(true);
-        expect(mgr.extractChangelogSection(version).startsWith('## [0.18.0]')).toBe(true);
+        // 0.18.0 is unreleased, so its notes live under `## [Unreleased]`.
+        expect(mgr.extractChangelogSection(version)).toBe(
+          extractVersionSection(shipped, 'Unreleased'),
+        );
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
