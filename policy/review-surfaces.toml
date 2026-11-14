@@ -346,8 +346,8 @@ risk_class = "public_surface_control"
 review_profile = "public_api_or_retirement_authority"
 required_evidence = "current_head_reviewer_packet"
 first_falsifier = "A baseline is regenerated alongside an accidental public addition and the ratchet certifies the widening instead of catching it."
-enforcement_successor = "#11796"
-code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+enforcement_successor = "#17089"
+code_owner_route = { kind = "not_proven", resolution_owner = "#17089", note = "Public-boundary evidence fan-in (#17089) owns whether this surface becomes enforced; #11796 is AR03 review promotion and does not mention this surface." }
 paths = [".ci/public-api-baselines/**", "xtask/tests/public_api_ratchet_tests.rs"]
 
 [surface.review_receipt_retirement]
