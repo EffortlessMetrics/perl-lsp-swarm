@@ -2385,6 +2385,39 @@ fn validate_rows(
         validate_row_digests(row, state);
         validate_row_authority(row, &declared_inputs, repo_root, loader, state);
 
+        // `classify` decides the product surface from the string this row
+        // declares; `loader` reads whatever the filesystem resolves that string
+        // to. Where those differ the guard and the read are talking about
+        // different files, and the row passes while real product content is
+        // displaced.
+        //
+        // The concrete case is a case-insensitive volume (Windows, default
+        // macOS). A `drop_swarm_only` row naming
+        // `Clients/Sublime/LSP-perllsp/plugin.py` matches no entry in
+        // `PRODUCT_PATH_SEGMENTS` (compared case-sensitively), carries no
+        // product extension, and does not equal the exact-path ledger entry
+        // `clients/sublime/LSP-perllsp/plugin.py` (`entry_governs` compares with
+        // `==`), so it classifies as unprotected — while `load_input`
+        // canonicalizes and opens the real plugin. Symlinked and `./`-prefixed
+        // spellings disagree the same way.
+        //
+        // Require the two spellings to agree before any surface decision is
+        // made. Only a path that actually resolves is checked: an absent path
+        // is the `row_source_absent` / release-only case handled below, where
+        // non-resolution is the finding rather than a spelling fault.
+        if let Some(resolved) = resolve_repo_relative(repo_root, &row.path)
+            && resolved != row.path
+        {
+            state.block(
+                "row_path_not_canonical",
+                format!(
+                    "row {} resolves to {} in this checkout; the surface classifier reads the declared spelling while the loader reads the resolved one, so a row must name the path as the filesystem spells it",
+                    row.path, resolved
+                ),
+                "release/ci",
+            );
+        }
+
         let displaces = row_displaces_swarm_content(row);
         let mut surface = product_surface.classify(&row.path, parse_date(&manifest.planned_at));
 

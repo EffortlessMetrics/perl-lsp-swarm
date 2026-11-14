@@ -2152,6 +2152,40 @@ fn a_displacing_row_on_a_plain_directory_is_blocked() -> Result<()> {
     assert_finding(&receipt, "row_displaces_directory")
 }
 
+/// A row is classified from the string it declares and loaded from whatever the
+/// filesystem resolves that string to. Where the two disagree, the surface guard
+/// and the read are about different files: a `drop_swarm_only` row naming
+/// `Clients/Sublime/LSP-perllsp/plugin.py` on a case-insensitive volume matches
+/// no product segment and not the exact-path ledger entry for the real
+/// `clients/...` plugin, so it classifies as unprotected while the loader opens
+/// the product file.
+///
+/// That volume cannot be created on a case-sensitive filesystem, so this
+/// exercises the same declared-vs-resolved disagreement through a symlink —
+/// portable, and an aliasing route in its own right.
+#[test]
+#[cfg(unix)]
+fn a_row_naming_a_path_the_filesystem_resolves_elsewhere_is_blocked() -> Result<()> {
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!("clients/alias-plugin.py");
+    let (root, _, _) = materialize_repo(&document)?;
+    fs::create_dir_all(root.path().join("clients"))?;
+    fs::write(root.path().join("clients/plugin.py"), "print('product')\n")?;
+    std::os::unix::fs::symlink("plugin.py", root.path().join("clients/alias-plugin.py"))?;
+
+    // Assert the premise. If the declared and resolved spellings agreed, this
+    // control would pass for the wrong reason and prove nothing about the guard.
+    let Some(resolved) = resolve_repo_relative(root.path(), "clients/alias-plugin.py") else {
+        bail!("the alias did not resolve, so this control cannot discriminate");
+    };
+    if resolved == "clients/alias-plugin.py" {
+        bail!("declared and resolved spellings agree ({resolved}); the control is vacuous");
+    }
+
+    let receipt = plan_on_disk(&document, root.path())?;
+    assert_finding(&receipt, "row_path_not_canonical")
+}
+
 #[test]
 fn a_displacing_row_on_a_plain_file_is_not_a_directory_finding() -> Result<()> {
     // Opposite direction: the subtree rule must not fire on ordinary file rows,
