@@ -1649,6 +1649,10 @@ fn pod_directive(line: &str) -> Option<&str> {
 }
 
 #[cfg(test)]
+#[path = "conformance_matrix.rs"]
+mod conformance_matrix;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use perl_test_must::must_some;
