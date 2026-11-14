@@ -175,9 +175,12 @@ def derive_cargo_inventory(cargo: Path, root: Path) -> tuple[list[dict[str, obje
 
 def verify(args: argparse.Namespace) -> None:
     root = args.root.resolve(strict=True)
-    if args.receipt.is_symlink():
+    # Match the producer: relative receipt paths belong to the selected root,
+    # never the verifier's ambient working directory.
+    receipt_candidate = args.receipt if args.receipt.is_absolute() else root / args.receipt
+    if receipt_candidate.is_symlink():
         raise VerificationError("receipt must be a regular non-symlink file")
-    receipt_path = args.receipt.resolve(strict=True)
+    receipt_path = receipt_candidate.resolve(strict=True)
     if not receipt_path.is_file():
         raise VerificationError("receipt must be a regular non-symlink file")
     if receipt_path.stat().st_size > 16 * 1024 * 1024:
