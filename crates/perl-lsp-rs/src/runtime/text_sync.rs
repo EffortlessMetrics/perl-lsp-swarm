@@ -180,6 +180,8 @@ impl LspServer {
         params: Option<Value>,
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
+        let _capture_owner =
+            crate::runtime::text_sync_work::owner_scope(std::ptr::from_ref(self) as usize);
         if let Some(params) = params {
             // Sink-owned admission (#8895): this operation turns URIs into
             // paths and stores buffers, so it owns URI policy. The check runs
@@ -192,6 +194,7 @@ impl LspServer {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
             let admission_key = self.normalize_uri_key(uri);
+            let _capture_document = crate::runtime::text_sync_work::document_scope(&admission_key);
             if let Err(err) = crate::security::validate_document_uri(&admission_key) {
                 return Err(invalid_params(&err.to_string()));
             }
@@ -741,6 +744,8 @@ impl LspServer {
         cancellation_token: Option<Arc<AtomicBool>>,
         allow_same_version: bool,
     ) -> Result<(), JsonRpcError> {
+        let _capture_owner =
+            crate::runtime::text_sync_work::owner_scope(std::ptr::from_ref(self) as usize);
         if let Some(params) = params {
             // Direct callers bypass the JSON-RPC dispatcher, so retain the
             // same admission guard before accepted-state mutation.
@@ -754,6 +759,7 @@ impl LspServer {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
             let admission_key = self.normalize_uri_key(uri);
+            let _capture_document = crate::runtime::text_sync_work::document_scope(&admission_key);
             if let Err(err) = crate::security::validate_document_uri(&admission_key) {
                 return Err(invalid_params(&err.to_string()));
             }
@@ -1019,6 +1025,15 @@ impl LspServer {
                         next_gen,
                         byte_len,
                         "did_change_materialize",
+                        sync_path,
+                    );
+                    crate::runtime::text_sync_work::record_full_source_bytes_copied(
+                        work_uri_tail.clone(),
+                        incoming_version,
+                        next_gen,
+                        byte_len,
+                        "did_change_materialize",
+                        "document_state",
                         sync_path,
                     );
                     crate::runtime::text_sync_work::record_full_source_allocation(
@@ -1697,7 +1712,12 @@ impl LspServer {
     /// scale, `documents.lock()`-released-before-`commit()`-runs) window a
     /// newer edit can still land in.
     pub(crate) fn run_post_parse_side_effects(&self, ticket: parse_worker::PublishedParseTicket) {
+        let _capture_owner =
+            crate::runtime::text_sync_work::owner_scope(std::ptr::from_ref(self) as usize);
         if crate::runtime::text_sync_work::is_enabled() {
+            let _capture_document = crate::runtime::text_sync_work::document_scope(
+                &self.normalize_uri_key(&ticket.uri),
+            );
             // This method is reached only after a freshness-gated publication,
             // so it supplies real document identity and distinguishes accepted
             // snapshots from constructor work later rejected as stale.

@@ -6,6 +6,71 @@
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+thread_local! {
+    static CAPTURE_OWNER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static CAPTURE_DOCUMENT: std::cell::RefCell<Option<String>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) struct CaptureOwnerScope(Option<usize>);
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+impl Drop for CaptureOwnerScope {
+    fn drop(&mut self) {
+        CAPTURE_OWNER.with(|current| current.set(self.0));
+    }
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) fn owner_scope(owner: usize) -> CaptureOwnerScope {
+    let previous = CAPTURE_OWNER.with(|current| current.replace(Some(owner)));
+    CaptureOwnerScope(previous)
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) struct CaptureDocumentScope {
+    active: bool,
+    previous: Option<String>,
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+impl Drop for CaptureDocumentScope {
+    fn drop(&mut self) {
+        if self.active {
+            CAPTURE_DOCUMENT.with(|current| current.replace(self.previous.take()));
+        }
+    }
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) fn document_scope(normalized_uri: &str) -> CaptureDocumentScope {
+    if !capture::is_enabled() {
+        return CaptureDocumentScope { active: false, previous: None };
+    }
+    let previous =
+        CAPTURE_DOCUMENT.with(|current| current.replace(Some(normalized_uri.to_string())));
+    CaptureDocumentScope { active: true, previous }
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+pub(crate) struct CaptureOwnerScope;
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+pub(crate) fn owner_scope(_owner: usize) -> CaptureOwnerScope {
+    CaptureOwnerScope
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+pub(crate) struct CaptureDocumentScope;
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+pub(crate) fn document_scope(_normalized_uri: &str) -> CaptureDocumentScope {
+    CaptureDocumentScope
+}
+
 /// Stable receipt schema id consumed by #7251 / #1373 work-volume fields.
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub const RECEIPT_SCHEMA_VERSION: &str = "text_sync_work_receipt.v1";
@@ -525,17 +590,26 @@ pub use receipt::{InstrumentStatus, ParseWorkerTotals, TextSyncWorkReceipt, buil
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub mod capture {
-    use super::{ParseWorkerTotals, WorkEvent};
+    use super::{CAPTURE_DOCUMENT, CAPTURE_OWNER, ParseWorkerTotals, WorkEvent};
     use parking_lot::{Mutex, MutexGuard};
     use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     static ENABLED: AtomicBool = AtomicBool::new(false);
+    static SESSION: AtomicU64 = AtomicU64::new(0);
+
+    struct CapturedEvent {
+        event: WorkEvent,
+        document: Option<String>,
+    }
 
     #[derive(Default)]
     struct CaptureBuffer {
-        events: Vec<WorkEvent>,
+        events: Vec<CapturedEvent>,
         worker_baseline: Option<ParseWorkerTotals>,
+        owner: Option<usize>,
+        session: u64,
+        active: bool,
     }
 
     fn buffer() -> &'static Mutex<CaptureBuffer> {
@@ -555,39 +629,97 @@ pub mod capture {
 
     impl Drop for CaptureGuard {
         fn drop(&mut self) {
-            ENABLED.store(false, Ordering::Relaxed);
             let mut buffer = buffer().lock();
+            buffer.active = false;
+            ENABLED.store(false, Ordering::Release);
             buffer.events.clear();
             buffer.worker_baseline = None;
+            buffer.owner = None;
         }
     }
 
     #[inline]
     pub fn is_enabled() -> bool {
-        ENABLED.load(Ordering::Relaxed)
+        ENABLED.load(Ordering::Acquire)
     }
 
-    pub fn test_lock(worker_baseline: Option<ParseWorkerTotals>) -> CaptureGuard {
+    pub fn test_lock(worker_baseline: impl FnOnce() -> Option<ParseWorkerTotals>) -> CaptureGuard {
         let lock = capture_lock().lock();
+        let owner = CAPTURE_OWNER.with(std::cell::Cell::get);
         {
             let mut buffer = buffer().lock();
+            buffer.active = false;
+            ENABLED.store(false, Ordering::Release);
+            buffer.session = SESSION.fetch_add(1, Ordering::AcqRel).saturating_add(1);
             buffer.events.clear();
-            buffer.worker_baseline = worker_baseline;
+            // The baseline and empty event buffer begin under the same capture
+            // ownership and buffer lock; delayed producers still revalidate below.
+            buffer.worker_baseline = worker_baseline();
+            buffer.owner = owner;
+            buffer.active = true;
+            ENABLED.store(true, Ordering::Release);
         }
-        ENABLED.store(true, Ordering::Relaxed);
         CaptureGuard { _lock: lock }
     }
 
+    #[cfg(test)]
     pub fn drain() -> (Vec<WorkEvent>, Option<ParseWorkerTotals>) {
-        ENABLED.store(false, Ordering::Relaxed);
+        drain_inner(None)
+    }
+
+    pub fn drain_for_uri(normalized_uri: &str) -> (Vec<WorkEvent>, Option<ParseWorkerTotals>) {
+        drain_inner(Some(normalized_uri))
+    }
+
+    fn drain_inner(normalized_uri: Option<&str>) -> (Vec<WorkEvent>, Option<ParseWorkerTotals>) {
         let mut buffer = buffer().lock();
-        (std::mem::take(&mut buffer.events), buffer.worker_baseline)
+        buffer.active = false;
+        ENABLED.store(false, Ordering::Release);
+        let events = std::mem::take(&mut buffer.events)
+            .into_iter()
+            .filter(|captured| {
+                normalized_uri.is_none_or(|uri| captured.document.as_deref() == Some(uri))
+            })
+            .map(|captured| captured.event)
+            .collect();
+        (events, buffer.worker_baseline)
     }
 
     pub(super) fn push(event: WorkEvent) {
-        if is_enabled() {
-            buffer().lock().events.push(event);
+        if !is_enabled() {
+            return;
         }
+        let session = SESSION.load(Ordering::Acquire);
+        let owner = CAPTURE_OWNER.with(std::cell::Cell::get);
+        let document = CAPTURE_DOCUMENT.with(|current| current.borrow().clone());
+        push_if_current(event, session, owner, document);
+    }
+
+    fn push_if_current(
+        event: WorkEvent,
+        session: u64,
+        owner: Option<usize>,
+        document: Option<String>,
+    ) {
+        let mut buffer = buffer().lock();
+        if !buffer.active || buffer.session != session {
+            return;
+        }
+        if buffer.owner.is_some() && buffer.owner != owner {
+            return;
+        }
+        buffer.events.push(CapturedEvent { event, document });
+    }
+
+    #[cfg(test)]
+    pub(super) fn session_for_test() -> u64 {
+        SESSION.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(super) fn push_with_session_for_test(event: WorkEvent, session: u64, owner: Option<usize>) {
+        let document = CAPTURE_DOCUMENT.with(|current| current.borrow().clone());
+        push_if_current(event, session, owner, document);
     }
 }
 
@@ -601,7 +733,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn empty_capture_is_not_proven() {
-        let _capture = capture::test_lock(None);
+        let _capture = capture::test_lock(|| None);
         let (events, baseline) = capture::drain();
         let receipt = build_receipt("test", "none", events, baseline);
         assert_eq!(receipt.instrument_status, InstrumentStatus::NotProven);
@@ -610,7 +742,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn arc_share_does_not_add_copied_bytes() {
-        let _capture = capture::test_lock(None);
+        let _capture = capture::test_lock(|| None);
         record_source_buffer_share("file.pl".to_string(), 1, "enqueue", "parse_worker", "async");
         let (events, baseline) = capture::drain();
         let receipt = build_receipt("share", "unit", events, baseline);
@@ -621,7 +753,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn accepted_snapshots_are_counted_at_publication_not_max_generation() {
-        let _capture = capture::test_lock(None);
+        let _capture = capture::test_lock(|| None);
         record_accepted_parsed_snapshot("file.pl".to_string(), 40, 10, "async");
         record_accepted_parsed_snapshot("file.pl".to_string(), 3, 12, "async");
         record_full_source_allocation(
@@ -636,5 +768,91 @@ mod tests {
         let (events, baseline) = capture::drain();
         let receipt = build_receipt("accepted", "unit", events, baseline);
         assert_eq!(receipt.accepted_generations, 2);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn capture_excludes_events_from_other_server_owners() {
+        let _scope = owner_scope(1);
+        let _capture = capture::test_lock(|| None);
+        drop(_scope);
+        {
+            let _other_server = owner_scope(2);
+            record_source_buffer_share(
+                "same.pl".to_string(),
+                1,
+                "enqueue",
+                "parse_worker",
+                "async",
+            );
+        }
+        {
+            let _owning_server = owner_scope(1);
+            record_source_buffer_share(
+                "same.pl".to_string(),
+                2,
+                "enqueue",
+                "parse_worker",
+                "async",
+            );
+        }
+
+        let (events, baseline) = capture::drain();
+        let receipt = build_receipt("owners", "unit", events, baseline);
+
+        assert_eq!(receipt.totals.source_buffer_shares, 1);
+        assert_eq!(receipt.events.len(), 1);
+        assert_eq!(receipt.events[0].generation, 2);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn receipt_excludes_other_documents_on_the_capture_owner() {
+        let _scope = owner_scope(1);
+        let _capture = capture::test_lock(|| None);
+        {
+            let _document = document_scope("file:///a.pl");
+            record_source_buffer_share("a.pl".to_string(), 1, "enqueue", "parse_worker", "async");
+        }
+        {
+            let _document = document_scope("file:///b.pl");
+            record_source_buffer_share("b.pl".to_string(), 2, "enqueue", "parse_worker", "async");
+        }
+
+        let (events, baseline) = capture::drain_for_uri("file:///a.pl");
+        let receipt = build_receipt("documents", "unit", events, baseline);
+
+        assert_eq!(receipt.events.len(), 1);
+        assert_eq!(receipt.events[0].uri_tail, "a.pl");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn delayed_producer_cannot_append_to_a_later_capture_session() {
+        let _scope = owner_scope(7);
+        let first_capture = capture::test_lock(|| None);
+        let stale_session = capture::session_for_test();
+        let _ = capture::drain();
+        drop(first_capture);
+        let _next_capture = capture::test_lock(|| None);
+
+        capture::push_with_session_for_test(
+            WorkEvent {
+                kind: WorkEventKind::SourceBufferShare,
+                uri_tail: "old.pl".to_string(),
+                client_version: None,
+                generation: 1,
+                stage: "enqueue",
+                owner: "parse_worker",
+                byte_length: 0,
+                sync_path: "async",
+                disposition: "current",
+            },
+            stale_session,
+            Some(7),
+        );
+
+        let (events, _) = capture::drain();
+        assert!(events.is_empty(), "an earlier session's event contaminated the next receipt");
     }
 }

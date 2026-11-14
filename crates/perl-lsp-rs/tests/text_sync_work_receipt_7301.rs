@@ -42,10 +42,10 @@ fn did_open_and_async_edit_emit_versioned_work_receipt() -> TestResult {
     assert_eq!(receipt.totals.source_buffer_shares, 1);
     assert_eq!(receipt.totals.canonical_digest_computed, 2);
     assert_eq!(receipt.totals.documents_lock_acquire_release_pairs, 1);
-    let expected_copied = 2 * u64::try_from(OPEN_TEXT.len())? + 3 * u64::try_from(EDIT_TEXT.len())?;
+    let expected_copied = 2 * u64::try_from(OPEN_TEXT.len())? + 4 * u64::try_from(EDIT_TEXT.len())?;
     assert_eq!(
         receipt.totals.full_source_bytes_copied, expected_copied,
-        "owned open strings, edit Arc transport, edit state copy, and both snapshot Arc<str> copies"
+        "owned open strings, edit materialization, edit Arc transport, edit state copy, and both snapshot Arc<str> copies"
     );
 
     let worker = receipt.parse_worker.as_ref().ok_or("worker metrics missing")?;
