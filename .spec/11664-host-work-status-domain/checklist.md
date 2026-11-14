@@ -6,16 +6,16 @@
 | --- | --- | --- |
 | F1 | Agent/lane return makes compute terminal | `host_work_status_f1_agent_return_not_terminal` |
 | F2 | Parent exit makes descendants/lock/reservation terminal | `host_work_status_f2_parent_exit_not_terminal` |
-| F3 | Process API unavailable becomes zero processes | `host_work_status_f3_api_unavailable_is_not_proven` |
+| F3 | Process API unavailable becomes zero processes | `host_work_status_f3_api_unavailable_is_not_proven_not_zero` |
 | F4 | Age alone creates `ORPHAN_CANDIDATE` | `host_work_status_f4_age_alone_never_orphan` |
 | F5 | Executable name/path attributes another repository's process | `host_work_status_f5_basename_attribution_rejected` |
 | F6 | Count-based universal dispatch denial | `host_work_status_f6_no_dispatch_verdict` |
 | F7 | Open PR forces physical KEEP despite reconstructible clean state | `host_work_status_f7_open_pr_allows_reconstructible_terminal` |
-| F8 | Closed issue makes unique dirty work removable | `host_work_status_f8_closed_issue_keeps_salvage` |
+| F8 | Closed issue makes unique dirty work removable | `host_work_status_f8_closed_issue_keeps_salvage_required` |
 | F9 | Shared cache state becomes candidate authority | `host_work_status_f9_shared_cache_not_candidate_authority` |
 | F10 | Dimensions collapse into one status | `host_work_status_f10_dimensions_stay_independent` |
 | F11 | Provider exit zero overrides typed blocked/unknown state | `host_work_status_f11_exit_zero_cannot_override_typed_fact` |
-| F12 | Provider human wording parsed as authority | `host_work_status_f12_no_prose_parsing_surface` (type-level: adapters take enums only) |
+| F12 | Provider human wording parsed as authority | `host_work_status_f12_provider_wording_is_not_authority` (type-level: adapters take enums only) |
 | F13 | Unknown provider variant disappears | `host_work_status_f13_unknown_variant_visible` |
 | F14 | One subject's resource satisfies another | `host_work_status_f14_subject_mismatch_unrepresentable` |
 | F15 | Aggregate HEALTHY hides ambiguous dimension | `host_work_status_f15_healthy_never_hides_uncertainty` |

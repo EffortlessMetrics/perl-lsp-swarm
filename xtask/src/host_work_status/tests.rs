@@ -1434,6 +1434,80 @@ fn host_work_status_f15d_stale_fact_on_each_dimension_is_contagious() -> Result<
     Ok(())
 }
 
+// ---- F9: ambiguous storage scope is contagious -------------------------------
+
+#[test]
+fn host_work_status_f9_ambiguous_scope_never_healthy() -> Result<()> {
+    let subject = repository_subject(Some("wt"));
+    let key = subject.subject_key();
+    let mut set = HostWorkObservationSet::new(key.clone());
+    set.push_logical(logical(&key, DurableState::NoLocalResidue)).context("own subject")?;
+    set.push_mutation(mutation(&key, MutationOwnership::Unowned)).context("own subject")?;
+    set.push_compute(compute(
+        &key,
+        ProcessTreeFact::ExitedConfirmed { process_group_id: String::from("pg") },
+        ReservationFact::Absent,
+        Settlement::Settled,
+        Settlement::Settled,
+        InitiatorReturn::Returned,
+    ))
+    .context("own subject")?;
+    set.push_storage(storage(
+        &key,
+        RootClass::AmbiguousScope,
+        StorageDisposition::CacheOnly,
+        CapacityFact::Measured { free_bytes: 900 },
+        None,
+        false,
+        ReclaimClass::NoneApproved,
+    ))
+    .context("own subject")?;
+
+    let storage_row = set.storage().iter().next().context("storage row")?;
+    let classification = classify_storage(storage_row);
+    ensure!(classification.evidence == DimensionEvidence::Incomplete);
+
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("builds")?;
+    ensure!(!status.aggregate.contains(&HostWorkObservationToken::Healthy));
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    Ok(())
+}
+
+// ---- F15e: stale live compute cannot be active/complete or reap-eligible -----
+
+#[test]
+fn host_work_status_f15e_stale_live_compute_is_not_reap_eligible() -> Result<()> {
+    let subject = repository_subject(Some("wt"));
+    let key = subject.subject_key();
+    let mut stale = compute(
+        &key,
+        ProcessTreeFact::Live {
+            process_group_id: String::from("pg-stale"),
+            attribution: Attribution::ExactSubjectBinding,
+        },
+        ReservationFact::Absent,
+        Settlement::Settled,
+        Settlement::Settled,
+        InitiatorReturn::Returned,
+    );
+    stale.freshness = Freshness::Stale;
+
+    let classification = classify_compute(&stale);
+    ensure!(classification.evidence == DimensionEvidence::Incomplete);
+    ensure!(
+        !(classification.lifecycle == HostWorkLifecycle::Active
+            && classification.evidence == DimensionEvidence::Complete)
+    );
+    ensure!(classification.reasons.contains(&HostWorkReason::CurrentnessNotProven));
+
+    let mut set = HostWorkObservationSet::new(key.clone());
+    set.push_compute(stale).context("own subject")?;
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("builds")?;
+    ensure!(!status.cleanup_readiness.contains(&CleanupReadiness::EligibleForProcessReapPlan));
+    ensure!(status.cleanup_readiness.contains(&CleanupReadiness::NotProven));
+    Ok(())
+}
+
 // ---- F14b: host profile is part of the load-bearing subject key -------------
 
 #[test]

@@ -3,7 +3,7 @@
 //! fields. This type owns no plan, verdict, or authorization surface.
 
 use super::dimension::{
-    CapacityFact, ComputeWorkObservation, HostWorkObservationSet, InitiatorReturn,
+    CapacityFact, ComputeWorkObservation, Freshness, HostWorkObservationSet, InitiatorReturn,
     MutationOwnership, ProcessTreeFact, UnknownVariantRecord,
 };
 use super::lifecycle::{
@@ -287,6 +287,7 @@ fn is_reap_candidate(row: &ComputeWorkObservation) -> bool {
             ..
         }
     ) && row.initiator_returned == InitiatorReturn::Returned
+        && row.freshness == Freshness::Current
 }
 
 fn readiness_rank(readiness: &CleanupReadiness) -> u8 {

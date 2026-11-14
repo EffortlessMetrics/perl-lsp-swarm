@@ -443,6 +443,9 @@ pub fn classify_compute(observation: &ComputeWorkObservation) -> HostWorkClassif
     let (bad_instrument, mut add) = instrument_incomplete(&observation.instrument);
     incomplete |= bad_instrument;
     reasons.append(&mut add);
+    let (stale, mut add) = freshness_incomplete(observation.freshness);
+    incomplete |= stale;
+    reasons.append(&mut add);
 
     let mut terminality_proven = false;
     let mut live_exact = false;
@@ -621,7 +624,10 @@ pub fn classify_storage(observation: &StorageWorkObservation) -> HostWorkClassif
             incomplete = true;
             reasons.push(HostWorkReason::InstrumentUnavailable);
         }
-        RootClass::AmbiguousScope => reasons.push(HostWorkReason::DispositionAmbiguous),
+        RootClass::AmbiguousScope => {
+            incomplete = true;
+            reasons.push(HostWorkReason::DispositionAmbiguous);
+        }
     }
 
     match observation.disposition {
