@@ -854,7 +854,7 @@ jobs:
       - uses: actions/checkout@<COMMIT_SHA> # v4
       - uses: dtolnay/rust-toolchain@<COMMIT_SHA> # stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.100.0
 
       - uses: Swatinem/rust-cache@<COMMIT_SHA> # v2
         with:
@@ -899,7 +899,7 @@ jobs:
 ```yaml
 test:
   stage: test
-  image: rust:1.95
+  image: rust:1.100
   variables:
     RUST_TEST_THREADS: "2"
     CARGO_NET_RETRY: "4"

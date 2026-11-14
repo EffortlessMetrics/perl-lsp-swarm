@@ -104,7 +104,7 @@ set -euo pipefail
 # rustup cargo so the guard passes and the ROUTED invocation is what lands in
 # the log; otherwise the probe clobbers it and the guard refuses at exit 78.
 if [[ "$*" == "--version" ]]; then
-  printf 'cargo 1.95.0 (0000000000 2026-01-01)\n'
+  printf 'cargo 1.100.0 (0000000000 2026-01-01)\n'
   exit 0
 fi
 printf '%s\n' "$*" > "${ADMISSION_LOG}"
@@ -163,7 +163,7 @@ cat > "$TMP/bin/cargo" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$*" == "--version" ]]; then
-  printf 'cargo 1.95.0 (0000000000 2026-01-01)\n'
+  printf 'cargo 1.100.0 (0000000000 2026-01-01)\n'
   exit 0
 fi
 printf '%s\n' "$*" > "${ADMISSION_LOG}"

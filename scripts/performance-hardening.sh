@@ -46,7 +46,7 @@ print_status "INFO" "Running performance benchmarks..."
 # Check if criterion is available for benchmarking
 if cargo bench --help >/dev/null 2>&1; then
     print_status "INFO" "Running cargo benchmarks..."
-    if cargo bench --no-run 2>/dev/null; then
+    if cargo bench --features perl-lsp-rs/benchmarks --no-run 2>/dev/null; then
         print_status "OK" "Benchmarks can be compiled successfully"
     else
         print_status "WARN" "Benchmark compilation failed"
@@ -227,7 +227,7 @@ if [ -f "$BASELINE_FILE" ]; then
     print_status "OK" "Found baseline benchmark file: $BASELINE_FILE"
     
     # Check if we can run benchmarks
-    if cargo bench --no-run 2>/dev/null; then
+    if cargo bench --features perl-lsp-rs/benchmarks --no-run 2>/dev/null; then
         print_status "INFO" "Benchmarks can be executed for validation"
     else
         print_status "WARN" "Benchmarks cannot be executed"
@@ -333,6 +333,6 @@ print_status "OK" "Production hardening performance script completed successfull
 echo ""
 echo "Next steps:"
 echo "1. Review and address any WARNINGS above"
-echo "2. Run performance benchmarks: cargo bench"
+echo "2. Run performance benchmarks: cargo bench --features perl-lsp-rs/benchmarks"
 echo "3. Validate against baselines: scripts/benchmarks/compare.sh"
 echo "4. Check performance report: $REPORT_FILE"

@@ -246,7 +246,7 @@ def validate_static_contract(source: list[str]) -> None:
     # its step's command text is longer than the command. `field` already
     # drops comment lines, so a command named only in prose still fails here.
     commands = [field(step, "run", 8) or "" for step in workflow_steps(seed)]
-    for command in ('cargo install ripr --version "$RIPR_VERSION" --locked',
+    for command in ('cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked',
                     'cargo build -p xtask --locked',
                     # #16126: the seed must actually produce the fact cache it
                     # saves. Without this the save step stores an empty
@@ -601,7 +601,7 @@ class RiprCacheAuthorityTests(unittest.TestCase):
                 1,
             ),
         }
-        for command in ('cargo install ripr --version "$RIPR_VERSION" --locked',
+        for command in ('cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked',
                         'cargo build -p xtask --locked',
                         SEED_SCAN):
             mutations[f"seed omits {command}"] = text.replace(
@@ -630,8 +630,8 @@ class RiprCacheAuthorityTests(unittest.TestCase):
             "", 1
         )
         mutations["fact cache path returns to a job-level env"] = text.replace(
-            "    env:\n      RIPR_VERSION: \"0.10.0\"\n",
-            "    env:\n      RIPR_VERSION: \"0.10.0\"\n"
+            "    env:\n      RIPR_VERSION: \"0.11.0\"\n",
+            "    env:\n      RIPR_VERSION: \"0.11.0\"\n"
             "      RIPR_CACHE_DIR: ${{ runner.temp }}/ripr-facts\n", 1
         )
         mutations["self-hosted lane loses its durable fact cache path"] = text.replace(

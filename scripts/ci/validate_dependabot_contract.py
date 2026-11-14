@@ -913,15 +913,40 @@ def _inspect_patch_query(path: str, text: str) -> list[Finding]:
 
 def _inspect_master_mentions(path: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
-    for match in re.finditer(r"`master`|\bmaster\b", text):
-        window = text[max(0, match.start() - 180) : match.end() + 80]
-        if re.search(r"EffortlessMetrics/perl-lsp(?!-swarm)", window):
+    # Recognize the documented command, not a repository name somewhere nearby.
+    # Only its branch argument is exempt; separate prose/commands still get checked.
+    # Keep this a bounded docs check, not a general shell-command parser.
+    gap = r"(?:[ \t]|\\\r?\n)+"
+    public_command = re.compile(
+        rf"(?m)(?:^|[`;&|])[ \t]*gh{gap}pr{gap}create{gap}"
+        rf"--repo{gap}EffortlessMetrics/perl-lsp{gap}--base{gap}"
+        r"(?P<branch>master)(?=[ \t]*(?:$|[`;&|#]))"
+    )
+    public_branches = {match.span("branch") for match in public_command.finditer(text)}
+    # The front door also spells the same instruction as a linked repository
+    # followed by "on `master`". Bind that exception to its branch token too.
+    public_prose = re.compile(
+        r"\[`EffortlessMetrics/perl-lsp`\]"
+        r"\(https://github\.com/EffortlessMetrics/perl-lsp\)\s+"
+        r"on[ \t]+(?P<branch>`master`)"
+    )
+    public_branches.update(match.span("branch") for match in public_prose.finditer(text))
+    for match in re.finditer(
+        r"(?:(?:EffortlessMetrics/)?perl-lsp/)?(`master`|\bmaster\b)", text
+    ):
+        if "perl-lsp/" in match.group(0):
+            # The matched occurrence is itself the qualified public branch
+            # `perl-lsp/master`. The exception binds to the match, not to
+            # whatever else happens to sit in the surrounding text, so a
+            # nearby unqualified swarm instruction is still rejected.
+            continue
+        if match.span() in public_branches:
             continue
         findings.append(
             Finding(
                 "master-as-default-branch",
                 path,
-                "master is rejected where the instruction means this repository's default branch",
+                "unqualified master is rejected where the instruction means the swarm repository's default branch",
             )
         )
         break

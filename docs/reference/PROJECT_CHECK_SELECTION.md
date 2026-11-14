@@ -118,7 +118,7 @@ executor transport proof remain separate.
 Use Python 3.10 or newer with the repository's existing `jsonschema` development
 dependency.
 Build only `perllsp --bin perllsp --profile agent --locked` through the pinned
-1.95.0 admitted route after exact-request host admission. Hold the root build
+1.100.0 admitted route after exact-request host admission. Hold the root build
 lane through capturing an immutable executable; never consume sibling output.
 
 ```bash

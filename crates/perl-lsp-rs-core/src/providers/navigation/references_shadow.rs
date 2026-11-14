@@ -523,8 +523,10 @@ fn references_trace_shape(
             Provenance::FrameworkSynthesis,
             fallback_state,
         ),
+        // Import/export and pragma inference are AST/workspace-index derived (#3046):
+        // they must not serialize as compiler/PIR producer identity.
         Provenance::ImportExportInference | Provenance::PragmaInference => {
-            (ProviderFactSourceKind::CompilerFact, occurrence.provenance, fallback_state)
+            (ProviderFactSourceKind::SemanticFact, occurrence.provenance, fallback_state)
         }
         Provenance::NameHeuristic | Provenance::SearchFallback => (
             ProviderFactSourceKind::Fallback,
@@ -1144,7 +1146,7 @@ mod tests {
     }
 
     #[test]
-    fn references_compiler_shadow_traces_import_export_occurrence()
+    fn references_semantic_shadow_traces_import_export_occurrence()
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let occ = make_occurrence(
@@ -1167,11 +1169,53 @@ mod tests {
 
         assert!(result.legacy_result.is_empty());
         assert_eq!(trace.surface, ProviderSurface::References);
-        assert_eq!(trace.source, ProviderFactSourceKind::CompilerFact);
+        assert_eq!(trace.source, ProviderFactSourceKind::SemanticFact);
         assert_eq!(trace.provenance, Provenance::ImportExportInference);
         assert_eq!(trace.confidence, Confidence::High);
         assert_eq!(trace.freshness, ProviderFactFreshness::Fresh);
         assert_eq!(trace.fallback_state, ProviderFallbackState::Shadow);
+        Ok(())
+    }
+
+    #[test]
+    fn references_trace_shape_never_labels_ast_inference_as_compiler_fact() {
+        for provenance in [Provenance::ImportExportInference, Provenance::PragmaInference] {
+            let occurrence =
+                make_occurrence(1, 10, 20, OccurrenceKind::Reference, provenance, Confidence::High);
+            let (source, _, _) =
+                references_trace_shape(&occurrence, ProviderFallbackState::Primary);
+            assert_eq!(
+                source,
+                ProviderFactSourceKind::SemanticFact,
+                "{provenance:?} must not serialize as compiler producer identity (#3046)"
+            );
+        }
+    }
+
+    #[test]
+    fn references_semantic_shadow_traces_pragma_inference_occurrence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let occ = make_occurrence(
+            5,
+            50,
+            60,
+            OccurrenceKind::Reference,
+            Provenance::PragmaInference,
+            Confidence::High,
+        );
+        let queries = StubSemanticQueries::new(vec![occ]);
+
+        let result = find_references_shadow(
+            index.find_references("pragma_target"),
+            &queries,
+            "pragma_target",
+            EntityId(60),
+        );
+        let trace = first_trace(&result.receipt)?;
+
+        assert_eq!(trace.source, ProviderFactSourceKind::SemanticFact);
+        assert_eq!(trace.provenance, Provenance::PragmaInference);
         Ok(())
     }
 
@@ -1430,7 +1474,7 @@ mod tests {
         assert!(note.contains("import_export_fallbacks=0"));
         assert!(note.contains("partial live exact/imported references cutover"));
         let trace = first_trace(&outcome.receipt)?;
-        assert_eq!(trace.source, ProviderFactSourceKind::CompilerFact);
+        assert_eq!(trace.source, ProviderFactSourceKind::SemanticFact);
         assert_eq!(trace.fallback_state, ProviderFallbackState::Primary);
         Ok(())
     }

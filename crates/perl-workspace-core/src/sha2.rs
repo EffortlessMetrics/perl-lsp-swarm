@@ -143,12 +143,12 @@ fn sha256(input: &[u8]) -> [u8; 32] {
     message.extend_from_slice(&bit_len.to_be_bytes());
 
     let mut state = INITIAL_STATE;
-    for block in message.chunks_exact(64) {
+    for block in message.as_chunks::<64>().0 {
         compress(&mut state, block);
     }
 
     let mut output = [0u8; 32];
-    for (chunk, word) in output.chunks_exact_mut(4).zip(state) {
+    for (chunk, word) in output.as_chunks_mut::<4>().0.iter_mut().zip(state) {
         chunk.copy_from_slice(&word.to_be_bytes());
     }
     output

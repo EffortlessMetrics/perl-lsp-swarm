@@ -135,5 +135,99 @@ class AppBindingContractTests(unittest.TestCase):
         self.assertNotEqual(canonical_digest(first), canonical_digest(second))
 
 
+
+class ReporterBindingTests(unittest.TestCase):
+    def binding(self, **changes):
+        return dict(kind="check-run", app_id=15368,
+                    obligation_ids=["gate-a", "gate-b"], coverage_complete=True, **changes)
+
+    def entry(self, binding):
+        return required_entry("github-ruleset", ruleset_integration_id=15368,
+                              reporter_binding=binding)
+
+    def test_explicit_check_run_binding_and_legacy_creator_are_separate(self):
+        self.assertEqual(set(), finding_codes(self.entry(self.binding())))
+        legacy = required_entry("neither", required=False, policy_role="advisory",
+            reporter_binding=dict(kind="legacy-status", creator_id=777,
+                obligation_ids=["external-a"], coverage_complete=True))
+        self.assertEqual(set(), finding_codes(legacy))
+        legacy["reporter_binding"]["app_id"] = 777
+        self.assertIn("invalid_reporter_binding", finding_codes(legacy))
+
+    def test_missing_fields_wrong_types_and_incomplete_coverage_refuse(self):
+        for field in self.binding():
+            binding=self.binding();del binding[field]
+            with self.subTest(missing=field):
+                self.assertIn("invalid_reporter_binding", finding_codes(self.entry(binding)))
+        for field, values in {
+            "kind": [None, [], "unknown"], "app_id": [True, 0, -1, "15368"],
+            "obligation_ids": [None, [], [""], [" x"], [1], ["x", "x"]],
+            "coverage_complete": [False, None, 1, "true"],
+        }.items():
+            for value in values:
+                binding=self.binding();binding[field]=value
+                with self.subTest(field=field,value=value):
+                    self.assertIn("invalid_reporter_binding", finding_codes(self.entry(binding)))
+
+    def test_conflicting_identity_unknown_fields_and_wrong_app_refuse(self):
+        for changes in ({"creator_id":777},{"app_id":777},{"unexpected":"x"}):
+            binding=self.binding();binding.update(changes)
+            self.assertIn("invalid_reporter_binding", finding_codes(self.entry(binding)))
+        entry=self.entry(self.binding());entry["classic_app_id"]=999
+        self.assertIn("invalid_reporter_binding", finding_codes(entry))
+
+    def test_absence_retains_old_contract_without_claiming_provenance(self):
+        entry=required_entry("github-ruleset",ruleset_integration_id=15368)
+        self.assertEqual(set(),finding_codes(entry))
+        self.assertNotIn("reporter_binding",contract._canonical_context(entry))
+        for binding in (None, [], False):
+            self.assertIn("invalid_reporter_binding",finding_codes(self.entry(binding)))
+
+    def test_legacy_cannot_borrow_app_binding_or_repository_job(self):
+        binding=dict(kind="legacy-status",creator_id=15368,
+            obligation_ids=["a"],coverage_complete=True)
+        self.assertIn("invalid_reporter_binding",finding_codes(self.entry(binding)))
+        entry=required_entry("neither",required=False,policy_role="advisory",
+            producer="repository-job",reporter_binding=binding)
+        self.assertIn("invalid_reporter_binding",finding_codes(entry))
+
+    def test_canonical_coverage_order_and_identity_movement(self):
+        entry=self.entry(self.binding());before=canonical_digest(entry)
+        entry["reporter_binding"]["obligation_ids"].reverse()
+        self.assertEqual(before,canonical_digest(entry))
+        for field,value in (("app_id",777),("obligation_ids",["gate-a"]),
+                            ("coverage_complete",False),("kind","legacy-status")):
+            other=self.binding();other[field]=value
+            self.assertNotEqual(before,canonical_digest(self.entry(other)))
+        self.assertEqual(["gate-b","gate-a"],entry["reporter_binding"]["obligation_ids"])
+
+    def test_real_git_fixture_binds_complete_declaration_to_semantic_subject(self):
+        import tempfile
+        from scripts.ci.test_validate_gate_enforcement_contract import fixture, REQUIRED
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            policy=fixture(root, REQUIRED + '\n[checks.reporter_binding]\n'
+                'kind="check-run"\napp_id=15368\n'
+                'obligation_ids=["gate-b","gate-a"]\ncoverage_complete=true\n')
+            result=contract.validate(root,policy)
+            self.assertEqual("SUCCESS",result["status"])
+            self.assertEqual("NOT_PROVEN",result["live_enforcement_status"])
+            binding=result["semantic_subject"]["contexts"][0]["reporter_binding"]
+            self.assertEqual(["gate-a","gate-b"],binding["obligation_ids"])
+            policy.write_text(policy.read_text().replace('"gate-b","gate-a"','"gate-a"'))
+            # Commit the isolated fixture change: validate() refuses dirty trees.
+            import subprocess
+            subprocess.run(["git","-C",str(root),"add","--",str(policy)],check=True,capture_output=True)
+            subprocess.run(["git","-C",str(root),"commit","-qm","change coverage"],check=True,capture_output=True)
+            changed=contract.validate(root,policy)
+            self.assertEqual("SUCCESS",changed["status"])
+            self.assertNotEqual(result["subject_sha256"],changed["subject_sha256"])
+
+    def test_duplicate_toml_binding_is_not_silently_overwritten(self):
+        import tomllib
+        with self.assertRaises(tomllib.TOMLDecodeError):
+            tomllib.loads('reporter_binding={kind="check-run",app_id=1,app_id=2}')
+
+
 if __name__ == "__main__":
     unittest.main()

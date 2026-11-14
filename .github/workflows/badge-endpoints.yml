@@ -22,6 +22,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.source_sha || github.sha }}
+  RIPR_VERSION: "0.11.0"
+  RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
+  RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
 
 jobs:
   generate:
@@ -62,7 +65,7 @@ jobs:
 
       - name: Set up manual RIPR producer
         if: github.event_name == 'workflow_dispatch'
-        run: cargo install ripr --version 0.10.0 --locked
+        run: cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
       - name: Refresh badge endpoints
         env:
