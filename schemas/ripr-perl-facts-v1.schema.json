@@ -35,7 +35,8 @@
     },
     "packet_status": {
       "type": "string",
-      "enum": ["complete", "partial", "unavailable"]
+      "description": "Producer lifecycle: `unavailable` when no fact arrays are populated; upgrades to `partial` when any requested fact exists. The producer never emits `complete` — open-ended classes such as dynamic boundaries are not exhaustively enumerable.",
+      "enum": ["partial", "unavailable"]
     },
     "packet_fingerprint": {
       "type": ["string", "null"]
