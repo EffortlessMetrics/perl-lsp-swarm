@@ -2261,7 +2261,7 @@ impl DebugAdapter {
                                         // configurationDone handler will publish it only after
                                         // correlating the engine installation.
                                         s.state = DebugState::Stopped;
-                                        s.reader_stop_epoch += 1;
+                                        s.reader_stop_epoch = s.reader_stop_epoch.saturating_add(1);
                                         s.last_resume_mode = ResumeMode::Unknown;
                                         continue;
                                     }
@@ -2320,7 +2320,8 @@ impl DebugAdapter {
                                         } else if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
                                             s.state = DebugState::Stopped;
-                                            s.reader_stop_epoch += 1;
+                                            s.reader_stop_epoch =
+                                                s.reader_stop_epoch.saturating_add(1);
                                         } else if breakpoint_outcome.matched {
                                             logpoint_messages = breakpoint_outcome.log_messages;
 
@@ -2404,7 +2405,8 @@ impl DebugAdapter {
                                             if breakpoint_outcome.should_stop {
                                                 stop_reason = "breakpoint".to_string();
                                                 s.state = DebugState::Stopped;
-                                                s.reader_stop_epoch += 1;
+                                                s.reader_stop_epoch =
+                                                    s.reader_stop_epoch.saturating_add(1);
                                             } else {
                                                 if let Some(stdin) = s.process.stdin.as_mut() {
                                                     let _ = stdin.write_all(b"c\n");
@@ -2431,7 +2433,8 @@ impl DebugAdapter {
                                             should_auto_continue = true;
                                         } else {
                                             s.state = DebugState::Stopped;
-                                            s.reader_stop_epoch += 1;
+                                            s.reader_stop_epoch =
+                                                s.reader_stop_epoch.saturating_add(1);
                                         }
 
                                         if !should_auto_continue {
@@ -2648,7 +2651,7 @@ impl DebugAdapter {
                                         let entry_stop = s.entry_stop_pending;
                                         s.entry_stop_pending = false;
                                         s.state = DebugState::Stopped;
-                                        s.reader_stop_epoch += 1;
+                                        s.reader_stop_epoch = s.reader_stop_epoch.saturating_add(1);
                                         should_emit_stopped = true;
                                         if entry_stop {
                                             stop_reason = "entry".to_string();

@@ -495,6 +495,11 @@ fn dap_helper_command_error(command: &str) -> Option<String> {
 
     let separator = tokens.iter().position(|token| *token == "&&")?;
     let helper_tokens = &tokens[separator + 1..];
+    if !helper_tokens.starts_with(&["env", "PERL_LSP_DAP_REQUIRE_PERL=1"]) {
+        return Some(
+            "DAP helper command must fail closed when no interpreter can run (#18536)".to_string(),
+        );
+    }
 
     // Cargo's `--` boundary: everything after the first standalone `--` is
     // harness arguments, not package/target selection. Selectors are only
@@ -571,6 +576,8 @@ fn dap_support_gate_binds_all_helper_targets_and_propagates_failures()
     if let Some(error) = dap_helper_command_error(&gate.command) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error).into());
     }
+    let without_strict_perl = gate.command.replace("env PERL_LSP_DAP_REQUIRE_PERL=1 ", "");
+    assert!(dap_helper_command_error(&without_strict_perl).is_some());
 
     for target in DAP_HELPER_TARGETS {
         let mutated = gate.command.replacen(&format!(" --test {target}"), "", 1);
