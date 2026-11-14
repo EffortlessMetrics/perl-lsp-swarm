@@ -200,30 +200,63 @@ impl<'a> TriviaScanner<'a> {
 
     fn is_pod_start(&self, offset: usize) -> bool {
         let remaining = &self.source[offset..];
-        !Self::is_pod_end_marker(remaining)
-            && remaining
-                .strip_prefix('=')
-                .and_then(|rest| rest.chars().next())
-                .is_some_and(|command| command.is_ascii_alphabetic())
+        if Self::is_cut_directive(remaining) {
+            return true;
+        }
+        remaining
+            .strip_prefix('=')
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|command| command.is_ascii_alphabetic())
     }
 
-    fn is_pod_end_marker(remaining: &str) -> bool {
-        remaining
-            .strip_prefix("=cut")
-            .is_some_and(|rest| rest.chars().next().is_none_or(char::is_whitespace))
+    /// True when `remaining` starts with a word-bounded `=cut` POD directive.
+    ///
+    /// `=cut` and `=cut;` are directives; `=cutlery` and `=cut_x` are distinct commands.
+    fn is_cut_directive(remaining: &str) -> bool {
+        remaining.as_bytes().starts_with(b"=cut")
+            && remaining.as_bytes().get(4).is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_')
+    }
+
+    fn line_start_after(&self, offset: usize) -> usize {
+        let bytes = self.source.as_bytes();
+        let mut index = offset;
+        while index < bytes.len() && bytes[index] != b'\n' && bytes[index] != b'\r' {
+            index += 1;
+        }
+        if index < bytes.len() && bytes[index] == b'\r' {
+            index += 1;
+            if index < bytes.len() && bytes[index] == b'\n' {
+                index += 1;
+            }
+        } else if index < bytes.len() && bytes[index] == b'\n' {
+            index += 1;
+        }
+        index
     }
 
     fn find_pod_end(&self, start: usize) -> usize {
         let bytes = self.source.as_bytes();
-        let mut position = start;
+        let mut search_start = start;
+        if Self::is_cut_directive(&self.source[start..]) {
+            search_start = self.line_start_after(start);
+        }
+        let mut position = search_start;
 
         while position < self.source.len() {
-            if self.at_line_start(position) && Self::is_pod_end_marker(&self.source[position..]) {
+            if self.at_line_start(position) && Self::is_cut_directive(&self.source[position..]) {
                 position += 4;
-                while position < self.source.len() && bytes[position] != b'\n' {
+                while position < self.source.len()
+                    && bytes[position] != b'\n'
+                    && bytes[position] != b'\r'
+                {
                     position += 1;
                 }
-                if position < self.source.len() {
+                if position < self.source.len() && bytes[position] == b'\r' {
+                    position += 1;
+                    if position < self.source.len() && bytes[position] == b'\n' {
+                        position += 1;
+                    }
+                } else if position < self.source.len() && bytes[position] == b'\n' {
                     position += 1;
                 }
                 return position;
@@ -232,6 +265,46 @@ impl<'a> TriviaScanner<'a> {
         }
 
         self.source.len()
+    }
+}
+
+#[cfg(test)]
+mod stray_cut_pod_tests {
+    use super::{TriviaParseOutput, TriviaPreservingParser};
+    use crate::trivia::Trivia;
+
+    fn pod_text(output: &TriviaParseOutput) -> Option<&str> {
+        output.trivia.iter().find_map(|token| {
+            if let Trivia::PodComment(text) = &token.trivia { Some(text.as_str()) } else { None }
+        })
+    }
+
+    #[test]
+    fn stray_cut_at_statement_start_opens_pod_to_eof() {
+        let source = "print 1;\n=cut\nDoc\n".to_string();
+        let output = TriviaPreservingParser::new(source).parse();
+        let pod = pod_text(&output).expect("stray =cut must produce PodComment trivia");
+        assert_eq!(pod, "=cut\nDoc\n");
+    }
+
+    #[test]
+    fn stray_cut_opens_pod_until_the_next_cut_directive() {
+        let source = "print 1;\n=cut\nDoc\n=cut\nmore();\n".to_string();
+        let output = TriviaPreservingParser::new(source).parse();
+        let pod = pod_text(&output).expect("stray =cut must produce PodComment trivia");
+        assert_eq!(pod, "=cut\nDoc\n=cut\n");
+    }
+
+    #[test]
+    fn cutlery_does_not_terminate_stray_cut_pod_block() {
+        let source = "print 1;\n=cut\n=cutlery\nstill pod\n=cut\n".to_string();
+        let output = TriviaPreservingParser::new(source).parse();
+        let pod = pod_text(&output).expect("stray =cut must produce PodComment trivia");
+        assert!(
+            pod.contains("=cutlery\nstill pod"),
+            "cutlery must remain inside the POD block: {pod:?}"
+        );
+        assert!(pod.ends_with("=cut\n"), "pod must end at the real =cut: {pod:?}");
     }
 }
 
