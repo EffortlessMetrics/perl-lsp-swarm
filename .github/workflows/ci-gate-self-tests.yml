@@ -41,6 +41,13 @@ on:
       # Ordinary doctor entrypoint regressions (#8639, landed in #17556).
       - 'scripts/tests/test_just_doctor.py'
       - 'scripts/ci/test_just_doctor_workflow.py'
+      # Maintained hook bootstrap and its advisory proof-pack declaration.
+      - 'scripts/install-githooks.sh'
+      - 'scripts/check-githooks.sh'
+      - 'scripts/githooks-bootstrap.sh'
+      - 'scripts/tests/test-install-githooks-wrapper.sh'
+      - 'scripts/tests/test_githooks_bootstrap.py'
+      - '.ci/coverage-packs.toml'
       - 'scripts/cargo_allow_cadence.py'
       - 'scripts/tests/test_cargo_allow_cadence.py'
       - 'scripts/cargo-package-workspace-dry-run.sh'
@@ -725,7 +732,8 @@ jobs:
           just --version
           git --version
           bash --version
-          python3 -B -m unittest scripts.tests.test_just_doctor scripts.ci.test_just_doctor_workflow -v
+          bash scripts/tests/test-install-githooks-wrapper.sh
+          python3 -B -m unittest scripts.tests.test_githooks_bootstrap scripts.tests.test_just_doctor scripts.ci.test_just_doctor_workflow -v
 
       - name: Summary
         if: always()
