@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Fixed
+body: Perltidy setup checks now distinguish missing-command errors from failed probes and give diagnostic guidance instead of claiming every failure means perltidy is absent. Native formatting remains independent of perltidy.
+time: 2026-10-16T04:44:00Z
+custom:
+  PR: 17989
+  Slug: perltidy-setup-feedback
+  Breaking: "no"

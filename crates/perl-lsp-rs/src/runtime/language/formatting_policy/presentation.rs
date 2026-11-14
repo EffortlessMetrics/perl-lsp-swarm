@@ -404,8 +404,8 @@ fn outcome_contract_violation(
 mod tests {
     use super::*;
     use perl_lsp_rs_core::tooling::perltidy::native::{
-        FormatChangeSummary, FormatEvidenceState, FormatIdentity, FormatLineEndingDisposition,
-        FormatRequestTarget, FormatSafetyEvidence, FormatterMode,
+        FormatChangeSummary, FormatEvidenceState, FormatExecutionStrategy, FormatIdentity,
+        FormatLineEndingDisposition, FormatRequestTarget, FormatSafetyEvidence, FormatterMode,
     };
 
     fn minimal_outcome(disposition: FormatDisposition, reason: FormatReasonCode) -> FormatOutcome {
@@ -421,6 +421,7 @@ mod tests {
                 config_fingerprint: "cfg-1".to_string(),
             },
             target: FormatRequestTarget::Document,
+            execution: FormatExecutionStrategy::NativeDocument,
             change: FormatChangeSummary {
                 edit_count: 0,
                 source_bytes_changed: 0,
@@ -471,6 +472,12 @@ mod tests {
             }
             _ => FormatDisposition::Refused,
         }
+    }
+
+    #[test]
+    fn minimal_outcome_records_the_native_document_execution_strategy() {
+        let outcome = minimal_outcome(FormatDisposition::Applied, FormatReasonCode::Applied);
+        assert_eq!(outcome.execution, FormatExecutionStrategy::NativeDocument);
     }
 
     #[test]

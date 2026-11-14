@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Security
-body: "include_paths set via a workspace's own .perl-lsp.toml are now rejected (with a visible warning) when absolute or when they resolve outside the workspace, instead of being silently honored — closing a path-traversal vector where a hostile cloned repository could redirect module resolution to read files outside the workspace during hover/go-to-definition."
-time: 2026-07-25T12:46:57Z
-custom:
-  PR: "4991"
-  Slug: reject-untrusted-toml-include-paths
-  Breaking: "no"

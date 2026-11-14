@@ -354,6 +354,12 @@ formatter = { command = "perltidy", args = ["-q"] }
 
 That is a separate integration path from `perllsp` document formatting.
 
+## Competing Perl tooling
+
+Helix does not run the VS Code coexistence detector. Use `perllsp --health`, your
+editor configuration, and [Competing Perl tooling (coexistence)](COEXISTENCE.md) for
+honest overlap guidance without inventing automatic conflict detection.
+
 ## Troubleshooting
 
 ### `perllsp` does not start
