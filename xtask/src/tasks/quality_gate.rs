@@ -214,8 +214,12 @@ fn evaluate(
             "PR comparison requires exact evaluated checkout and head-bound repository-wide RIPR proof"
         );
     }
+    let mut subject_receipts = vec![&args.ripr_pr_receipt];
+    if !matches!(args.mode, QualityGateMode::EnforceNewRipr) {
+        subject_receipts.push(&args.review_receipt);
+    }
     if args.ripr_pr_head.is_some() {
-        for path in [&args.ripr_pr_receipt, &args.review_receipt] {
+        for path in subject_receipts.iter().copied() {
             let packet: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
             super::ripr_evidence::validate_comparison_subject(&packet, subject.as_ref())?;
             if packet.get("base_sha") != subject.as_ref().map(|s| &s["event_base_sha"])
@@ -227,7 +231,7 @@ fn evaluate(
             }
         }
     } else {
-        for path in [&args.ripr_pr_receipt, &args.review_receipt] {
+        for path in subject_receipts {
             if let Ok(text) = fs::read_to_string(path)
                 && let Ok(packet) = serde_json::from_str::<Value>(&text)
                 && (packet.get("comparison_subject").is_some()
@@ -402,6 +406,7 @@ fn evaluate_final(
             "expected_head_sha": head,
             "base": ripr_pr.base,
             "base_sha": ripr_pr.base_sha,
+            "analysis_outcome": ripr_pr.analysis_outcome,
             "new_unresolved": ripr_pr.new_unresolved,
             "non_production_excluded": ripr_pr.non_production_excluded,
             "static_limitation_cleared": clearing.applied.len(),
@@ -574,11 +579,11 @@ fn evaluate_new_ripr(
     if ripr_pr.status != "present" {
         next_actions.push(ripr_pr_receipt_action(&ripr_pr, head, args));
     }
-    let review_receipt_blocks_without_new_gaps =
-        matches!(review.status.as_str(), "missing" | "invalid" | "invalid_schema" | "stale");
-    if review_receipt_blocks_without_new_gaps {
-        next_actions.push(ripr_review_receipt_action(&review, head, args));
-    }
+    // `ripr check` owns the required verdict. Review guidance is advisory:
+    // missing, stale, malformed, timed-out, or oversized guidance stays visible
+    // in the receipt but cannot turn a complete zero-gap raw check red (#19240).
+    // Required-scope partial analysis is NOT_PROVEN and blocks. A bounded,
+    // named non-Rust scope limitation stays visible without weakening that proof.
 
     // Applied static-limitation credit for this evaluation. Defaults to zero:
     // arms that never run the clearing (unknown or zero count) must not
@@ -596,22 +601,14 @@ fn evaluate_new_ripr(
                         &clearing.applied,
                         args,
                     ));
-                    // An incomplete receipt that still names actionable seams
-                    // (#10054 fallback) is sufficient for the gate to fail on named
-                    // evidence; only nameless degradation blocks on the receipt.
-                    // A producer-classified static_limitation item is also named
-                    // evidence (#15630): it cannot become a repair packet, but it
-                    // proves the receipt names the seams it counts.
-                    let review_names_gaps = review.status == "present"
-                        || (review.status == "incomplete"
-                            && (!review.top_gaps.is_empty()
-                                || !review.static_limitation_gaps.is_empty()));
-                    if review.status == "present" {
-                        if review.top_gaps.is_empty() && review.static_limitation_gaps.is_empty() {
-                            next_actions.push(ripr_review_guidance_gap_action(&review, head, args));
-                        }
-                    } else if !review_names_gaps && !review_receipt_blocks_without_new_gaps {
-                        next_actions.push(ripr_review_receipt_action(&review, head, args));
+                    // The raw gap count is already blocking. Completed guidance
+                    // may add named seams or earned static-limitation credit, but
+                    // an absent or incomplete advisory pass adds no second blocker.
+                    if review.status == "present"
+                        && review.top_gaps.is_empty()
+                        && review.static_limitation_gaps.is_empty()
+                    {
+                        next_actions.push(ripr_review_guidance_gap_action(&review, head, args));
                     }
                 } else {
                     next_actions
@@ -654,6 +651,7 @@ fn evaluate_new_ripr(
             "expected_head_sha": head,
             "base": ripr_pr.base,
             "base_sha": ripr_pr.base_sha,
+            "analysis_outcome": ripr_pr.analysis_outcome,
             "new_unresolved": ripr_pr.new_unresolved,
             "non_production_excluded": ripr_pr.non_production_excluded,
             "static_limitation_cleared": clearing.applied.len(),
@@ -721,6 +719,9 @@ struct RiprPrReceipt {
     receipt_head_sha: Option<String>,
     base: Option<String>,
     base_sha: Option<String>,
+    /// Raw `ripr check` completeness, including its typed limitations. This
+    /// stays visible regardless of whether advisory review guidance completed.
+    analysis_outcome: Option<Value>,
     new_unresolved: Option<u64>,
     /// Seams the producer dropped from the basis as non-production (#11690):
     /// `archive/**` sources and Cargo integration-test files. Surfaced so a
@@ -1462,6 +1463,52 @@ fn genuine_new_ripr_gap_count(payload: &Value) -> Option<u64> {
     }
 }
 
+fn limitation_touches_rust_path(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.to_ascii_lowercase().contains(".rs"),
+        Value::Array(values) => values.iter().any(limitation_touches_rust_path),
+        Value::Object(fields) => fields.values().any(limitation_touches_rust_path),
+        _ => false,
+    }
+}
+
+fn bounded_non_rust_scope_limitation(limitation: &Value) -> bool {
+    let kind = limitation.get("kind").and_then(Value::as_str);
+    if !matches!(kind, Some("language_scope_unsupported" | "language_adapter_unavailable")) {
+        return false;
+    }
+    if limitation_touches_rust_path(limitation) {
+        return false;
+    }
+    let explicit_non_rust_path = kind == Some("language_scope_unsupported")
+        && ["path", "file", "file_path"].into_iter().any(|key| {
+            limitation.get(key).and_then(Value::as_str).is_some_and(|path| !path.is_empty())
+        });
+    let bounded_python_preview =
+        limitation.get("bounded_detail").and_then(Value::as_str).is_some_and(|detail| {
+            let detail = detail.to_ascii_lowercase();
+            detail.contains("python")
+                && detail.contains("preview adapter")
+                && (detail.contains("not enabled") || detail.contains("not available"))
+        });
+    explicit_non_rust_path || bounded_python_preview
+}
+
+fn required_scope_incomplete(payload: &Value) -> bool {
+    if payload.pointer("/analysis_outcome/outcome/kind").and_then(Value::as_str)
+        == Some("partial_with_limitations")
+    {
+        let limitations =
+            payload.pointer("/analysis_outcome/outcome/limitations").and_then(Value::as_array);
+        return limitations.is_none_or(|limitations| {
+            limitations.is_empty() || !limitations.iter().all(bounded_non_rust_scope_limitation)
+        });
+    }
+    payload.get("status").and_then(Value::as_str) == Some("incomplete")
+        || payload.pointer("/analysis_outcome/analysis_complete").and_then(Value::as_bool)
+            == Some(false)
+}
+
 fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
     match read_json_receipt(path) {
         JsonReceipt::Missing => RiprPrReceipt {
@@ -1469,6 +1516,7 @@ fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
             receipt_head_sha: None,
             base: None,
             base_sha: None,
+            analysis_outcome: None,
             new_unresolved: None,
             non_production_excluded: None,
         },
@@ -1477,6 +1525,7 @@ fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
             receipt_head_sha: None,
             base: None,
             base_sha: None,
+            analysis_outcome: None,
             new_unresolved: None,
             non_production_excluded: None,
         },
@@ -1489,22 +1538,27 @@ fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
                     receipt_head_sha: None,
                     base: None,
                     base_sha: None,
+                    analysis_outcome: None,
                     new_unresolved: None,
                     non_production_excluded: None,
                 };
             }
             let receipt_head_sha =
                 payload.get("head_sha").and_then(Value::as_str).map(ToOwned::to_owned);
-            let status = if receipt_head_sha.as_deref() == Some(expected_head) {
-                "present"
-            } else {
+            let incomplete = required_scope_incomplete(&payload);
+            let status = if receipt_head_sha.as_deref() != Some(expected_head) {
                 "stale"
+            } else if incomplete {
+                "incomplete"
+            } else {
+                "present"
             };
             RiprPrReceipt {
                 status: status.to_string(),
                 receipt_head_sha,
                 base: payload.get("base").and_then(Value::as_str).map(ToOwned::to_owned),
                 base_sha: payload.get("base_sha").and_then(Value::as_str).map(ToOwned::to_owned),
+                analysis_outcome: payload.get("analysis_outcome").cloned(),
                 new_unresolved: genuine_new_ripr_gap_count(&payload),
                 non_production_excluded: payload
                     .pointer("/summary/non_production_excluded")
@@ -2494,6 +2548,26 @@ pub(crate) fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result
             .unwrap_or_else(|| "unknown".to_string());
         markdown.push_str(&format!("- diff RIPR receipt: `{status}`\n"));
         markdown.push_str(&format!("- new RIPR gaps: `{new_unresolved}`\n"));
+        if let Some(kind) =
+            ripr_pr.pointer("/analysis_outcome/outcome/kind").and_then(Value::as_str)
+        {
+            markdown.push_str(&format!("- raw check analysis outcome: `{kind}`\n"));
+        }
+        if let Some(limitations) =
+            ripr_pr.pointer("/analysis_outcome/outcome/limitations").and_then(Value::as_array)
+        {
+            for limitation in limitations {
+                let kind = limitation.get("kind").and_then(Value::as_str).unwrap_or("unknown");
+                let detail = limitation
+                    .get("detail")
+                    .or_else(|| limitation.get("bounded_detail"))
+                    .or_else(|| limitation.get("message"))
+                    .or_else(|| limitation.get("summary"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("producer did not supply limitation detail");
+                markdown.push_str(&format!("- raw check limitation: `{kind}`: {detail}\n"));
+            }
+        }
         if let Some(excluded) = ripr_pr.get("non_production_excluded").and_then(Value::as_u64)
             && excluded > 0
         {
@@ -2521,7 +2595,10 @@ pub(crate) fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result
     }
     if let Some(review) = receipt.get("review_guidance") {
         let status = review.get("status").and_then(Value::as_str).unwrap_or("unknown");
-        markdown.push_str(&format!("- review guidance receipt: `{status}`\n"));
+        markdown.push_str(&format!("- review guidance receipt: `{status}` (advisory)\n"));
+        if let Some(reason) = review.get("unavailable_reason").and_then(Value::as_str) {
+            markdown.push_str(&format!("- review guidance limitation: {reason}\n"));
+        }
     }
     if let Some(exceptions) = receipt.get("temporary_exceptions") {
         let status = exceptions.get("status").and_then(Value::as_str).unwrap_or("unknown");
@@ -3043,6 +3120,103 @@ mod tests {
     }
 
     #[test]
+    fn ripr_pr_receipt_refuses_incomplete_packet_at_matching_head() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "partial-head";
+        let receipt = dir.path().join("repo-exposure.json");
+        write_text(
+            &receipt,
+            &json!({
+                "schema_version": "0.1",
+                "head_sha": head,
+                "status": "incomplete",
+                "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
+            })
+            .to_string(),
+        )?;
+
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "incomplete");
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_pr_receipt_refuses_partial_analysis_touching_rust_path() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "rust-partial-head";
+        let receipt = dir.path().join("repo-exposure.json");
+        write_text(
+            &receipt,
+            &json!({
+                "schema_version": "0.1",
+                "head_sha": head,
+                "status": "incomplete",
+                "analysis_outcome": {
+                    "analysis_complete": false,
+                    "outcome": {
+                        "kind": "partial_with_limitations",
+                        "limitations": [{
+                            "kind": "language_scope_unsupported",
+                            "path": "crates/perl-parser/src/lib.rs"
+                        }]
+                    }
+                },
+                "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
+            })
+            .to_string(),
+        )?;
+
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "incomplete");
+        Ok(())
+    }
+
+    #[test]
+    fn hosted_python_adapter_limitation_is_bounded_but_other_adapters_block() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "hosted-python-preview-head";
+        let receipt = dir.path().join("repo-exposure.json");
+        let mut payload = json!({
+            "schema_version": "0.1",
+            "head_sha": head,
+            "status": "incomplete",
+            "analysis_outcome": {
+                "analysis_complete": false,
+                "outcome": {
+                    "kind": "partial_with_limitations",
+                    "limitations": [{
+                        "affected_items": 5,
+                        "bounded_detail": "python changed 5 file(s), but the preview adapter was not enabled or available",
+                        "kind": "language_adapter_unavailable",
+                        "path": null,
+                        "producer_stage": "language_adapter",
+                        "recovery": {
+                            "detail": "Enable the python preview adapter and re-run the analysis.",
+                            "kind": "enable_language"
+                        }
+                    }]
+                }
+            },
+            "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
+        });
+        write_text(&receipt, &payload.to_string())?;
+
+        // Exact limitation shape returned by RIPR 0.11.0 in run 43551000063.
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "present");
+
+        payload["analysis_outcome"]["outcome"]["limitations"][0]["bounded_detail"] =
+            json!("go adapter was unavailable");
+        write_text(&receipt, &payload.to_string())?;
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "incomplete");
+
+        payload["analysis_outcome"]["outcome"]["limitations"][0]["bounded_detail"] =
+            json!("python changed 5 file(s), but the preview adapter was not enabled or available");
+        payload["analysis_outcome"]["outcome"]["limitations"][0]["recovery"]["detail"] =
+            json!("Re-run analysis for crates/perl-parser/src/lib.rs");
+        write_text(&receipt, &payload.to_string())?;
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "incomplete");
+        Ok(())
+    }
+
+    #[test]
     fn review_guidance_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
         let dir = tempdir()?;
         let head = "schema-head";
@@ -3083,7 +3257,7 @@ mod tests {
     }
 
     #[test]
-    fn new_ripr_gate_blocks_on_invalid_schema_review_receipt() -> Result<()> {
+    fn new_ripr_gate_treats_invalid_schema_review_receipt_as_advisory() -> Result<()> {
         let dir = tempdir()?;
         let head = "schema-head";
         write_gate_inputs(
@@ -3099,25 +3273,31 @@ mod tests {
                 "warnings": []
             }),
         )?;
+        fs::write(
+            dir.path().join("repo-exposure.json"),
+            json!({
+                "schema_version": "0.1",
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-sha",
+                "summary": {
+                    "severe_gaps": 0,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": 0
+                }
+            })
+            .to_string(),
+        )?;
         let args = new_ripr_args(dir.path())?;
 
         let evaluation = evaluate_new_ripr(head, &args, None)?;
 
-        assert!(evaluation.failed);
-        let actions = evaluation
-            .receipt
-            .get("next_actions")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        assert!(
-            actions.iter().any(|action| {
-                action.get("kind").and_then(Value::as_str)
-                    == Some("ripr_review_receipt_not_current")
-                    && action.get("reason").and_then(Value::as_str) == Some("invalid_schema")
-            }),
-            "an invalid_schema review receipt must block the new-gap gate: {actions:?}"
+        assert!(!evaluation.failed, "{:?}", evaluation.receipt["next_actions"]);
+        assert_eq!(
+            evaluation.receipt.pointer("/review_guidance/status"),
+            Some(&json!("invalid_schema"))
         );
+        assert_eq!(evaluation.receipt.pointer("/ripr_pr/new_unresolved"), Some(&json!(0)));
         Ok(())
     }
 
@@ -3740,6 +3920,7 @@ mod tests {
                 receipt_head_sha: None,
                 base: None,
                 base_sha: base_sha.map(ToOwned::to_owned),
+                analysis_outcome: None,
                 new_unresolved: None,
                 non_production_excluded: None,
             }
@@ -4505,7 +4686,7 @@ mod tests {
     }
 
     #[test]
-    fn error_guidance_without_named_seams_keeps_not_proven_blocking() -> Result<()> {
+    fn error_guidance_without_named_seams_blocks_only_on_the_raw_gap() -> Result<()> {
         let dir = tempdir()?;
         let head = "review-head";
         write_gate_inputs(
@@ -4539,10 +4720,106 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(gap.get("gap_list_proven"), Some(&json!(false)));
         assert!(
-            actions.iter().any(|action| action.get("kind").and_then(Value::as_str)
-                == Some("ripr_review_receipt_not_current")),
-            "nameless guidance failure must still block on the receipt: {actions:?}"
+            actions.iter().all(|action| action.get("kind").and_then(Value::as_str)
+                != Some("ripr_review_receipt_not_current")),
+            "advisory guidance failure must not add a second blocker: {actions:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_non_rust_limitation_preserves_zero_gap_result_and_reason() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "review-head";
+        let reason = "review_guidance_oversized: 4554 closure input files exceed the review-guidance ceiling (RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES=1200); the guidance pass was not run to protect runner memory.";
+        for (limitation, expected_detail) in [
+            (
+                json!({
+                    "kind": "language_scope_unsupported",
+                    "bounded_detail": "Python preview adapter is not enabled"
+                }),
+                "Python preview adapter is not enabled",
+            ),
+            (
+                json!({
+                    "affected_items": 5,
+                    "bounded_detail": "python changed 5 file(s), but the preview adapter was not enabled or available",
+                    "kind": "language_adapter_unavailable",
+                    "path": null,
+                    "producer_stage": "language_adapter",
+                    "recovery": {
+                        "detail": "Enable the python preview adapter and re-run the analysis.",
+                        "kind": "enable_language"
+                    }
+                }),
+                "python changed 5 file(s), but the preview adapter was not enabled or available",
+            ),
+        ] {
+            fs::write(
+                dir.path().join("ripr-plus.json"),
+                json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
+            )?;
+            fs::write(
+                dir.path().join("repo-exposure.json"),
+                json!({
+                    "schema_version": "0.1",
+                    "head_sha": head,
+                    "base": "origin/main",
+                    "base_sha": "base-sha",
+                    "analysis_outcome": {
+                        "analysis_complete": false,
+                        "outcome": {
+                            "kind": "partial_with_limitations",
+                            "limitations": [limitation]
+                        }
+                    },
+                    "summary": {
+                        "severe_gaps": 0,
+                        "reachable_unrevealed": 0,
+                        "no_static_path": 0
+                    }
+                })
+                .to_string(),
+            )?;
+            fs::write(
+                dir.path().join("comments.json"),
+                json!({
+                    "schema_version": "0.1",
+                    "head_sha": head,
+                    "status": "incomplete",
+                    "comments": [],
+                    "summary_only": [],
+                    "suppressed": [],
+                    "warnings": [{ "kind": "review_guidance_oversized", "message": reason }]
+                })
+                .to_string(),
+            )?;
+            let args = new_ripr_args(dir.path())?;
+
+            let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+            assert!(
+                !evaluation.failed,
+                "a bounded non-Rust limitation must not block required Rust proof"
+            );
+            assert_eq!(evaluation.receipt["decision"], json!("pass"));
+            assert_eq!(evaluation.receipt.pointer("/ripr_pr/status"), Some(&json!("present")));
+            assert_eq!(
+                evaluation.receipt.pointer("/ripr_pr/analysis_outcome/outcome/kind"),
+                Some(&json!("partial_with_limitations"))
+            );
+            assert_eq!(
+                evaluation.receipt.pointer("/review_guidance/unavailable_reason"),
+                Some(&json!(reason))
+            );
+            assert!(
+                evaluation
+                    .markdown
+                    .contains("raw check analysis outcome: `partial_with_limitations`")
+            );
+            assert!(evaluation.markdown.contains(expected_detail));
+            assert!(evaluation.markdown.contains(reason));
+        }
         Ok(())
     }
 

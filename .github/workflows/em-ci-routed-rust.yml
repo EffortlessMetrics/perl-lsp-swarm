@@ -40,7 +40,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  RUST_VERSION: "1.95.0"
+  RUST_VERSION: "1.100.0"
 
 jobs:
   route-rust-small:
@@ -182,7 +182,7 @@ jobs:
           # require 'docker login'". Routing straight to CX53 (or GH-hosted when CX53
           # is busy) is both cleaner and cheaper until ops restores the CX43 image.
           # Revert: delete this block's CX43 skip and restore the `elif ... emit cx43`
-          # branch (preserved below) once `docker image inspect em-ci-rust:1.95`
+          # branch (preserved below) once `docker image inspect em-ci-rust:1.100`
           # passes on the CX43 host.
           #
           # Prefer CX53 (301 GB volume, ~140 GB free); fall back to GitHub-hosted
@@ -235,7 +235,7 @@ jobs:
           set +e
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
           # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
           rm -rf "$GITHUB_WORKSPACE/target" || true
@@ -288,7 +288,7 @@ jobs:
           ci-disk-guard /mnt/docker 20 || disk_ok=false
           ci-disk-guard /mnt/ci-cache 20 || disk_ok=false
           image_ok=true
-          docker image inspect em-ci-rust:1.95 >/dev/null 2>&1 || image_ok=false
+          docker image inspect em-ci-rust:1.100 >/dev/null 2>&1 || image_ok=false
           df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
           if [ "$disk_ok" = "true" ] && [ "$image_ok" = "true" ]; then
             preflight_ok=true
@@ -301,7 +301,7 @@ jobs:
             exit 1
           fi
           if [ "$image_ok" = "false" ]; then
-            echo "::error::Required Docker image em-ci-rust:1.95 is missing on CX53. Failover job will run on GitHub-hosted."
+            echo "::error::Required Docker image em-ci-rust:1.100 is missing on CX53. Failover job will run on GitHub-hosted."
             exit 1
           fi
           mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
@@ -331,7 +331,7 @@ jobs:
             -v "$CARGO_TARGET_DIR:/target" \
             -v "$TMPDIR:/tmp/jobtmp" \
             -w /workspace \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -eu -o pipefail -c '
               rustc --version
               cargo --version
@@ -359,7 +359,7 @@ jobs:
           docker run --rm \
             -v "$TMPDIR:/tmpdir" \
             -v "$CARGO_TARGET_DIR:/target" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
           rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
           df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
@@ -401,7 +401,7 @@ jobs:
           set +e
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
           # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
           rm -rf "$GITHUB_WORKSPACE/target" || true
@@ -451,7 +451,7 @@ jobs:
           ci-disk-guard /mnt/docker 15 || disk_ok=false
           ci-disk-guard /mnt/ci-cache 15 || disk_ok=false
           image_ok=true
-          docker image inspect em-ci-rust:1.95 >/dev/null 2>&1 || image_ok=false
+          docker image inspect em-ci-rust:1.100 >/dev/null 2>&1 || image_ok=false
           df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
           if [ "$disk_ok" = "true" ] && [ "$image_ok" = "true" ]; then
             preflight_ok=true
@@ -464,7 +464,7 @@ jobs:
             exit 1
           fi
           if [ "$image_ok" = "false" ]; then
-            echo "::error::Required Docker image em-ci-rust:1.95 is missing on CX43. Failover job will run on GitHub-hosted."
+            echo "::error::Required Docker image em-ci-rust:1.100 is missing on CX43. Failover job will run on GitHub-hosted."
             exit 1
           fi
           mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
@@ -494,7 +494,7 @@ jobs:
             -v "$CARGO_TARGET_DIR:/target" \
             -v "$TMPDIR:/tmp/jobtmp" \
             -w /workspace \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -eu -o pipefail -c '
               rustc --version
               cargo --version
@@ -522,7 +522,7 @@ jobs:
           docker run --rm \
             -v "$TMPDIR:/tmpdir" \
             -v "$CARGO_TARGET_DIR:/target" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
           rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
           df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
@@ -608,7 +608,7 @@ jobs:
             echo "Primary runner \`${{ needs.route-rust-small.outputs.target }}\` failed"
             echo "preflight before the Rust lane started. This job ran the full Rust Small"
             echo "contract on GitHub-hosted. Ops: check disk and the"
-            echo "\`em-ci-rust:1.95\` image on the failing runner."
+            echo "\`em-ci-rust:1.100\` image on the failing runner."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

@@ -56,8 +56,8 @@ just pr-fast
 ```
 
 Without Nix, install the pinned toolchain through [rustup](https://rustup.rs/) and
-`cargo install just`. The repository pins Rust channel `1.95.0` in `rust-toolchain.toml`
-and currently requires MSRV 1.95.
+`cargo install just`. The repository pins Rust channel `1.100.0` in `rust-toolchain.toml`
+and currently requires MSRV 1.100.
 
 ---
 

@@ -2,6 +2,7 @@
 name = "perl-workspace-core"
 version = "0.17.0"
 edition = "2024"
+rust-version.workspace = true
 description = "LSP-free project-facts substrate for Perl: files, packages, symbols, dynamic boundaries — with stable IDs, source ranges, provenance, and confidence."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/effortlessmetrics/perl-lsp-swarm"

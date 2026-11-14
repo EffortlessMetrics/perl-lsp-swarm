@@ -2170,6 +2170,10 @@ fn wait_within_cap(
 #[derive(Debug)]
 struct RiprCheckIngestion {
     analysis_base: Option<Value>,
+    /// Producer-owned completeness and typed limitations. Older ripr releases
+    /// do not emit this field, so it remains optional rather than being
+    /// inferred from the finding count.
+    analysis_outcome: Option<Value>,
     summary_counts: RiprPrSummaryCounts,
     /// Mirrors `check_value.get("summary").and_then(Value::as_object).is_some()`:
     /// a `summary` key that is not an object still counts as absent.
@@ -2202,6 +2206,7 @@ fn ripr_check_ingestion_from_file(
     validate_check_findings_array(payload.findings_is_array)?;
     Ok(RiprCheckIngestion {
         analysis_base: payload.base,
+        analysis_outcome: payload.analysis_outcome,
         summary_counts: ripr_summary_counts_merge(
             ripr_summary_counts_seed(check_summary),
             buckets,
@@ -2248,6 +2253,7 @@ where
 struct RiprCheckPayload {
     summary: Option<Value>,
     base: Option<Value>,
+    analysis_outcome: Option<Value>,
     findings_is_array: bool,
 }
 
@@ -2282,6 +2288,7 @@ where
                         map.next_value_seed(StreamFindingsSeed { on_event: self.on_event })?;
                 }
                 "base" => payload.base = Some(map.next_value()?),
+                "analysis_outcome" => payload.analysis_outcome = Some(map.next_value()?),
                 // Values the receipt never consumes are skipped in place —
                 // serde_json discards skipped tokens without buffering them.
                 _ => {
@@ -4414,6 +4421,7 @@ fn pr_evidence_packet_with_count(
         options,
         &RiprCheckIngestion {
             analysis_base: check_value.get("base").cloned(),
+            analysis_outcome: check_value.get("analysis_outcome").cloned(),
             summary_counts: summary,
             check_summary_present: check_summary.is_some(),
         },
@@ -4455,6 +4463,12 @@ fn pr_evidence_packet_from_summary(
         .saturating_sub(summary.outside_head_unclassified)
         .saturating_sub(summary.non_production_unclassified);
     let ripr_severe_gap = severe_gaps > 0;
+    let partial_analysis = ingestion
+        .analysis_outcome
+        .as_ref()
+        .and_then(|outcome| outcome.pointer("/outcome/kind"))
+        .and_then(Value::as_str)
+        == Some("partial_with_limitations");
     let warnings = if ingestion.check_summary_present {
         Vec::new()
     } else {
@@ -4464,12 +4478,12 @@ fn pr_evidence_packet_from_summary(
             "path": null
         })]
     };
-    json!({
+    let mut packet = json!({
         "schema_version": "0.1",
         "tool": "ripr",
         "kind": "pr_evidence",
         "scope": "diff",
-        "status": if warnings.is_empty() { "advisory" } else { "incomplete" },
+        "status": if warnings.is_empty() && !partial_analysis { "advisory" } else { "incomplete" },
         "root": options.root,
         "base": options.base,
         "base_sha": base_sha,
@@ -4537,7 +4551,11 @@ fn pr_evidence_packet_from_summary(
             "This packet does not post review comments or execute mutation.",
             "Public badge state must not be derived from this diff-scoped packet."
         ]
-    })
+    });
+    if let Some(outcome) = &ingestion.analysis_outcome {
+        packet["analysis_outcome"] = outcome.clone();
+    }
+    packet
 }
 
 fn validate_pr_evidence_packet(
@@ -4707,7 +4725,34 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
         "- declaration_seam_excluded: {}\n",
         count_field(summary, "declaration_seam_excluded")
     ));
-    out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
+    out.push_str(&format!("- severe gaps: {}\n", count_field(summary, "severe_gaps")));
+    if let Some(outcome) = packet.get("analysis_outcome").filter(|value| !value.is_null()) {
+        out.push_str(&format!(
+            "- analysis outcome: `{}`\n",
+            md_escape(
+                outcome.pointer("/outcome/kind").and_then(Value::as_str).unwrap_or("unknown")
+            )
+        ));
+        if let Some(limitations) = outcome.pointer("/outcome/limitations").and_then(Value::as_array)
+        {
+            for limitation in limitations {
+                out.push_str(&format!(
+                    "- analysis limitation: `{}`: {}\n",
+                    md_escape(string_field(limitation, "kind", "unknown")),
+                    md_escape(
+                        limitation
+                            .get("detail")
+                            .or_else(|| limitation.get("bounded_detail"))
+                            .or_else(|| limitation.get("message"))
+                            .or_else(|| limitation.get("summary"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("producer did not supply limitation detail")
+                    )
+                ));
+            }
+        }
+    }
+    out.push('\n');
     out.push_str("## Targeted Mutation\n\n");
     out.push_str(&format!(
         "- requires_targeted_mutation: {}\n",
@@ -4860,7 +4905,8 @@ fn current_pr_evidence_has_no_severe_gaps(
     if validate_comparison_subject(&packet, subject.as_ref()).is_err() {
         return Ok(false);
     }
-    Ok(packet.pointer("/summary/severe_gaps").and_then(Value::as_u64) == Some(0))
+    Ok(packet.get("status").and_then(Value::as_str) == Some("advisory")
+        && packet.pointer("/summary/severe_gaps").and_then(Value::as_u64) == Some(0))
 }
 
 fn validate_review_comments(
@@ -4991,16 +5037,33 @@ fn render_clean_review_comments_markdown(packet: &Value) -> String {
     )
 }
 
+const REVIEW_GUIDANCE_OVERSIZED: &str = "review_guidance_oversized";
+
+/// Preserve the producer's typed refusal instead of reducing the whole command
+/// failure to its exit-status line. The source emits the reason on one line;
+/// retaining that complete line keeps counts, limits, and repair text auditable.
+fn review_guidance_oversized_reason(error: &str) -> Option<&str> {
+    error.lines().map(str::trim).find_map(|line| {
+        let reason = line.strip_prefix("ripr: ").unwrap_or(line);
+        reason.starts_with("review_guidance_oversized:").then_some(reason)
+    })
+}
+
+fn review_guidance_failure_message(error: &str) -> String {
+    review_guidance_oversized_reason(error).map(str::to_owned).unwrap_or_else(|| first_line(error))
+}
+
 fn write_error_review_comments(
     repo: &Path,
     options: &ReviewCommentsOptions,
     root: &str,
     error: &str,
 ) -> Result<()> {
+    let oversized = review_guidance_oversized_reason(error).is_some();
     let packet = json!({
         "schema_version": "0.1",
         "tool": "ripr",
-        "status": "error",
+        "status": if oversized { "incomplete" } else { "error" },
         "root": normalize_path_text(root),
         "base": options.base,
         "head": options.head,
@@ -5023,8 +5086,8 @@ fn write_error_review_comments(
         "suppressed": [],
         "warnings": [
             {
-                "kind": "tool_error",
-                "message": first_line(error),
+                "kind": if oversized { REVIEW_GUIDANCE_OVERSIZED } else { "tool_error" },
+                "message": review_guidance_failure_message(error),
                 "path": null
             }
         ],
@@ -5043,9 +5106,16 @@ fn render_error_review_comments_markdown(packet: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("review guidance generation did not complete");
     format!(
-        "# RIPR PR Guidance\n\n- status: error\n- base: `{}`\n- head: `{}`\n- line annotations: 0\n- summary-only recommendations: 0\n- suppressed recommendations: 0\n\nNo review guidance was generated.\n\n## Warnings\n\n- tool_error: {}\n",
+        "# RIPR PR Guidance\n\n- status: {}\n- base: `{}`\n- head: `{}`\n- line annotations: 0\n- summary-only recommendations: 0\n- suppressed recommendations: 0\n\nNo review guidance was generated.\n\n## Warnings\n\n- {}: {}\n",
+        string_field(packet, "status", "error"),
         string_field(packet, "base", DEFAULT_BASE),
         string_field(packet, "head", DEFAULT_HEAD),
+        packet
+            .get("warnings")
+            .and_then(Value::as_array)
+            .and_then(|warnings| warnings.first())
+            .map(|warning| string_field(warning, "kind", "tool_error"))
+            .unwrap_or("tool_error"),
         md_escape(warning)
     )
 }
@@ -5403,8 +5473,8 @@ fn write_fallback_review_comments(
         "suppressed": [],
         "warnings": [
             {
-                "kind": "tool_error",
-                "message": first_line(error),
+                "kind": if review_guidance_oversized_reason(error).is_some() { REVIEW_GUIDANCE_OVERSIZED } else { "tool_error" },
+                "message": review_guidance_failure_message(error),
                 "path": null
             },
             {
@@ -5460,7 +5530,13 @@ fn render_fallback_review_comments_markdown(packet: &Value) -> String {
         .and_then(|warning| warning.get("message"))
         .and_then(Value::as_str)
     {
-        markdown.push_str(&format!("\n## Warnings\n\n- tool_error: {}\n", md_escape(warning)));
+        let kind = packet
+            .get("warnings")
+            .and_then(Value::as_array)
+            .and_then(|warnings| warnings.first())
+            .map(|entry| string_field(entry, "kind", "tool_error"))
+            .unwrap_or("tool_error");
+        markdown.push_str(&format!("\n## Warnings\n\n- {kind}: {}\n", md_escape(warning)));
     }
     markdown
 }
@@ -11443,6 +11519,56 @@ paths = ["archive/["]
     }
 
     #[test]
+    fn partial_zero_gap_evidence_does_not_take_the_clean_guidance_shortcut() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let head = revision_sha(repo, "HEAD")?;
+        let packet = pr_evidence_packet(
+            &options,
+            &["src/lib.rs".to_string()],
+            &json!({
+                "summary": {
+                    "weakly_exposed": 0,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": 0
+                },
+                "analysis_outcome": {
+                    "analysis_complete": false,
+                    "outcome": {
+                        "kind": "partial_with_limitations",
+                        "limitations": [{
+                            "kind": "language_scope_unsupported",
+                            "bounded_detail": "Python preview adapter is not enabled"
+                        }]
+                    }
+                }
+            }),
+            &head,
+            &head,
+            &RiprSuppressionRules::default(),
+        );
+        write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
+        let review_options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+
+        assert_eq!(packet["status"], json!("incomplete"));
+        assert!(!current_pr_evidence_has_no_severe_gaps(repo, &review_options)?);
+        Ok(())
+    }
+
+    #[test]
     fn current_pr_evidence_has_no_severe_gaps_rejects_stale_receipt() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
@@ -12068,6 +12194,90 @@ paths = ["archive/["]
                 "reach": { "state": "no", "summary": "No static test path found for the changed owner" }
             }
         })
+    }
+
+    #[test]
+    fn pr_evidence_preserves_partial_analysis_and_adapter_limitations() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let analysis_outcome = json!({
+            "analysis_complete": false,
+            "outcome": {
+                "kind": "partial_with_limitations",
+                "limitations": [{
+                    "kind": "language_scope_unsupported",
+                    "bounded_detail": "Python preview adapter is not enabled for scripts/ci/probe.py"
+                }]
+            }
+        });
+        let packet = pr_evidence_packet_with_count(
+            &options,
+            &json!({
+                "summary": {
+                    "weakly_exposed": 0,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": 0
+                },
+                "findings": [],
+                "analysis_outcome": analysis_outcome
+            }),
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+            None,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                attribution_scope: None,
+                production_surface: None,
+            },
+        );
+
+        assert_eq!(packet["status"], json!("incomplete"));
+        assert_eq!(packet["analysis_outcome"], analysis_outcome);
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        let markdown = render_pr_evidence_markdown(&packet);
+        assert!(markdown.contains("analysis outcome: `partial_with_limitations`"), "{markdown}");
+        assert!(markdown.contains("Python preview adapter is not enabled"), "{markdown}");
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_review_guidance_receipt_preserves_the_typed_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+        let reason = "review_guidance_oversized: 4554 closure input files exceed the review-guidance ceiling (RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES=1200); the guidance pass was not run to protect runner memory.";
+        let error =
+            format!("ripr failed with status exit status: 2\nstdout:\n\nstderr:\nripr: {reason}\n");
+
+        write_error_review_comments(repo, &options, ".", &error)?;
+        stamp_review_comments_receipt(repo, &options)?;
+        validate_review_comments(repo, &options, true)?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        assert_eq!(packet["status"], json!("incomplete"));
+        assert_eq!(packet.pointer("/warnings/0/kind"), Some(&json!(REVIEW_GUIDANCE_OVERSIZED)));
+        assert_eq!(packet.pointer("/warnings/0/message"), Some(&json!(reason)));
+        let markdown = fs::read_to_string(repo.join(REVIEW_COMMENTS_MD))?;
+        assert!(markdown.contains("- status: incomplete"), "{markdown}");
+        assert!(markdown.contains(reason), "{markdown}");
+        assert!(
+            review_guidance_oversized_reason("ripr: review_guidance_oversized_metadata: unrelated")
+                .is_none()
+        );
+        Ok(())
     }
 
     #[test]

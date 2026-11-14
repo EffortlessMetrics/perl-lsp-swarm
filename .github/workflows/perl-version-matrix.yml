@@ -191,7 +191,7 @@ jobs:
         if: matrix.run_rust_smoke
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable (master)
         with:
-          toolchain: 1.95.0
+          toolchain: 1.100.0
 
       - name: Cache cargo dependencies (smoke lanes)
         if: matrix.run_rust_smoke
@@ -219,7 +219,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable (master)
         with:
-          toolchain: 1.95.0
+          toolchain: 1.100.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: signature-conformance

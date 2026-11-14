@@ -235,7 +235,7 @@ impl IndexMetrics {
     pub fn decrement_pending_parses(&self) -> usize {
         match self
             .pending_parses
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| current.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| current.checked_sub(1))
         {
             Ok(previous) => previous.saturating_sub(1),
             Err(current) => current,

@@ -3449,7 +3449,7 @@ impl WorkspaceIndex {
         let files = self.files.read();
         let mut symbols = Vec::new();
 
-        for (_uri_key, file_index) in files.iter() {
+        for file_index in files.values() {
             symbols.extend(file_index.symbols.clone());
         }
 
@@ -4963,7 +4963,7 @@ impl WorkspaceIndex {
         let files = self.files.read();
         let mut members = Vec::new();
 
-        for (_uri_key, file_index) in files.iter() {
+        for file_index in files.values() {
             for symbol in &file_index.symbols {
                 // Check if symbol belongs to this package
                 if let Some(ref container) = symbol.container_name
@@ -5255,7 +5255,7 @@ impl WorkspaceIndex {
             // It's a variable - search through all files for this variable name
             let var_name = format!("{}{}", sigil, key.name);
             let mut refs = Vec::new();
-            for (_uri_key, file_index) in files_locked.iter() {
+            for file_index in files_locked.values() {
                 if let Some(var_refs) = file_index.references.get(&var_name) {
                     for reference in var_refs {
                         if exclude_coderef && reference.kind == ReferenceKind::Coderef {
@@ -5273,7 +5273,7 @@ impl WorkspaceIndex {
                 let mut refs =
                     self.find_references_filtered(&format!("main::{}", key.name), exclude_coderef);
                 // Add bare name references
-                for (_uri_key, file_index) in files_locked.iter() {
+                for file_index in files_locked.values() {
                     if let Some(bare_refs) = file_index.references.get(key.name.as_ref()) {
                         for reference in bare_refs {
                             if exclude_coderef && reference.kind == ReferenceKind::Coderef {
@@ -9044,7 +9044,7 @@ use Data::Dumper;
     #[test]
     fn test_windows_paths() {
         // Test Windows-style paths
-        let result = fs_path_to_uri(r"C:\Users\test\Documents\script.pl");
+        let result = fs_path_to_uri(r"C:\test\Documents\script.pl");
         assert!(result.is_ok());
         let uri = must(result);
         assert!(uri.starts_with("file://"));

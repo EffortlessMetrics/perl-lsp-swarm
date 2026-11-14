@@ -209,7 +209,13 @@ outcome_owner = "#10230"
 # 41 scanned files, 60 producer rows over 18 candidate classes, the entry routes
 # and the finalizer seam are unchanged. This is a source re-audit of changed
 # insertion geometry, not a claim that completion behavior is unchanged.
-source_digest = "sha256:4fbedefcbd5065a61034413ffef944ccee6e51cc2b8ecb284dafbe4491fac258"
+# Re-anchor 2026-11-14 (#9864): #19209 made the two runtime completion routes
+# adjudicate `#` with the generation-current SourceRegionIndex and narrowed
+# regex-flag region detection; it added no candidate channel, route, or finalizer.
+# The later request-dispatch and Dancer2 edits are behavior-preserving Rust 1.100
+# lint repairs. The same 41 files, 60 producers, 18 classes, and existing evidence,
+# identity, completeness, and migration ceilings remain current.
+source_digest = "sha256:21e0f9b8d51e0b5c955651f6e6b54fab424dbf58c8307c34c8b5c23345108094"
 
 [[delegations]]
 module = "dancer2"

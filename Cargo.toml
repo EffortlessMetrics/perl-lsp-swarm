@@ -235,7 +235,7 @@ allow = [
 [workspace.package]
 version = "0.17.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.100"
 authors = ["Steven Zimmerman, CPA <git@effortlesssteven.com>"]
 description = "Perl parser, LSP, and DAP ecosystem in Rust"
 license = "MIT OR Apache-2.0"

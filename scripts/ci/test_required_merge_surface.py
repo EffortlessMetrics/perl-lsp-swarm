@@ -54,7 +54,7 @@ def run_with_tools(script, tools, extra_env=None):
         fake_cargo.write_text(
             '#!/usr/bin/env bash\n'
             'if [[ "$*" == "--version" ]]; then\n'
-            '    printf "cargo 1.95.0\\n"\n'
+            '    printf "cargo 1.100.0\\n"\n'
             '    exit 0\n'
             'fi\n'
             'exit 97\n', encoding='utf-8')
@@ -78,17 +78,18 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         keeper = tempfile.TemporaryDirectory()
         self.addCleanup(keeper.cleanup)
         altered = Path(keeper.name) / 'required-merge-surface.sh'
+        current_commands = producer_commands()
+        next_command = len(current_commands) + 1
         altered.write_text(
             SCRIPT.read_text(encoding='utf-8')
-            + '\n# required merge surface command 39: Future contract (required merge surface)\n'
+            + f'\n# required merge surface command {next_command}: Future contract (required merge surface)\n'
             + '_step_index=$((_step_index + 1))\n'
             + 'cargo test -p xtask --test future_contract --locked -- --nocapture\n',
             encoding='utf-8',
         )
-        expected = [step['run'].strip() for step in original_steps()]
         actual = producer_commands(altered)
-        self.assertEqual(actual[:len(expected)], expected)
-        self.assertEqual(len(actual), len(expected) + 1)
+        self.assertEqual(actual[:-1], current_commands)
+        self.assertEqual(len(actual), len(current_commands) + 1)
 
     def test_ci_retains_setup_compile_and_exactly_one_shared_producer(self):
         data = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8'))
@@ -176,7 +177,7 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         fake_cargo.write_text(
             '#!/usr/bin/env bash\n'
             'if [[ "$*" == "--version" ]]; then\n'
-            '    printf "cargo 1.95.0\\n"\n'
+            '    printf "cargo 1.100.0\\n"\n'
             '    exit 0\n'
             'fi\n'
             'printf "cargo %s\\n" "$*" >> "$MERGE_SURFACE_SPY"\n'

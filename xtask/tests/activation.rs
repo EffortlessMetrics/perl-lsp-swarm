@@ -67,7 +67,9 @@ fn expect_override_violation(
 /// authorities. Every row of the 170 -> 177 delta is accounted for below; none
 /// of it is a relaxed ratchet, and nothing was removed.
 const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
-    ("product", 16),
+    // 16 -> 18: this PR adds feature:lsp.critic.native and writes
+    // feature:lsp.text_document_sync as product surfaces (#19371).
+    ("product", 18),
     ("preview", 2),
     ("compatibility_shim", 1),
     ("test_api", 27),
@@ -91,8 +93,10 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
 /// Pin derivation receipts independently of class counts so a rule that
 /// rewrites `considered = emitted` cannot hide an under-count.
 const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
-    ("features-product", 129, 16),
-    ("features-preview", 129, 2),
+    // 129 -> 130 considered, with 16 -> 18 product and 2 preview emitted:
+    // feature:lsp.critic.native and feature:lsp.text_document_sync (#19371).
+    ("features-product", 130, 18),
+    ("features-preview", 130, 2),
     // 87/87 -> 94/94. The committed artifact already held 88, so one of these
     // predates the last write; the other four entered .ci/gate-policy.yaml on
     // 2026-09-19: doctest_contract_proof and doctest_enforcement in 405ab14ff

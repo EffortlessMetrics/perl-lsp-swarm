@@ -32,7 +32,7 @@ EXPECTED_COUNT_FIELDS = (
     "unsuppressed_exposure_gaps",
     "unsuppressed_test_efficiency_findings",
 )
-EXPECTED_RIPR_VERSION = "0.10.0"
+EXPECTED_RIPR_VERSION = "0.11.0"
 
 
 class RiprOutputLimitExceeded(RuntimeError):
