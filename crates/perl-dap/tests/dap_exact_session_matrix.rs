@@ -45,6 +45,121 @@ const ROW_TIMEOUT: Duration = Duration::from_secs(15);
 /// cleanup failure (#7565 review).
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Bounded wait for the delayed-breakpoint launch request.
+///
+/// The adapter's pre-launch `perl -c` carries its own budget (30s, #19416), so
+/// this wait must exceed it. Otherwise the harness times out first and reports
+/// its own request timeout instead of the adapter's classified launch failure.
+const DELAYED_LAUNCH_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Why a DAP launch failed, as classified from the adapter's failure message.
+///
+/// The delayed-breakpoint row proves a product behaviour: a launch that cannot
+/// resolve the breakpoint must say so. A launch that never reached that
+/// verdict — a pre-launch `perl -c` that exceeded its budget, for example
+/// (#19416) — is an environment/instrument condition. It must be reported as
+/// its own class, never as a missing-ambiguity product defect, and never as a
+/// pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchFailureClass {
+    /// The launch failed for an environment/instrument reason: no product
+    /// verdict was reached.
+    Environment,
+    /// The launch failed because the breakpoint could not be resolved
+    /// unambiguously. This is the behaviour the row proves.
+    Ambiguity,
+    /// The launch failed without stating that the breakpoint was ambiguous.
+    MissingAmbiguity,
+}
+
+impl LaunchFailureClass {
+    /// How this class is reported when the row fails.
+    fn report(self, launch_message: &str) -> String {
+        match self {
+            LaunchFailureClass::Environment => format!(
+                "environment_failure: the delayed launch failed for an environment reason, \
+                 so no ambiguity verdict was observed: {launch_message}"
+            ),
+            LaunchFailureClass::MissingAmbiguity => format!(
+                "missing_ambiguity_failure: delayed launch failure omitted ambiguity reason: \
+                 {launch_message}"
+            ),
+            LaunchFailureClass::Ambiguity => format!(
+                "ambiguity_failure: the delayed launch reported an ambiguous breakpoint: \
+                 {launch_message}"
+            ),
+        }
+    }
+}
+
+/// Classify a failed launch from the adapter's failure message.
+fn classify_launch_failure(message: &str) -> LaunchFailureClass {
+    let lowered = message.to_lowercase();
+    // The environment class is recognised first, and on purpose: a launch that
+    // never reached a verdict must not be mistaken for the product verdict.
+    if lowered.contains("timed out") {
+        return LaunchFailureClass::Environment;
+    }
+    if lowered.contains("ambiguous") || lowered.contains("invalidated") {
+        return LaunchFailureClass::Ambiguity;
+    }
+    LaunchFailureClass::MissingAmbiguity
+}
+
+/// The verdict the delayed-breakpoint row reaches from a failed launch.
+///
+/// `Ok(())` means the launch failed for the product reason this row proves: an
+/// ambiguous or invalidated breakpoint. `Err(class)` means the row observed
+/// something else, so it cannot claim the product behaviour. The environment
+/// class and the missing-ambiguity class stay distinct, and neither is ever
+/// reported as a pass.
+fn judge_launch_failure(message: &str) -> Result<(), LaunchFailureClass> {
+    match classify_launch_failure(message) {
+        LaunchFailureClass::Ambiguity => Ok(()),
+        other => Err(other),
+    }
+}
+
+/// The classification the delayed-breakpoint row depends on must keep the three
+/// outcomes it can observe apart (#19416): the product verdict, an environment
+/// condition, and a launch failure that names no reason at all.
+#[test]
+fn launch_failure_classification_separates_environment_from_product_failures() {
+    let ambiguity = "Cannot start Perl debugger: Debugger session was invalidated because a \
+                     source breakpoint acknowledgement was ambiguous.";
+    assert_eq!(
+        classify_launch_failure(ambiguity),
+        LaunchFailureClass::Ambiguity,
+        "an invalidated/ambiguous launch is the product verdict this row proves"
+    );
+    assert!(judge_launch_failure(ambiguity).is_ok(), "the product verdict must satisfy the row");
+
+    let timeout = "Cannot start Perl debugger: Syntax check timed out after 30 seconds for \
+                   '/tmp/delayed.pl' — the interpreter did not finish compiling the script.";
+    assert_eq!(
+        classify_launch_failure(timeout),
+        LaunchFailureClass::Environment,
+        "a syntax-check timeout is an environment condition, not a product verdict"
+    );
+    assert_eq!(
+        judge_launch_failure(timeout),
+        Err(LaunchFailureClass::Environment),
+        "an environment condition must never satisfy the row"
+    );
+
+    let unrelated = "Cannot start Perl debugger: the debuggee exited before the session started.";
+    assert_eq!(
+        classify_launch_failure(unrelated),
+        LaunchFailureClass::MissingAmbiguity,
+        "a launch failure that names neither class is a missing-ambiguity failure"
+    );
+    assert_eq!(
+        judge_launch_failure(unrelated),
+        Err(LaunchFailureClass::MissingAmbiguity),
+        "a launch failure without an ambiguity reason must fail the row"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Subject identity
 // ---------------------------------------------------------------------------
@@ -1493,14 +1608,14 @@ fn exact_session_delayed_breakpoint_prompt_fails_closed() -> Result<()> {
                 "perlPath": perl.binary.display().to_string(),
                 "stopOnEntry": false,
             })),
-            ROW_TIMEOUT,
+            DELAYED_LAUNCH_TIMEOUT,
         )?;
         if launch.success {
             return Err(anyhow!("delayed debugger prompt unexpectedly launched successfully"));
         }
         let message = launch.message.unwrap_or_default();
-        if !message.contains("ambiguous") && !message.contains("invalidated") {
-            return Err(anyhow!("delayed launch failure omitted ambiguity reason: {message}"));
+        if let Err(class) = judge_launch_failure(&message) {
+            return Err(anyhow!("{}", class.report(&message)));
         }
         let pid_path = fixture.with_file_name("delayed_breakpoint.pid");
         let pid_deadline = Instant::now() + Duration::from_secs(2);
