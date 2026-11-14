@@ -215,9 +215,21 @@ pub fn list_staged_entries(root: &Path, tree_oid: &str) -> Result<Vec<StagedEntr
 /// that happens after `oid` was written. `None` falls back to `git diff
 /// --cached` (the live index) for callers outside a real plan.
 pub fn staged_diff_paths(root: &Path, tree_oid: Option<&str>) -> Result<Vec<String>> {
+    staged_diff_paths_against(root, tree_oid, None)
+}
+
+/// Explicit baseline for frozen committed-object checks; existing staged callers retain HEAD.
+pub fn staged_diff_paths_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<Vec<String>> {
     let raw = match tree_oid {
         Some(oid) => {
-            let base = diff_base(root)?;
+            let base = match base {
+                Some(base) => base.to_string(),
+                None => diff_base(root)?,
+            };
             run_git_ok(root, &["diff", "--name-only", "--diff-filter=ACDMRT", "-z", &base, oid])?
         }
         None => {
