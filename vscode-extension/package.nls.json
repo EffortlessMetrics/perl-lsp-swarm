@@ -5,6 +5,7 @@
   "command.showOutput.title": "Show Output Channel",
   "command.showStatusMenu.title": "Show Status Menu",
   "command.showWorkspaceStatus.title": "Show Perl Workspace Status",
+  "command.showBinaryIdentity.title": "Show Server and DAP Identity",
   "command.reinstall.title": "Reinstall Server Binary",
   "command.checkForUpdate.title": "Check for Binary Updates",
   "command.runTests.title": "Run Tests in Current File",

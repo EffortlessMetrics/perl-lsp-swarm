@@ -12,6 +12,7 @@ import {
   type BinaryIdentityPresentation,
   type SelectedBinaryRole,
   projectBinaryIdentityStatus,
+  projectUnavailableBinaryIdentity,
 } from './binaryIdentityStatus';
 
 export const SHOW_BINARY_IDENTITY_COMMAND = 'perl-lsp.showBinaryIdentity' as const;
@@ -33,6 +34,12 @@ export interface BinaryIdentityCommandInput {
   extensionCandidate?: string;
   expectedTarget?: string;
   selectedRole: SelectedBinaryRole;
+  /**
+   * Whether the host resolved any server binary. `false` with a managed
+   * selection is the only no-server state attributed as a missing managed
+   * artifact; `undefined` means the host does not know.
+   */
+  serverBinaryResolved?: boolean;
   expectedServerInstanceId?: string;
   expectedEnvironmentSnapshotId?: string;
 }
@@ -46,6 +53,8 @@ function request(input: BinaryIdentityCommandInput): BinaryIdentityRequestV1 {
       id: CANONICAL_EXTENSION_ID,
       version: input.extensionVersion,
       // The selected channel is the artifact role the server must agree with.
+      // A binary the host cannot attribute is sent as `unknown`, never as
+      // `managed`, so the server cannot be asked to confirm a guessed role.
       binary_artifact_role: input.selectedRole,
       // The installed VSIX is the authority that produced this expectation.
       // The token carries the packaged extension identity rather than the
@@ -91,11 +100,31 @@ export async function showBinaryIdentityStatus(
   host: BinaryIdentityCommandHost,
   input: BinaryIdentityCommandInput,
 ): Promise<BinaryIdentityPresentation> {
-  const response = await client.sendRequest<BinaryIdentityResponseV1>(
+  // The response is untrusted wire data; the projection validates it and maps
+  // anything it cannot read to `not_proven`.
+  const response = await client.sendRequest<BinaryIdentityResponseV1 | null>(
     BINARY_IDENTITY_METHOD,
     request(input),
   );
   const presentation = projectBinaryIdentityStatus(response, input.selectedRole);
+  const action = await host.show(presentation);
+  await applyAction(action, presentation, host);
+  return presentation;
+}
+
+/**
+ * Presents identity status when no language client is running. The user
+ * asked for status, so a bounded explanation is always shown rather than
+ * returning silently.
+ */
+export async function showUnavailableBinaryIdentityStatus(
+  host: BinaryIdentityCommandHost,
+  input: Pick<BinaryIdentityCommandInput, 'selectedRole' | 'serverBinaryResolved'>,
+): Promise<BinaryIdentityPresentation> {
+  const presentation = projectUnavailableBinaryIdentity(
+    input.selectedRole,
+    input.serverBinaryResolved,
+  );
   const action = await host.show(presentation);
   await applyAction(action, presentation, host);
   return presentation;
