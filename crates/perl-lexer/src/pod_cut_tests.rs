@@ -160,6 +160,128 @@ fn cut_after_a_term_stays_code() -> TestResult {
     Ok(())
 }
 
+/// The stray-cut record captures exactly the amputation decisions (#18771).
+///
+/// The skipper emits no token for the block it drops, so the record is the
+/// durable witness: one event per stray `=cut`, with the line-start offset of
+/// the `=` and whether the block ran to EOF.
+#[test]
+fn stray_cut_record_captures_offset_and_eof_extent() -> TestResult {
+    let source = "use strict;\n=cut\nnot code at all @@@ ###\n=cut\nmy $x = 1;\n";
+    let mut lexer = PerlLexer::new(source);
+    let _ = lexer.collect_tokens();
+    let events: Vec<(usize, bool)> =
+        lexer.stray_cut_opens().iter().map(|e| (e.cut_offset, e.runs_to_eof)).collect();
+
+    require(
+        events == vec![(12, false)],
+        format!(
+            "the stray =cut at offset 12 opens a block closed by the later =cut, got {events:?}"
+        ),
+    );
+    Ok(())
+}
+
+/// A stray `=cut` with no closing `=cut` records `runs_to_eof`.
+#[test]
+fn stray_cut_record_marks_runs_to_eof() -> TestResult {
+    let source = "use strict;\n=cut\nthis is not valid perl @@@ ###\n";
+    let mut lexer = PerlLexer::new(source);
+    let _ = lexer.collect_tokens();
+    let events: Vec<(usize, bool)> =
+        lexer.stray_cut_opens().iter().map(|e| (e.cut_offset, e.runs_to_eof)).collect();
+
+    require(
+        events == vec![(12, true)],
+        format!("the stray =cut opens a block that runs to EOF, got {events:?}"),
+    );
+    Ok(())
+}
+
+/// Peeking must not duplicate the record: the peeked `next_token` records the
+/// stray `=cut`, the rewind drops that entry, and the consuming `next_token`
+/// records it exactly once (#19051 review).
+#[test]
+fn peek_token_does_not_duplicate_the_stray_cut_record() -> TestResult {
+    let source = "use strict;
+=cut
+this is not valid perl @@@ ###
+";
+    let mut lexer = PerlLexer::new(source);
+    // Consume through the `;` first so the peek actually crosses the stray
+    // `=cut` — a peek over `use` alone would pass vacuously (#19051 review).
+    while let Some(token) = lexer.next_token() {
+        if token.text.to_string() == ";" {
+            break;
+        }
+    }
+    require(
+        lexer.stray_cut_opens().is_empty(),
+        format!(
+            "fixture invariant: the =cut has not been passed yet, got {:?}",
+            lexer.stray_cut_opens()
+        ),
+    );
+    let _ = lexer.peek_token();
+    require(
+        lexer.stray_cut_opens().is_empty(),
+        format!("a peek must not leave a record behind, got {:?}", lexer.stray_cut_opens()),
+    );
+    let _ = lexer.collect_tokens();
+    let events: Vec<(usize, bool)> =
+        lexer.stray_cut_opens().iter().map(|e| (e.cut_offset, e.runs_to_eof)).collect();
+    require(
+        events == vec![(12, true)],
+        format!("exactly one record must survive a peek-then-consume, got {events:?}"),
+    );
+    Ok(())
+}
+
+/// `reset` starts a fresh lex over the same source, so the record must not
+/// accumulate a second copy (#19051 review).
+#[test]
+fn reset_clears_the_stray_cut_record() -> TestResult {
+    let source = "use strict;
+=cut
+this is not valid perl @@@ ###
+";
+    let mut lexer = PerlLexer::new(source);
+    let _ = lexer.collect_tokens();
+    require(
+        lexer.stray_cut_opens().len() == 1,
+        format!("the first pass must record the stray cut, got {:?}", lexer.stray_cut_opens()),
+    );
+    lexer.reset();
+    require(
+        lexer.stray_cut_opens().is_empty(),
+        format!("reset must clear the record, got {:?}", lexer.stray_cut_opens()),
+    );
+    let _ = lexer.collect_tokens();
+    let events: Vec<(usize, bool)> =
+        lexer.stray_cut_opens().iter().map(|e| (e.cut_offset, e.runs_to_eof)).collect();
+    require(
+        events == vec![(12, true)],
+        format!("the re-lex must not duplicate the record, got {events:?}"),
+    );
+    Ok(())
+}
+
+/// A `=cut` that closes a `=pod`-opened block is not a stray cut and must not
+/// appear in the record.
+#[test]
+fn matched_pod_block_leaves_no_stray_cut_record() -> TestResult {
+    let source = "use strict;\n=pod\nDocs\n=cut\nsub after { 1 }\n";
+    let mut lexer = PerlLexer::new(source);
+    let _ = lexer.collect_tokens();
+    let events = lexer.stray_cut_opens();
+
+    require(
+        events.is_empty(),
+        format!("the =cut closes a =pod block, so the record must stay empty, got {events:?}"),
+    );
+    Ok(())
+}
+
 /// A `=cut` inside a regex literal does not open POD.
 ///
 /// The text after the `=cut` must still be lexed as the regex body and as code, so

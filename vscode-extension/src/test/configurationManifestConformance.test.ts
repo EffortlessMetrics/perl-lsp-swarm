@@ -183,7 +183,7 @@ describe('authentic public settings migration conformance (#7837)', () => {
         {
           key: 'perl-lsp.mcp.servers',
           before: mcp,
-          after: configurationInventory(candidate)['perl-lsp.mcp.servers']!,
+          after: null,
           issue: 7837,
           reason: 'duplicate coverage',
         },

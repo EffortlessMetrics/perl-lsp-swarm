@@ -37,8 +37,14 @@ fn find_two_arg_open(source: &str) -> Vec<CodeAction> {
 
     for (line_idx, line) in source.lines().enumerate() {
         let trimmed = line.trim();
+        let stripped_line = strip_strings_and_comments(trimmed);
+        let executable = stripped_line.trim();
 
-        if !trimmed.starts_with("open") {
+        if !executable.starts_with("open") {
+            continue;
+        }
+
+        if contains_or_die_idiom(line) {
             continue;
         }
 
@@ -59,22 +65,25 @@ fn find_two_arg_open(source: &str) -> Vec<CodeAction> {
 
         if let Some((filehandle, mode_file)) = split_at_first_comma(content) {
             let filehandle = filehandle.trim();
-            let mode_file = mode_file.trim().trim_matches('"').trim_matches('\'');
-
-            let (mode, filename) = extract_mode_and_filename(mode_file);
+            let mode_file = mode_file.trim();
+            let (mode, filename_arg, die_label) = format_mode_and_filename_arg(mode_file);
 
             let modern_open = if filehandle.starts_with("my ") || filehandle.starts_with('$') {
                 format!(
-                    "open({}, \"{}\", \"{}\") or die \"Cannot open {}: $!\"",
-                    filehandle, mode, filename, filename
+                    "open({}, \"{}\", {}) or die \"Cannot open {}: $!\"",
+                    filehandle, mode, filename_arg, die_label
                 )
             } else {
                 let lc_handle = filehandle.to_lowercase();
                 format!(
-                    "open(my ${}, \"{}\", \"{}\") or die \"Cannot open {}: $!\"",
-                    lc_handle, mode, filename, filename
+                    "open(my ${}, \"{}\", {}) or die \"Cannot open {}: $!\"",
+                    lc_handle, mode, filename_arg, die_label
                 )
             };
+
+            let had_trailing_semicolon = trimmed.ends_with(';');
+            let modern_open =
+                if had_trailing_semicolon { format!("{modern_open};") } else { modern_open };
 
             let line_start = line_offsets[line_idx];
             let line_end = line_start + line.len();
@@ -104,59 +113,69 @@ fn find_two_arg_open(source: &str) -> Vec<CodeAction> {
 /// Detect `defined(@array)` and `defined(%hash)` which are deprecated since v5.22.
 fn find_deprecated_defined(source: &str) -> Vec<CodeAction> {
     let mut actions = Vec::new();
+    let line_offsets = line_start_offsets(source);
 
-    let mut search_from = 0;
-    while let Some(pos) = source[search_from..].find("defined") {
-        let abs_pos = search_from + pos;
+    for (line_idx, line) in source.lines().enumerate() {
+        let stripped = strip_strings_and_comments(line);
+        let mut search_from = 0;
+        while let Some(pos) = stripped[search_from..].find("defined") {
+            let abs_pos = line_offsets[line_idx] + search_from + pos;
 
-        if abs_pos > 0 {
-            let prev = source.as_bytes()[abs_pos - 1];
-            if prev.is_ascii_alphanumeric() || prev == b'_' {
-                search_from = abs_pos + 7;
-                continue;
+            if search_from + pos > 0 {
+                let prev = stripped.as_bytes()[search_from + pos - 1];
+                if prev.is_ascii_alphanumeric() || prev == b'_' {
+                    search_from += pos + 7;
+                    continue;
+                }
             }
-        }
 
-        let after = &source[abs_pos + 7..];
-        let after_trimmed = after.trim_start();
-        let has_paren = after_trimmed.starts_with('(');
-        let inner = if has_paren {
-            after_trimmed.trim_start_matches('(').trim_start()
-        } else {
-            after_trimmed
-        };
-
-        if inner.starts_with('@') || inner.starts_with('%') {
-            let sigil = if inner.starts_with('@') { '@' } else { '%' };
-            let var_end = inner[1..]
-                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .map(|p| p + 1)
-                .unwrap_or(inner.len());
-            let var_name = &inner[..var_end];
-
-            let expr_end = if has_paren {
-                let paren_start = abs_pos + 7 + (after.len() - after_trimmed.len()) + 1;
-                let close = source[paren_start..].find(')').map(|p| paren_start + p + 1);
-                close.unwrap_or(abs_pos + 7 + var_end + 2)
+            let after = &stripped[search_from + pos + 7..];
+            let after_trimmed = after.trim_start();
+            let has_paren = after_trimmed.starts_with('(');
+            let inner = if has_paren {
+                after_trimmed.trim_start_matches('(').trim_start()
             } else {
-                abs_pos + 7 + (after.len() - after_trimmed.len()) + var_end
+                after_trimmed
             };
 
-            actions.push(CodeAction {
-                title: format!("Modernize: remove deprecated defined({}) (since v5.22)", sigil),
-                kind: CodeActionKind::SourceModernize,
-                diagnostics: Vec::new(),
-                edit: CodeActionEdit {
-                    changes: vec![TextEdit {
-                        location: SourceLocation { start: abs_pos, end: expr_end },
-                        new_text: var_name.to_string(),
-                    }],
-                },
-                is_preferred: false,
-            });
-        }
+            if inner.starts_with('@') || inner.starts_with('%') {
+                let sigil = if inner.starts_with('@') { '@' } else { '%' };
+                let var_end = inner[1..]
+                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .map(|p| p + 1)
+                    .unwrap_or(inner.len());
+                let var_name = &inner[..var_end];
 
-        search_from = abs_pos + 7;
+                let expr_end = if has_paren {
+                    let paren_start =
+                        search_from + pos + 7 + (after.len() - after_trimmed.len()) + 1;
+                    let close = stripped[paren_start..].find(')').map(|p| paren_start + p + 1);
+                    line_offsets[line_idx] + close.unwrap_or(search_from + pos + 7 + var_end + 2)
+                } else {
+                    line_offsets[line_idx]
+                        + search_from
+                        + pos
+                        + 7
+                        + (after.len() - after_trimmed.len())
+                        + var_end
+                };
+
+                actions.push(CodeAction {
+                    title: format!("Modernize: remove deprecated defined({}) (since v5.22)", sigil),
+                    kind: CodeActionKind::SourceModernize,
+                    diagnostics: Vec::new(),
+                    edit: CodeActionEdit {
+                        changes: vec![TextEdit {
+                            location: SourceLocation { start: abs_pos, end: expr_end },
+                            new_text: var_name.to_string(),
+                        }],
+                    },
+                    is_preferred: false,
+                });
+            }
+
+            search_from += pos + 7;
+        }
     }
 
     actions
@@ -515,6 +534,48 @@ fn extract_mode_and_filename(s: &str) -> (&str, &str) {
     } else {
         ("<", s)
     }
+}
+
+/// Build the third `open` argument and a short label for the `or die` message.
+///
+/// Quoted literals become `"name"`; variables and other expressions are copied
+/// verbatim so `$path` is not turned into `"$path"`.
+fn format_mode_and_filename_arg(mode_file: &str) -> (String, String, String) {
+    let trimmed = mode_file.trim();
+    if trimmed.starts_with('$')
+        || trimmed.starts_with('@')
+        || trimmed.starts_with('%')
+        || trimmed.starts_with('&')
+        || trimmed.starts_with('*')
+    {
+        let (mode, rest) = extract_mode_and_filename(trimmed);
+        return (mode.to_string(), rest.trim().to_string(), rest.trim().to_string());
+    }
+
+    if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        let inner = unquote_string(trimmed);
+        let (mode, filename) = extract_mode_and_filename(inner);
+        let quoted = format!("\"{filename}\"");
+        return (mode.to_string(), quoted, filename.to_string());
+    }
+
+    let (mode, filename) = extract_mode_and_filename(trimmed);
+    let quoted = format!("\"{filename}\"");
+    (mode.to_string(), quoted, filename.to_string())
+}
+
+fn unquote_string(raw: &str) -> &str {
+    if raw.len() >= 2 {
+        let bytes = raw.as_bytes();
+        let first = bytes[0];
+        let last = bytes[raw.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &raw[1..raw.len() - 1];
+        }
+    }
+    raw
 }
 
 fn modernize_version(ver: &str) -> Option<String> {
@@ -1225,5 +1286,66 @@ mod tests {
         // File of only newlines: no patterns to detect, must not panic.
         let actions = get_modernize_actions("\n\n\n", &parse("\n\n\n"));
         drop(actions);
+    }
+
+    fn apply_first_edit(source: &str, actions: &[CodeAction]) -> String {
+        assert!(!actions.is_empty(), "expected at least one action");
+        let action = &actions[0];
+        assert!(!action.edit.changes.is_empty(), "expected edit");
+        let edit = &action.edit.changes[0];
+        let mut out = String::new();
+        out.push_str(&source[..edit.location.start]);
+        out.push_str(&edit.new_text);
+        out.push_str(&source[edit.location.end..]);
+        out
+    }
+
+    #[test]
+    fn two_arg_open_modernization_preserves_trailing_semicolon() {
+        let source = "use strict;\nopen(FILE, \">output.txt\");\nprint \"ok\";\n";
+        let actions = find_two_arg_open(source);
+        let updated = apply_first_edit(source, &actions);
+        assert!(
+            updated.contains("or die \"Cannot open output.txt: $!\";"),
+            "modernized open must keep the statement terminator: {updated}"
+        );
+        must(Parser::new(&updated).parse());
+    }
+
+    #[test]
+    fn two_arg_open_skips_or_die_idiom() {
+        let source = "open(FILE, \">output.txt\") or die $!;\n";
+        assert!(find_two_arg_open(source).is_empty());
+    }
+
+    #[test]
+    fn two_arg_open_preserves_scalar_filename_expression() {
+        let source = "open(FH, $path);\n";
+        let actions = find_two_arg_open(source);
+        let updated = apply_first_edit(source, &actions);
+        assert!(
+            updated.contains("open(my $fh, \"<\", $path)"),
+            "variable filename must not be quoted: {updated}"
+        );
+        assert!(!updated.contains("\"$path\""));
+    }
+
+    #[test]
+    fn deprecated_defined_ignored_in_comment() {
+        let source = "# if (defined(@array)) { }\nif (defined($x)) { }\n";
+        let actions = find_deprecated_defined(source);
+        assert!(actions.is_empty(), "comment-only defined(@) must not match");
+    }
+
+    #[test]
+    fn two_arg_open_ignored_in_comment() {
+        let source = "# open(FILE, \">output.txt\");\nprint 1;\n";
+        assert!(find_two_arg_open(source).is_empty());
+    }
+
+    #[test]
+    fn deprecated_defined_ignored_in_string_literal() {
+        let source = "my $doc = \"defined(@array)\";\n";
+        assert!(find_deprecated_defined(source).is_empty());
     }
 }

@@ -37,17 +37,19 @@ function baseFacts(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function presentation(outcome: ReturnType<typeof composeCheckSkippedOutcome>): ManagedUpdatePresentation {
+function presentation(
+  outcome: ReturnType<typeof composeCheckSkippedOutcome>,
+): ManagedUpdatePresentation {
   return projectManagedUpdateOutcome(outcome);
 }
 
 describe('managedUpdateOutcome admission refusals (#16804)', () => {
   test('background pinned tag stays output-only with stable dedup identity', () => {
-    const decision = decideManagedUpdateCheck(
-      baseFacts({ channel: 'tag', versionTag: 'v0.12.0' }),
-    );
+    const decision = decideManagedUpdateCheck(baseFacts({ channel: 'tag', versionTag: 'v0.12.0' }));
     expect(decision.kind).not.toBe('run');
-    const outcome = composeCheckSkippedOutcome(decision as Exclude<typeof decision, { kind: 'run' }>);
+    const outcome = composeCheckSkippedOutcome(
+      decision as Exclude<typeof decision, { kind: 'run' }>,
+    );
     const view = presentation(outcome);
 
     expect(view.notification.visibility).toBe('none');
@@ -62,7 +64,9 @@ describe('managedUpdateOutcome admission refusals (#16804)', () => {
     const decision = decideManagedUpdateCheck(
       baseFacts({ intent: 'manual_force', channel: 'tag', versionTag: 'v0.12.0' }),
     );
-    const outcome = composeCheckSkippedOutcome(decision as Exclude<typeof decision, { kind: 'run' }>);
+    const outcome = composeCheckSkippedOutcome(
+      decision as Exclude<typeof decision, { kind: 'run' }>,
+    );
     const view = projectManagedUpdateOutcome(outcome);
 
     expect(view.notification.visibility).toBe('explicit-command');
@@ -76,7 +80,9 @@ describe('managedUpdateOutcome admission refusals (#16804)', () => {
     const decision = decideManagedUpdateCheck(
       baseFacts({ intent: 'manual_force', configuredServerPath: '/custom/perllsp' }),
     );
-    const outcome = composeCheckSkippedOutcome(decision as Exclude<typeof decision, { kind: 'run' }>);
+    const outcome = composeCheckSkippedOutcome(
+      decision as Exclude<typeof decision, { kind: 'run' }>,
+    );
     const view = projectManagedUpdateOutcome(outcome);
 
     expect(view.notification.summary).toBe(
@@ -88,7 +94,9 @@ describe('managedUpdateOutcome admission refusals (#16804)', () => {
     const decision = decideManagedUpdateCheck(
       baseFacts({ intent: 'manual_force', localBinaryPresent: false }),
     );
-    const outcome = composeCheckSkippedOutcome(decision as Exclude<typeof decision, { kind: 'run' }>);
+    const outcome = composeCheckSkippedOutcome(
+      decision as Exclude<typeof decision, { kind: 'run' }>,
+    );
     const view = projectManagedUpdateOutcome(outcome);
 
     expect(view.notification.severity).toBe('warning');
@@ -97,8 +105,12 @@ describe('managedUpdateOutcome admission refusals (#16804)', () => {
   });
 
   test('manual invalid channel reports remediation, not a generic skip', () => {
-    const decision = decideManagedUpdateCheck(baseFacts({ intent: 'manual_force', channel: 'nightly' }));
-    const outcome = composeCheckSkippedOutcome(decision as Exclude<typeof decision, { kind: 'run' }>);
+    const decision = decideManagedUpdateCheck(
+      baseFacts({ intent: 'manual_force', channel: 'nightly' }),
+    );
+    const outcome = composeCheckSkippedOutcome(
+      decision as Exclude<typeof decision, { kind: 'run' }>,
+    );
     const view = projectManagedUpdateOutcome(outcome);
 
     expect(view.notification.severity).toBe('warning');
@@ -139,10 +151,10 @@ describe('managedUpdateOutcome manual terminal results (#16804)', () => {
 describe('ManagedUpdateOutcomeDedupe', () => {
   test('suppresses repeated identical background refusals in one session', () => {
     const dedupe = new ManagedUpdateOutcomeDedupe();
-    const decision = decideManagedUpdateCheck(
-      baseFacts({ channel: 'tag', versionTag: 'v0.12.0' }),
+    const decision = decideManagedUpdateCheck(baseFacts({ channel: 'tag', versionTag: 'v0.12.0' }));
+    const outcome = composeCheckSkippedOutcome(
+      decision as Exclude<typeof decision, { kind: 'run' }>,
     );
-    const outcome = composeCheckSkippedOutcome(decision as Exclude<typeof decision, { kind: 'run' }>);
     const view = projectManagedUpdateOutcome(outcome);
 
     expect(dedupe.shouldEmitOutput(view)).toBe(true);

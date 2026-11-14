@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Go-to-definition and completion no longer go silent for the rest of a line when a `#` appears inside a string or regex earlier on that line; a `#` in a real comment still suppresses both (#19206)."
+time: 2026-11-08T23:20:06Z
+custom:
+  PR: "19209"
+  Slug: hash-in-string-navigation-completion
+  Breaking: "no"

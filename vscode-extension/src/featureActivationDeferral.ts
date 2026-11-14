@@ -1,7 +1,6 @@
 import type { FeatureActivationDomain } from './featureActivationMetrics';
 
 const FEATURE_DOMAINS: readonly FeatureActivationDomain[] = [
-  'mcp',
   'whats_new',
   'providers',
   'configuration',
