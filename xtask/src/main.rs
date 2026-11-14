@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 mod allocation_tracker;
 mod cli;
+mod host_work_status;
 use xtask::git_environment;
 #[cfg(test)]
 #[path = "../tests/git_test_support.rs"]
