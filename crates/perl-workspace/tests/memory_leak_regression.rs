@@ -6,7 +6,7 @@
 //! near) baseline after the corresponding cleanup.
 //!
 //! Requires the `memory-profiling` feature so `MemorySnapshot::capture` and
-//! `DocumentStore::total_text_bytes` are available.
+//! the versioned denominator are available.
 
 #![cfg(feature = "memory-profiling")]
 
@@ -15,6 +15,20 @@ use perl_workspace::workspace_index::WorkspaceIndex;
 use url::Url;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn assert_v2_measured_families_empty(snap: &MemorySnapshot, context: &str) {
+    assert!(snap.v2.is_evidence_complete(), "{context}: snapshot must be complete");
+    assert_eq!(snap.v2.search_index.logical_bytes, 0, "{context}: search_index");
+    assert_eq!(snap.v2.fact_shards.logical_bytes, 0, "{context}: fact_shards");
+    assert_eq!(snap.v2.semantic_reference_index.logical_bytes, 0, "{context}: semantic refs");
+    assert_eq!(snap.v2.semantic_import_export_index.logical_bytes, 0, "{context}: import/export");
+    assert_eq!(snap.v2.semantic_package_graph_index.logical_bytes, 0, "{context}: package graph");
+    assert_eq!(snap.v2.document_source.logical_bytes, 0, "{context}: document source");
+    assert_eq!(
+        snap.v2.document_line_geometry.logical_bytes, 0,
+        "{context}: document line geometry"
+    );
+}
 
 fn module(idx: usize) -> Result<(Url, String), url::ParseError> {
     let uri = Url::parse(&format!("file:///lib/Leak/Mod{idx}.pm"))?;
@@ -47,7 +61,7 @@ fn remove_all_returns_index_to_empty_baseline() -> TestResult {
     let mut uris = Vec::with_capacity(count);
     for i in 0..count {
         let (uri, src) = module(i)?;
-        index.index_file(uri.clone(), src).ok();
+        index.index_file(uri.clone(), src)?;
         uris.push(uri);
     }
 
@@ -77,6 +91,7 @@ fn remove_all_returns_index_to_empty_baseline() -> TestResult {
         after_remove.document_store_bytes, 0,
         "document store must be drained on full remove"
     );
+    assert_v2_measured_families_empty(&after_remove, "after full remove");
     // files_bytes counts the underlying HashMap keys/values; with all entries
     // removed it must be zero. Allocator bucket capacity is not measured.
     assert_eq!(after_remove.files_bytes, 0, "files map must be empty");
@@ -91,7 +106,7 @@ fn find_definition_does_not_grow_symbols_on_miss() -> TestResult {
     let index = WorkspaceIndex::new();
     for i in 0..50 {
         let (uri, src) = module(i)?;
-        index.index_file(uri, src).ok();
+        index.index_file(uri, src)?;
     }
     let before = MemorySnapshot::capture(&index);
 
@@ -122,7 +137,7 @@ fn repeated_index_remove_cycles_do_not_accumulate() -> TestResult {
     // Warmup cycle to establish baseline after the first round of allocations.
     for i in 0..40 {
         let (uri, src) = module(i)?;
-        index.index_file(uri, src).ok();
+        index.index_file(uri, src)?;
     }
     for i in 0..40 {
         let (uri, _) = module(i)?;
@@ -135,7 +150,7 @@ fn repeated_index_remove_cycles_do_not_accumulate() -> TestResult {
     for _cycle in 0..20 {
         for i in 0..40 {
             let (uri, src) = module(i)?;
-            index.index_file(uri, src).ok();
+            index.index_file(uri, src)?;
         }
         for i in 0..40 {
             let (uri, _) = module(i)?;
@@ -153,6 +168,7 @@ fn repeated_index_remove_cycles_do_not_accumulate() -> TestResult {
         "20 index/remove cycles must leave global_references empty"
     );
     assert_eq!(after.file_count, 0, "no files should remain after cycles");
+    assert_v2_measured_families_empty(&after, "after repeated cycles");
     Ok(())
 }
 
@@ -164,7 +180,7 @@ fn cycle_footprint_matches_single_shot_footprint() -> TestResult {
     let single_shot = WorkspaceIndex::new();
     for i in 0..60 {
         let (uri, src) = module(i)?;
-        single_shot.index_file(uri, src).ok();
+        single_shot.index_file(uri, src)?;
     }
     let single = MemorySnapshot::capture(&single_shot);
 
@@ -172,7 +188,7 @@ fn cycle_footprint_matches_single_shot_footprint() -> TestResult {
     for _ in 0..5 {
         for i in 0..60 {
             let (uri, src) = module(i)?;
-            cycled.index_file(uri, src).ok();
+            cycled.index_file(uri, src)?;
         }
         for i in 0..60 {
             let (uri, _) = module(i)?;
@@ -182,7 +198,7 @@ fn cycle_footprint_matches_single_shot_footprint() -> TestResult {
     // Final indexing pass: leave the cycled index populated.
     for i in 0..60 {
         let (uri, src) = module(i)?;
-        cycled.index_file(uri, src).ok();
+        cycled.index_file(uri, src)?;
     }
     let cycled_snap = MemorySnapshot::capture(&cycled);
 
@@ -217,7 +233,7 @@ fn bytes_per_symbol_stays_under_threshold_at_500_files() -> TestResult {
     let index = WorkspaceIndex::new();
     for i in 0..500 {
         let (uri, src) = module(i)?;
-        index.index_file(uri, src).ok();
+        index.index_file(uri, src)?;
     }
 
     let snap = MemorySnapshot::capture(&index);
