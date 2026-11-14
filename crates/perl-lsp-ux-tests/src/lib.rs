@@ -71,7 +71,10 @@ pub use client::{
 };
 pub use diagnostics::DiagnosticsTracker;
 pub use env::{PathGuard, RestrictedPath};
-pub use observation::{Inbox, InboxSnapshot, ObservationId, StreamEnd, WaitEnd};
+pub use observation::{
+    CapturedMessage, CursorOwnerMismatch, Inbox, InboxSnapshot, ObservationId, ServerMessageCursor,
+    StreamEnd, WaitEnd,
+};
 pub use project_fixture::{
     ProjectFixtureFile, create_fixture_harness, fixture_content, fixture_scenario_config,
     load_catalyst_fixture_files, load_dancer2_fixture_files, load_mojolicious_fixture_files,
@@ -210,6 +213,40 @@ impl std::fmt::Display for IndexReadyWaitEnd {
 }
 
 impl std::error::Error for IndexReadyWaitEnd {}
+
+fn wait_for_index_ready_after(
+    inbox: &Inbox,
+    after: &ServerMessageCursor,
+    timeout: Duration,
+) -> std::result::Result<(), IndexReadyWaitEnd> {
+    let mut last_observed = None;
+    inbox
+        .wait_for_events_after(after, timeout, |captured| {
+            last_observed = captured
+                .iter()
+                .rev()
+                .filter_map(|message| {
+                    (message.value.get("method")?.as_str()? == "perl-lsp/index-ready")
+                        .then(|| message.value.get("params").cloned())
+                        .flatten()
+                })
+                .next();
+            captured
+                .iter()
+                .any(|message| {
+                    message.value.get("method").and_then(|m| m.as_str())
+                        == Some("perl-lsp/index-ready")
+                        && message
+                            .value
+                            .get("params")
+                            .and_then(|params| params.get("ready"))
+                            .and_then(|ready| ready.as_bool())
+                            == Some(true)
+                })
+                .then_some(())
+        })
+        .map_err(|end| IndexReadyWaitEnd { end, last_observed })
+}
 
 fn wait_for_index_ready_event(
     events: &impl client::EventSource,
@@ -922,7 +959,16 @@ impl UxHarness {
         &self,
         timeout: Duration,
     ) -> std::result::Result<(), IndexReadyWaitEnd> {
-        self.wait_for_index_ready_event_after(0, timeout)
+        wait_for_index_ready_after(self.client.inbox(), &self.client.origin_cursor(), timeout)
+    }
+
+    /// Wait until a ready-index notification arrives after `cursor`.
+    pub fn wait_for_index_ready_after(
+        &self,
+        after: ServerMessageCursor,
+        timeout: Duration,
+    ) -> std::result::Result<(), IndexReadyWaitEnd> {
+        wait_for_index_ready_after(self.client.inbox(), &after, timeout)
     }
 
     /// Count ready-index notifications already observed by the harness.
@@ -1074,6 +1120,42 @@ impl UxHarness {
     pub fn diagnostics_event_count(&self, relative_path: &str) -> usize {
         let uri = self.workspace.uri(relative_path);
         DiagnosticsTracker::count_for_uri(&self.client.peek_events(), &uri)
+    }
+
+    /// Capture-order checkpoint for server messages on this harness client.
+    #[must_use]
+    pub fn server_message_cursor(&self) -> ServerMessageCursor {
+        self.client.server_message_cursor()
+    }
+
+    /// Wait for a diagnostics notification strictly after `cursor`.
+    pub fn wait_for_diagnostics_after(
+        &self,
+        relative_path: &str,
+        after: ServerMessageCursor,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
+        let uri = self.workspace.uri(relative_path);
+        DiagnosticsTracker::wait_for_uri_after_cursor(self.client.inbox(), &uri, &after, timeout)
+    }
+
+    /// Wait for a diagnostics notification with an explicit version strictly
+    /// after `cursor`.
+    pub fn wait_for_diagnostics_after_and_version(
+        &self,
+        relative_path: &str,
+        after: ServerMessageCursor,
+        expected_version: i32,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
+        let uri = self.workspace.uri(relative_path);
+        DiagnosticsTracker::wait_for_uri_after_cursor_and_version(
+            self.client.inbox(),
+            &uri,
+            &after,
+            i64::from(expected_version),
+            timeout,
+        )
     }
 
     /// Wait for a diagnostics notification after `already_seen` prior
@@ -2290,5 +2372,50 @@ mod quality_poll_outcome_tests {
             described.contains("deadline expired after 0ms"),
             "sub-ms timeouts must still emit the marker; got: {described}"
         );
+    }
+}
+
+#[cfg(test)]
+mod event_cursor {
+    use super::{Inbox, wait_for_index_ready_after};
+    use crate::observation::StreamEnd;
+    use serde_json::json;
+    use std::time::Duration;
+
+    fn index_ready(ready: bool) -> serde_json::Value {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "perl-lsp/index-ready",
+            "params": { "ready": ready, "state": if ready { "ready" } else { "building" } }
+        })
+    }
+
+    #[test]
+    fn index_ready_wait_after_cursor_survives_intervening_drain() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(index_ready(true));
+        let cursor = inbox.server_message_cursor();
+        let _ = inbox.drain_events();
+        inbox.push_event(index_ready(false));
+        inbox.push_event(index_ready(true));
+        wait_for_index_ready_after(&inbox, &cursor, Duration::from_secs(1))?;
+        Ok(())
+    }
+
+    #[test]
+    fn wait_for_after_rejects_foreign_cursor() -> anyhow::Result<()> {
+        let left = Inbox::new();
+        let right = Inbox::new();
+        let cursor = left.server_message_cursor();
+        let matched = right.wait_for_events_after(&cursor, Duration::ZERO, |_| Some(()));
+        let end = match matched {
+            Err(end) => end,
+            Ok(()) => anyhow::bail!("foreign cursor must not satisfy a wait"),
+        };
+        anyhow::ensure!(
+            matches!(end, crate::WaitEnd::Ended(StreamEnd::TransportFailure { .. })),
+            "expected typed transport failure for foreign cursor, got {end:?}"
+        );
+        Ok(())
     }
 }
