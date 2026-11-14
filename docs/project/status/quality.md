@@ -31,7 +31,7 @@
 | perl-incremental-parsing | — | 13 |
 | perl-lexer | — | 312 |
 | perl-line-index | — | 40 |
-| perl-lsp | — | 2695 |
+| perl-lsp | — | 2700 |
 | perl-lsp-perltidy | — | 58 |
 | perl-lsp-rs-core | — | 4711 |
 | perl-lsp-ux-tests | — | 274 |
@@ -63,7 +63,7 @@
 | perl-workspace-core | — | 372 |
 | tree-sitter-perl-c | — | 19 |
 | tree-sitter-perl-rs | — | 57 |
-| xtask | — | 1064 |
+| xtask | — | 1073 |
 <!-- END: QUALITY_CRATE_TABLE -->
 
 ## Flaky Test Registry
