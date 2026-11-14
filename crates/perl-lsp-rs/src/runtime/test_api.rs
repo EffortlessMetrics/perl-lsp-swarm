@@ -1111,6 +1111,50 @@ impl LspServer {
             .collect()
     }
 
+    /// Test-only: begin an exclusive #7301 text-sync work capture session.
+    pub fn test_text_sync_work_capture_start(
+        &self,
+    ) -> crate::runtime::text_sync_work::CaptureGuard {
+        let _capture_owner =
+            crate::runtime::text_sync_work::owner_scope(std::ptr::from_ref(self) as usize);
+        crate::runtime::text_sync_work::capture::test_lock(|| {
+            self.test_parse_worker_metrics().map(|m| {
+                crate::runtime::text_sync_work::ParseWorkerTotals {
+                    jobs_enqueued: m.jobs_enqueued,
+                    jobs_coalesced: m.jobs_coalesced,
+                    jobs_rejected_stale: m.jobs_rejected_stale,
+                    jobs_published: m.jobs_published,
+                }
+            })
+        })
+    }
+
+    /// Test-only: settle this document's worker, then drain and build a receipt.
+    pub fn test_text_sync_work_capture_receipt(
+        &self,
+        uri: &str,
+        workload: &str,
+        reproduction: &str,
+    ) -> crate::runtime::text_sync_work::TextSyncWorkReceipt {
+        let worker_settled = self.parse_worker().is_none()
+            || self.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(30));
+        let (events, _baseline) =
+            crate::runtime::text_sync_work::capture::drain_for_uri(&self.normalize_uri_key(uri));
+        let parse_worker = self
+            .test_parse_worker_metrics()
+            .and_then(|_| crate::runtime::text_sync_work::parse_worker_totals_for_events(&events));
+        let mut receipt = crate::runtime::text_sync_work::build_receipt(
+            workload,
+            reproduction,
+            events,
+            parse_worker,
+        );
+        if !worker_settled {
+            receipt.instrument_status = crate::runtime::text_sync_work::InstrumentStatus::NotProven;
+        }
+        receipt
+    }
+
     /// Install the production off-lock async parse worker (#3396 Phase 3)
     /// on this server.
     ///

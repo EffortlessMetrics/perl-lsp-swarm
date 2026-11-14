@@ -180,6 +180,8 @@ impl LspServer {
         params: Option<Value>,
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
+        let _capture_owner =
+            crate::runtime::text_sync_work::owner_scope(std::ptr::from_ref(self) as usize);
         if let Some(params) = params {
             // Sink-owned admission (#8895): this operation turns URIs into
             // paths and stores buffers, so it owns URI policy. The check runs
@@ -192,6 +194,7 @@ impl LspServer {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
             let admission_key = self.normalize_uri_key(uri);
+            let _capture_document = crate::runtime::text_sync_work::document_scope(&admission_key);
             if let Err(err) = crate::security::validate_document_uri(&admission_key) {
                 return Err(invalid_params(&err.to_string()));
             }
@@ -497,7 +500,29 @@ impl LspServer {
                 ParsedSnapshot::from_parse_result(doc_generation, text, ast_arc.clone(), errors)
                     .with_regex_analysis(regex_analysis),
             );
-            doc_state.publish_parsed_if_current(doc_generation, Arc::clone(&snapshot));
+            if crate::runtime::text_sync_work::is_enabled() {
+                let tail = uri_tail(uri);
+                let byte_len = u64::try_from(text.len()).unwrap_or(u64::MAX);
+                crate::runtime::text_sync_work::record_full_source_bytes_copied(
+                    tail.clone(),
+                    Some(version),
+                    doc_generation,
+                    byte_len,
+                    "did_open_document_state_owned_string",
+                    "document_state",
+                    "sync",
+                );
+            }
+            if doc_state.publish_parsed_if_current(doc_generation, Arc::clone(&snapshot))
+                && crate::runtime::text_sync_work::is_enabled()
+            {
+                crate::runtime::text_sync_work::record_accepted_parsed_snapshot(
+                    uri_tail(uri),
+                    doc_generation,
+                    u64::try_from(text.len()).unwrap_or(u64::MAX),
+                    "sync",
+                );
+            }
 
             {
                 #[cfg(feature = "workspace")]
@@ -719,6 +744,8 @@ impl LspServer {
         cancellation_token: Option<Arc<AtomicBool>>,
         allow_same_version: bool,
     ) -> Result<(), JsonRpcError> {
+        let _capture_owner =
+            crate::runtime::text_sync_work::owner_scope(std::ptr::from_ref(self) as usize);
         if let Some(params) = params {
             // Direct callers bypass the JSON-RPC dispatcher, so retain the
             // same admission guard before accepted-state mutation.
@@ -732,6 +759,7 @@ impl LspServer {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
             let admission_key = self.normalize_uri_key(uri);
+            let _capture_document = crate::runtime::text_sync_work::document_scope(&admission_key);
             if let Err(err) = crate::security::validate_document_uri(&admission_key) {
                 return Err(invalid_params(&err.to_string()));
             }
@@ -757,11 +785,39 @@ impl LspServer {
                 // Phase-1 latency instrumentation (opt-in via PERL_LSP_TIMING).
                 // Instrumentation only — no behavior change to the mutation path.
                 let timing_on = crate::runtime::timing::is_enabled();
+                let mut sync_path: &'static str =
+                    if !self.incremental_eager_enabled() && self.parse_worker().is_some() {
+                        "pending"
+                    } else {
+                        "sync_fallback"
+                    };
                 let t_did_change_start = std::time::Instant::now();
 
-                // Get current document state or create new one
+                // Get current document state or create new one. Disabled capture
+                // must not allocate a bounded URI label on every edit.
+                let work_uri_tail = if crate::runtime::text_sync_work::is_enabled() {
+                    uri_tail(uri)
+                } else {
+                    String::new()
+                };
+                let work_gen_hint = if crate::runtime::text_sync_work::is_enabled() {
+                    let docs = self.documents.lock();
+                    docs.get(&self.normalize_uri_key(uri))
+                        .or_else(|| docs.get(uri))
+                        .map(|d| d.current_generation())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
                 let t_lock_start = std::time::Instant::now();
-                let mut documents = self.documents.lock();
+                let mut documents = crate::runtime::text_sync_work::DocumentsLockScope::enter(
+                    &self.documents,
+                    work_uri_tail.clone(),
+                    incoming_version,
+                    work_gen_hint,
+                    "did_change_mutation",
+                    sync_path,
+                );
                 let lock_wait_ms = crate::runtime::timing::elapsed_ms(t_lock_start);
                 let normalized_uri = self.normalize_uri_key(uri);
                 let existing_doc =
@@ -961,6 +1017,50 @@ impl LspServer {
                 let t_rope_start = std::time::Instant::now();
                 let text_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
+                if crate::runtime::text_sync_work::is_enabled() {
+                    let byte_len = u64::try_from(text.len()).unwrap_or(u64::MAX);
+                    crate::runtime::text_sync_work::record_full_source_materialized(
+                        work_uri_tail.clone(),
+                        incoming_version,
+                        next_gen,
+                        byte_len,
+                        "did_change_materialize",
+                        sync_path,
+                    );
+                    crate::runtime::text_sync_work::record_full_source_bytes_copied(
+                        work_uri_tail.clone(),
+                        incoming_version,
+                        next_gen,
+                        byte_len,
+                        "did_change_materialize",
+                        "document_state",
+                        sync_path,
+                    );
+                    crate::runtime::text_sync_work::record_full_source_allocation(
+                        work_uri_tail.clone(),
+                        incoming_version,
+                        next_gen,
+                        byte_len,
+                        "did_change_arc_str",
+                        "parse_job_transport",
+                        sync_path,
+                    );
+                    crate::runtime::text_sync_work::record_full_source_bytes_copied(
+                        work_uri_tail.clone(),
+                        incoming_version,
+                        next_gen,
+                        byte_len,
+                        "did_change_arc_str",
+                        "parse_job_transport",
+                        sync_path,
+                    );
+                    crate::runtime::text_sync_work::record_rope_rebuilt(
+                        work_uri_tail.clone(),
+                        incoming_version,
+                        next_gen,
+                        sync_path,
+                    );
+                }
                 tracing::debug!("Document changed: {} (version {})", uri, version);
 
                 #[cfg(feature = "incremental")]
@@ -1166,6 +1266,18 @@ impl LspServer {
                     // docs and the #3589 pending-parse provider
                     // policies.
                     doc_state.replace_text_state(doc.rope.clone(), text_arc.to_string(), version);
+                    if crate::runtime::text_sync_work::is_enabled() {
+                        let byte_len = u64::try_from(text_arc.len()).unwrap_or(u64::MAX);
+                        crate::runtime::text_sync_work::record_full_source_bytes_copied(
+                            work_uri_tail.clone(),
+                            incoming_version,
+                            next_gen,
+                            byte_len,
+                            "replace_text_state_owned_string",
+                            "document_state",
+                            sync_path,
+                        );
+                    }
                     #[cfg(feature = "incremental")]
                     {
                         doc_state.incremental_doc = None;
@@ -1189,6 +1301,23 @@ impl LspServer {
                         allow_same_version,
                     );
                     if enqueue_result.is_ok() {
+                        sync_path = "async";
+                        if crate::runtime::text_sync_work::is_enabled() {
+                            crate::runtime::text_sync_work::record_source_buffer_share(
+                                work_uri_tail.clone(),
+                                next_gen,
+                                "parse_worker_enqueue",
+                                "parse_worker",
+                                sync_path,
+                            );
+                            let byte_len = u64::try_from(text_arc.len()).unwrap_or(u64::MAX);
+                            crate::runtime::text_sync_work::record_parse_worker_enqueue(
+                                work_uri_tail,
+                                next_gen,
+                                byte_len,
+                                sync_path,
+                            );
+                        }
                         documents.insert(normalized_uri.clone(), doc_state);
                         drop(documents);
 
@@ -1454,7 +1583,7 @@ impl LspServer {
                 doc_state.publish_parsed_if_current(next_gen, Arc::clone(&snapshot));
 
                 // Check if a newer change arrived while we were parsing
-                if let Some(existing_doc) = self.get_document(&documents, uri)
+                if let Some(existing_doc) = self.get_document(documents.guard(), uri)
                     && (existing_doc.generation.load(Ordering::SeqCst) != next_gen
                         || existing_doc.version > target_version)
                 {
@@ -1583,6 +1712,24 @@ impl LspServer {
     /// scale, `documents.lock()`-released-before-`commit()`-runs) window a
     /// newer edit can still land in.
     pub(crate) fn run_post_parse_side_effects(&self, ticket: parse_worker::PublishedParseTicket) {
+        let _capture_owner =
+            crate::runtime::text_sync_work::owner_scope(std::ptr::from_ref(self) as usize);
+        if crate::runtime::text_sync_work::is_enabled() {
+            let _capture_document = crate::runtime::text_sync_work::document_scope(
+                &self.normalize_uri_key(&ticket.uri),
+            );
+            // This method is reached only after a freshness-gated publication,
+            // so it supplies real document identity and distinguishes accepted
+            // snapshots from constructor work later rejected as stale.
+            let sync_path =
+                if ticket.settle_notified_by_worker { "async" } else { "sync_fallback" };
+            crate::runtime::text_sync_work::record_accepted_parsed_snapshot(
+                uri_tail(&ticket.uri),
+                ticket.generation,
+                u64::try_from(ticket.snapshot.source().len()).unwrap_or(u64::MAX),
+                sync_path,
+            );
+        }
         let ast_arc = ticket.snapshot.ast().cloned();
         // The async worker's publish is the acceptance event for this exact
         // ticket (#11675); classify the parser outcome for the readiness
