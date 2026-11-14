@@ -1,4 +1,4 @@
-use crate::tasks::agent_lease::{AgentLease, read_lease};
+use crate::tasks::agent_lease::{self, AgentLease, read_lease};
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -7,12 +7,13 @@ use std::fs;
 use std::path::Path;
 
 /// Wire version this producer emits and every consumer pins (#15373).
-const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: &str = "agent_receipt.v1";
+const SUPPORTED_SCHEMA_VERSION: &str = SCHEMA_VERSION;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentLeaseReceipt {
-    pub schema_version: u32,
+    pub schema_version: String,
     pub task_id: String,
     pub snapshot_id: String,
     pub head_sha: String,
@@ -66,10 +67,11 @@ fn validate_against_lease(receipt: &AgentLeaseReceipt, lease: &AgentLease) -> Re
     // compatible future lease must not validate under unsupported lease
     // semantics. `read_lease` itself stays version-agnostic; the pin lives on
     // the validating paths (`verify` pins it separately).
-    if lease.schema_version != SUPPORTED_SCHEMA_VERSION {
+    if lease.schema_version != agent_lease::SCHEMA_VERSION {
         bail!(
-            "unsupported agent lease schema_version: {} (expected {SUPPORTED_SCHEMA_VERSION})",
-            lease.schema_version
+            "unsupported agent lease schema_version: {} (expected {})",
+            lease.schema_version,
+            agent_lease::SCHEMA_VERSION
         );
     }
     if receipt.task_id != lease.task.task_id {
@@ -147,7 +149,7 @@ mod tests {
         let receipt = valid_receipt("comment_upsert");
         let after_receipt = Utc::now();
 
-        assert_eq!(receipt.schema_version, 1);
+        assert_eq!(receipt.schema_version, SCHEMA_VERSION);
         assert_eq!(receipt.task_id, "task-6853");
         assert_eq!(receipt.snapshot_id, "snap-001");
         assert_eq!(receipt.head_sha, "abc123");
@@ -169,7 +171,7 @@ mod tests {
         let lease = valid_lease(expires_at)?;
         let after_lease = Utc::now();
 
-        assert_eq!(lease.schema_version, 1);
+        assert_eq!(lease.schema_version, agent_lease::SCHEMA_VERSION);
         assert!(
             lease.issued_at >= before_lease && lease.issued_at <= after_lease,
             "lease timestamp should be captured while building the fixture"
@@ -287,7 +289,7 @@ mod tests {
         // v1 reader was never taught (#16012 review).
         let receipt = valid_receipt("comment_upsert");
         let mut lease = valid_lease(Utc::now() + Duration::days(1))?;
-        lease.schema_version = 2;
+        lease.schema_version = "agent_lease.v2".to_owned();
         let err = validate_against_lease(&receipt, &lease).err().ok_or_else(|| {
             color_eyre::eyre::eyre!("future lease schema_version should be rejected")
         })?;
@@ -359,13 +361,15 @@ mod tests {
         let path = temp.path().join("receipt.json");
 
         let mut future = valid_receipt("comment_upsert");
-        future.schema_version = 2;
+        future.schema_version = "agent_receipt.v2".to_owned();
         fs::write(&path, serde_json::to_string_pretty(&future)?)?;
         let err = validate(&path)
             .err()
             .ok_or_else(|| color_eyre::eyre::eyre!("v2 receipt should fail validation"))?;
         ensure!(
-            err.to_string().contains("unsupported agent receipt schema_version: 2 (expected 1)"),
+            err.to_string().contains(
+                "unsupported agent receipt schema_version: agent_receipt.v2 (expected agent_receipt.v1)"
+            ),
             "got error: {err}"
         );
 
@@ -387,7 +391,7 @@ mod tests {
 
     fn valid_receipt(mutation: &str) -> AgentLeaseReceipt {
         AgentLeaseReceipt {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION.to_owned(),
             task_id: "task-6853".to_string(),
             snapshot_id: "snap-001".to_string(),
             head_sha: "abc123".to_string(),

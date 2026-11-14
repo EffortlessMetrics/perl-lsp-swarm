@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import stat
+import sys
 import tempfile
 import textwrap
 import threading
@@ -142,6 +143,56 @@ class DapScorecardRuntimeTests(unittest.TestCase):
                 "envelope" in str(raised.exception) or "bounded capacity" in str(raised.exception),
                 str(raised.exception),
             )
+
+    def test_output_flood_does_not_starve_lifecycle_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            binary = self._executable(
+                Path(temp_dir),
+                "output-flood-adapter.py",
+                f"""
+                import json
+                import sys
+                import time
+
+                for index in range({TRANSPORT.MESSAGE_QUEUE_CAPACITY * 3}):
+                    body = json.dumps(
+                        {{
+                            "type": "event",
+                            "seq": index + 1,
+                            "event": "output",
+                            "body": {{"output": str(index)}},
+                        }},
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    sys.stdout.buffer.write(
+                        f"Content-Length: {{len(body)}}\\r\\n\\r\\n".encode("ascii") + body
+                    )
+                    sys.stdout.buffer.flush()
+                    time.sleep(0.001)
+                body = json.dumps(
+                    {{"type": "event", "seq": 1000, "event": "stopped", "body": {{"threadId": 7}}}},
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                sys.stdout.buffer.write(
+                    f"Content-Length: {{len(body)}}\\r\\n\\r\\n".encode("ascii") + body
+                )
+                sys.stdout.buffer.flush()
+                time.sleep(30)
+                """,
+            )
+            real_popen = TRANSPORT.subprocess.Popen
+
+            def spawn_python(argv, **kwargs):
+                return real_popen([sys.executable, str(argv[0]), *argv[1:]], **kwargs)
+
+            TRANSPORT.subprocess.Popen = spawn_python
+            try:
+                with TRANSPORT.DapProcess(binary, 3.0) as dap:
+                    time.sleep(0.5)
+                    stopped = dap.wait_event("stopped")
+                    self.assertEqual(stopped["threadId"], 7)
+            finally:
+                TRANSPORT.subprocess.Popen = real_popen
 
     def test_stderr_tail_is_hard_byte_bounded(self) -> None:
         suffix = b"TAIL"

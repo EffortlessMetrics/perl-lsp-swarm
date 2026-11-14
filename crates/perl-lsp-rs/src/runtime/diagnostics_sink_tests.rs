@@ -124,6 +124,12 @@ mod tests {
             .expect("didOpen should succeed");
         assert!(wait_for_frames(&buf, 1), "initial open should publish diagnostics");
         buf.lock().clear();
+        // Detach the sink ledger: the identical-content law (#18774) would
+        // legitimately suppress a byte-identical republish of the didOpen
+        // payload. This test's subject is the debouncer-fallback mechanism,
+        // so it needs the fallback publication to reach the wire
+        // unconditionally.
+        server.test_clear_committed_push_diagnostics();
 
         server.install_diagnostic_debouncer(
             super::super::diagnostic_debounce::DiagnosticDebouncer::unavailable_for_test(),

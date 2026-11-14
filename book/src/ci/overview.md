@@ -17,7 +17,11 @@ Runs on every pull request for fast feedback.
 
 ### Merge Gate
 
-Runs on `merge-ready`, pushes to `main` or `master`, and manual workflow runs.
+Runs on pull request activity against `main` or `master` (`opened`,
+`synchronize`, `reopened`, `ready_for_review`, `converted_to_draft`), merge
+queue events, pushes to `main` or `master`, and manual workflow runs. PR labels
+(including `merge-ready`) do not trigger the Merge Gate or `ci.yml`; `ci.yml` deliberately excludes
+`labeled` and `unlabeled`.
 This is the server-side equivalent of the local `nix develop -c just ci-gate`
 gate.
 
@@ -42,7 +46,7 @@ Example registry image override:
 
 ```yaml
 default:
-  image: $CI_REGISTRY_IMAGE/ci/rust:1.95-bookworm
+  image: $CI_REGISTRY_IMAGE/ci/rust:1.100-bookworm
 ```
 
 ## Local Equivalents

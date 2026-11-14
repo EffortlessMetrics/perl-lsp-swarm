@@ -781,14 +781,14 @@ const DEV_ENVIRONMENT_SCHEMA: &str = "perllsp-doctor-dev-environment-v1";
 
 /// Workspace MSRV label ([workspace.package] rust-version). Cross-checked
 /// against rust-toolchain.toml and the crate manifest by the pin test.
-const WORKSPACE_RUST_VERSION_LABEL: &str = "1.95";
+const WORKSPACE_RUST_VERSION_LABEL: &str = "1.100";
 const WORKSPACE_RUST_VERSION_MAJOR: u64 = 1;
-const WORKSPACE_RUST_VERSION_MINOR: u64 = 95;
+const WORKSPACE_RUST_VERSION_MINOR: u64 = 100;
 
 /// Channel pinned by rust-toolchain.toml. A rustup shim can select it, but
 /// resolved path provenance alone cannot prove that cwd and overrides did
 /// select it. Distro cargo bypasses that selection mechanism (#12595).
-const TOOLCHAIN_CHANNEL_LABEL: &str = "1.95.0";
+const TOOLCHAIN_CHANNEL_LABEL: &str = "1.100.0";
 
 /// Prerequisite found and healthy for its role.
 const STATUS_PRESENT: &str = "present";
@@ -1212,7 +1212,7 @@ fn run_file_symlink_probe(target: &Path, link: &Path) -> SymlinkPrivilegeReport 
 // ── Cargo per shell flavor ─────────────────────────────────────────────────
 
 /// Parse the first `major.minor.patch` word of a `cargo --version` line such
-/// as `cargo 1.95.0 (8f3d0b0ac 2026-01-30)`; distro builds append their own
+/// as `cargo 1.100.0 (8f3d0b0ac 2026-01-30)`; distro builds append their own
 /// suffixes after the patch number.
 fn parse_cargo_version_line(line: &str) -> Option<VersionTriple> {
     line.split_whitespace().find_map(parse_version_word)
@@ -1602,10 +1602,8 @@ fn parse_shell_cargo_probe_output(output: &str) -> Result<ShellCargoProbe, Strin
     let mut cargo_home = None;
     let mut cwd_state = None;
     let mut cwd = None;
-    for pair in fields.chunks_exact(2) {
-        let [key, value] = pair else {
-            return Err("shell cargo probe emitted an incomplete NUL-delimited field".to_string());
-        };
+    for pair in fields.as_chunks::<2>().0 {
+        let [key, value] = pair;
         let slot = match *key {
             "cargo_path" => &mut cargo_path,
             "cargo_version" => &mut version_output,
@@ -1690,8 +1688,12 @@ fn classify_windows_bash_path(path_text: &str) -> WindowsBashKind {
 /// ordinary children stay UTF-8, so both shapes must land as readable text.
 fn decode_shell_output(bytes: &[u8]) -> String {
     if looks_like_utf16le(bytes) {
-        let units: Vec<u16> =
-            bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
         String::from_utf16_lossy(&units)
     } else {
         String::from_utf8_lossy(bytes).into_owned()
@@ -4320,7 +4322,7 @@ mod tests {
         let channel = channel_line.split('"').nth(1).ok_or("quoted channel value")?;
 
         assert_eq!(channel, TOOLCHAIN_CHANNEL_LABEL, "rust-toolchain.toml drifted");
-        assert_eq!(TOOLCHAIN_CHANNEL_LABEL, "1.95.0");
+        assert_eq!(TOOLCHAIN_CHANNEL_LABEL, "1.100.0");
         let mut channel_parts = TOOLCHAIN_CHANNEL_LABEL.split('.');
         let channel_major = channel_parts.next().and_then(|part| part.parse::<u64>().ok());
         let channel_minor = channel_parts.next().and_then(|part| part.parse::<u64>().ok());
@@ -4337,8 +4339,8 @@ mod tests {
     #[test]
     fn parse_cargo_version_line_parses_rustup_and_distro_banners() {
         assert_eq!(
-            parse_cargo_version_line("cargo 1.95.0 (8f3d0b0ac 2026-01-30)"),
-            Some((1, 95, 0))
+            parse_cargo_version_line("cargo 1.100.0 (8f3d0b0ac 2026-01-30)"),
+            Some((1, 100, 0))
         );
         assert_eq!(
             parse_cargo_version_line("cargo 1.75.0 (2ca31a4c3 2023-12-26)"),
@@ -4354,9 +4356,10 @@ mod tests {
 
     #[test]
     fn version_below_workspace_pin_boundary() {
-        assert!(version_below_workspace_pin((1, 94, 9)));
-        assert!(!version_below_workspace_pin((1, 95, 0)));
-        assert!(!version_below_workspace_pin((1, 96, 0)));
+        assert!(version_below_workspace_pin((1, 95, 0)));
+        assert!(version_below_workspace_pin((1, 99, 9)));
+        assert!(!version_below_workspace_pin((1, 100, 0)));
+        assert!(!version_below_workspace_pin((1, 101, 0)));
         assert!(!version_below_workspace_pin((2, 0, 0)));
     }
 
@@ -4373,7 +4376,7 @@ mod tests {
         assert_eq!(stale_meets, Some(false));
 
         let (healthy, healthy_meets) =
-            reachable_cargo_status(Some(CargoProvenance::RustupShim), Some((1, 95, 0)));
+            reachable_cargo_status(Some(CargoProvenance::RustupShim), Some((1, 100, 0)));
         assert_eq!(healthy, STATUS_PRESENT);
         assert_eq!(healthy_meets, Some(true));
 
@@ -4442,7 +4445,7 @@ mod tests {
             (r"D:\rustup-cache\bin-other\cargo.exe", &custom_windows_context, None),
             (r"D:\rustup-cache\bin\nested\cargo.exe", &custom_windows_context, None),
             (
-                "/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo",
+                "/home/dev/.rustup/toolchains/1.100.0-x86_64/bin/cargo",
                 &posix_context,
                 Some(CargoProvenance::RustupToolchain),
             ),
@@ -4463,8 +4466,8 @@ mod tests {
     fn direct_rustup_toolchain_does_not_claim_to_honor_workspace_pin() -> TestResult {
         let report = finish_reachable_cargo_report_with_context(
             FLAVOR_NATIVE_SHELL,
-            Some(PathBuf::from("/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo")),
-            "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+            Some(PathBuf::from("/home/dev/.rustup/toolchains/1.100.0-x86_64/bin/cargo")),
+            "cargo 1.100.0 (8f3d0b0ac 2026-01-30)",
             &CargoProbeContext::shell(Some("/home/dev".to_string()), None, None),
         );
 
@@ -4484,7 +4487,7 @@ mod tests {
         let report = finish_reachable_cargo_report_with_context(
             FLAVOR_NATIVE_SHELL,
             Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
-            "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+            "cargo 1.100.0 (8f3d0b0ac 2026-01-30)",
             &CargoProbeContext {
                 path_style: CargoPathStyle::Windows,
                 cwd: Some(r"C:\workspace".to_string()),
@@ -4663,7 +4666,7 @@ mod tests {
                 finish_reachable_cargo_report_with_context(
                     FLAVOR_GIT_BASH,
                     Some(PathBuf::from("/home/dev/.cargo/bin/cargo")),
-                    "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+                    "cargo 1.100.0 (8f3d0b0ac 2026-01-30)",
                     &CargoProbeContext::shell(
                         Some("/home/dev".to_string()),
                         None,
@@ -4738,7 +4741,7 @@ mod tests {
         }
         assert_eq!(decode_shell_output(&utf16_bytes), utf16_text);
 
-        assert_eq!(decode_shell_output(b"cargo 1.95.0\n"), "cargo 1.95.0\n");
+        assert_eq!(decode_shell_output(b"cargo 1.100.0\n"), "cargo 1.100.0\n");
         assert_eq!(decode_shell_output(&[0xEF, 0xBB, 0xBF, b'x']), "x", "BOM stripped");
     }
 
@@ -5046,7 +5049,7 @@ mod tests {
         // Repair only the failed provider, then repeat the same command/path.
         replace_unix_executable(
             &cargo_path,
-            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 87\nprintf '%s\\n' 'cargo 1.95.0 (repaired fixture)'\n",
+            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 87\nprintf '%s\\n' 'cargo 1.100.0 (repaired fixture)'\n",
         )?;
         let output =
             probe().map_err(|error| format!("repaired fixture did not execute: {error}"))?;
@@ -5059,7 +5062,7 @@ mod tests {
         );
         assert_eq!(cargo.status, STATUS_PRESENT);
         assert_eq!(cargo.path.as_deref(), cargo_path.to_str());
-        assert_eq!(cargo.version.as_deref(), Some("cargo 1.95.0 (repaired fixture)"));
+        assert_eq!(cargo.version.as_deref(), Some("cargo 1.100.0 (repaired fixture)"));
         assert!(cargo.error.is_none());
         assert!(cargo.fix.is_none());
         let report = environment_with_cargo(cargo);
@@ -5110,7 +5113,7 @@ mod tests {
     fn shell_cargo_probe_parser_preserves_empty_and_relative_context() -> TestResult {
         let output = concat!(
             "cargo_path\0/usr/bin/cargo\0",
-            "cargo_version\0cargo 1.95.0 (fixture)\0",
+            "cargo_version\0cargo 1.100.0 (fixture)\0",
             "home_state\0set\0home\0\0",
             "cargo_home_state\0set\0cargo_home\0.rustup-cache\0",
             "cwd_state\0set\0cwd\0\0",
@@ -5119,7 +5122,7 @@ mod tests {
         if probe.cargo_path != Some(PathBuf::from("/usr/bin/cargo")) {
             return Err(format!("unexpected shell cargo path {:?}", probe.cargo_path).into());
         }
-        if probe.version_output != "cargo 1.95.0 (fixture)" {
+        if probe.version_output != "cargo 1.100.0 (fixture)" {
             return Err(format!("unexpected shell cargo version {:?}", probe.version_output).into());
         }
         if probe.context.home != Some(String::new())
@@ -5164,7 +5167,7 @@ mod tests {
                 ("/different-home/.cargo/bin/cargo", PROVENANCE_UNKNOWN),
             ] {
                 let output = format!(
-                    "cargo_path\0{cargo_path}\0cargo_version\0cargo 1.95.0\0\
+                    "cargo_path\0{cargo_path}\0cargo_version\0cargo 1.100.0\0\
                      home_state\0set\0home\0/shell-home\0\
                      cargo_home_state\0unset\0cargo_home\0\0\
                      cwd_state\0set\0cwd\0/workspace\0"
@@ -5175,7 +5178,7 @@ mod tests {
                 );
                 if report.status != STATUS_PRESENT
                     || report.path.as_deref() != Some(cargo_path)
-                    || report.version.as_deref() != Some("cargo 1.95.0")
+                    || report.version.as_deref() != Some("cargo 1.100.0")
                     || report.provenance != expected_provenance
                     || report.meets_workspace_pin != Some(true)
                     || report.honors_toolchain_file.is_some()
@@ -5191,7 +5194,7 @@ mod tests {
     #[test]
     fn shell_cargo_report_preserves_failed_record_path_and_stderr() -> TestResult {
         let output = concat!(
-            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.100.0\0",
             "home_state\0set\0home\0/home/dev\0",
             "cargo_home_state\0unset\0cargo_home\0\0",
             "cwd_state\0set\0cwd\0/workspace\0",
@@ -5254,7 +5257,7 @@ mod tests {
     #[test]
     fn shell_cargo_probe_parser_rejects_malformed_or_duplicate_fields() -> TestResult {
         let missing_cargo_path = concat!(
-            "cargo_version\0cargo 1.95.0\0home_state\0set\0home\0/home/dev\0",
+            "cargo_version\0cargo 1.100.0\0home_state\0set\0home\0/home/dev\0",
             "cargo_home_state\0unset\0cargo_home\0\0cwd_state\0set\0cwd\0/workspace\0",
         );
         if parse_shell_cargo_probe_output(missing_cargo_path).is_ok() {
@@ -5267,7 +5270,7 @@ mod tests {
             return Err("missing NUL record terminator was accepted".into());
         }
         let valid_body = concat!(
-            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.100.0\0",
             "home_state\0set\0home\0/home/dev\0",
             "cargo_home_state\0unset\0cargo_home\0\0",
             "cwd_state\0set\0cwd\0/workspace",
@@ -5285,7 +5288,7 @@ mod tests {
             return Err("duplicate NUL field was accepted".into());
         }
         let unset_with_value = concat!(
-            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.100.0\0",
             "home_state\0unset\0home\0/home/dev\0",
             "cargo_home_state\0unset\0cargo_home\0/workspace/.cargo\0",
             "cwd_state\0unset\0cwd\0/workspace\0",
@@ -5329,7 +5332,7 @@ mod tests {
             "shell cargo probe emitted an incomplete NUL-delimited field";
         for malformed in [
             "cargo_path\0/usr/bin/cargo\0odd\0",
-            "cargo_path\0\0cargo_version\0cargo 1.95.0\0stray\0",
+            "cargo_path\0\0cargo_version\0cargo 1.100.0\0stray\0",
         ] {
             let error = parse_shell_cargo_probe_output(malformed)
                 .err()
@@ -5339,7 +5342,7 @@ mod tests {
             }
         }
         let valid = concat!(
-            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.100.0\0",
             "home_state\0set\0home\0/home/dev\0",
             "cargo_home_state\0unset\0cargo_home\0\0",
             "cwd_state\0set\0cwd\0/workspace\0",
@@ -5773,7 +5776,7 @@ mod tests {
 
         let stale = cargo_fix_line(FLAVOR_GIT_BASH, STATUS_STALE)
             .ok_or("stale finding must carry a fix")?;
-        assert!(stale.contains("rustup toolchain install 1.95.0"));
+        assert!(stale.contains("rustup toolchain install 1.100.0"));
 
         let missing = cargo_fix_line(FLAVOR_NATIVE_SHELL, STATUS_MISSING)
             .ok_or("unreachable flavor must carry a fix")?;
@@ -5816,7 +5819,7 @@ mod tests {
                     flavor: FLAVOR_NATIVE_SHELL,
                     status: STATUS_PRESENT,
                     path: Some(r"C:\Users\dev\.cargo\bin\cargo.exe".to_string()),
-                    version: Some("cargo 1.95.0 (8f3d0b0ac 2026-01-30)".to_string()),
+                    version: Some("cargo 1.100.0 (8f3d0b0ac 2026-01-30)".to_string()),
                     provenance: PROVENANCE_RUSTUP_SHIM,
                     meets_workspace_pin: Some(true),
                     honors_toolchain_file: None,
@@ -5871,7 +5874,7 @@ mod tests {
         assert!(rendered.contains("Symlink privilege: missing"));
         assert!(rendered.contains("Developer Mode"));
         assert!(rendered.contains("- wsl: non_rustup | /usr/bin/cargo | cargo 1.75.0"));
-        assert!(rendered.contains("meets workspace pin (1.95): no"));
+        assert!(rendered.contains("meets workspace pin (1.100): no"));
         assert!(rendered.contains("honors rust-toolchain.toml: no"));
         assert!(rendered.contains("WARNING: additional distinct identities"));
         assert!(rendered.contains("strawberry"));

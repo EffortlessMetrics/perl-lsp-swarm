@@ -129,6 +129,7 @@ class ConsumerPacket(unittest.TestCase):
         self.assertEqual(phases["baseline"]["fresh_generation_repo_checks"], formats)
         self.assertEqual(phases["validation"]["additional_repo_checks"], formats)
         self.assertIn("hosted", self.collect()["source_profile"]["lane"])
+        self.assertEqual(self.collect()["source_profile"]["consumer_ripr_version"], "0.10.0")
         self.assertIn("cargo install ripr --version 0.10.0 --locked", phases["freshness_and_build"]["host_setup"])
         self.assertIn("cargo install ripr --version 0.10.0 --locked", phases["pr_evidence"]["container_setup"])
         self.assertIn("observe-xtask-build.sh container -- cargo build -p xtask --locked",

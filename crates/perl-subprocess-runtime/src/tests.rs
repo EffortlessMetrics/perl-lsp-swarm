@@ -5,8 +5,6 @@ use crate::os_runtime::{candidate_priority, select_path_candidate};
 #[cfg(windows)]
 use crate::os_runtime::{resolve_cmd_exe, resolve_command_invocation, windows_program_priority};
 use crate::*;
-#[cfg(windows)]
-use std::path::Path;
 
 #[test]
 fn test_subprocess_output_success() {
@@ -274,6 +272,43 @@ fn test_subprocess_error_usable_as_std_error_trait_object() {
 // Windows-absolute paths (`C:\tools\perltidy.exe`) on Windows.  The underlying
 // logic is identical on both; only the path syntax differs.
 
+/// Disposable directory tree for `select_path_candidate` proofs that need real
+/// on-disk candidates (canonicalize-the-file + fail-closed).
+struct SelectPathTempTree {
+    root: std::path::PathBuf,
+}
+
+impl SelectPathTempTree {
+    fn new(tag: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "perl-subprocess-select-path-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create select-path temp tree");
+        Self { root }
+    }
+
+    fn dir(&self, name: &str) -> std::path::PathBuf {
+        let dir = self.root.join(name);
+        std::fs::create_dir_all(&dir).expect("create select-path temp dir");
+        dir
+    }
+
+    fn plant(&self, dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, b"").expect("plant select-path candidate");
+        path
+    }
+}
+
+impl Drop for SelectPathTempTree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 /// Layer 1 — absolute check: a relative candidate is always rejected, returning
 /// `None`.  This pins the `!Path::new(c).is_absolute() { return false; }` seam.
 #[test]
@@ -334,18 +369,133 @@ fn availability_rejects_absolute_and_separator_bearing_inputs()
 /// raw path comparison, which is sufficient for this layer-2 proof.
 #[test]
 fn test_select_path_candidate_cwd_parent_candidate_rejected() {
-    // Build a fake CWD using the real temp dir so the absolute-path check passes,
-    // then construct a candidate whose parent IS that CWD.
-    let cwd = std::env::temp_dir();
-    // Construct a candidate path that has `cwd` as its parent directory.
-    let candidate = cwd.join("planted_tool");
+    let tree = SelectPathTempTree::new("cwd-parent");
+    let cwd = tree.dir("workspace");
+    let candidate = tree.plant(&cwd, "planted_tool");
     let candidate_str = candidate.to_string_lossy().to_string();
     let candidate_refs: Vec<&str> = vec![candidate_str.as_str()];
     let result = select_path_candidate(&candidate_refs, &cwd);
-    // The candidate's parent == cwd, so it must be excluded (Layer 2).
+    // The candidate's canonical path lies under the CWD, so it must be excluded.
     assert!(
         result.is_none(),
         "a candidate whose parent is the CWD must be rejected; got: {result:?}"
+    );
+}
+
+/// Layer 2 — CWD subtree: a candidate under `<cwd>/bin` must be rejected even
+/// though its immediate parent is not the CWD directory itself.
+#[test]
+fn test_select_path_candidate_rejects_candidate_in_cwd_subtree() {
+    let tree = SelectPathTempTree::new("cwd-subtree");
+    let cwd = tree.dir("workspace");
+    let bin = tree.dir("workspace/bin");
+    let planted = tree.plant(&bin, "perltidy.exe");
+    let safe_dir = tree.dir("usr-bin");
+    let safe = tree.plant(&safe_dir, "perltidy.exe");
+    let candidates = [planted.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_refs, &cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(safe.as_path()),
+        "a candidate under `<cwd>/bin` must be rejected; safe PATH binary must win"
+    );
+}
+
+/// Fail closed when the working directory cannot be canonicalized.
+#[test]
+fn test_select_path_candidate_fail_closed_when_cwd_missing() {
+    let tree = SelectPathTempTree::new("missing-cwd");
+    let safe_dir = tree.dir("usr-bin");
+    let safe = tree.plant(&safe_dir, "perltidy.exe");
+    let missing_cwd = tree.root.join("definitely-not-a-real-cwd");
+    let candidate_refs = [safe.to_string_lossy().into_owned()];
+    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_ref_strs, &missing_cwd);
+    assert!(result.is_none(), "missing CWD must fail closed; got: {result:?}");
+}
+
+/// At a filesystem root CWD, subtree matching would reject every absolute path;
+/// installed tools outside the root directory must remain selectable.
+#[cfg(unix)]
+#[test]
+fn test_select_path_candidate_filesystem_root_cwd_admits_usr_bin() {
+    use std::path::Path;
+    let cwd = Path::new("/");
+    let candidate = Path::new("/usr/bin/true");
+    if !candidate.is_file() {
+        return;
+    }
+    let candidate_str = candidate.to_string_lossy().to_string();
+    let result = select_path_candidate(&[candidate_str.as_str()], cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(candidate),
+        "filesystem-root CWD must not reject installed tools under /usr/bin"
+    );
+}
+
+/// Fail-closed: a non-existent absolute candidate is dropped rather than compared
+/// via a raw parent-path fallback.
+#[test]
+fn test_select_path_candidate_fail_closed_on_nonexistent_candidate() {
+    let tree = SelectPathTempTree::new("fail-closed");
+    let cwd = tree.dir("workspace");
+    let safe_dir = tree.dir("usr-bin");
+    let safe = tree.plant(&safe_dir, "perltidy.exe");
+    let missing = safe_dir.join("definitely-missing-perltidy.exe");
+    let candidates = [missing.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_refs, &cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(safe.as_path()),
+        "non-existent candidate must be dropped fail-closed; safe binary must win"
+    );
+}
+
+/// Symlink whose literal path is outside the CWD but whose target resolves inside
+/// the CWD must be rejected.
+#[cfg(unix)]
+#[test]
+fn test_select_path_candidate_rejects_symlink_target_inside_cwd() {
+    use std::os::unix::fs::symlink;
+
+    let tree = SelectPathTempTree::new("symlink-into-cwd");
+    let cwd = tree.dir("workspace");
+    let outside = tree.dir("outside");
+    let planted = tree.plant(&cwd, "perltidy.exe");
+    let link = outside.join("perltidy.exe");
+    symlink(&planted, &link).expect("create symlink into CWD");
+    let safe_dir = tree.dir("usr-bin");
+    let safe = tree.plant(&safe_dir, "perltidy.exe");
+    let candidates = [link.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_refs, &cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(safe.as_path()),
+        "symlink into CWD must be rejected; safe PATH binary must win"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_select_path_candidate_symlink_into_cwd_only_returns_none() {
+    use std::os::unix::fs::symlink;
+
+    let tree = SelectPathTempTree::new("symlink-only");
+    let cwd = tree.dir("workspace");
+    let outside = tree.dir("outside");
+    let planted = tree.plant(&cwd, "perltidy.exe");
+    let link = outside.join("perltidy.exe");
+    symlink(&planted, &link).expect("create symlink into CWD");
+    let candidate_refs = [link.to_string_lossy().into_owned()];
+    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_ref_strs, &cwd);
+    assert!(
+        result.is_none(),
+        "symlink-only candidate resolving into CWD must return None; got: {result:?}"
     );
 }
 
@@ -379,30 +529,33 @@ fn test_candidate_priority_case_insensitive() {
 
 /// RCE regression: a planted `perltidy.exe` in the CWD must not be selected
 /// when a legitimate `perltidy.exe` exists on PATH.
-#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_planted_cwd_binary_is_rejected_in_favor_of_path() {
-    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
-    let candidates = &[
-        r"C:\Users\user\project\perltidy.exe", // planted — must be excluded
-        r"C:\Strawberry\perl\bin\perltidy.exe", // legitimate PATH install
-    ];
-    let result = select_path_candidate(candidates, &cwd);
+    let tree = SelectPathTempTree::new("planted-vs-path");
+    let cwd = tree.dir("workspace");
+    let planted = tree.plant(&cwd, "perltidy.exe");
+    let safe_dir = tree.dir("usr-bin");
+    let safe = tree.plant(&safe_dir, "perltidy.exe");
+    let candidates = [planted.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_refs, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
+        Some(safe.as_path()),
         "planted CWD binary must not be selected; legitimate PATH binary must win"
     );
 }
 
 /// Security invariant: when the only candidate is under the CWD, resolve to
 /// `None` rather than executing a planted binary.
-#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_cwd_only_returns_none() {
-    let cwd = std::path::PathBuf::from(r"C:\Users\user\untrusted-workspace");
-    let candidates = &[r"C:\Users\user\untrusted-workspace\perltidy.exe"];
-    let result = select_path_candidate(candidates, &cwd);
+    let tree = SelectPathTempTree::new("cwd-only");
+    let cwd = tree.dir("workspace");
+    let planted = tree.plant(&cwd, "perltidy.exe");
+    let candidate_refs = [planted.to_string_lossy().into_owned()];
+    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_ref_strs, &cwd);
     assert!(
         result.is_none(),
         "a planted-only candidate list must return None, not execute the planted binary; got: {result:?}"
@@ -410,15 +563,18 @@ fn test_select_path_candidate_cwd_only_returns_none() {
 }
 
 /// Baseline: a candidate on a real PATH directory (not CWD) resolves correctly.
-#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_legitimate_path_binary_resolves() {
-    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
-    let candidates = &[r"C:\Strawberry\perl\bin\perltidy.exe"];
-    let result = select_path_candidate(candidates, &cwd);
+    let tree = SelectPathTempTree::new("legitimate-path");
+    let cwd = tree.dir("workspace");
+    let safe_dir = tree.dir("usr-bin");
+    let safe = tree.plant(&safe_dir, "perltidy.exe");
+    let candidate_refs = [safe.to_string_lossy().into_owned()];
+    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_ref_strs, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
+        Some(safe.as_path()),
         "a legitimate PATH binary must resolve when CWD is different"
     );
 }
@@ -426,16 +582,19 @@ fn test_select_path_candidate_legitimate_path_binary_resolves() {
 /// Extension priority: among PATH candidates, `.exe` must beat `.bat`.
 /// The CWD exclusion must not disturb the priority ordering among safe
 /// candidates.
-#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_extension_priority_preserved_among_path_candidates() {
-    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
-    let candidates =
-        &[r"C:\Strawberry\perl\bin\perltidy.bat", r"C:\Strawberry\perl\bin\perltidy.exe"];
-    let result = select_path_candidate(candidates, &cwd);
+    let tree = SelectPathTempTree::new("ext-priority");
+    let cwd = tree.dir("workspace");
+    let safe_dir = tree.dir("usr-bin");
+    let bat = tree.plant(&safe_dir, "perltidy.bat");
+    let exe = tree.plant(&safe_dir, "perltidy.exe");
+    let candidates = [bat.to_string_lossy().into_owned(), exe.to_string_lossy().into_owned()];
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_refs, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
+        Some(exe.as_path()),
         ".exe must beat .bat in extension priority ordering"
     );
 }
@@ -464,18 +623,18 @@ fn test_select_path_candidate_relative_candidate_returns_none() {
 
 /// A relative candidate alongside a legitimate absolute PATH candidate: only
 /// the absolute one is selected; the relative one is silently dropped.
-#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_relative_candidate_dropped_absolute_path_wins() {
-    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
-    let candidates = &[
-        "perltidy.EXE",                         // relative — must be dropped
-        r"C:\Strawberry\perl\bin\perltidy.exe", // absolute PATH install — must win
-    ];
-    let result = select_path_candidate(candidates, &cwd);
+    let tree = SelectPathTempTree::new("relative-drop");
+    let cwd = tree.dir("workspace");
+    let safe_dir = tree.dir("usr-bin");
+    let safe = tree.plant(&safe_dir, "perltidy.exe");
+    let candidates = ["perltidy.EXE".to_string(), safe.to_string_lossy().into_owned()];
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_refs, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
+        Some(safe.as_path()),
         "relative candidate must be dropped; absolute PATH binary must win"
     );
 }
@@ -496,30 +655,33 @@ fn test_select_path_candidate_relative_candidate_dropped_absolute_path_wins() {
 
 /// A candidate for an extensioned bare name (`perltidy.exe`) that lives in the
 /// CWD must be rejected in favour of a PATH-directory copy.
-#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_extensioned_bare_cwd_binary_rejected_in_favor_of_path() {
-    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
-    let candidates = &[
-        r"C:\Users\user\project\perltidy.exe", // planted in CWD — must be dropped
-        r"C:\Strawberry\perl\bin\perltidy.exe", // legitimate PATH install
-    ];
-    let result = select_path_candidate(candidates, &cwd);
+    let tree = SelectPathTempTree::new("extensioned-planted");
+    let cwd = tree.dir("workspace");
+    let planted = tree.plant(&cwd, "perltidy.exe");
+    let safe_dir = tree.dir("usr-bin");
+    let safe = tree.plant(&safe_dir, "perltidy.exe");
+    let candidates = [planted.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_refs, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
+        Some(safe.as_path()),
         "extensioned bare name: CWD-planted binary must be rejected; PATH binary must win"
     );
 }
 
 /// When an extensioned bare name is not found on PATH at all, `None` is
 /// returned — never falls back to the CWD.
-#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_extensioned_bare_cwd_only_returns_none() {
-    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
-    let candidates = &[r"C:\Users\user\project\perltidy.exe"]; // only in CWD
-    let result = select_path_candidate(candidates, &cwd);
+    let tree = SelectPathTempTree::new("extensioned-only-cwd");
+    let cwd = tree.dir("workspace");
+    let planted = tree.plant(&cwd, "perltidy.exe");
+    let candidate_refs = [planted.to_string_lossy().into_owned()];
+    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_ref_strs, &cwd);
     assert!(
         result.is_none(),
         "extensioned bare name not on PATH must return None, not execute CWD binary; got: {result:?}"

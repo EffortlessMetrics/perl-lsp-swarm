@@ -389,14 +389,14 @@ The project pins to a specific MSRV:
 
 ```toml
 [toolchain]
-channel = "1.95.0"
+channel = "1.100.0"
 ```
 
 **Mitigation**
 
 ```bash
-rustup update stable
-rustup override set 1.95.0
+rustup toolchain install 1.100.0
+rustup override set 1.100.0
 ```
 
 **Related Documentation**

@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "The \"Add use strict;\"/\"Add use warnings;\" pragma quick fixes offered from the missing-pragma path now insert after the shebang line rather than at byte offset 0, and handle a shebang with no trailing newline by inserting a line break first, so applying them no longer breaks script execution or joins the pragma onto the #! line."
-time: 2026-07-29T22:28:59Z
-custom:
-  PR: "5166"
-  Slug: pragma-quickfix-shebang-edge-cases
-  Breaking: "no"

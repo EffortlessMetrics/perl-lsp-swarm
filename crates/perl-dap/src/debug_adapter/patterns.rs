@@ -178,6 +178,12 @@ pub(super) fn dangerous_ops_re() -> Option<&'static Regex> {
             //   - Network: socket, connect, bind, listen, accept, send, recv, shutdown
             //   - IPC: msg*, sem*, shm*
             // Note: s/tr/y regex mutation operators handled separately via regex_mutation_re()
+            //
+            // `each` is denied: it advances the hash iterator (perlfunc).
+            // `keys`/`values` also reset that iterator. That reset is accepted —
+            // they return a complete snapshot rather than walking the iterator,
+            // and Watch/repl cannot send allowSideEffects. Do not add `keys` or
+            // `values` here (#18436 item 2).
             let ops = [
                 // State mutation
                 "push",
@@ -190,8 +196,6 @@ pub(super) fn dangerous_ops_re() -> Option<&'static Regex> {
                 "srand",
                 "bless",
                 "each",
-                "keys",
-                "values",
                 "reset", // Process control
                 "system",
                 "exec",
@@ -356,4 +360,27 @@ pub(super) fn is_valid_function_breakpoint_name(name: &str) -> bool {
 
 pub(super) fn inc_re() -> Option<&'static Regex> {
     INC_RE.get_or_init(|| Regex::new(r"'([^']+)'\s*=>\s*'([^']+)'")).as_ref().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_and_values_are_admitted_each_remains_denied() {
+        use perl_tdd_support::must_some;
+        let re = must_some(dangerous_ops_re());
+
+        for expr in ["keys %h", "values %$ref", "scalar keys %h"] {
+            assert!(
+                !re.is_match(expr),
+                "read-only hash snapshot {expr:?} must not match the deny-list"
+            );
+        }
+        assert!(re.is_match("each %h"), "each advances the iterator and must remain denied");
+        assert!(
+            re.is_match("keys %h; system('true')"),
+            "compound expressions must still match remaining dangerous ops"
+        );
+    }
 }

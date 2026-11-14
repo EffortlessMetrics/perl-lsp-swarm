@@ -13,7 +13,7 @@ cargo-allow-cadence executable sha256 as_of root output_dir:
     python3 scripts/cargo_allow_cadence.py --executable {{quote(executable)}} --expected-sha256 {{quote(sha256)}} --as-of {{quote(as_of)}} --root {{quote(root)}} --output-dir {{quote(output_dir)}}
 
 
-# Initialize bounded build/cache directories.
+# Plan admitted build paths without allocating directories or assessing capacity.
 devplane-init:
     ./scripts/devplane-init
 
@@ -29,20 +29,41 @@ agent-preflight: storage-doctor
     @echo "storage layout preflight ok; Cargo build capacity was not assessed"
     @echo "For build admission: scripts/cargo-admitted --preflight <exact Cargo command>"
 
-# Legacy cargo-safe compatibility check; not host admission. New agent work: scripts/cargo-admitted after host admission.
-agent-check:
-    {{cargo_safe}} check --workspace --all-targets --profile agent --locked
+# Check one package through cargo-admitted (agent profile, locked); preflight the same request first.
+[positional-arguments]
+agent-check package *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exec ./scripts/cargo-admitted check -p "$1" --profile agent --locked "${@:2}"
 
-# Legacy cargo-safe compatibility test; not host admission. New agent work: scripts/cargo-admitted after host admission.
-agent-test:
-    {{cargo_safe}} test --workspace --all-targets --profile agent --locked
+# Test explicit targets through cargo-admitted; put the selector after package and preflight the same request.
+[positional-arguments]
+agent-test package selector *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    invalid_scope() {
+        printf '%s\n' \
+            'agent-test: put a Cargo target selector immediately after PACKAGE.' \
+            'Use --lib/--doc, --test NAME (also --bin/--example/--bench), or an explicit plural selector.' \
+            'Named selectors require a nonempty value; use --test=NAME when NAME starts with a dash.' >&2
+        exit 2
+    }
+    case "$2" in
+        --lib|--doc|--bins|--tests|--examples|--benches|--all-targets) ;;
+        --bin|--test|--example|--bench)
+            [[ -n "${3:-}" && "${3:-}" != -* ]] || invalid_scope
+            ;;
+        --bin=?*|--test=?*|--example=?*|--bench=?*) ;;
+        *) invalid_scope ;;
+    esac
+    exec ./scripts/cargo-admitted test -p "$1" --profile agent --locked "${@:2}"
 
 # Legacy cargo-safe compatibility lint; not host admission. See docs/agents/CARGO_STORAGE.md#staged-native-clippy for the separately qualified route.
 agent-clippy:
     {{cargo_safe}} clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs
 
 # Nextest's runner profile and Cargo's build profile are separate selectors.
-# Match agent-test's build profile so switching runners reuses its test binaries.
+# The agent build profile does not give this legacy route admitted output ownership.
 # Legacy cargo-safe compatibility nextest; not host admission. External nextest is not admitted; requires a separately admitted route.
 agent-nextest:
     {{cargo_safe}} nextest run --workspace --profile agent --cargo-profile agent
@@ -904,8 +925,8 @@ _check-tools-nextest:
 # CI Validation Commands (Issue #211)
 # ============================================================================
 
-# MSRV: Rust 1.95 (for OpenAI Codex compatibility)
-# The rust-toolchain.toml pins to 1.95.0, so standard commands use MSRV by default.
+# MSRV: Rust 1.100 (product compiler and source-build floor)
+# The rust-toolchain.toml pins to 1.100.0, so standard commands use MSRV by default.
 # Use these recipes to explicitly verify MSRV compliance:
 
 # Phase 0: publish receipts to review/receipts/YYYY-MM-DD/
@@ -928,10 +949,10 @@ ci-measure:
 # UX Regression Tests (first-5-minutes user experience)
 # ============================================================================
 
-# Fast merge gate on MSRV (~2-5 min) - proves 1.95 compatibility
+# Fast merge gate on MSRV (~2-5 min) - proves 1.100 compatibility
 ci-gate-msrv:
-    @echo "🚪 Running fast merge gate on MSRV (Rust 1.95)..."
-    @RUSTUP_TOOLCHAIN=1.95.0 just ci-gate
+    @echo "🚪 Running fast merge gate on MSRV (Rust 1.100)..."
+    @RUSTUP_TOOLCHAIN=1.100.0 just ci-gate
 
 # Low-memory merge gate - for constrained environments (WSL, CI runners, low-RAM)
 # Forces single-threaded builds/tests to prevent OOM crashes
@@ -941,6 +962,7 @@ ci-gate-low-mem:
     @echo "   Using CARGO_BUILD_JOBS=1, RUST_TEST_THREADS=1, RUSTC_WRAPPER unset"
     @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 PROPTEST_CASES=32 \
         sh -c 'just ci-workflow-audit && \
+        just ci-contracts && \
         just ci-check-no-nested-lock && \
         just ci-format && \
         just ci-docs-check && \
@@ -956,10 +978,10 @@ ci-gate-low-mem:
         just ci-features-invariants'
     @echo "✅ Low-memory merge gate passed!"
 
-# Full CI on MSRV (~10-20 min) - proves 1.95 compatibility for releases
+# Full CI on MSRV (~10-20 min) - proves 1.100 compatibility for releases
 ci-full-msrv:
-    @echo "🚀 Running full CI on MSRV (Rust 1.95)..."
-    @RUSTUP_TOOLCHAIN=1.95.0 just ci-full
+    @echo "🚀 Running full CI on MSRV (Rust 1.100)..."
+    @RUSTUP_TOOLCHAIN=1.100.0 just ci-full
 
 # Check for nested Cargo.lock files (footgun prevention)
 ci-check-no-nested-lock:
@@ -977,11 +999,61 @@ ci-check-no-nested-lock:
 ci-workflow-audit:
     @cargo xtask ci-audit-workflows
 
+# Complete, exact-head post-compile admission proof. Kept separate from the
+# <180-second pr_fast tier; missing tools or evidence must not become green.
+# Set RUNNER_TEMP to an existing artifact directory, for example
+# `RUNNER_TEMP="$(mktemp -d)" just prove-required-merge-surface`. Without it,
+# the proof deliberately exits 80 NOT_PROVEN rather than losing the original
+# tee/grep log assertions or silently using a caller-unowned temp directory.
+prove-required-merge-surface:
+    bash scripts/ci/required-merge-surface.sh
+
+# The checked-in contract validators that the `Gate Enforcement Contract` and
+# `Workflow Security Ratchet` CI jobs run. Run this on a committed tree: the
+# gate-enforcement contract proves the exact subject, so tracked modifications
+# are NOT_PROVEN rather than green.
+ci-contracts: prove-required-merge-surface
+    #!/usr/bin/env bash
+    set -uo pipefail
+    status=0
+    python3 -m unittest \
+        scripts/ci/test_validate_gate_enforcement_contract.py \
+        scripts/ci/test_gate_enforcement_app_bindings.py \
+        scripts/ci/test_reconcile_github_enforcement_snapshot.py \
+        scripts/ci/test_observe_github_enforcement.py \
+        scripts/ci/test_check_release_required_ci.py \
+        scripts/ci/test_required_checks_doc_contract.py \
+        scripts/ci/test_merge_queue_activation_checklist.py || status=1
+    python3 scripts/ci/test_detect_required_check_registration.py || status=1
+    python3 scripts/ci/required_checks_doc_contract.py --root . || status=1
+    python3 -m unittest scripts/ci/test_workflow_security_ratchet.py || status=1
+    # `validate-baseline` (not `check`) so a stale baseline - a finding that was
+    # fixed but not removed from the baseline - fails here exactly as it does in
+    # the CI self-test. `check` tolerates resolved findings and would let the
+    # local gate pass while the candidate self-test fails.
+    python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+        --root . \
+        --baseline .ci/workflow-security-baseline.json \
+        --baseline-root . || status=1
+    # Include untracked, non-ignored files: an untracked workflow or doc can
+    # participate in validation, so a clean tracked tree is not proof that the
+    # working tree matches the committed subject. Gitignored build output does
+    # not appear here.
+    if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+        echo "ci-contracts: working-tree changes present; commit, then rerun so the" >&2
+        echo "  gate-enforcement contract can prove the exact subject." >&2
+        status=1
+    else
+        python3 scripts/ci/validate_gate_enforcement_contract.py --root . || status=1
+    fi
+    exit "$status"
+
 # Fast merge gate (~2-5 min) - REQUIRED for all merges
 # The pre-push hook runs `just pr-fast`; this is the broader local merge gate.
 ci-gate:
     @echo "Running fast merge gate..."
     just ci-workflow-audit && \
+    just ci-contracts && \
     just ci-check-no-nested-lock && \
     just ci-format && \
     just ci-docs-check && \
@@ -1028,7 +1100,7 @@ gates tier='merge-gate' *args='':
 # Validate release-history surfaces (tags ↔ ledger ↔ notes ↔ changelog).
 ci-release-history:
     bash scripts/check_release_history.sh
-    @python3 -m unittest scripts.tests.test_release_channel_actuals         scripts.test_release_build_identity         scripts.test_release_package_evidence         scripts.test_release_tag_authority         scripts.test_release_topology_json         scripts.tests.test_domain6_fragment -v
+    @python3 -m unittest scripts.tests.test_release_channel_actuals         scripts.test_release_build_identity         scripts.test_release_package_evidence         scripts.test_release_tag_authority         scripts.test_release_topology_json         scripts.tests.test_domain6_fragment.Domain6FragmentTest -v
 
 # Validate installer Linux libc target selection without downloading artifacts.
 ci-install-target-selection:
@@ -1513,6 +1585,7 @@ ci-policy:
     @python3 scripts/ci/test_validate_cargo_feature_roles.py
     @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
     @python3 scripts/ci/test_public_api_filter.py
+    @python3 scripts/ci/test_semver_pr_check.py
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
@@ -1994,7 +2067,7 @@ perf-baseline:
     cargo bench -p perl-lsp-completion --bench completion_benchmark --locked
     cargo bench -p perl-lsp-navigation --bench navigation_benchmark --locked
     cargo bench -p perl-workspace --features workspace --bench workspace_index_benchmark --locked
-    cargo bench -p perl-lsp-rs --bench rope_performance_benchmark --locked
+    cargo bench -p perl-lsp-rs --features benchmarks --bench rope_performance_benchmark --locked
     cargo bench -p perl-lsp-tooling --bench cache_benchmark --locked
     @echo "Baseline complete. See docs/project/PERFORMANCE_BASELINES.md"
 
@@ -2399,7 +2472,7 @@ semver-diff package='perl-parser':
 _semver-check-install:
     @if ! command -v cargo-semver-checks >/dev/null 2>&1; then \
         echo "📦 Installing cargo-semver-checks..."; \
-        cargo install cargo-semver-checks --version 0.47.0 --locked; \
+        cargo install cargo-semver-checks --version 0.51.0 --locked; \
     fi
 
 # Private helper: install cargo-public-api if not present
@@ -2462,6 +2535,10 @@ _api-ratchet-crates:
 # Revisit the Arc rule because a matched delimiter may begin a nested Arc;
 # every replacement removes one relocated path, so the loop terminates.
 #
+# Fold the remaining rcs-module siblings from rust-lang/rust#163331 (#17121).
+# Baselines keep alloc::rc::Rc, alloc::sync::Weak, and alloc::rc::Weak; same
+# delimiter whitelist and loop shape as the Arc rule above.
+#
 # Usage: just _public-api-filter <raw-file> <filtered-file>
 [private]
 _public-api-filter raw out:
@@ -2486,6 +2563,15 @@ _public-api-filter raw out:
             -e ':arc_alias' \
             -e 's#(^|[ <([&,=?])alloc::rcs::arc::Arc(<|::|[][ >(),&;=?]|$)#\1alloc::sync::Arc\2#g' \
             -e 't arc_alias' \
+            -e ':rc_alias' \
+            -e 's#(^|[ <([&,=?])alloc::rcs::rc::Rc(<|::|[][ >(),&;=?]|$)#\1alloc::rc::Rc\2#g' \
+            -e 't rc_alias' \
+            -e ':arc_weak_alias' \
+            -e 's#(^|[ <([&,=?])alloc::rcs::arc::Weak(<|::|[][ >(),&;=?]|$)#\1alloc::sync::Weak\2#g' \
+            -e 't arc_weak_alias' \
+            -e ':rc_weak_alias' \
+            -e 's#(^|[ <([&,=?])alloc::rcs::rc::Weak(<|::|[][ >(),&;=?]|$)#\1alloc::rc::Weak\2#g' \
+            -e 't rc_weak_alias' \
         | awk -f scripts/ci/public_api_filter.awk \
         > "{{out}}" || true
 
@@ -2570,6 +2656,43 @@ public-api-check:
         fi
     done
     [ $FAILED -eq 0 ] || { echo "Run 'just public-api-update' to regenerate baselines if the change is intentional."; exit 1; }
+
+# Prove every committed baseline is filter-stable WITHOUT the
+# cargo-public-api instrument (grep/sed/awk only). Merge-time half of
+# public-api-check's canonical-form guard (#18736): a baseline the filter
+# would rewrite hides those lines from the ratchet diff. Runs in the
+# merge-gate meta shard, required=true inside the shard policy. That makes
+# the gate fail its shard; ruleset-level merge blocking additionally needs
+# the shard's own context promoted (#17193 / #18736 Step 2), so until then
+# this gate fails the shard, not the merge.
+public-api-baselines-canonical:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Fail closed on an empty crate list: a silent vacuous loop would be a
+    # green verdict on nothing, which is the one direction this gate may
+    # never take.
+    crates="$(just _api-ratchet-crates)"
+    if [ -z "$crates" ]; then
+        echo "INSTRUMENT-FAIL public-api: ratchet crate list is empty; refusing a vacuous pass"
+        exit 1
+    fi
+    failed=0
+    for crate in $crates; do
+        baseline=".ci/public-api-baselines/${crate}.txt"
+        if [ ! -f "$baseline" ]; then
+            echo "FAIL missing baseline: $baseline (run: just public-api-update)"; failed=1; continue
+        fi
+        just _public-api-filter "$baseline" "/tmp/${crate}-canonical.txt"
+        if [ ! -s "/tmp/${crate}-canonical.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: baseline normalized to nothing"; failed=1; continue
+        fi
+        if ! cmp -s "$baseline" "/tmp/${crate}-canonical.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: committed baseline $baseline is not in canonical filtered form -- lines the filter drops would be invisible to this diff (run 'just public-api-update')"
+            diff -u "$baseline" "/tmp/${crate}-canonical.txt" | head -20 || true
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ] || exit 1
 
 # Regenerate all public API baselines from current workspace state
 public-api-update:

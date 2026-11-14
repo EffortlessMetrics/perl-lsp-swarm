@@ -140,34 +140,20 @@ pub fn publish_vscode() -> Result<()> {
     );
 }
 
+/// Fail-closed refusal for the legacy `publish-release` helper (#17904 / #16802).
+///
+/// `Publish to crates.io` requires sealed-handoff inputs this command never supplies;
+/// the reviewed release transaction owns publication through `release-orchestration.yml`.
+pub fn publish_release_refusal() -> &'static str {
+    "The legacy `publish-release` workflow dispatch is disabled. It does not supply the \
+     required `expected_sha`, `candidate_run_id`, and `manifest_sha256` inputs for \
+     `Publish to crates.io`. Follow the reviewed release transaction (#13768 / #6055) and \
+     its `release-orchestration.yml` entry point (see docs/release/RUNBOOK.md)."
+}
+
 pub fn publish_release(version: String, dry_run: bool, git_ref: Option<String>) -> Result<()> {
-    let root = project_root()?;
-    let ref_name = git_ref.unwrap_or_else(|| format!("v{version}"));
-
-    let status = Command::new("gh")
-        .current_dir(&root)
-        .args([
-            "workflow",
-            "run",
-            "Publish to crates.io",
-            "--ref",
-            &ref_name,
-            "-f",
-            &format!("version={version}"),
-            "-f",
-            &format!("dry_run={dry_run}"),
-        ])
-        .status()?;
-
-    if !status.success() {
-        bail!("publish-release workflow dispatch failed");
-    }
-
-    println!(
-        "Dispatch request accepted for {version} on ref {ref_name}; publication and completion \
-         are not verified. Exact workflow-run correlation is tracked by #16799."
-    );
-    Ok(())
+    let _ = (version, dry_run, git_ref);
+    bail!("{}", publish_release_refusal())
 }
 
 pub fn smoke_test_release(version: String) -> Result<()> {
@@ -192,7 +178,7 @@ pub fn smoke_test_release(version: String) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{publish_crates, publish_vscode};
+    use super::{publish_crates, publish_release, publish_release_refusal, publish_vscode};
 
     #[test]
     fn direct_crates_publication_refuses_without_dry_run() {
@@ -215,6 +201,31 @@ mod tests {
         assert!(
             message.contains("publish-extension.yml"),
             "refusal must route to the gated release workflow: {message}"
+        );
+    }
+
+    #[test]
+    fn legacy_publish_release_refuses_before_dispatch() {
+        let refusal = publish_release_refusal();
+        assert!(
+            refusal.contains("release-orchestration.yml"),
+            "refusal must route to the reviewed release orchestration workflow: {refusal}"
+        );
+        assert!(
+            refusal.contains("expected_sha"),
+            "refusal must name the missing sealed-handoff inputs: {refusal}"
+        );
+
+        let err = publish_release("0.0.0".into(), false, Some("v0.0.0".into()))
+            .expect_err("legacy publish-release dispatch must refuse before spawning gh");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("release-orchestration.yml"),
+            "publish_release must fail closed with orchestration routing: {message}"
+        );
+        assert!(
+            !message.contains("workflow dispatch failed"),
+            "must not reach gh workflow dispatch: {message}"
         );
     }
 }

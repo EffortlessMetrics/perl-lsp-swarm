@@ -17,7 +17,7 @@
       "rule": "cargo-test-features",
       "authority": "crates/*/Cargo.toml",
       "emits": "test_api",
-      "considered": 80,
+      "considered": 81,
       "emitted": 27,
       "not_seeded_reason": "a feature is seeded when its NAME declares test-only intent (test-*, expose_*, experimental-*, stress-tests, slow_tests, integration-test) or its USAGE proves it (at least one cfg(feature = \"...\") site, all under tests/ or benches/). Each row records which signal settled it. A feature with no cfg sites at all is not seeded by usage: an unused feature is neither shown to gate tests nor shown not to. A feature gating both production and test code is seeded only if its name declares the intent, since gating production code is what an exposed test API does"
     },
@@ -25,7 +25,7 @@
       "rule": "features-preview",
       "authority": "features.toml",
       "emits": "preview",
-      "considered": 129,
+      "considered": 130,
       "emitted": 2,
       "not_seeded_reason": "rows with maturity != \"preview\" are not preview surfaces"
     },
@@ -33,8 +33,8 @@
       "rule": "features-product",
       "authority": "features.toml",
       "emits": "product",
-      "considered": 129,
-      "emitted": 16,
+      "considered": 130,
+      "emitted": 18,
       "not_seeded_reason": "rows with maturity != \"proven\" or advertised != true are not product surfaces; earned-claim maturity stays owned by features.toml"
     },
     {
@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 97,
-      "emitted": 97,
+      "considered": 99,
+      "emitted": 99,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -1545,6 +1545,40 @@
       }
     },
     {
+      "surface_id": "feature:lsp.critic.native",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.critic.native",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"executeCommandProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perllsp/tests/lsp_critic_native_only_process.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.critic.native",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
       "surface_id": "feature:lsp.declaration",
       "class": "product",
       "class_authority": {
@@ -2106,6 +2140,40 @@
         "authority": "features.toml"
       },
       "maturity_authority": "features.toml#lsp.semantic_tokens",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.text_document_sync",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.text_document_sync",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"textDocumentSync\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perllsp/tests/lsp_text_sync_diagnostics_process.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.text_document_sync",
       "owner": "crates/perl-lsp-rs",
       "promotion": {
         "state": "not_evaluated"
@@ -4423,6 +4491,33 @@
       "notes": "Reject HIR-only completion claims for control.postfix_modifier capability docs (#13281)"
     },
     {
+      "surface_id": "gate:public_api_baseline_canonical",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#public_api_baseline_canonical",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Committed .ci/public-api-baselines/*.txt are filter-stable canonical form (#18736)"
+    },
+    {
       "surface_id": "gate:publish_closure",
       "class": "gate",
       "class_authority": {
@@ -4664,6 +4759,33 @@
         "state": "not_evaluated"
       },
       "notes": "Check release-history drift"
+    },
+    {
+      "surface_id": "gate:release_history_domain6_rerender",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#release_history_domain6_rerender",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Re-render the pinned Domain-6 release-history range and reject drift"
     },
     {
       "surface_id": "gate:release_trust_invariants",
