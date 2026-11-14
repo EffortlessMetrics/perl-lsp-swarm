@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/public_release_claims.v2.schema.json",
+  "title": "public_release_claims.v2",
+  "description": "Deterministic install-claim inventory derivative (#11548 successor, scoping shape (a) per #11549 comment 5458545004). Rows are regenerated from the landed inventory docs/distribution/INSTALL_CLAIM_SURFACES.md (#11575) by the sanctioned generator (`cargo xtask public-release-claims-v2 build --write`); the Python oracle (scripts/validate_public_release_claims_v2.py) re-derives every row from that source and fails any tampered value. NON-authoritative by scoping: no route IDs, no projection contexts, and no true-v2 (#10333/#10334) authority is claimed. Every object node is closed (`additionalProperties: false`); nested dimension objects accept no schema-forbidden keys.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "generator",
+    "issue",
+    "source_inventory",
+    "input_digests",
+    "release_receipts",
+    "surfaces",
+    "claims",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": {"const": "public_release_claims.v2"},
+    "status": {"const": "generated"},
+    "generator": {
+      "type": "string",
+      "const": "cargo xtask public-release-claims-v2 build --write"
+    },
+    "issue": {"const": 11548},
+    "source_inventory": {"$ref": "#/$defs/source_inventory"},
+    "input_digests": {"$ref": "#/$defs/input_digests"},
+    "release_receipts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/release_receipt"}
+    },
+    "surfaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/surface"}
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/claim"}
+    },
+    "findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/finding"}
+    }
+  },
+  "$defs": {
+    "source_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "audited_commit", "audited_date", "release_anchor", "track"],
+      "properties": {
+        "path": {"const": "docs/distribution/INSTALL_CLAIM_SURFACES.md"},
+        "audited_commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+        "audited_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "release_anchor": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "track": {"const": "public-beta"}
+      }
+    },
+    "input_digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inventory_document", "schema", "release_receipt_manifest"],
+      "properties": {
+        "inventory_document": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "schema": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "release_receipt_manifest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "release_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Release-asset manifest mirrored from the live publication-repo release; the receipt authority for `dimensions.windows_arm64.published_receipt_*` values (defect D1). The generator derives those values from this manifest and the oracle cross-checks them here — never against the inventory digest alone.",
+      "required": ["release", "source", "verified_date", "assets"],
+      "properties": {
+        "release": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "source": {"type": "string", "minLength": 1},
+        "verified_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "assets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface_id", "path", "role", "claim_class", "registry_cross_ref"],
+      "properties": {
+        "surface_id": {"type": "string", "pattern": "^S(?:0[1-9]|1[0-3])$"},
+        "path": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1},
+        "claim_class": {"type": "string", "minLength": 1},
+        "registry_cross_ref": {"type": "string"}
+      }
+    },
+    "drift_status": {
+      "enum": [
+        "current",
+        "pending",
+        "stale_example",
+        "future_example",
+        "mutable_pin",
+        "cross_surface_drift",
+        "source_drift",
+        "volatile_number"
+      ]
+    },
+    "finding_ref": {"type": "string", "pattern": "^FND-(?:[1-9]|1[0-2])$"},
+    "claim_ref": {"type": "string", "pattern": "^C[0-9]{3,4}$"},
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "windows_arm64": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "user_prose",
+            "tracked_source",
+            "published_receipt_v0_17_0"
+          ],
+          "description": "Conjunctive dimension (a): Windows ARM64 support asserted inconsistently across source, prose, and published assets (FND-4). The three fields are independent and must not be collapsed. `published_receipt_v0_17_0` is derived from the mirrored v0.17.0 release-asset manifest (D1), not from prose.",
+          "properties": {
+            "user_prose": {
+              "enum": ["unsupported", "x64_fallback_build_from_source", "supported", "unspecified"]
+            },
+            "tracked_source": {"enum": ["not_built", "built", "unknown"]},
+            "published_receipt_v0_17_0": {"enum": ["absent", "present", "unverified"]},
+            "finding_refs": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/finding_ref"},
+              "uniqueItems": true
+            }
+          }
+        },
+        "sha256sums_enforcement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "description": "Conjunctive dimension (b): SHA256SUMS enforcement mode claimed for an installer surface (C207 fail-closed canonical versus C1005 fail-open residue; FND-7).",
+          "properties": {
+            "mode": {
+              "enum": ["fail_closed_required", "fail_open_conditional", "verify_present_no_mode", "not_applicable"]
+            },
+            "finding_refs": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/finding_ref"},
+              "uniqueItems": true
+            }
+          }
+        },
+        "product_units": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["build_from_source_units"],
+          "description": "Conjunctive dimension (c): product-unit membership (perllsp server, perl-dap adapter, extension) per acquisition mode (C208 BUILD_FROM_SOURCE=1 server-only versus archive pair; FND-11 tracked-installer divergence).",
+          "properties": {
+            "build_from_source_units": {
+              "type": "array",
+              "items": {"enum": ["perllsp", "perl-dap", "extension"]},
+              "uniqueItems": true
+            },
+            "archive_units_claimed": {
+              "type": "array",
+              "items": {"enum": ["perllsp", "perl-dap"]},
+              "uniqueItems": true
+            },
+            "tracked_installer_ships_adapter": {"type": ["boolean", "null"]},
+            "finding_refs": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/finding_ref"},
+              "uniqueItems": true
+            }
+          }
+        }
+      }
+    },
+    "identity_anti_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "First-class anti-claim identity (defect D2). Records what a row must NOT be read as claiming. The crates.io four-name collision is source truth, not an omission caveat: the foreign crates.io package `perl-lsp` is another project and must not be installed; the supported Cargo package is `perllsp`. Every row whose raw inventory text states the collision or asserts the crates.io registry route must carry this record; the oracle fails any such row without it.",
+      "required": ["kind", "foreign_name", "owned_name", "disposition"],
+      "properties": {
+        "kind": {"const": "crates_io_name_collision"},
+        "foreign_name": {"const": "perl-lsp"},
+        "owned_name": {"const": "perllsp"},
+        "disposition": {"const": "do_not_install"}
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "surface_id",
+        "location",
+        "summary",
+        "drift_status",
+        "notes",
+        "finding_refs",
+        "restatement_group",
+        "omitted_caveats",
+        "identity_anti_claims"
+      ],
+      "properties": {
+        "claim_id": {"$ref": "#/$defs/claim_ref"},
+        "surface_id": {"type": "string", "pattern": "^S(?:0[1-9]|1[0-3])$"},
+        "location": {"type": "string", "minLength": 1},
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Inventory claim cell with code-span delimiters trimmed symmetrically (one matched boundary pair dropped, else verbatim); unbalanced delimiters are rejected (defect D3)."
+        },
+        "drift_status": {"$ref": "#/$defs/drift_status"},
+        "notes": {"type": "string"},
+        "finding_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/finding_ref"},
+          "uniqueItems": true,
+          "description": "Derived by inverting the finding-to-claim cited-file join (defect D4), not by scanning for literal FND tokens."
+        },
+        "restatement_group": {
+          "description": "Dedup join tag only, sourced from the inventory's own family handoff notes. No canonical fragment or preference is selected here; that belongs to the later family slice.",
+          "enum": ["bootstrap_identity", "verification_probes", null]
+        },
+        "omitted_caveats": {
+          "type": "array",
+          "items": {"enum": ["homebrew_tap_version_unproven"]},
+          "uniqueItems": true
+        },
+        "identity_anti_claims": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/identity_anti_claim"},
+          "uniqueItems": true
+        },
+        "dimensions": {"$ref": "#/$defs/dimensions"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_id", "title", "cited_files", "related_claims", "owner_route"],
+      "properties": {
+        "finding_id": {"$ref": "#/$defs/finding_ref"},
+        "title": {"type": "string", "minLength": 1},
+        "cited_files": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true,
+          "description": "File tokens cited as file:line in the inventory finding prose; the join input for related_claims (defect D4)."
+        },
+        "related_claims": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/claim_ref"},
+          "uniqueItems": true,
+          "description": "Every claim row whose Location cell cites the same file basename (same-cited-file mapping). Deterministic superset by design; the inventory's own explicit FND mentions are a subset of this join."
+        },
+        "owner_route": {
+          "description": "Recorded disposition pointer from the inventory text; `none_recorded` when the inventory assigns none.",
+          "enum": [
+            "#10342-ci-cutover",
+            "#11549-classifier",
+            "distribution-docs-sync",
+            "none_recorded"
+          ]
+        }
+      }
+    }
+  }
+}
