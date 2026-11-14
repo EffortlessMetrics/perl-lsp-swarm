@@ -6,9 +6,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tempfile
 import tomllib
 import unittest
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = Path(__file__).with_name("hosted_formatter_producers.py")
@@ -96,8 +99,15 @@ def retire_meta_fmt(
 
 
 class HostedFormatterProducerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        # These tests mutate in-memory fixtures, never the source files. Read the
+        # tree once per suite (not in a process-global cache), then isolate every
+        # case's nested policy and workflow mutations from that snapshot.
+        cls._tree = load_tree()
+
     def setUp(self) -> None:
-        self.ci, self.execution, self.gate_policy, self.required, self.workflows = load_tree()
+        self.ci, self.execution, self.gate_policy, self.required, self.workflows = deepcopy(self._tree)
         (
             self.retired_ci,
             self.retired_execution,
@@ -356,6 +366,83 @@ class HostedFormatterProducerTests(unittest.TestCase):
         entry["reason"] = "Post-merge promotion target tracked by #6202 and #7087."
         with self.assertRaisesRegex(AssertionError, "declare the current parity relationship"):
             self.validate(required=broken)
+
+
+class HostedFormatterFixtureTests(unittest.TestCase):
+    @staticmethod
+    def tree():
+        return (
+            "ci source",
+            {"gates": {"unit": {"requires": []}}},
+            "gate policy",
+            {"checks": [{"name": "Rust formatting", "reason": "original"}]},
+            {CI_WORKFLOW_KEY: "ci source", "other.yml": "other source"},
+        )
+
+    def test_one_load_per_suite_preserves_nested_mutation_isolation(self):
+        cases = []
+
+        class Probe(HostedFormatterProducerTests):
+            def runTest(self):
+                cases.append(self)
+                if len(cases) == 1:
+                    self.execution["gates"]["unit"]["requires"].append("changed")
+                    self.required["checks"][0]["reason"] = "changed"
+                    self.workflows["other.yml"] = "changed"
+                    self.retired_execution["gates"]["unit"]["requires"].append("retired")
+                    self.retired_required["checks"][0]["reason"] = "retired"
+                    self.retired_workflows["other.yml"] = "retired"
+
+        with patch(__name__ + ".load_tree", side_effect=self.tree) as load:
+            result = unittest.TestResult()
+            unittest.TestSuite([Probe(), Probe()]).run(result)
+        self.assertEqual(result.testsRun, 2)
+        self.assertTrue(result.wasSuccessful(), (result.errors, result.failures))
+        self.assertEqual(load.call_count, 1)
+        second = cases[1]
+        self.assertEqual(second.execution, self.tree()[1])
+        self.assertEqual(second.required, self.tree()[3])
+        self.assertEqual(second.workflows, self.tree()[4])
+        self.assertEqual(second.retired_execution, self.tree()[1])
+        self.assertEqual(second.retired_required["checks"][0]["reason"], DECLARED_REASON)
+        self.assertEqual(second.retired_workflows, self.tree()[4])
+
+    def test_new_suite_reloads_inputs_and_does_not_hide_load_failure(self):
+        observed = []
+
+        class Probe(HostedFormatterProducerTests):
+            def runTest(self):
+                observed.append(self.ci)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workflow = root / CI_WORKFLOW_KEY
+            workflow.parent.mkdir(parents=True)
+            execution = root / "execution.json"
+            execution.write_text(json.dumps(self.tree()[1]), encoding="utf-8")
+            gates = root / "gates.yaml"
+            gates.write_text("gate policy", encoding="utf-8")
+            required = root / "required.toml"
+            required.write_text('[[checks]]\nname = "Rust formatting"\nreason = "original"\n', encoding="utf-8")
+            # Exercise the real loader so a process-global cache cannot hide
+            # edits or a missing input on a subsequent unittest invocation.
+            with patch.multiple(
+                sys.modules[__name__], ROOT=root, EXECUTION_POLICY=execution,
+                GATE_POLICY=gates, REQUIRED_CHECKS=required,
+            ):
+                for text in ("ci source", "new ci source"):
+                    workflow.write_text(text, encoding="utf-8")
+                    result = unittest.TestResult()
+                    unittest.TestSuite([Probe()]).run(result)
+                    self.assertEqual(result.testsRun, 1)
+                    self.assertTrue(result.wasSuccessful(), (result.errors, result.failures))
+                execution.unlink()
+                failed = unittest.TestResult()
+                unittest.TestSuite([Probe()]).run(failed)
+        self.assertEqual(observed, ["ci source", "new ci source"])
+        self.assertFalse(failed.wasSuccessful())
+        self.assertEqual(len(failed.errors), 1)
+        self.assertIn("FileNotFoundError", failed.errors[0][1])
 
 
 if __name__ == "__main__":
