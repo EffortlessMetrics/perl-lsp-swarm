@@ -126,7 +126,7 @@ set -euo pipefail
 } >> "$CARGO_INVOCATION_LOG"
 
 if [[ "${1:-}" == "--version" ]]; then
-  printf 'cargo 1.95.0 (stub 000000000 2026-01-01)\n'
+  printf 'cargo 1.100.0 (stub 000000000 2026-01-01)\n'
   exit 0
 fi
 

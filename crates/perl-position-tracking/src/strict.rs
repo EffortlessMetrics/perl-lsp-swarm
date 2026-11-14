@@ -218,15 +218,17 @@ impl RangeMapping {
     /// Exact byte range when the complete mapping is admitted.
     #[must_use]
     pub fn byte_range(self) -> Option<std::ops::Range<usize>> {
-        Some(self.start.byte_offset()?..self.end.byte_offset()?)
-            .filter(|_| self.disposition.admits_incoming_mutation())
+        self.disposition
+            .admits_incoming_mutation()
+            .then_some(self.start.byte_offset()?..self.end.byte_offset()?)
     }
 
     /// Exact character range when the complete mapping is admitted.
     #[must_use]
     pub fn char_range(self) -> Option<std::ops::Range<usize>> {
-        Some(self.start.char_offset()?..self.end.char_offset()?)
-            .filter(|_| self.disposition.admits_incoming_mutation())
+        self.disposition
+            .admits_incoming_mutation()
+            .then_some(self.start.char_offset()?..self.end.char_offset()?)
     }
 
     /// Whether this complete range may authorize an incoming mutation.

@@ -81,7 +81,6 @@ import {
   runTestAtCursorCommand,
   runTestsCommand,
 } from './testCommands';
-import { registerMcpSupport } from './mcpSupport';
 import { registerServerCommandGroup } from './serverCommandGroup';
 import { languageServerRuntimeHealth } from './languageServerRuntimeHealth';
 import {
@@ -1039,14 +1038,6 @@ async function runExtensionActivation(
   if (aliasLanguageDisposable) {
     activation.own('base', 'optional_degradable', aliasLanguageDisposable);
   }
-  // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
-  // longer activation-critical: it registers nothing and returns no disposable.
-  const mcpDisposable = measureOrDeferFeature(featureActivationMetrics, 'mcp', false, () =>
-    registerMcpSupport(outputChannel),
-  );
-  if (mcpDisposable) {
-    activation.own('support', 'optional_degradable', mcpDisposable);
-  }
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
   statusBarItem.accessibilityInformation = {
@@ -1947,25 +1938,42 @@ function runActivationHousekeeping(
     false,
     () => new OnboardingManager(context, outputChannel),
   );
+  const languageServerRunning = languageClientLifecycle?.snapshot.state === 'running';
+
   if (onboarding?.shouldShowWelcome()) {
     featureActivationMetrics.markFirstUse('onboarding');
-    // Fire-and-forget; failures must not block extension startup.
-    onboarding.showWelcomeNotification(currentServerPath).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      outputChannel.error(`[onboarding] Error showing welcome: ${msg}`);
-    });
     // Mark the version seen on first install so the next activation
     // (after an update) triggers the What's New panel instead of welcome.
     whatsNewManager.markVersionSeen().catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       outputChannel.error(`[whats-new] Error marking version seen: ${msg}`);
     });
+
+    if (onboarding.shouldOfferWelcomeNotification(languageServerRunning)) {
+      // Fire-and-forget; failures must not block extension startup.
+      onboarding.showWelcomeNotification(currentServerPath).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.error(`[onboarding] Error showing welcome: ${msg}`);
+      });
+    } else {
+      // Healthy cold start — skip the stacked welcome toast (#18432).
+      onboarding.markWelcomed().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.error(`[onboarding] Error marking welcomed: ${msg}`);
+      });
+    }
   } else if (whatsNewManager.shouldShowWhatsNew()) {
     // Extension was updated — show What's New panel.
     // Fire-and-forget; failures must not block extension startup.
     whatsNewManager
       .markVersionSeen()
       .then(() => {
+        if (!whatsNewManager.hasReleaseNotesContent()) {
+          outputChannel.info(
+            '[whats-new] Skipping auto-open — no changelog section for this version',
+          );
+          return undefined;
+        }
         return whatsNewManager.showWhatsNew();
       })
       .catch((err: unknown) => {
@@ -2326,7 +2334,9 @@ function createLanguageClientLifecycle(
         crashRecoveryArbiter.markRunning(snapshot.generation, Date.now());
         // Check after finalization so a dynamic registration received during
         // its awaits is not lost between the startup check and running state.
-        void suggestAiCompletionIfSupported(context, client).catch((err: unknown) => {
+        void suggestAiCompletionIfSupported(context, client, (message) =>
+          outputChannel.warn(message),
+        ).catch((err: unknown) => {
           outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
         });
       }
@@ -2623,7 +2633,9 @@ export function createLanguageClient(serverPath: string): LanguageClient {
           extensionContext
         ) {
           // A user-facing prompt must not hold the registration response open.
-          void suggestAiCompletionIfSupported(extensionContext, lc).catch((err: unknown) => {
+          void suggestAiCompletionIfSupported(extensionContext, lc, (message) =>
+            outputChannel.warn(message),
+          ).catch((err: unknown) => {
             outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
           });
         }

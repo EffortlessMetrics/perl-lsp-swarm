@@ -1495,6 +1495,15 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature (#18464): resolve only enriches items
+        // returned by the parent workspace/symbol request, so it must refuse
+        // with the same method-not-advertised error whenever the parent
+        // workspaceSymbolProvider is not advertised (e.g. after
+        // `disabledFeatures: ["lsp.workspace_symbol"]`).
+        if !self.advertised_features.lock().workspace_symbol {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let params = params.ok_or_else(|| {
             crate::protocol::invalid_params(
                 "workspace/symbol/resolve: missing required parameter 'params'",
@@ -2068,6 +2077,8 @@ impl LspServer {
 
                     self.evict_deleted_file_state(&uri);
 
+                    self.invalidate_module_resolution_negative_cache_for_uri(&uri);
+
                     tracing::debug!(uri, "Removed deleted file from index");
 
                     #[cfg(feature = "workspace")]
@@ -2225,6 +2236,7 @@ impl LspServer {
                 );
             }
         }
+        self.clear_module_resolution_negative_cache();
     }
 
     /// Discovery admission policy for a filesystem path (#14186).    ///
@@ -2273,6 +2285,7 @@ impl LspServer {
     /// a genuinely closed file, which the next watcher event or scan
     /// recovers.
     fn process_file_watcher_uri_immediate(&self, uri: &str) {
+        self.invalidate_module_resolution_negative_cache_for_uri(uri);
         if self.document_is_open(uri) {
             self.record_backing_file_transition(uri, BackingFileTransition::Changed);
             tracing::debug!(
@@ -2581,6 +2594,7 @@ impl LspServer {
                 // event or scan recovers.
                 if self.document_is_open(uri) {
                     self.record_backing_file_transition(uri, BackingFileTransition::Changed);
+                    self.invalidate_module_resolution_negative_cache_for_uri(uri);
                     tracing::debug!(
                         uri,
                         "Explicit create for open document — buffer remains \
@@ -2635,6 +2649,9 @@ impl LspServer {
                     continue;
                 };
                 processed_any = true;
+
+                self.invalidate_module_resolution_negative_cache_for_uri(old_uri);
+                self.invalidate_module_resolution_negative_cache_for_uri(new_uri);
 
                 // Normalize URIs so the index and pinned_doc_map_for
                 // lookups (which use normalize_uri_key / uri_key) match
@@ -2778,6 +2795,8 @@ impl LspServer {
                 tracing::debug!("Ignoring empty workspace folder change notification");
                 return Ok(());
             }
+
+            self.clear_module_resolution_negative_cache();
 
             let _indexing_transition = self.indexing_transition_lock.lock();
 
@@ -4602,6 +4621,15 @@ mod tests {
             "B's scoped pull item is missing",
         )?;
 
+        // #18774's identical-content law suppresses an outbound frame whose
+        // diagnostics array is byte-identical to the last committed one. The
+        // scoped-pull refresh republishes all three documents, but only A's
+        // squiggles actually change -- B and the folderless document keep the
+        // same PL701, so their refresh frames are suppressed. This test's
+        // claim is about the wire -- "refreshes fallback consumers" with their
+        // diagnostic policy -- so detach the committed ledger and let the
+        // refresh reach the client.
+        server.test_clear_committed_push_diagnostics();
         server.handle_client_response(Some(json!({
             "id": id,
             "result": [

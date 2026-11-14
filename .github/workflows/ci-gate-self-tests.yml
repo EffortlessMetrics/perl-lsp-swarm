@@ -17,6 +17,7 @@ on:
       # Scoped pre-build storage admission; Python fixtures compile no Rust.
       - 'scripts/cargo-admitted'
       - 'scripts/cargo_admitted.py'
+      - 'scripts/devplane-init'
       - 'scripts/cargo_cohort.py'
       # Parser-policy proofs inspect Cargo graphs; their CI consumer must not
       # bootstrap the product-linked xtask integration harness (#18016).
@@ -28,7 +29,10 @@ on:
       - 'Cargo.lock'
       - 'scripts/tests/test_cargo_cohort.py'
       - 'scripts/tests/test_cargo_admitted_storage.py'
+      - 'scripts/tests/test_cargo_admitted_discovery_gate.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
+      - 'scripts/tests/test_cargo_admitted_frontdoor.py'
+      - '.vscode/tasks.json'
       - 'scripts/storage-doctor'
       - 'scripts/storage_observation.py'
       - 'scripts/tests/test_storage_doctor.py'
@@ -103,6 +107,8 @@ on:
       # half must re-run the self-test gate.
       - 'scripts/worktree-add.sh'
       - 'scripts/tests/test-worktree-add-hooks.sh'
+      - 'scripts/githooks/warn-stale-checkout.sh'
+      - 'scripts/tests/test_warn_stale_checkout.py'
       - 'scripts/agent-preflight.sh'
       - 'scripts/test-agent-preflight.sh'
       # Per-worktree core.hooksPath isolation (issue #17414 rule C).
@@ -186,6 +192,14 @@ on:
       - 'scripts/ci/test_ripr_event_operands.py'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
       - 'scripts/tests/test-preserve-lane-log-tail.sh'
+      # cargo-deny vacuous skip gate (#17686): fail closed on unmatched-skip.
+      - 'deny.toml'
+      - '.github/workflows/ci-security.yml'
+      - 'scripts/ci/assert-no-cargo-deny-unmatched-skip.sh'
+      - 'scripts/ci/run-cargo-deny-check.sh'
+      - 'scripts/security_scan.sh'
+      - 'scripts/tests/test-run-cargo-deny-check.sh'
+      - '.justfiles/security.just'
       # Governed RIPR proof entry point (#13768): the adapter and its
       # recording controls gate each other, so both halves re-run here.
       - '.ci/ripr-proof.sh'
@@ -243,7 +257,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: stable
 
@@ -640,6 +654,9 @@ jobs:
       - name: Run worktree hook-provisioning self-test
         run: bash scripts/tests/test-worktree-add-hooks.sh
 
+      - name: Run warning-only checkout hook regression
+        run: python3 -m unittest discover -s scripts/tests -p test_warn_stale_checkout.py -v
+
       - name: Summary
         if: always()
         env:
@@ -649,6 +666,7 @@ jobs:
             echo "## Worktree hook-provisioning self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "Fresh worktrees (issue #17406) get a current executable pre-push hook via scripts/worktree-add.sh and worktree-manager.py \`allocate\`, installer failures fail loudly naming the installer, and current hooks skip the installer build." >> "$GITHUB_STEP_SUMMARY"
+            echo "Warning-only checkout hooks also preserve successful Git transitions when freshness receipts or parsers fail (#19108)." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## Worktree hook-provisioning self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -734,7 +752,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: stable
 
@@ -762,9 +780,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
-          toolchain: '1.95.0'
+          toolchain: '1.100.0'
       - name: Check direct policy route and failure controls
         run: python3 scripts/tests/test_xtask_parser_policy_route.py
       - name: Populate selected Cargo graph without compiling
@@ -779,7 +797,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Run both admitted storage suites without Rust builds
+      - name: Install just for admitted recipe regressions
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        with:
+          tool: just@1.46.0
+          fallback: none
+      - name: Run admitted storage suites without Rust builds
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
       - name: Check cohort ownership and exact reclamation controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
@@ -796,11 +819,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           # The real-toolchain fixture runs from this repo's pinned root.
           # Guard probes refuse missing pins rather than installing them.
-          toolchain: '1.95.0'
+          toolchain: '1.100.0'
 
       - name: Run guard decision-function and coverage self-test
         run: bash scripts/tests/test-cargo-toolchain-guard.sh
@@ -951,3 +974,32 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The head-name sentinel contract regressed — it could again trigger via a suppressible event, execute or check out any ref, silently pass a SHA-like branch, or drift from its documented surface. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  cargo-deny-unmatched-skip-self-test:
+    name: cargo-deny unmatched-skip gate self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        with:
+          tool: cargo-deny
+
+      - name: Run cargo-deny unmatched-skip gate self-test
+        run: bash scripts/tests/test-run-cargo-deny-check.sh
+
+  security-scan-receipt-self-test:
+    name: security scan typed receipt self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run security scan receipt self-test
+        run: bash scripts/security_scan_test.sh

@@ -210,10 +210,20 @@ fn assert_conflict_markers_run_on_every_route(
     );
 
     let checkout_ref = checkout_ref_of(conflict_job, "conflict-markers")?;
-    assert!(
-        checkout_ref.contains("github.event.pull_request.head.sha"),
-        "the conflict-marker checkout must pin the exact pull-request head SHA so \
-         draft feedback describes this candidate. Normalized ref:\n{checkout_ref}"
+    let expected_checkout_ref = "${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}";
+    assert_eq!(
+        checkout_ref, expected_checkout_ref,
+        "the conflict-marker checkout must use merge_group.head_sha for merge groups, \
+         preserve the exact pull_request head expression, and keep ref_name as the \
+         unchanged push fallback"
+    );
+
+    let memory_job = job(workflow, "lsp-memory-smoke")?;
+    let memory_checkout_ref = checkout_ref_of(memory_job, "lsp-memory-smoke")?;
+    assert_eq!(
+        memory_checkout_ref, expected_checkout_ref,
+        "the advisory memory-smoke checkout must use the same exact merge-group head, \
+         exact pull-request head, and unchanged push fallback as conflict markers"
     );
     Ok(())
 }

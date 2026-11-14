@@ -3449,7 +3449,7 @@ impl WorkspaceIndex {
         let files = self.files.read();
         let mut symbols = Vec::new();
 
-        for (_uri_key, file_index) in files.iter() {
+        for file_index in files.values() {
             symbols.extend(file_index.symbols.clone());
         }
 
@@ -4963,7 +4963,7 @@ impl WorkspaceIndex {
         let files = self.files.read();
         let mut members = Vec::new();
 
-        for (_uri_key, file_index) in files.iter() {
+        for file_index in files.values() {
             for symbol in &file_index.symbols {
                 // Check if symbol belongs to this package
                 if let Some(ref container) = symbol.container_name
@@ -5255,7 +5255,7 @@ impl WorkspaceIndex {
             // It's a variable - search through all files for this variable name
             let var_name = format!("{}{}", sigil, key.name);
             let mut refs = Vec::new();
-            for (_uri_key, file_index) in files_locked.iter() {
+            for file_index in files_locked.values() {
                 if let Some(var_refs) = file_index.references.get(&var_name) {
                     for reference in var_refs {
                         if exclude_coderef && reference.kind == ReferenceKind::Coderef {
@@ -5273,7 +5273,7 @@ impl WorkspaceIndex {
                 let mut refs =
                     self.find_references_filtered(&format!("main::{}", key.name), exclude_coderef);
                 // Add bare name references
-                for (_uri_key, file_index) in files_locked.iter() {
+                for file_index in files_locked.values() {
                     if let Some(bare_refs) = file_index.references.get(key.name.as_ref()) {
                         for reference in bare_refs {
                             if exclude_coderef && reference.kind == ReferenceKind::Coderef {
@@ -7107,7 +7107,7 @@ fn initial_package_for_uri(uri: &str) -> Option<String> {
     let path = file_path.as_deref().unwrap_or_else(|| Path::new(parsed_uri.path()));
     let extension = path.extension().and_then(|extension| extension.to_str());
     if extension.is_some_and(|extension| {
-        ["pm", "ep", "tt", "tt2", "mason"]
+        ["pm", "pod", "ep", "tt", "tt2", "mason"]
             .iter()
             .any(|excluded| extension.eq_ignore_ascii_case(excluded))
     }) {
@@ -8070,6 +8070,52 @@ mod tests {
     }
 
     #[test]
+    fn package_less_pod_documentation_has_no_main_package() -> anyhow::Result<()> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///doc/Module.pod";
+        let pod_only = "=head1 NAME\n\nModule - docs\n\n=cut\n\nsub helper { 1 }\n";
+        anyhow::ensure!(
+            super::initial_package_for_uri(uri).is_none(),
+            "POD files must not receive an implicit package seed"
+        );
+        index
+            .index_initial_file(Url::parse(uri)?, pod_only.to_string())
+            .map_err(anyhow::Error::msg)?;
+
+        let symbols = index.file_symbols(uri);
+        anyhow::ensure!(
+            symbols.iter().all(|symbol| symbol.qualified_name.as_deref() != Some("main::helper")),
+            "POD files must not qualify declarations with main: {symbols:?}"
+        );
+        anyhow::ensure!(
+            symbols.iter().all(|symbol| symbol.name != "main"),
+            "POD documentation must not synthesize a main package: {symbols:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_less_test_file_keeps_main_namespace() -> anyhow::Result<()> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///t/basic.t";
+        index
+            .index_initial_file(
+                Url::parse(uri)?,
+                "use Test::More; sub test_something { 1 }".to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+
+        let symbols = index.file_symbols(uri);
+        anyhow::ensure!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.qualified_name.as_deref() == Some("main::test_something")),
+            "test scripts must retain implicit main for subs: {symbols:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_use_constant_indexed_as_constant_symbol() {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/My/Config.pm";
@@ -8998,7 +9044,7 @@ use Data::Dumper;
     #[test]
     fn test_windows_paths() {
         // Test Windows-style paths
-        let result = fs_path_to_uri(r"C:\Users\test\Documents\script.pl");
+        let result = fs_path_to_uri(r"C:\test\Documents\script.pl");
         assert!(result.is_ok());
         let uri = must(result);
         assert!(uri.starts_with("file://"));

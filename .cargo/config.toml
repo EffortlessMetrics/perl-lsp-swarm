@@ -1,9 +1,15 @@
 [alias]
 xtask = "run --package xtask --"
 
-# Agent/local-safe aliases. These do not choose machine paths.
-# Select machine storage in the task shell using docs/agents/CARGO_STORAGE.md.
-# Cargo does not automatically load .cargo/config.local.toml.
+# Legacy raw Cargo aliases: workspace-wide compatibility commands, not admission.
+# New agent work uses `just agent-check PACKAGE` / `just agent-test PACKAGE SELECTOR`
+# after exact-command preflight; see docs/agents/CARGO_STORAGE.md.
+#
+# Optional machine-local overrides live in `.cargo/config.local.toml` (gitignored;
+# copy from `.cargo/config.local.toml.example`). Cargo does not discover that
+# filename automatically. Repository wrappers pass `--config` when it exists
+# (`scripts/cargo-safe`, `scripts/cargo-admitted`). For direct `cargo`, pass
+# `--config .cargo/config.local.toml` (or set machine-local keys via `CARGO_*`).
 agent-check = "check --workspace --all-targets --profile agent --locked"
 agent-test = "test --workspace --all-targets --profile agent --locked"
 agent-clippy = "clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs"
@@ -11,6 +17,12 @@ agent-clippy = "clippy --workspace --all-targets --profile agent --locked -- -D 
 t2 = "test -- --test-threads=2"
 
 [build]
+# Bound raw-Cargo fallback growth while callers migrate to the admitted route.
+# Canonical agent commands already force incremental off and private output roots.
+# Deliberate single-worktree measurements may opt in with CARGO_INCREMENTAL=1;
+# that override is outside the default agent posture and grants no admission,
+# lease, or cleanup authority. See docs/agents/CARGO_INCREMENTAL_FALLBACK.md.
+incremental = false
 rustflags = []
 
 # Lossless ELF debug compression on the pinned native Linux compiler-driver

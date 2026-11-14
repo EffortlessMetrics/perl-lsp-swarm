@@ -445,7 +445,7 @@ impl SemanticAnalyzer {
                 }
             }
 
-            NodeKind::While { condition, body, continue_block: _, .. } => {
+            NodeKind::While { condition, body, .. } => {
                 self.analyze_node(condition, scope_id);
                 self.analyze_node(body, scope_id);
             }

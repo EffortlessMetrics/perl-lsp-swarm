@@ -23,7 +23,7 @@
       "label": "perl-lsp: agent-check",
       "type": "process",
       "command": "just",
-      "args": ["agent-check"],
+      "args": ["agent-check", "${input:perlLspCargoPackage}"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -32,7 +32,7 @@
         "kind": "build",
         "isDefault": true
       },
-      "detail": "Cargo-safe workspace compile check (`just agent-check`)."
+      "detail": "Focused admitted package check (`just agent-check <package>`). Preflight the same check -p <package> --profile agent --locked request first."
     },
     {
       "label": "perl-lsp: pr-fast",
@@ -48,6 +48,14 @@
         "isDefault": true
       },
       "detail": "Fast local pull-request gate (`just pr-fast`)."
+    }
+  ],
+  "inputs": [
+    {
+      "id": "perlLspCargoPackage",
+      "type": "promptString",
+      "description": "Cargo package to check",
+      "default": "perl-parser"
     }
   ]
 }

@@ -118,7 +118,7 @@ assert_not_contains "cargo-safe: stale cargo never executed work" \
 FRESH_BIN="${TMPDIR_BASE}/fresh-bin"
 FRESH_LOG="${TMPDIR_BASE}/fresh-args.log"
 : > "$FRESH_LOG"
-write_stub_cargo "$FRESH_BIN" "1.96.1" "$FRESH_LOG"
+write_stub_cargo "$FRESH_BIN" "1.101.1" "$FRESH_LOG"
 
 code=0
 (
@@ -130,7 +130,7 @@ if [[ "$code" -eq 0 ]]; then
 else
   fail "cargo-safe: satisfying cargo must pass, got exit ${code}"
 fi
-if grep -Fq "cargo 1.96.1" "${TMPDIR_BASE}/fresh.out"; then
+if grep -Fq "cargo 1.101.1" "${TMPDIR_BASE}/fresh.out"; then
   pass "cargo-safe: satisfying cargo still receives the delegation"
 else
   fail "cargo-safe: expected stub version on stdout, got: $(cat "${TMPDIR_BASE}/fresh.out")"
@@ -157,7 +157,7 @@ chmod +x "${FAILED_BIN}/cargo"
 for scenario in missing-pin unrelated-failure; do
   case "$scenario" in
     missing-pin)
-      probe_error="error: toolchain '1.95.0-x86_64-unknown-linux-gnu' is not installed"
+      probe_error="error: toolchain '1.100.0-x86_64-unknown-linux-gnu' is not installed"
       ;;
     unrelated-failure)
       # Even version-looking output must not override a failed probe status.
@@ -185,7 +185,7 @@ for scenario in missing-pin unrelated-failure; do
   assert_contains "$scenario: distinguishes stable from the repository pin" \
     'Installing stable alone does not install that pin' "${TMPDIR_BASE}/${scenario}.err"
   assert_contains "$scenario: makes pin installation conditional on the error" \
-    'if the error reports the pinned toolchain missing: rustup toolchain install 1.95.0' \
+    'if the error reports the pinned toolchain missing: rustup toolchain install 1.100.0' \
     "${TMPDIR_BASE}/${scenario}.err"
   assert_not_contains "$scenario: does not prescribe removing Cargo" \
     'repair or remove this cargo from PATH' "${TMPDIR_BASE}/${scenario}.err"
@@ -298,6 +298,105 @@ else
 fi
 assert_contains "old proxy refusal names the safe manager floor" \
   'needs rustup >= 1.28.0' "${TMPDIR_BASE}/old.err"
+
+# ── 5. per-checkout config.local.toml loading (#13065) ───────────────────────
+
+LIB="${REPO_ROOT}/scripts/lib/cargo-local-config.sh"
+FIXTURE="${TMPDIR_BASE}/local-config-fixture"
+mkdir -p "${FIXTURE}/.cargo"
+# shellcheck source=../lib/cargo-local-config.sh
+source "$LIB"
+CARGO_LOCAL_CONFIG_ARGS=(unexpected)
+cargo_local_config_prepare "$FIXTURE"
+if [[ ${#CARGO_LOCAL_CONFIG_ARGS[@]} -eq 0 ]]; then
+  pass "local-config helper: no args when file absent"
+else
+  fail "local-config helper: expected empty args when absent"
+fi
+echo '[build]
+jobs = 3' > "${FIXTURE}/.cargo/config.local.toml"
+cargo_local_config_prepare "$FIXTURE"
+if [[ ${#CARGO_LOCAL_CONFIG_ARGS[@]} -eq 2 &&
+      "${CARGO_LOCAL_CONFIG_ARGS[0]}" == "--config" ]]; then
+  pass "local-config helper: passes --config when present"
+else
+  fail "local-config helper: unexpected args when present"
+fi
+
+LOCAL_CONFIG="${REPO_ROOT}/.cargo/config.local.toml"
+LOCAL_BACKUP=""
+CREATED_LOCAL=0
+restore_local_config() {
+  if [[ -n "${LOCAL_BACKUP:-}" ]]; then
+    mv -f "$LOCAL_BACKUP" "$LOCAL_CONFIG"
+    LOCAL_BACKUP=""
+  elif [[ "${CREATED_LOCAL:-0}" == 1 && -f "$LOCAL_CONFIG" ]]; then
+    rm -f "$LOCAL_CONFIG"
+  fi
+  CREATED_LOCAL=0
+}
+if [[ -f "$LOCAL_CONFIG" ]]; then
+  LOCAL_BACKUP="${TMPDIR_BASE}/config.local.toml.bak"
+  cp "$LOCAL_CONFIG" "$LOCAL_BACKUP"
+fi
+trap 'restore_local_config; cleanup' EXIT
+
+CONFIG_STUB_BIN="${TMPDIR_BASE}/config-stub-bin"
+CONFIG_STUB_LOG="${TMPDIR_BASE}/config-stub-args.log"
+: > "$CONFIG_STUB_LOG"
+write_stub_cargo "$CONFIG_STUB_BIN" "1.101.1" "$CONFIG_STUB_LOG"
+echo '[env]
+CARGO_LOCAL_CONFIG_PROBE = "present"' > "$LOCAL_CONFIG"
+CREATED_LOCAL=1
+: > "$CONFIG_STUB_LOG"
+code=0
+(
+  cd "$REPO_ROOT"
+  PATH="${CONFIG_STUB_BIN}:$PATH" DEVPLANE="${TMPDIR_BASE}/config-plane" bash "$CARGO_SAFE" metadata --no-deps --format-version 1
+) > "${TMPDIR_BASE}/config-present.out" 2> "${TMPDIR_BASE}/config-present.err" || code=$?
+if [[ "$code" -eq 0 ]]; then
+  pass "cargo-safe: delegates with local config present"
+else
+  fail "cargo-safe: delegation failed with local config (${code})"
+fi
+assert_contains "cargo-safe: passes --config for local file" \
+  "--config ${REPO_ROOT}/.cargo/config.local.toml" "$CONFIG_STUB_LOG"
+restore_local_config
+
+code=0
+(
+  cd "$REPO_ROOT"
+  cargo metadata --no-deps --format-version 1 >/dev/null
+) 2> "${TMPDIR_BASE}/config-parse.err" || code=$?
+if [[ "$code" -eq 0 ]]; then
+  pass "tracked config.toml parses without local file"
+else
+  fail "tracked config.toml must parse without local file (${code})"
+fi
+
+FIXTURE_MANIFEST="${TMPDIR_BASE}/manifest-fixture"
+mkdir -p "${FIXTURE_MANIFEST}/.cargo" "${FIXTURE_MANIFEST}/src"
+cp "${REPO_ROOT}/.cargo/config.toml" "${FIXTURE_MANIFEST}/.cargo/config.toml"
+cat > "${FIXTURE_MANIFEST}/Cargo.toml" <<'EOF'
+[package]
+name = "local-config-parse-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+EOF
+echo 'fn main() {}' > "${FIXTURE_MANIFEST}/src/main.rs"
+echo '[build]
+jobs = 3' > "${FIXTURE_MANIFEST}/.cargo/config.local.toml"
+code=0
+(
+  cd "$FIXTURE_MANIFEST"
+  cargo --config .cargo/config.local.toml metadata --no-deps --format-version 1 >/dev/null
+) 2> "${TMPDIR_BASE}/explicit-config.err" || code=$?
+if [[ "$code" -eq 0 ]]; then
+  pass "direct cargo loads local file via explicit --config"
+else
+  fail "explicit --config must load local file (${code}): $(cat "${TMPDIR_BASE}/explicit-config.err")"
+fi
 
 TOTAL=$((PASS + FAIL))
 echo ""

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 4262,
-  "reason": "Activation deferral experiment harness (#4262): deferral registration/metrics and comparison scripts increase extension.js and package.json; inventory measured from hosted current-source smoke projected_actual.",
-  "base_baseline_file_sha256": "76ced040e30a4f70d0d55448beceec25475d3c399a06f661c613756ebb8ce4db",
-  "base_inventory_sha256": "ba88ea223cd3cee7f5d0ee1d02d246cb805732b19079f4bd99228c257e01e296",
-  "candidate_baseline_file_sha256": "1233267f59fc7a419b838be670662dcecdff5bea5cb6bdc03b54c225ebbdea6d",
-  "candidate_inventory_sha256": "67f9e75176be9de4b49f088559bd864607aafa66d70015a744a7e50003caa5fd"
+  "owner_issue": 9864,
+  "reason": "Merge main onboarding and What's New packaging with the Rust 1.100 source-build minimum: out/extension.js adopts main's welcome gating and fallback logic, while the MSRV-1.100 badge adds one README byte; no files added or removed",
+  "base_baseline_file_sha256": "6fc630983acde8e559bb4e10f875f6960c5df2439dccfd09762b1b8c8c223ea3",
+  "candidate_baseline_file_sha256": "686faa5fef23a36add99101fb2ce23b8bf4d4f3dbae25142a6a5e359914725f0",
+  "base_inventory_sha256": "1f39cc7522fa37db92ab26799a3e4140dd7be06439a068c3202fe04e9d90bfbe",
+  "candidate_inventory_sha256": "eec70960e0bfaef1fcd494e7001cbccfc15624d6967143a178cd0d68ea1d9f15"
 }
