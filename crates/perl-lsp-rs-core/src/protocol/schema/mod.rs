@@ -5,7 +5,8 @@
 //! `$/cancelRequest`), the window-message family (`window/showMessage`,
 //! `window/showMessageRequest`, `window/logMessage`), and the document-sync
 //! family (`textDocument/didOpen`, `textDocument/didChange`,
-//! `textDocument/didClose`). Remaining method payload validators stay on
+//! `textDocument/didClose`), push diagnostics (`textDocument/publishDiagnostics`),
+//! and document highlights. Remaining method payload validators stay on
 //! #10477 so each family stays within RIPR's review budget. Exact-process
 //! coverage is wired separately by #7116.
 
@@ -29,7 +30,7 @@ pub const SCHEMA_SOURCE_JSON: &str = include_str!("../../../protocol_schema_sour
 pub const UPSTREAM_PROTOCOL_COMMIT: &str = "8d5153933153aed3a488b9b8f46b22ed0f90f552";
 /// SHA-256 of the reviewed, checked-in source manifest bytes.
 pub const SCHEMA_SOURCE_MANIFEST_SHA256: &str =
-    "bc804d11ce4c3856922607ab3b811d0bc203d3695b1e2a294041a960c4761920";
+    "2518d2e363c8020e1e1dfdd8a1df2d9e5dd7a056d30720b516b36a205741f89c";
 
 /// Direction of a protocol message on the LSP connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
