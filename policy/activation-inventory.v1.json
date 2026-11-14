@@ -5379,7 +5379,7 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "Fail when a production unsafe block lacks // SAFETY: reasoning or the unsafe-prod baseline rises"
+      "notes": "Fail when a production unsafe block lacks // SAFETY: reasoning or the unsafe-prod site set drifts from baseline"
     },
     {
       "surface_id": "gate:v2_bundle_sync",

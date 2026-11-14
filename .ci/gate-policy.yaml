@@ -2013,18 +2013,18 @@ gates:
       - doctest
       - ratchet
 
-  # The production-unsafe ratchet is fail-closed: `check-unsafe-prod` counts
-  # `unsafe` syntax outside tests and fails when any production unsafe block
-  # lacks a preceding `// SAFETY:` comment stating the call's actual
-  # obligations, or when the count in ci/unsafe_prod_baseline.txt is exceeded
-  # (lowered only by evidence, never raised to obtain green). Only humans ran
-  # this checker until this gate existed (#16215), so drift like missing
+  # The production-unsafe ratchet is fail-closed: `check-unsafe-prod` compares
+  # the scanned `path:line` site set to `ci/unsafe_prod_baseline.txt`, requires
+  # a preceding `// SAFETY:` comment on each production unsafe block stating the
+  # call's actual obligations, and fails when either the composition or the
+  # documentation obligations drift (baseline updates require intentional review).
+  # Only humans ran this checker until this gate existed (#16215), so drift like missing
   # safety reasoning was silently absorbed. Runs in the `policy` shard via the
   # committed wrapper, which resolves the pinned toolchain before invoking the
   # perl-ci-hygiene CLI.
   - name: unsafe_prod_check
     tier: merge_gate
-    description: "Fail when a production unsafe block lacks // SAFETY: reasoning or the unsafe-prod baseline rises"
+    description: "Fail when a production unsafe block lacks // SAFETY: reasoning or the unsafe-prod site set drifts from baseline"
     required: true
     command: bash ci/check_unsafe_prod.sh
     # Matches the sibling `cargo xtask ...` gates in this shard: the cost is
