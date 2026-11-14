@@ -401,16 +401,7 @@ impl Coordinator {
     fn enqueue_locked(&self, state: &mut QueueState, job: ParseJob) -> bool {
         self.metrics.jobs_enqueued.fetch_add(1, Ordering::SeqCst);
         let uri = job.normalized_uri.clone();
-        let capture_job = if crate::runtime::text_sync_work::is_enabled() {
-            Some((
-                crate::runtime::timing::uri_tail(&job.normalized_uri),
-                job.generation,
-                u64::try_from(job.text.len()).unwrap_or(u64::MAX),
-            ))
-        } else {
-            None
-        };
-        let replaced = state.pending.insert(uri.clone(), job).is_some();
+        let replaced_job = state.pending.insert(uri.clone(), job);
         self.metrics.bump_queue_depth(state.pending.len());
         let newly_active = state.active.insert(uri.clone());
         if newly_active {
@@ -433,13 +424,15 @@ impl Coordinator {
             // `on_settled` decrement for this same lifecycle, full stop --
             // not merely "before `notify_one()`, which is usually enough."
             (self.on_activated)(&uri);
-        } else if replaced {
+        } else if let Some(replaced_job) = replaced_job {
             // Already owned by a worker (queued or in-flight); this enqueue
             // replaced a not-yet-started job that was waiting behind it.
             self.metrics.jobs_coalesced.fetch_add(1, Ordering::SeqCst);
-            if let Some((tail, generation, byte_len)) = capture_job {
+            if crate::runtime::text_sync_work::is_enabled() {
                 crate::runtime::text_sync_work::record_parse_worker_coalesced(
-                    tail, generation, byte_len,
+                    crate::runtime::timing::uri_tail(&replaced_job.normalized_uri),
+                    replaced_job.generation,
+                    u64::try_from(replaced_job.text.len()).unwrap_or(u64::MAX),
                 );
             }
         }
@@ -1661,6 +1654,40 @@ mod tests {
     }
 
     // ---- Invariant 3: burst coalescing -----------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    fn coalesced_event_records_replaced_job_identity() {
+        let _capture = crate::runtime::text_sync_work::capture::test_lock(|| None);
+        let coordinator =
+            Coordinator::new(Arc::new(ParseWorkerMetrics::default()), Arc::new(|_| {}));
+        let mut state =
+            QueueState { pending: HashMap::new(), ready: VecDeque::new(), active: HashSet::new() };
+        let job = |generation, text: &'static str| ParseJob {
+            uri: "file:///coalesced.pl".to_string(),
+            normalized_uri: "file:///coalesced.pl".to_string(),
+            generation,
+            generation_handle: Arc::new(AtomicU32::new(generation)),
+            text: Arc::from(text),
+            refresh_consumers_after_index: false,
+            enqueued_at: Instant::now(),
+            capture_owner: None,
+        };
+
+        assert!(coordinator.enqueue_locked(&mut state, job(4, "old")));
+        assert!(!coordinator.enqueue_locked(&mut state, job(5, "replacement")));
+
+        let (events, _) = crate::runtime::text_sync_work::capture::drain();
+        let coalesced: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.kind == crate::runtime::text_sync_work::WorkEventKind::ParseWorkerCoalesced
+            })
+            .collect();
+        assert_eq!(coalesced.len(), 1);
+        assert_eq!(coalesced[0].generation, 4);
+        assert_eq!(coalesced[0].byte_length, 3);
+    }
 
     #[test]
     fn rapid_burst_coalesces_to_far_fewer_jobs_than_edits() {
