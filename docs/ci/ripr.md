@@ -227,14 +227,17 @@ never infer success from emptiness.
   sorting and truncation, so excluded seams cannot crowd out a production seam
   from the named-evidence list. Findings with no resolvable path are never
   classified non-production (fail closed).
-- In CI, review guidance has an explicit timeout. When the guidance pass does
-  not finish, the harness emits an `incomplete` receipt that names the
-  gate-actionable seams (`reachable_unrevealed` / `no_static_path`) from the
-  completed diff-scoped raw check, so the quality gate blocks on named
-  file/line/seam evidence instead of an unnameable count (#10054). The
-  suggested-proof text on these fallback names is generic, not
-  analyzer-derived, and the receipt warning says so. Only when the raw check
-  is also unavailable does the gate report the missing repair packet.
+- In CI, the completed diff-scoped raw check owns the required new-gap verdict;
+  review guidance is advisory. Timeout, absence, or an oversized guidance pass
+  leaves an `incomplete` advisory receipt but adds no independent blocker.
+  Actionable raw gaps still block on named file/line/seam evidence when fallback
+  guidance can supply it. Missing, stale, malformed, or required-scope partial
+  analysis remains `NOT_PROVEN` and blocks, including every limitation that names
+  a Rust path. A bounded `language_scope_unsupported` limitation confined to a
+  non-Rust file does not add a blocker when the required raw gap count is zero;
+  its reason remains visible rather than being relabelled as clean. Fallback
+  suggested-proof text is generic, not analyzer-derived, and the advisory receipt
+  warning says so.
 - Emits non-blocking warning annotations from `comments[]` only.
 - Produces mutation-routing evidence under
   `target/xtask/impacted-evidence/`.

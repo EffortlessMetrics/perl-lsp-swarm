@@ -581,7 +581,9 @@ fn evaluate_new_ripr(
     }
     // `ripr check` owns the required verdict. Review guidance is advisory:
     // missing, stale, malformed, timed-out, or oversized guidance stays visible
-    // in the receipt but cannot turn a clean raw-check result red (#19240).
+    // in the receipt but cannot turn a complete zero-gap raw check red (#19240).
+    // Required-scope partial analysis is NOT_PROVEN and blocks. A bounded,
+    // named non-Rust scope limitation stays visible without weakening that proof.
 
     // Applied static-limitation credit for this evaluation. Defaults to zero:
     // arms that never run the clearing (unknown or zero count) must not
@@ -1461,6 +1463,45 @@ fn genuine_new_ripr_gap_count(payload: &Value) -> Option<u64> {
     }
 }
 
+fn bounded_non_rust_scope_limitation(limitation: &Value) -> bool {
+    if limitation.get("kind").and_then(Value::as_str) != Some("language_scope_unsupported") {
+        return false;
+    }
+    let object = limitation.as_object();
+    let touches_rust_path = object.is_some_and(|fields| {
+        fields.values().filter_map(Value::as_str).any(|text| {
+            let lower = text.to_ascii_lowercase();
+            lower.contains(".rs")
+        })
+    });
+    if touches_rust_path {
+        return false;
+    }
+    let explicit_non_rust_path = ["path", "file", "file_path"].into_iter().any(|key| {
+        limitation.get(key).and_then(Value::as_str).is_some_and(|path| !path.is_empty())
+    });
+    let bounded_python_preview = limitation
+        .get("bounded_detail")
+        .and_then(Value::as_str)
+        .is_some_and(|detail| detail.contains("Python preview adapter"));
+    explicit_non_rust_path || bounded_python_preview
+}
+
+fn required_scope_incomplete(payload: &Value) -> bool {
+    if payload.pointer("/analysis_outcome/outcome/kind").and_then(Value::as_str)
+        == Some("partial_with_limitations")
+    {
+        let limitations =
+            payload.pointer("/analysis_outcome/outcome/limitations").and_then(Value::as_array);
+        return limitations.is_none_or(|limitations| {
+            limitations.is_empty() || !limitations.iter().all(bounded_non_rust_scope_limitation)
+        });
+    }
+    payload.get("status").and_then(Value::as_str) == Some("incomplete")
+        || payload.pointer("/analysis_outcome/analysis_complete").and_then(Value::as_bool)
+            == Some(false)
+}
+
 fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
     match read_json_receipt(path) {
         JsonReceipt::Missing => RiprPrReceipt {
@@ -1497,10 +1538,13 @@ fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
             }
             let receipt_head_sha =
                 payload.get("head_sha").and_then(Value::as_str).map(ToOwned::to_owned);
-            let status = if receipt_head_sha.as_deref() == Some(expected_head) {
-                "present"
-            } else {
+            let incomplete = required_scope_incomplete(&payload);
+            let status = if receipt_head_sha.as_deref() != Some(expected_head) {
                 "stale"
+            } else if incomplete {
+                "incomplete"
+            } else {
+                "present"
             };
             RiprPrReceipt {
                 status: status.to_string(),
@@ -3069,6 +3113,56 @@ mod tests {
     }
 
     #[test]
+    fn ripr_pr_receipt_refuses_incomplete_packet_at_matching_head() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "partial-head";
+        let receipt = dir.path().join("repo-exposure.json");
+        write_text(
+            &receipt,
+            &json!({
+                "schema_version": "0.1",
+                "head_sha": head,
+                "status": "incomplete",
+                "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
+            })
+            .to_string(),
+        )?;
+
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "incomplete");
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_pr_receipt_refuses_partial_analysis_touching_rust_path() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "rust-partial-head";
+        let receipt = dir.path().join("repo-exposure.json");
+        write_text(
+            &receipt,
+            &json!({
+                "schema_version": "0.1",
+                "head_sha": head,
+                "status": "incomplete",
+                "analysis_outcome": {
+                    "analysis_complete": false,
+                    "outcome": {
+                        "kind": "partial_with_limitations",
+                        "limitations": [{
+                            "kind": "language_scope_unsupported",
+                            "path": "crates/perl-parser/src/lib.rs"
+                        }]
+                    }
+                },
+                "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
+            })
+            .to_string(),
+        )?;
+
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "incomplete");
+        Ok(())
+    }
+
+    #[test]
     fn review_guidance_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
         let dir = tempdir()?;
         let head = "schema-head";
@@ -4580,8 +4674,7 @@ mod tests {
     }
 
     #[test]
-    fn advisory_oversized_guidance_preserves_limitation_without_blocking_clean_check() -> Result<()>
-    {
+    fn bounded_non_rust_limitation_preserves_zero_gap_result_and_reason() -> Result<()> {
         let dir = tempdir()?;
         let head = "review-head";
         let reason = "review_guidance_oversized: 4554 closure input files exceed the review-guidance ceiling (RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES=1200); the guidance pass was not run to protect runner memory.";
@@ -4631,8 +4724,12 @@ mod tests {
 
         let evaluation = evaluate_new_ripr(head, &args, None)?;
 
-        assert!(!evaluation.failed, "{:?}", evaluation.receipt["next_actions"]);
+        assert!(
+            !evaluation.failed,
+            "a bounded non-Rust limitation must not block required Rust proof"
+        );
         assert_eq!(evaluation.receipt["decision"], json!("pass"));
+        assert_eq!(evaluation.receipt.pointer("/ripr_pr/status"), Some(&json!("present")));
         assert_eq!(
             evaluation.receipt.pointer("/ripr_pr/analysis_outcome/outcome/kind"),
             Some(&json!("partial_with_limitations"))
