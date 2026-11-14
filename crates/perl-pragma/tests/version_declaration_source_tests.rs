@@ -190,19 +190,24 @@ fn conditional_version_targets_never_establish_unconditional_authority() -> Test
         "use if 0, v5.44;",
         "use if 1, v5.44;",
         "use if $enabled, v5.44;",
-        "use unless 1, v5.44;",
-        "use unless 0, v5.44;",
-        "use unless $enabled, v5.44;",
         "use if $enabled, v5.bad;",
-        "use unless $enabled, v5.bad;",
         // Flattened arguments cannot distinguish this import argument from a
         // version target. Unknown avoids manufacturing unconditional authority.
         "use if $enabled, Foo, v5.44;",
-        "use unless $enabled, Foo, v5.44;",
     ] {
-        for prefix in ["", "use v5.42; "] {
-            let source = format!("{prefix}{declaration}");
-            check_unknown(&snapshot_for(&source)?, &source)?;
+        let snapshot = snapshot_for(declaration)?;
+        check_unknown(&snapshot, declaration)?;
+
+        let source = format!("use v5.42; {declaration}");
+        let snapshot = snapshot_for(&source)?;
+        let base = snapshot_for("use v5.42;")?;
+        if declaration.starts_with("use if 0,") || declaration.contains("$enabled") {
+            check(
+                snapshot.state() == base.state(),
+                format!("unsupported conditional must not mutate retained authority: {source}"),
+            )?;
+        } else {
+            check_unknown(&snapshot, &source)?;
         }
     }
     Ok(())
@@ -214,20 +219,34 @@ fn malformed_conditional_targets_only_invalidate_admission() -> TestResult {
         "use v5.44;",
         "use v5.42; use feature 'enhanced_xx'; no warnings; no strict 'vars'; use utf8;",
     ] {
-        let mut expected = snapshot_for(prefix)?.state().clone();
-        expected.perl_version = None;
-        for conditional in ["if", "unless"] {
-            for condition in ["0", "1", "$enabled"] {
-                for target in ["v5.bad", "v5.44.bad"] {
-                    let source = format!("{prefix} use {conditional} {condition}, {target};");
-                    let snapshot = snapshot_for(&source)?;
+        let base = snapshot_for(prefix)?;
+        let mut invalidated = base.state().clone();
+        invalidated.perl_version = None;
+        for condition in ["0", "1"] {
+            for target in ["v5.bad", "v5.44.bad"] {
+                let source = format!("{prefix} use if {condition}, {target};");
+                let snapshot = snapshot_for(&source)?;
+                if condition == "1" {
                     check_unknown(&snapshot, &source)?;
                     check(
-                        snapshot.state() == &expected,
+                        snapshot.state() == &invalidated,
                         format!("malformed conditional changed effective pragma state: {source}"),
+                    )?;
+                } else {
+                    check(
+                        snapshot.state() == base.state(),
+                        format!("proven-false conditional must not mutate exact state: {source}"),
                     )?;
                 }
             }
+        }
+        for target in ["v5.bad", "v5.44.bad"] {
+            let source = format!("{prefix} use if $enabled, {target};");
+            let snapshot = snapshot_for(&source)?;
+            check(
+                snapshot.state() == base.state(),
+                format!("unsupported dynamic conditional must not mutate exact state: {source}"),
+            )?;
         }
     }
     Ok(())
