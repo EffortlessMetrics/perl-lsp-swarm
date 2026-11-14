@@ -35,6 +35,9 @@
 //! - No existing shadow file is deleted or migrated here.
 //! - No behavior change: per-provider receipts remain byte-identical.
 //! - Policy hooks are not flattened; they remain in the caller callbacks.
+//!
+//! Pilot migrations onto [`run_shadow_compare`] land in #9086 (`safe_delete_shadow`,
+//! `diagnostics_shadow`) and #9087 (remaining provider shadows).
 
 use perl_semantic_facts::ProviderFactTrace;
 use perl_workspace::semantic_shadow_compare::{
