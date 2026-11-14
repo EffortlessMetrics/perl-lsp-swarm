@@ -36,12 +36,15 @@ pub mod semantic_identity;
 pub mod semantic_query;
 /// Provider-neutral ordered structural access-hop contract (#13619).
 pub mod structural_access;
+/// Canonical framework template-target fact family (#8937).
+pub mod template;
 
 pub use envelope::*;
 pub use handler::*;
 pub use hook::*;
 pub use route::*;
 pub use semantic_query::*;
+pub use template::*;
 
 macro_rules! id_newtype {
     ($name:ident) => {
