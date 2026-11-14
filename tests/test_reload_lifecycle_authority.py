@@ -16,10 +16,13 @@ sentence. What is asserted here is structure, closure, and uniqueness.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -191,10 +194,12 @@ def referenced_foreign_types(realisation: str) -> list[str]:
     return [span for span in BACKTICKED.findall(realisation) if "::" in span]
 
 
-def _git_grep(pattern: str, *, fixed: bool) -> list[str]:
+def _git_grep(pattern: str, *, fixed: bool) -> bool:
+    # This is an existence query, not exhaustive read-error detection: Git can
+    # return 0/1 with read diagnostics, as it could for the previous -l query.
     mode = "-F" if fixed else "-E"
     result = subprocess.run(
-        ["git", "grep", "-l", mode, pattern, "--", "crates"],
+        ["git", "grep", "-q", mode, pattern, "--", ":(glob)crates/**/*.rs"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -202,7 +207,7 @@ def _git_grep(pattern: str, *, fixed: bool) -> list[str]:
     )
     if result.returncode not in (0, 1):
         raise RuntimeError(f"git grep failed for {pattern!r}: {result.stderr.strip()}")
-    return [line for line in result.stdout.splitlines() if line.endswith(".rs")]
+    return result.returncode == 0
 
 
 def type_name_exists_in_crates(name: str) -> bool:
@@ -245,6 +250,83 @@ def contiguous(ids: list[str], prefix: str) -> list[str]:
             f"highest {numbers[-1]}, count {len(numbers)}"
         )
     return problems
+
+
+class RustExistenceProbeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        # These fixtures have no user configuration or ambient repository selectors.
+        environment = {"PATH": os.environ.get("PATH", os.defpath)}
+        run = subprocess.run
+
+        def isolated_run(*args, **kwargs):
+            return run(*args, **kwargs, env=environment)
+
+        root_patch = patch(__name__ + ".ROOT", self.root)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
+        run_patch = patch(__name__ + ".subprocess.run", side_effect=isolated_run)
+        self.run = run_patch.start()
+        self.addCleanup(run_patch.stop)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+
+    def track(self, path: str, text: str) -> Path:
+        file = self.root / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(text, encoding="utf-8")
+        subprocess.run(["git", "add", "--", path], cwd=self.root, check=True)
+        return file
+
+    def test_search_is_quiet_and_restricted_to_rust(self) -> None:
+        self.track("crates/decoy.md", "pub struct OnlyInMarkdown;\n")
+        self.track("outside/decoy.rs", "pub struct OutsideCrates;\n")
+        self.track("crates/direct.rs", "pub struct DirectType;\n")
+        self.track("crates/nested/src/lib.rs", "pub struct NestedType;\n")
+        self.assertFalse(type_name_exists_in_crates("OnlyInMarkdown"))
+        self.assertFalse(type_name_exists_in_crates("OutsideCrates"))
+        self.assertTrue(type_name_exists_in_crates("DirectType"))
+        self.assertTrue(type_name_exists_in_crates("NestedType"))
+        searches = [call.args[0] for call in self.run.call_args_list
+                    if call.args[0][:2] == ["git", "grep"]]
+        self.assertTrue(searches)
+        self.assertTrue(all("-q" in command for command in searches))
+
+    def test_tracked_worktree_edits_are_observed_without_caching(self) -> None:
+        file = self.track("crates/example/src/lib.rs", "pub struct BeforeEdit;\n")
+        self.assertTrue(type_name_exists_in_crates("BeforeEdit"))
+        file.write_text("pub struct AfterEdit;\n", encoding="utf-8")
+        self.assertFalse(type_name_exists_in_crates("BeforeEdit"))
+        self.assertTrue(type_name_exists_in_crates("AfterEdit"))
+        file.with_name("untracked.rs").write_text("pub struct Untracked;\n", encoding="utf-8")
+        self.assertFalse(type_name_exists_in_crates("Untracked"))
+
+    def test_git_quoted_rust_filenames_still_supply_type_evidence(self) -> None:
+        subprocess.run(["git", "config", "core.quotePath", "true"], cwd=self.root, check=True)
+        for name, type_name in [("caf\u00e9.rs", "UnicodeType"), ("line\nbreak.rs", "NewlineType")]:
+            with self.subTest(name=name):
+                self.track(f"crates/{name}", f"pub struct {type_name};\n")
+                listed = subprocess.run(
+                    ["git", "grep", "-l", "-F", type_name, "--", "crates"],
+                    cwd=self.root, capture_output=True, text=True, check=True,
+                )
+                self.assertTrue(listed.stdout.startswith('"'), "fixture must exercise Git quoting")
+                self.assertFalse(any(line.endswith(".rs") for line in listed.stdout.splitlines()))
+                self.assertTrue(type_name_exists_in_crates(type_name))
+
+    def test_regex_macro_and_fixed_string_queries_keep_their_meaning(self) -> None:
+        self.track("crates/example/src/lib.rs", "opaque_id!(\n    MacroType,\n);\nlet _: ForeignType;\n")
+        self.assertTrue(type_name_exists_in_crates("MacroType"))
+        self.assertTrue(foreign_type_is_used_in_crates("dependency::ForeignType"))
+        self.assertFalse(foreign_type_is_used_in_crates("dependency::Foreign.*Type"))
+        with self.assertRaisesRegex(RuntimeError, "git grep failed"):
+            _git_grep("[", fixed=False)
+
+    def test_repository_error_is_not_a_negative_match(self) -> None:
+        with tempfile.TemporaryDirectory() as outside, patch(__name__ + ".ROOT", Path(outside)):
+            with self.assertRaisesRegex(RuntimeError, "git grep failed"):
+                _git_grep("MissingType", fixed=True)
 
 
 class ReloadLifecycleAuthorityTest(unittest.TestCase):
