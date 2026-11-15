@@ -9,7 +9,7 @@
 //!
 //! The family is framework-neutral. Framework-specific minting (verb tables,
 //! method normalization, activation gating) lives in concrete adapters such as
-//! `framework_adapters::dancer2_routes`; this module only defines what a route
+//! `perl_semantic_analyzer::framework_adapters::dancer2_routes`; this module only defines what a route
 //! declaration must preserve: identity by source order, route name separate
 //! from pattern, normalized method set, pattern kind, static options, handler
 //! anchor, and the full declaration/keyword ranges. The handler relation

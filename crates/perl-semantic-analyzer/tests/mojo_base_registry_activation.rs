@@ -3,7 +3,7 @@
 //! End-to-end registry-backed Mojo::Base activation/profile proof (#9681).
 //!
 //! Drives the #6820 checked SDK surface through the Mojo::Base adapter in
-//! `perl-semantic-facts::framework_adapters::mojo_base` and the AST
+//! `perl-semantic-analyzer::framework_adapters::mojo_base` and the AST
 //! activation extractor in
 //! `perl_semantic_analyzer::analysis::mojo_base_activation`, including the
 //! `test_corpus/real_projects/mojolicious_skeleton` fixture. Every typed
@@ -12,6 +12,9 @@
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::mojo_base_activation::extract_mojo_base_activation_sites;
+use perl_semantic_analyzer::framework_adapters::mojo_base::{
+    detect_mojo_base, mojo_base_activation_facts, mojo_base_descriptor, parse_mojo_base_import_args,
+};
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDetectionInput, DetectionOutcome, ModuleObservationReceipt,
     ModuleSelectorEvaluation, ModuleSelectorOutcome,
@@ -21,8 +24,6 @@ use perl_semantic_facts::framework::{
 };
 use perl_semantic_facts::framework_adapters::mojo_base::{
     MOJO_BASE_VERSION_CONSTRAINT, MojoBaseActivationOutcome, MojoBaseParentSelection,
-    detect_mojo_base, mojo_base_activation_facts, mojo_base_descriptor,
-    parse_mojo_base_import_args,
 };
 use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 use perl_tdd_support::{must, must_some};

@@ -4,7 +4,7 @@
 //! extractor and checked adapter detection, the `has` attribute extractor in
 //! `perl_semantic_analyzer::analysis::mojo_base_attributes`, and the fact
 //! minting in
-//! `perl_semantic_facts::framework_adapters::mojo_base_facts`. Every
+//! `perl_semantic_analyzer::framework_adapters::mojo_base_facts`. Every
 //! acceptance row and every negative control named in #9682 appears as one
 //! named test.
 //!
@@ -17,17 +17,18 @@ use perl_semantic_analyzer::analysis::mojo_base_activation::{
     MojoBaseActivationSite, extract_mojo_base_activation_sites,
 };
 use perl_semantic_analyzer::analysis::mojo_base_attributes::extract_mojo_base_attribute_declarations;
+use perl_semantic_analyzer::framework_adapters::mojo_base::{
+    detect_mojo_base, mojo_base_activation_facts, mojo_base_descriptor,
+};
+use perl_semantic_analyzer::framework_adapters::mojo_base_facts::mojo_base_object_facts;
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDetectionInput, AdapterDetectionResult, DetectionEvidenceClass,
     ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
     ModuleSelectorOutcome, ModuleVersionEvidence,
 };
-use perl_semantic_facts::framework_adapters::mojo_base::{
-    detect_mojo_base, mojo_base_activation_facts, mojo_base_descriptor,
-};
 use perl_semantic_facts::framework_adapters::mojo_base_facts::{
     MojoBaseAttributeDeclaration, MojoBaseAttributeDefault, MojoBaseExecutionPhase,
-    MojoBaseExplicitMethodState, MojoBaseObjectFacts, mojo_base_object_facts,
+    MojoBaseExplicitMethodState, MojoBaseObjectFacts,
 };
 use perl_semantic_facts::{
     BoundaryKind, CallableResultLimitation, CallableResultRelation, Confidence, FileId,

@@ -9,7 +9,7 @@
 //!
 //! The family is framework-neutral. Framework-specific minting (activation
 //! gating, reviewed alias contracts) lives in concrete adapters such as
-//! `framework_adapters::dancer2_hooks`; this module only defines what a hook
+//! `perl_semantic_analyzer::framework_adapters::dancer2_hooks`; this module only defines what a hook
 //! declaration must preserve: identity by source order, the literal source
 //! hook name with its version-authoritative normalization state, the handler
 //! relation (shared [`crate::handler`] contract), and the exact

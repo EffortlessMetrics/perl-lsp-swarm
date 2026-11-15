@@ -2,7 +2,7 @@
 //!
 //! Extracts the statically supported Dancer2 route declaration grammar from an
 //! AST into [`Dancer2RouteDeclaration`] carriers for the registry-activated
-//! minting in `perl_semantic_facts::framework_adapters::dancer2_routes`. This
+//! minting in `crate::framework_adapters::dancer2_routes`. This
 //! is pure source observation: extraction knows the reviewed route grammar, it
 //! does not decide activation — a route fact exists only after the registry
 //! adapter minted it over an exact activation (#8914 seam).
@@ -59,9 +59,11 @@
 
 use crate::analysis::dancer2_handler_targets::{SubroutineTargetIndex, handler_from_node};
 use crate::ast::{Node, NodeKind};
+use crate::framework_adapters::dancer2_routes::{
+    dancer2_keyword_methods, normalize_dancer2_method,
+};
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
     DANCER2_ROUTE_KEYWORDS, Dancer2PrefixDeclaration, Dancer2RouteDeclaration, RouteRegistration,
-    dancer2_keyword_methods, normalize_dancer2_method,
 };
 use perl_semantic_facts::route::{
     RouteDeclaration, RouteEffectivePattern, RouteMethodSet, RouteName, RouteNameSelection,

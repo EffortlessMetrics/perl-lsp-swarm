@@ -20,11 +20,20 @@ workspace, refactoring, and LSP layers can consume.
 - `analysis::declaration::DeclarationProvider`
 - `analysis::index::WorkspaceIndex`
 - `known_scalar_argument_count`
+- `framework_adapters` -- Dancer2, Moose, Mojo::Base, Mojolicious, and DBIx::Class
+  detection, import interpretation, and fact production over shared
+  `perl-semantic-facts` contracts.
 
 `known_scalar_argument_count` supplies the shared conservative argument count for
 critic, diagnostics, and quick-fix admission. It returns `None` when any argument
 has unknown cardinality in Perl list context, including calls, arrays, and command
 output. An empty argument list returns `Some(0)`.
+
+Framework contracts and normative tables remain in `perl-semantic-facts`.
+The [API migration map](../../docs/reference/FRAMEWORK_ADAPTER_OWNERSHIP_MIGRATION.md)
+lists the concrete implementation functions now owned by this crate. The public
+`framework_adapters` module is at the crate root, outside `analysis`, so the parser
+compatibility wildcard does not acquire an adapter implementation namespace.
 
 ## Example
 

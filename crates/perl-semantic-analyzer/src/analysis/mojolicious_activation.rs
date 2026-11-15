@@ -20,15 +20,15 @@
 //! extracted by
 //! [`crate::analysis::mojo_base_activation::extract_mojo_base_activation_sites`],
 //! and classified by
-//! [`perl_semantic_facts::framework_adapters::mojolicious::mojolicious_role_facts_from_mojo_base`].
+//! [`crate::framework_adapters::mojolicious::mojolicious_role_facts_from_mojo_base`].
 //! Adding a second recognizer for them would duplicate the Mojo::Base
 //! authority this profile is required to consume.
 
 use crate::ast::{Node, NodeKind};
+use crate::framework_adapters::mojolicious::mojolicious_lite_import_evidence;
 use perl_semantic_facts::framework_adapters::mojolicious::MOJOLICIOUS_LITE_MODULE;
 use perl_semantic_facts::framework_adapters::mojolicious::{
     MojoliciousLiteImportEvidence, MojoliciousLiteVersionRequirement, MojoliciousSiteAnchor,
-    mojolicious_lite_import_evidence,
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceGeneration};
 

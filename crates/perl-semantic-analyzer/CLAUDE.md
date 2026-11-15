@@ -53,6 +53,20 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 module remains crate-private so `perl-parser`'s analysis wildcard re-export does
 not widen the parser's public API.
 
+### Framework interpretation (`src/framework_adapters/`)
+
+This crate owns concrete Dancer2, Moose, Mojo::Base, Mojolicious, and DBIx::Class
+descriptors, detection, import interpretation, and fact production. The public
+module is at the crate root, outside `analysis`, to keep parser compatibility
+exports bounded. `perl-semantic-facts::framework_adapters` owns the stable types,
+IDs, provenance, validation contracts, and normative reference tables. Import those
+contracts directly; do not copy tables or add a facts-to-analyzer dependency.
+
+The QuickORM API registry remains entirely in the facts crate. See
+`../../docs/reference/FRAMEWORK_ADAPTER_OWNERSHIP_MIGRATION.md` for the public
+function migration and the retained identity laws. Adapter tests live here;
+table, identity, serialization, and checked-SDK contract tests stay below.
+
 ### Re-exports from `lib.rs`
 
 The crate re-exports core types from `perl-parser-core` (`Node`, `NodeKind`, `SourceLocation`, `Parser`, `ast`, `error`, etc.) and `perl-workspace::workspace_index`, so downstream crates can use a single import.

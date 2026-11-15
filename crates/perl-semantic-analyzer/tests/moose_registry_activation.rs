@@ -8,6 +8,10 @@ use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::moose_activation::{
     MooseActivationSite, extract_moose_activation_sites,
 };
+use perl_semantic_analyzer::framework_adapters::moose::{
+    detect_moose_class, detect_moose_role, moose_class_descriptor, moose_descriptors,
+    moose_role_descriptor,
+};
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDescriptor, AdapterDetectionInput, AdapterDetectionResult,
     AdapterDisposition, DetectionAbsenceReason, DetectionAuthorityError, DetectionEvidenceClass,
@@ -16,8 +20,7 @@ use perl_semantic_facts::framework::{
 };
 use perl_semantic_facts::framework_adapters::moose::{
     MOOSE_ACTIVATION_PROFILE_VERSION, MOOSE_VERSION_CONSTRAINT, MooseActivationKind,
-    MooseImportDisposition, detect_moose_class, detect_moose_role, moose_class_descriptor,
-    moose_descriptors, moose_role_descriptor,
+    MooseImportDisposition,
 };
 use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 use perl_tdd_support::{must, must_some};

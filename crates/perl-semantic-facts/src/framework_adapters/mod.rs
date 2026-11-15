@@ -1,31 +1,29 @@
-//! Concrete registry-backed framework adapters built on the checked
-//! [`crate::framework`] SDK surface.
+//! Shared framework contracts and reviewed reference data.
 //!
-//! Generic registry dispatch and canonical shard publication are owned by the
-//! framework registry/publication issues; the adapters here are
-//! framework-specific, and each descriptor declares its own detection or
-//! publication disposition.
+//! This vocabulary retains stable types, identities, and tables alongside the
+//! checked [`crate::framework`] SDK. Concrete detection, import interpretation,
+//! and fact production are owned by `perl_semantic_analyzer::framework_adapters`.
 
-/// Dancer2 framework adapter (#8914).
+/// Dancer2 activation contracts and reviewed DSL reference data (#8914).
 pub mod dancer2;
-/// Registry-activated Dancer2 hook fact minting (#8924).
+/// Dancer2 hook declarations and reviewed hook-name contracts (#8924).
 pub mod dancer2_hooks;
-/// Registry-activated Dancer2 route fact minting (#8918).
+/// Dancer2 route declarations and shared route-family contracts (#8918).
 pub mod dancer2_routes;
-/// Dancer2 2.x activation, import, and core-DSL registry facts (#13616).
+/// Dancer2 2.x activation contracts and core-DSL registry data (#13616).
 pub mod dancer2_two_x;
-/// DBIx::Class result-class/result-source identity adapter (#9736).
+/// DBIx::Class result-class/result-source identity contracts (#9736).
 pub mod dbix_class;
 
-/// Mojo::Base framework adapter (#9681).
+/// Mojo::Base activation contracts (#9681).
 pub mod mojo_base;
-/// Registry-activated Mojo::Base object-fact minting (#9682).
+/// Mojo::Base object-fact contracts and stable identity construction (#9682).
 pub mod mojo_base_facts;
 
-/// Mojolicious application/controller identity adapter (#9688).
+/// Mojolicious application/controller identity contracts (#9688).
 pub mod mojolicious;
 
-/// Checked Moose and Moose::Role activation detection (#7788).
+/// Moose and Moose::Role activation contracts (#7788).
 pub mod moose;
 
 /// Version-bound DBIx::QuickORM API return and preserving-method contract (#13374).

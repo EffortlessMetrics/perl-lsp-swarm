@@ -2,7 +2,7 @@
 //!
 //! Extracts the statically supported Dancer2 hook declaration grammar from an
 //! AST into [`Dancer2HookDeclaration`] carriers for the registry-activated
-//! minting in `perl_semantic_facts::framework_adapters::dancer2_hooks`. This
+//! minting in `crate::framework_adapters::dancer2_hooks`. This
 //! is pure source observation: extraction knows the reviewed hook grammar, it
 //! does not decide activation — a hook fact exists only after the registry
 //! adapter minted it over an exact activation (#8914 seam).
@@ -35,9 +35,8 @@
 use crate::analysis::dancer2_handler_targets::{SubroutineTargetIndex, handler_from_node};
 use crate::analysis::dancer2_routes::interpolated_value_is_dynamic;
 use crate::ast::{Node, NodeKind};
-use perl_semantic_facts::framework_adapters::dancer2_hooks::{
-    Dancer2HookDeclaration, normalize_dancer2_hook_name,
-};
+use crate::framework_adapters::dancer2_hooks::normalize_dancer2_hook_name;
+use perl_semantic_facts::framework_adapters::dancer2_hooks::Dancer2HookDeclaration;
 use perl_semantic_facts::hook::{HookDeclaration, HookName, HookNameSelection};
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
 

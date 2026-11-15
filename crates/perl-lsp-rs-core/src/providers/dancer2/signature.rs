@@ -6,9 +6,8 @@
 //! flattened into one. Version authority comes from the activating import's
 //! observed version evidence (#8914), not from this table alone.
 
-use perl_semantic_facts::framework_adapters::dancer2_routes::{
-    DANCER2_ANY_DEFAULT_METHODS, dancer2_keyword_methods,
-};
+use perl_semantic_analyzer::framework_adapters::dancer2_routes::dancer2_keyword_methods;
+use perl_semantic_facts::framework_adapters::dancer2_routes::DANCER2_ANY_DEFAULT_METHODS;
 
 /// One signature form of the reviewed route DSL.
 #[non_exhaustive]

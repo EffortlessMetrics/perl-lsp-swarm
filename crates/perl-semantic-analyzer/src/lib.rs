@@ -54,6 +54,9 @@
     clippy::uninlined_format_args
 )]
 
+/// Framework-specific interpretation over shared semantic-fact contracts.
+pub mod framework_adapters;
+
 pub use analysis::document_analysis::DocumentDiagnosticAnalysis;
 pub use analysis::index as workspace_index;
 pub use perl_parser_core::{Node, NodeKind, SourceLocation};

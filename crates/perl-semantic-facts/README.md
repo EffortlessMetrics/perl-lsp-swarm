@@ -11,6 +11,18 @@ This crate intentionally does **not**:
 It provides stable typed identifiers, facts, confidence/provenance metadata, and enums
 for entity/occurrence/edge classification.
 
+## Framework contracts
+
+`framework_adapters` retains shared framework-specific records, stable identity
+construction, and reviewed reference tables. Detection, import interpretation,
+and fact production live in `perl_semantic_analyzer::framework_adapters`.
+Consumers that only transport or validate facts continue to depend on this crate.
+See the [public API migration map](../../docs/reference/FRAMEWORK_ADAPTER_OWNERSHIP_MIGRATION.md)
+for the moved functions.
+
+The QuickORM API registry stays here as reference data. Its table lookups and the
+matrix generator do not require the semantic analyzer.
+
 ## Canonical provider envelope
 
 `SemanticFactEnvelope` is the transport contract between compiler/workspace producers

@@ -16,6 +16,9 @@
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::dancer2_two_x_activation::extract_dancer2_two_x_activation_sites;
+use perl_semantic_analyzer::framework_adapters::dancer2_two_x::{
+    dancer2_two_x_activation_facts, dancer2_two_x_descriptor, detect_dancer2_two_x,
+};
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDetectionInput, DetectionAbsenceReason, DetectionEvidenceClass,
     DetectionOutcome, ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
@@ -25,7 +28,6 @@ use perl_semantic_facts::framework_adapters::dancer2::{DslKeywordScope, DslSelec
 use perl_semantic_facts::framework_adapters::dancer2_two_x::{
     DANCER2_TWO_X_DSL_CONTRACT_VERSION, DANCER2_TWO_X_IMPORT_DIE_MESSAGE,
     DANCER2_TWO_X_KEYWORD_TOTAL, Dancer2TwoXActivationState, Dancer2TwoXKeywordState,
-    dancer2_two_x_activation_facts, dancer2_two_x_descriptor, detect_dancer2_two_x,
 };
 use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 use perl_tdd_support::{must, must_some};

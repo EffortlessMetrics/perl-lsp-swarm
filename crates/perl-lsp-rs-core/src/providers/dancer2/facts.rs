@@ -11,13 +11,13 @@ use super::activation::{Dancer2FileActivations, Dancer2TwoXPackageActivation};
 use perl_parser_core::Node;
 use perl_semantic_analyzer::analysis::dancer2_hooks::extract_dancer2_hook_declarations;
 use perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_contexts;
+use perl_semantic_analyzer::framework_adapters::dancer2_hooks::{
+    dancer2_hook_facts, dancer2_hook_handler_context_facts,
+};
+use perl_semantic_analyzer::framework_adapters::dancer2_routes::dancer2_route_family_facts;
 use perl_semantic_facts::FileId;
-use perl_semantic_facts::framework_adapters::dancer2_hooks::{
-    Dancer2HookDeclaration, dancer2_hook_facts, dancer2_hook_handler_context_facts,
-};
-use perl_semantic_facts::framework_adapters::dancer2_routes::{
-    Dancer2RouteFacts, dancer2_route_family_facts,
-};
+use perl_semantic_facts::framework_adapters::dancer2_hooks::Dancer2HookDeclaration;
+use perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts;
 use perl_semantic_facts::handler::FrameworkHandler as RouteHandler;
 use perl_semantic_facts::hook::HookFact;
 use perl_semantic_facts::route::{RouteFact, RouteHandlerContextFact};
@@ -259,7 +259,7 @@ pub fn canonical_file_facts(
             .as_ref()
             .is_some_and(perl_semantic_facts::framework::AdapterDetectionResult::is_detected);
         facts.two_x_route_facts.push(
-            perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_route_family_facts(
+            perl_semantic_analyzer::framework_adapters::dancer2_two_x::dancer2_two_x_route_family_facts(
                 detection_detected,
                 &activation.facts,
                 package,

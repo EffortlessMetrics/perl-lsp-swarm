@@ -12,19 +12,56 @@
 
 #![deny(clippy::map_err_ignore)]
 
+use perl_semantic_analyzer::framework_adapters::dancer2::dancer2_descriptor;
+use perl_semantic_analyzer::framework_adapters::dancer2_hooks::normalize_dancer2_hook_name;
+use perl_semantic_analyzer::framework_adapters::dancer2_two_x::dancer2_two_x_descriptor;
 use perl_semantic_facts::framework::version_constraint_matches;
 use perl_semantic_facts::framework_adapters::dancer2::{
-    DANCER2_DSL_KEYWORDS, DANCER2_VERSION_CONSTRAINT, DslKeywordScope, dancer2_descriptor,
+    DANCER2_DSL_KEYWORDS, DANCER2_VERSION_CONSTRAINT, DslKeywordScope,
 };
-use perl_semantic_facts::framework_adapters::dancer2_hooks::normalize_dancer2_hook_name;
 use perl_semantic_facts::framework_adapters::dancer2_two_x::{
     DANCER2_TWO_X_DSL_KEYWORDS, DANCER2_TWO_X_IMPORT_DIE_MESSAGE, DANCER2_TWO_X_KEYWORD_GLOBAL,
     DANCER2_TWO_X_KEYWORD_ROUTE_ONLY, DANCER2_TWO_X_KEYWORD_TOTAL,
     DANCER2_TWO_X_PINNED_COMMIT_2_0_0, DANCER2_TWO_X_PINNED_COMMIT_2_0_1,
-    DANCER2_TWO_X_PINNED_COMMIT_2_1_0, DANCER2_TWO_X_VERSION_CONSTRAINT, dancer2_two_x_descriptor,
+    DANCER2_TWO_X_PINNED_COMMIT_2_1_0, DANCER2_TWO_X_VERSION_CONSTRAINT,
 };
 use perl_semantic_facts::hook::HookNameNormalization;
 use perl_test_must::{must, must_some_with};
+
+use perl_semantic_analyzer::framework_adapters::dancer2_two_x::{
+    dancer2_two_x_activation_facts, detect_dancer2_two_x, parse_dancer2_two_x_import_args,
+};
+use perl_semantic_facts::framework::{
+    AdapterCancellation, AdapterDetectionInput, AdapterDetectionResult, DetectionEvidenceClass,
+    ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
+    ModuleVersionEvidence,
+};
+use perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState;
+use perl_semantic_facts::{FileId, SourceGeneration};
+
+fn detected_two_x() -> AdapterDetectionResult {
+    let generation = SourceGeneration::known("profile-fixture-generation");
+    let activation = ModuleActivationIdentity::new("Dancer2", Some(FileId(7)), generation.clone())
+        .with_observed_version(ModuleVersionEvidence::new("2.0.1", generation.clone()));
+    let observation = ModuleObservationReceipt::new(
+        "module-resolver.v1",
+        "root:profile-fixture",
+        "project-environment.v1",
+        generation,
+        "sha256:profile-fixture-input",
+        vec![ModuleSelectorEvaluation::matched(
+            "Dancer2",
+            activation,
+            DetectionEvidenceClass::ResolvedModule,
+        )],
+    );
+    detect_dancer2_two_x(&AdapterDetectionInput::new(
+        dancer2_two_x_descriptor(),
+        observation,
+        None,
+        AdapterCancellation::active(),
+    ))
+}
 
 /// Pinned upstream identities for the research matrix (#13616).
 const PINNED_IDENTITIES: &[(&str, &str)] = &[
@@ -296,7 +333,7 @@ const IMPLEMENTATION_LEAVES: &[ImplementationLeaf] = &[
 
 fn one_x_adapter_source() -> String {
     must(std::fs::read_to_string(format!(
-        "{}/src/framework_adapters/dancer2.rs",
+        "{}/../perl-semantic-facts/src/framework_adapters/dancer2.rs",
         env!("CARGO_MANIFEST_DIR")
     )))
 }
@@ -607,10 +644,29 @@ fn every_landed_profile_row_anchors_on_live_adapter_surfaces() {
             ("activation", "use_dancer2_import") => {
                 assert_eq!(row.authority_path, "lib/Dancer2.pm");
                 assert_eq!(row.authority_symbol, "sub import");
-                assert!(
-                    two_x_source.contains(DANCER2_TWO_X_IMPORT_DIE_MESSAGE),
-                    "import die must stay wired to the live 2.x adapter"
+                let detection = detected_two_x();
+                let admitted = dancer2_two_x_activation_facts(
+                    &detection,
+                    Some("App"),
+                    &parse_dancer2_two_x_import_args(&[]),
+                    &[],
                 );
+                assert!(admitted.is_exact(), "the checked detection must admit a valid import");
+                let refused = dancer2_two_x_activation_facts(
+                    &detection,
+                    Some("App"),
+                    &parse_dancer2_two_x_import_args(&["appname".to_string()]),
+                    &[],
+                );
+                assert!(
+                    matches!(
+                        refused.state,
+                        Dancer2TwoXActivationState::ImportDied { ref die_message }
+                            if die_message == DANCER2_TWO_X_IMPORT_DIE_MESSAGE
+                    ),
+                    "an odd argument list must reach the live producer's exact die contract"
+                );
+                assert!(refused.keywords.is_empty());
             }
             ("activation", "version_gate") => {
                 assert_eq!(row.pin_1_1_1, DANCER2_VERSION_CONSTRAINT);

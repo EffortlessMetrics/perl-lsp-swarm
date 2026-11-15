@@ -3,12 +3,15 @@
 //! End-to-end registry-backed Dancer2 activation proof (#8914).
 //!
 //! Drives the #6820 checked SDK surface through the Dancer2 adapter in
-//! `perl-semantic-facts::framework_adapters::dancer2` and the AST activation
+//! `perl-semantic-analyzer::framework_adapters::dancer2` and the AST activation
 //! extractor in `perl_semantic_analyzer::analysis::dancer2_activation`,
 //! including the `test_corpus/real_projects/dancer2_skeleton` fixture.
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::dancer2_activation::extract_dancer2_activation_sites;
+use perl_semantic_analyzer::framework_adapters::dancer2::{
+    dancer2_activation_facts, dancer2_descriptor, detect_dancer2, parse_dancer2_import_args,
+};
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDetectionInput, DetectionOutcome, ModuleObservationReceipt,
     ModuleSelectorEvaluation, ModuleSelectorOutcome,
@@ -18,8 +21,7 @@ use perl_semantic_facts::framework::{
 };
 use perl_semantic_facts::framework_adapters::dancer2::{
     DANCER2_VERSION_CONSTRAINT, Dancer2ActivationState, Dancer2KeywordState, DslKeywordScope,
-    DslSelection, dancer2_activation_facts, dancer2_descriptor, detect_dancer2,
-    parse_dancer2_import_args,
+    DslSelection,
 };
 use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 use perl_tdd_support::{must, must_some};

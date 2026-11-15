@@ -22,10 +22,10 @@
 //!   silently becoming defaults.
 
 use crate::ast::{Node, NodeKind};
-use perl_semantic_facts::framework_adapters::dancer2_two_x::{
-    Dancer2TwoXImportEvidence, parse_dancer2_two_x_import_args,
-    parse_parenthesized_dancer2_two_x_import_args,
+use crate::framework_adapters::dancer2_two_x::{
+    parse_dancer2_two_x_import_args, parse_parenthesized_dancer2_two_x_import_args,
 };
+use perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence;
 use perl_semantic_facts::{AnchorId, FileId, SourceGeneration};
 
 /// One exact `use Dancer2 ...;` activation site in a source file.
@@ -179,8 +179,8 @@ fn collect_package_subs(
             // (#14408 review). Only plain words count; tags and `!`
             // exclusions are this module's own import vocabulary.
             for arg in args {
-                let words = perl_semantic_facts::framework_adapters::dancer2_two_x::qw_words(arg)
-                    .unwrap_or_else(|| {
+                let words =
+                    crate::framework_adapters::dancer2_two_x::qw_words(arg).unwrap_or_else(|| {
                         arg.split_whitespace()
                             .map(|word| word.trim_matches('\'').trim_matches('"').to_string())
                             .collect()

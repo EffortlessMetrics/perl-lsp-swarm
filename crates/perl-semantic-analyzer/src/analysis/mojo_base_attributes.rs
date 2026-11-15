@@ -3,7 +3,7 @@
 //! Extracts the statically supported `Mojo::Base` attribute grammar from an
 //! AST into [`MojoBaseAttributeDeclaration`] carriers for the
 //! registry-activated minting in
-//! `perl_semantic_facts::framework_adapters::mojo_base_facts`. This is pure
+//! `crate::framework_adapters::mojo_base_facts`. This is pure
 //! source observation: extraction knows the reviewed `has` grammar, it does
 //! **not** decide activation — an object fact exists only after the registry
 //! adapter minted it over an exact #9681 activation. A `has` call is never

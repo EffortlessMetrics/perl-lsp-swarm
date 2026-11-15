@@ -528,6 +528,7 @@ pub perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts::ke
 pub perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts::state: perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationState
 pub perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts::unknown_exclusions: alloc::vec::Vec<alloc::string::String>
 pub fn perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts::is_exact(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts::new(state: perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationState, dsl: perl_semantic_facts::framework_adapters::dancer2::DslSelection, dsl_contract_version: &'static str, keywords: alloc::vec::Vec<perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact>, unknown_exclusions: alloc::vec::Vec<alloc::string::String>) -> perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts
 pub fn perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts
 pub fn perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts) -> bool
 pub fn perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -552,6 +553,7 @@ pub perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact::
 pub perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact::keyword: alloc::string::String
 pub perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact::scope: perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope
 pub perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact::state: perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordState
+pub fn perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact::new(keyword: alloc::string::String, scope: perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope, state: perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordState, deprecated: bool) -> perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact
 pub fn perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact
 pub fn perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact) -> bool
 pub fn perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordImportFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -561,11 +563,6 @@ pub const perl_semantic_facts::framework_adapters::dancer2::DANCER2_DSL_CONTRACT
 pub const perl_semantic_facts::framework_adapters::dancer2::DANCER2_DSL_KEYWORDS: &[perl_semantic_facts::framework_adapters::dancer2::Dancer2DslKeyword]
 pub const perl_semantic_facts::framework_adapters::dancer2::DANCER2_FRAMEWORK_NAME: &str
 pub const perl_semantic_facts::framework_adapters::dancer2::DANCER2_VERSION_CONSTRAINT: &str
-pub fn perl_semantic_facts::framework_adapters::dancer2::dancer2_activation_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, package_name: core::option::Option<&str>, evidence: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ImportEvidence) -> perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts
-pub fn perl_semantic_facts::framework_adapters::dancer2::dancer2_application_identity(package_name: core::option::Option<&str>, appname: core::option::Option<&perl_semantic_facts::framework_adapters::dancer2::AppNameSelection>) -> perl_semantic_facts::framework_adapters::dancer2::AppNameSelection
-pub fn perl_semantic_facts::framework_adapters::dancer2::dancer2_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
-pub fn perl_semantic_facts::framework_adapters::dancer2::detect_dancer2(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
-pub fn perl_semantic_facts::framework_adapters::dancer2::parse_dancer2_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::dancer2::Dancer2ImportEvidence
 pub mod perl_semantic_facts::framework_adapters::dancer2_hooks
 pub struct perl_semantic_facts::framework_adapters::dancer2_hooks::Dancer2HookDeclaration
 pub perl_semantic_facts::framework_adapters::dancer2_hooks::Dancer2HookDeclaration::declaration_end_byte: u32
@@ -581,11 +578,6 @@ pub const perl_semantic_facts::framework_adapters::dancer2_hooks::DANCER2_HOOK_A
 pub const perl_semantic_facts::framework_adapters::dancer2_hooks::DANCER2_HOOK_CONTRACT_VERSION: &str
 pub const perl_semantic_facts::framework_adapters::dancer2_hooks::DANCER2_HOOK_KEYWORD: &str
 pub const perl_semantic_facts::framework_adapters::dancer2_hooks::DANCER2_REQUEST_CONTEXT_HOOKS: &[&str]
-pub fn perl_semantic_facts::framework_adapters::dancer2_hooks::coerce_dancer2_hook_name(literal: &str) -> &str
-pub fn perl_semantic_facts::framework_adapters::dancer2_hooks::dancer2_hook_establishes_request_context(canonical: &str) -> bool
-pub fn perl_semantic_facts::framework_adapters::dancer2_hooks::dancer2_hook_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::dancer2_hooks::Dancer2HookDeclaration]) -> alloc::vec::Vec<perl_semantic_facts::HookFact>
-pub fn perl_semantic_facts::framework_adapters::dancer2_hooks::dancer2_hook_handler_context_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::dancer2_hooks::Dancer2HookDeclaration]) -> alloc::vec::Vec<perl_semantic_facts::RouteHandlerContextFact>
-pub fn perl_semantic_facts::framework_adapters::dancer2_hooks::normalize_dancer2_hook_name(literal: &str) -> perl_semantic_facts::HookNameNormalization
 pub mod perl_semantic_facts::framework_adapters::dancer2_routes
 pub enum perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract
 pub perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::OneX
@@ -640,16 +632,6 @@ pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywo
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::keyword_state(&self, keyword: &str) -> core::option::Option<perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordState>
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::prefix_keyword_imported(&self) -> bool
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::source_generation(&self) -> core::option::Option<&perl_semantic_facts::SourceGeneration>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::adapter_id(&self) -> perl_semantic_facts::framework::AdapterId
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::application_name(&self) -> core::option::Option<&str>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::framework_version(&self) -> core::option::Option<&str>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::is_exact(&self) -> bool
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::keyword_state(&self, keyword: &str) -> core::option::Option<perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordState>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::source_generation(&self) -> core::option::Option<&perl_semantic_facts::SourceGeneration>
-pub fn perl_semantic_facts::framework_adapters::dancer2_routes::dancer2_keyword_methods(keyword: &str) -> core::option::Option<perl_semantic_facts::RouteMethodSet>
-pub fn perl_semantic_facts::framework_adapters::dancer2_routes::dancer2_route_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration]) -> alloc::vec::Vec<perl_semantic_facts::RouteFact>
-pub fn perl_semantic_facts::framework_adapters::dancer2_routes::dancer2_route_family_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration], prefix_declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2PrefixDeclaration]) -> perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts
-pub fn perl_semantic_facts::framework_adapters::dancer2_routes::normalize_dancer2_method(raw: &str) -> alloc::string::String
 pub mod perl_semantic_facts::framework_adapters::dancer2_two_x
 #[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState
 pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::DynamicBoundary
@@ -681,6 +663,7 @@ pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivatio
 pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::state: perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState
 pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::unknown_exclusions: alloc::vec::Vec<alloc::string::String>
 pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::is_exact(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::new(state: perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState, dsl: perl_semantic_facts::framework_adapters::dancer2::DslSelection, dsl_contract_version: &'static str, nopragmas: bool, no_op_tags: alloc::vec::Vec<alloc::string::String>, keywords: alloc::vec::Vec<perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact>, unknown_exclusions: alloc::vec::Vec<alloc::string::String>) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts
 pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts
 pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts) -> bool
 pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -713,17 +696,10 @@ pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFa
 pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::prototype: core::option::Option<&'static str>
 pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::scope: perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope
 pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::state: perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::new(keyword: alloc::string::String, scope: perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope, prototype: core::option::Option<&'static str>, deprecation_replacement: core::option::Option<&'static str>, state: perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact
 pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact
 pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact) -> bool
 pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'a>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'a>::new(facts: &'a perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'a>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::adapter_id(&self) -> perl_semantic_facts::framework::AdapterId
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::application_name(&self) -> core::option::Option<&str>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::framework_version(&self) -> core::option::Option<&str>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::is_exact(&self) -> bool
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::keyword_state(&self, keyword: &str) -> core::option::Option<perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordState>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::source_generation(&self) -> core::option::Option<&perl_semantic_facts::SourceGeneration>
 pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_ADAPTER_ID: perl_semantic_facts::framework::AdapterId
 pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_DESCRIPTOR_REVISION: u32
 pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_DSL_CONTRACT_VERSION: &str
@@ -739,15 +715,7 @@ pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_
 pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_PINNED_COMMIT_2_0_1: &str
 pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_PINNED_COMMIT_2_1_0: &str
 pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_VERSION_CONSTRAINT: &str
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_activation_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, package_name: core::option::Option<&str>, evidence: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence, shadowed_keywords: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_application_identity(package_name: core::option::Option<&str>, appname: core::option::Option<&perl_semantic_facts::framework_adapters::dancer2::AppNameSelection>) -> perl_semantic_facts::framework_adapters::dancer2::AppNameSelection
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
 pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_keyword(name: &str) -> core::option::Option<&'static perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword>
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_route_family_facts(detection_detected: bool, activation: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration], prefix_declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2PrefixDeclaration]) -> perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::detect_dancer2_two_x(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::parse_dancer2_two_x_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::parse_parenthesized_dancer2_two_x_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence
-pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::qw_words(token: &str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub mod perl_semantic_facts::framework_adapters::dbix_class
 #[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::dbix_class::DbixClassInheritanceEvidence
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixClassInheritanceEvidence::Dynamic
@@ -820,6 +788,7 @@ pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity::root_identity: core::option::Option<alloc::string::String>
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity::schema_identity: core::option::Option<alloc::string::String>
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity::scope_identity: alloc::string::String
+pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity::new(package: alloc::string::String, scope_identity: alloc::string::String, root_identity: core::option::Option<alloc::string::String>, schema_identity: core::option::Option<alloc::string::String>) -> perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity
 pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity::clone(&self) -> perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity
 pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity::eq(&self, other: &perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity) -> bool
 pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -837,6 +806,7 @@ pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts:
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts::result_source: core::option::Option<perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity>
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts::scope_identity: core::option::Option<alloc::string::String>
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts::source_generation: perl_semantic_facts::SourceGeneration
+pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts::new(outcome: perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileOutcome, profile_version: &'static str, confidence: perl_semantic_facts::Confidence, completeness: perl_semantic_facts::framework_adapters::dbix_class::DbixFactCompleteness, source_generation: perl_semantic_facts::SourceGeneration, project_generation: perl_semantic_facts::SourceGeneration, scope_identity: core::option::Option<alloc::string::String>, environment_identity: core::option::Option<alloc::string::String>, resolved_module: core::option::Option<perl_semantic_facts::framework::ModuleActivationIdentity>, framework_version: core::option::Option<alloc::string::String>, result_class: core::option::Option<perl_semantic_facts::framework_adapters::dbix_class::DbixResultClassIdentity>, result_source: core::option::Option<perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity>, limitations: alloc::vec::Vec<alloc::string::String>) -> perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts
 pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts::clone(&self) -> perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts
 pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts::eq(&self, other: &perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts) -> bool
 pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -858,6 +828,7 @@ pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentit
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity::key: alloc::string::String
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity::result_class_key: alloc::string::String
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity::table_name: alloc::string::String
+pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity::new(result_class_key: alloc::string::String, table_name: alloc::string::String, declaration_anchor_id: perl_semantic_facts::AnchorId, declaration_range: (u32, u32)) -> perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity
 pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity::clone(&self) -> perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity
 pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity::eq(&self, other: &perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity) -> bool
 pub fn perl_semantic_facts::framework_adapters::dbix_class::DbixResultSourceIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -867,9 +838,6 @@ pub const perl_semantic_facts::framework_adapters::dbix_class::DBIX_CLASS_DESCRI
 pub const perl_semantic_facts::framework_adapters::dbix_class::DBIX_CLASS_FRAMEWORK_NAME: &str
 pub const perl_semantic_facts::framework_adapters::dbix_class::DBIX_CLASS_PROFILE_VERSION: &str
 pub const perl_semantic_facts::framework_adapters::dbix_class::DBIX_CLASS_VERSION_CONSTRAINT: &str
-pub fn perl_semantic_facts::framework_adapters::dbix_class::dbix_class_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
-pub fn perl_semantic_facts::framework_adapters::dbix_class::dbix_result_profile_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, anchor: &perl_semantic_facts::framework_adapters::dbix_class::DbixResultSiteAnchor, inheritance: &perl_semantic_facts::framework_adapters::dbix_class::DbixClassInheritanceEvidence, table: &perl_semantic_facts::framework_adapters::dbix_class::DbixTableEvidence) -> perl_semantic_facts::framework_adapters::dbix_class::DbixResultProfileFacts
-pub fn perl_semantic_facts::framework_adapters::dbix_class::detect_dbix_class(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
 pub mod perl_semantic_facts::framework_adapters::mojo_base
 #[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationOutcome
 pub perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationOutcome::AbsentWithCompleteEvidence
@@ -924,6 +892,7 @@ pub perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts:
 pub perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts::source_interval: (u32, u32)
 pub perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts::unmodeled_options: alloc::vec::Vec<alloc::string::String>
 pub fn perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts::is_exact(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts::new(outcome: perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationOutcome, profile_version: &'static str, package: core::option::Option<alloc::string::String>, source_interval: (u32, u32), parent_range: core::option::Option<(u32, u32)>, scope_identity: core::option::Option<alloc::string::String>, environment_identity: core::option::Option<alloc::string::String>, resolved_module: core::option::Option<perl_semantic_facts::framework::ModuleActivationIdentity>, framework_version: alloc::string::String, confidence: perl_semantic_facts::Confidence, source_generation: perl_semantic_facts::SourceGeneration, signatures: bool, unmodeled_options: alloc::vec::Vec<alloc::string::String>, limitations: alloc::vec::Vec<alloc::string::String>) -> perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts
 pub fn perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts
 pub fn perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts) -> bool
 pub fn perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -950,10 +919,6 @@ pub const perl_semantic_facts::framework_adapters::mojo_base::MOJO_BASE_DESCRIPT
 pub const perl_semantic_facts::framework_adapters::mojo_base::MOJO_BASE_FRAMEWORK_NAME: &str
 pub const perl_semantic_facts::framework_adapters::mojo_base::MOJO_BASE_PROFILE_VERSION: &str
 pub const perl_semantic_facts::framework_adapters::mojo_base::MOJO_BASE_VERSION_CONSTRAINT: &str
-pub fn perl_semantic_facts::framework_adapters::mojo_base::detect_mojo_base(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
-pub fn perl_semantic_facts::framework_adapters::mojo_base::mojo_base_activation_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, anchor: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseSiteAnchor, evidence: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseImportEvidence) -> perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts
-pub fn perl_semantic_facts::framework_adapters::mojo_base::mojo_base_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
-pub fn perl_semantic_facts::framework_adapters::mojo_base::parse_mojo_base_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::mojo_base::MojoBaseImportEvidence
 pub mod perl_semantic_facts::framework_adapters::mojo_base_facts
 #[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault
 pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Absent
@@ -1010,6 +975,7 @@ pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttribu
 pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::envelope: perl_semantic_facts::SemanticFactEnvelope
 pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::explicit_method: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState
 pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::member: perl_semantic_facts::GeneratedMember
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::new(envelope: perl_semantic_facts::SemanticFactEnvelope, member: perl_semantic_facts::GeneratedMember, explicit_method: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact) -> bool
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1026,11 +992,11 @@ pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectF
 #[non_exhaustive] pub struct perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact
 pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::edge: perl_semantic_facts::PackageEdge
 pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::envelope: perl_semantic_facts::SemanticFactEnvelope
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::new(envelope: perl_semantic_facts::SemanticFactEnvelope, edge: perl_semantic_facts::PackageEdge) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact) -> bool
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_member_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, name_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
-pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_object_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts, file_id: perl_semantic_facts::FileId, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration]) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_parent_identity(file_id: perl_semantic_facts::FileId, import_start_byte: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_reader_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, name_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
 pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_setter_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, name_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
@@ -1096,6 +1062,7 @@ pub perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationF
 pub perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts::unmodeled_options: alloc::vec::Vec<alloc::string::String>
 pub fn perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts::is_exact(&self) -> bool
 pub fn perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts::role(&self) -> core::option::Option<perl_semantic_facts::framework_adapters::mojolicious::MojoliciousRole>
+pub fn perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts::new(outcome: perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationOutcome, profile_version: &'static str, package: core::option::Option<alloc::string::String>, source_interval: (u32, u32), parent_range: core::option::Option<(u32, u32)>, scope_identity: core::option::Option<alloc::string::String>, environment_identity: core::option::Option<alloc::string::String>, resolved_module: core::option::Option<perl_semantic_facts::framework::ModuleActivationIdentity>, framework_version: alloc::string::String, confidence: perl_semantic_facts::Confidence, source_generation: perl_semantic_facts::SourceGeneration, signatures: bool, unmodeled_options: alloc::vec::Vec<alloc::string::String>, limitations: alloc::vec::Vec<alloc::string::String>) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts
 pub fn perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts::clone(&self) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts
 pub fn perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts::eq(&self, other: &perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts) -> bool
 pub fn perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1134,16 +1101,11 @@ pub const perl_semantic_facts::framework_adapters::mojolicious::MOJOLICIOUS_FRAM
 pub const perl_semantic_facts::framework_adapters::mojolicious::MOJOLICIOUS_LITE_MODULE: &str
 pub const perl_semantic_facts::framework_adapters::mojolicious::MOJOLICIOUS_PROFILE_VERSION: &str
 pub const perl_semantic_facts::framework_adapters::mojolicious::MOJOLICIOUS_VERSION_CONSTRAINT: &str
-pub fn perl_semantic_facts::framework_adapters::mojolicious::detect_mojolicious_lite(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
-pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_lite_activation_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, anchor: &perl_semantic_facts::framework_adapters::mojolicious::MojoliciousSiteAnchor, evidence: &perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteImportEvidence) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts
-pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_lite_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
-pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_lite_import_evidence(args: &[alloc::string::String], explicit_empty_import: bool, version: &perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteVersionRequirement) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteImportEvidence
-pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_role_facts_from_mojo_base(mojo_base: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts
-pub fn perl_semantic_facts::framework_adapters::mojolicious::parse_mojolicious_lite_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteImportEvidence
 pub mod perl_semantic_facts::framework_adapters::moose
 #[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::moose::MooseActivationKind
 pub perl_semantic_facts::framework_adapters::moose::MooseActivationKind::Class
 pub perl_semantic_facts::framework_adapters::moose::MooseActivationKind::Role
+pub const fn perl_semantic_facts::framework_adapters::moose::MooseActivationKind::adapter_id(self) -> perl_semantic_facts::framework::AdapterId
 pub const fn perl_semantic_facts::framework_adapters::moose::MooseActivationKind::adapter_name(self) -> &'static str
 pub const fn perl_semantic_facts::framework_adapters::moose::MooseActivationKind::module_name(self) -> &'static str
 pub fn perl_semantic_facts::framework_adapters::moose::MooseActivationKind::clone(&self) -> perl_semantic_facts::framework_adapters::moose::MooseActivationKind
@@ -1174,11 +1136,6 @@ pub const perl_semantic_facts::framework_adapters::moose::MOOSE_CLASS_ADAPTER_ID
 pub const perl_semantic_facts::framework_adapters::moose::MOOSE_DESCRIPTOR_REVISION: u32
 pub const perl_semantic_facts::framework_adapters::moose::MOOSE_ROLE_ADAPTER_ID: perl_semantic_facts::framework::AdapterId
 pub const perl_semantic_facts::framework_adapters::moose::MOOSE_VERSION_CONSTRAINT: &str
-pub fn perl_semantic_facts::framework_adapters::moose::detect_moose_class(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
-pub fn perl_semantic_facts::framework_adapters::moose::detect_moose_role(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
-pub fn perl_semantic_facts::framework_adapters::moose::moose_class_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
-pub fn perl_semantic_facts::framework_adapters::moose::moose_descriptors() -> [perl_semantic_facts::framework::AdapterDescriptor; 2]
-pub fn perl_semantic_facts::framework_adapters::moose::moose_role_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
 pub mod perl_semantic_facts::framework_adapters::quickorm_api
 #[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort
 pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::ExplicitUndefClearing

@@ -14,18 +14,21 @@
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::mojo_base_activation::extract_mojo_base_activation_sites;
 use perl_semantic_analyzer::analysis::mojolicious_activation::extract_mojolicious_lite_activation_sites;
+use perl_semantic_analyzer::framework_adapters::mojo_base::{
+    detect_mojo_base, mojo_base_activation_facts, mojo_base_descriptor,
+};
+use perl_semantic_analyzer::framework_adapters::mojolicious::{
+    detect_mojolicious_lite, mojolicious_lite_activation_facts, mojolicious_lite_descriptor,
+    mojolicious_role_facts_from_mojo_base,
+};
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDetectionInput, DetectionEvidenceClass, ModuleActivationIdentity,
     ModuleObservationReceipt, ModuleSelectorEvaluation, ModuleSelectorOutcome,
     ModuleVersionEvidence,
 };
-use perl_semantic_facts::framework_adapters::mojo_base::{
-    detect_mojo_base, mojo_base_activation_facts, mojo_base_descriptor,
-};
 use perl_semantic_facts::framework_adapters::mojolicious::{
     MOJOLICIOUS_LITE_MODULE, MojoliciousActivationFacts, MojoliciousActivationOutcome,
-    MojoliciousRole, detect_mojolicious_lite, mojolicious_lite_activation_facts,
-    mojolicious_lite_descriptor, mojolicious_role_facts_from_mojo_base,
+    MojoliciousRole,
 };
 use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 use perl_tdd_support::must;

@@ -15,8 +15,8 @@
 //!   silently becoming defaults.
 
 use crate::ast::{Node, NodeKind};
+use crate::framework_adapters::dancer2::parse_dancer2_import_args;
 use perl_semantic_facts::framework_adapters::dancer2::Dancer2ImportEvidence;
-use perl_semantic_facts::framework_adapters::dancer2::parse_dancer2_import_args;
 use perl_semantic_facts::{AnchorId, FileId};
 
 /// One exact `use Dancer2 ...;` activation site in a source file.

@@ -11,15 +11,15 @@
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::dancer2_activation::extract_dancer2_activation_sites;
 use perl_semantic_analyzer::analysis::dancer2_hooks::extract_dancer2_hook_declarations;
+use perl_semantic_analyzer::framework_adapters::dancer2::{
+    dancer2_activation_facts, dancer2_descriptor, detect_dancer2,
+};
+use perl_semantic_analyzer::framework_adapters::dancer2_hooks::dancer2_hook_facts;
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDetectionInput, DetectionEvidenceClass, ModuleActivationIdentity,
     ModuleObservationReceipt, ModuleSelectorEvaluation, ModuleSelectorOutcome,
     ModuleVersionEvidence,
 };
-use perl_semantic_facts::framework_adapters::dancer2::{
-    dancer2_activation_facts, dancer2_descriptor, detect_dancer2,
-};
-use perl_semantic_facts::framework_adapters::dancer2_hooks::dancer2_hook_facts;
 use perl_semantic_facts::handler::{FrameworkHandler, FrameworkHandlerBoundary};
 use perl_semantic_facts::hook::{
     HookFact, HookNameNormalization, HookNameSelection, hook_fact_identity,

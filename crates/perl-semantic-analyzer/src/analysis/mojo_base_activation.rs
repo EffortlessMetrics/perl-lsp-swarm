@@ -18,9 +18,9 @@
 //!   silently becoming literals.
 
 use crate::ast::{Node, NodeKind};
+use crate::framework_adapters::mojo_base::parse_mojo_base_import_args;
 use perl_semantic_facts::framework_adapters::mojo_base::{
     MojoBaseImportEvidence, MojoBaseParentSelection, MojoBaseSiteAnchor,
-    parse_mojo_base_import_args,
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceGeneration};
 

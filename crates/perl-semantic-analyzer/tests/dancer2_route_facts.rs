@@ -15,17 +15,20 @@ use perl_semantic_analyzer::analysis::dancer2_activation::extract_dancer2_activa
 use perl_semantic_analyzer::analysis::dancer2_routes::{
     extract_dancer2_route_contexts, extract_dancer2_route_declarations,
 };
+use perl_semantic_analyzer::framework_adapters::dancer2::{
+    dancer2_activation_facts, dancer2_descriptor, detect_dancer2, parse_dancer2_import_args,
+};
+use perl_semantic_analyzer::framework_adapters::dancer2_routes::{
+    dancer2_route_facts, dancer2_route_family_facts,
+};
 use perl_semantic_analyzer::symbol::{SymbolExtractor, SymbolKind, SymbolTable};
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDetectionInput, AdapterDetectionResult, DetectionEvidenceClass,
     ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
     ModuleSelectorOutcome, ModuleVersionEvidence,
 };
-use perl_semantic_facts::framework_adapters::dancer2::{
-    dancer2_activation_facts, dancer2_descriptor, detect_dancer2, parse_dancer2_import_args,
-};
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
-    Dancer2RouteDeclaration, Dancer2RouteFacts, dancer2_route_facts, dancer2_route_family_facts,
+    Dancer2RouteDeclaration, Dancer2RouteFacts,
 };
 use perl_semantic_facts::route::{
     RouteEffectivePattern, RouteFact, RouteHandler, RouteHandlerContextFact, RouteMethodSet,

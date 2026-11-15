@@ -27,6 +27,12 @@
 use perl_parser_core::Node;
 use perl_semantic_analyzer::analysis::dancer2_activation::extract_dancer2_activation_sites;
 use perl_semantic_analyzer::analysis::dancer2_two_x_activation::extract_dancer2_two_x_activation_sites;
+use perl_semantic_analyzer::framework_adapters::dancer2::{
+    dancer2_activation_facts, dancer2_descriptor, detect_dancer2,
+};
+use perl_semantic_analyzer::framework_adapters::dancer2_two_x::{
+    dancer2_two_x_activation_facts, dancer2_two_x_descriptor, detect_dancer2_two_x,
+};
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDetectionInput, AdapterDetectionResult, DetectionEvidenceClass,
     ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
@@ -34,11 +40,9 @@ use perl_semantic_facts::framework::{
 };
 use perl_semantic_facts::framework_adapters::dancer2::{
     Dancer2ActivationFacts, Dancer2ActivationState, Dancer2ImportEvidence,
-    dancer2_activation_facts, dancer2_descriptor, detect_dancer2,
 };
 use perl_semantic_facts::framework_adapters::dancer2_two_x::{
-    Dancer2TwoXActivationFacts, Dancer2TwoXActivationState, dancer2_two_x_activation_facts,
-    dancer2_two_x_descriptor, detect_dancer2_two_x,
+    Dancer2TwoXActivationFacts, Dancer2TwoXActivationState,
 };
 use perl_semantic_facts::{FileId, SourceGeneration};
 use std::collections::HashMap;
@@ -489,9 +493,8 @@ mod tests {
     use super::*;
     use crate::providers::dancer2::facts::canonical_file_facts;
     use perl_semantic_analyzer::Parser;
-    use perl_semantic_facts::framework_adapters::dancer2::{
-        Dancer2KeywordState, DslSelection, parse_dancer2_import_args,
-    };
+    use perl_semantic_analyzer::framework_adapters::dancer2::parse_dancer2_import_args;
+    use perl_semantic_facts::framework_adapters::dancer2::{Dancer2KeywordState, DslSelection};
     use perl_test_must::{must_some_with, must_with};
 
     fn parse(source: &str) -> Node {

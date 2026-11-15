@@ -913,7 +913,7 @@ get '/x' => sub { 1 };
                 FileId(1),
             );
         let family =
-            perl_semantic_facts::framework_adapters::dancer2_routes::dancer2_route_family_facts(
+            perl_semantic_analyzer::framework_adapters::dancer2_routes::dancer2_route_family_facts(
                 one_x_detection,
                 &one_x_activation.facts,
                 Some("App"),

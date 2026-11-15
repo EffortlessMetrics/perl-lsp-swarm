@@ -29,6 +29,11 @@ only where this guide describes them.
   `StructuralAccessChain`, `StructuralAccessHop` and their vocabulary, for
   recording `$config->{groups}{staff}[0]` hop by hop. Validated constructors,
   private fields, deterministic fingerprints. No producer consumes it yet.
+- `framework_adapters/` -- shared framework records, stable IDs and identity
+  construction, and reviewed DSL/hook/route/QuickORM reference tables. Preserve
+  `#[non_exhaustive]` on extensible records; constructors assemble or validate
+  supplied contract values. Concrete detection, import interpretation, activation
+  decisions, and fact production belong in `perl-semantic-analyzer`.
 
 ## Does not own
 
@@ -38,7 +43,7 @@ is a types-only vocabulary crate.
 
 ## Neighbors
 
-- Upstream: `serde` (only dependency).
+- Upstream: `serde` and `serde_json`.
 - Downstream: `perl-lsp-rs`, `perl-parser-core`, `perl-semantic-analyzer`,
   `perl-symbol`, `perl-workspace`.
 
@@ -51,6 +56,10 @@ is a types-only vocabulary crate.
   file in that directory. It states the ownership fence, the
   spelling-is-evidence rule, and the transport trust boundary, all of which
   its laws depend on.
+- `src/framework_adapters/mod.rs` and
+  `../../docs/reference/FRAMEWORK_ADAPTER_OWNERSHIP_MIGRATION.md` -- the contract
+  and implementation boundary. Do not add an analyzer dependency to this crate,
+  including for tests of concrete adapters; those tests belong with the producer.
 
 ## Focused validation
 
@@ -101,6 +110,7 @@ analysis stage actually populates which fact kind at runtime -- that logic
 lives in the consuming crates listed above, and no producer emits a
 structural access chain yet.
 
-This guide documents `lib.rs` and `structural_access/`. The crate's other
+This guide documents `lib.rs`, `structural_access/`, and the ownership boundary of
+`framework_adapters/`. The crate's other
 modules under `src/` are not described here; read them directly rather than
 assuming this file covers them.

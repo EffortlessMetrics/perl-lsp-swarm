@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (`perl-semantic-facts`): concrete framework interpretation moves to
+  `perl-semantic-analyzer::framework_adapters`.** Dancer2, Moose, Mojo::Base,
+  Mojolicious, and DBIx::Class detection, import interpretation, and fact producers
+  now share the existing semantic-analysis owner (#19461, #14991). Import the
+  moved functions and `Dancer2TwoXKeywordView` from the analyzer; shared fact types,
+  stable identities, checked SDK contracts, and reference tables retain their
+  facts-crate paths. See the [exact API migration map](docs/reference/FRAMEWORK_ADAPTER_OWNERSHIP_MIGRATION.md).
+  This intentional public API removal requires the next minor release under
+  [the stability policy](docs/reference/STABILITY.md) and must not ship in a patch
+  release. It does not introduce a new crate or install surface.
+
 - **Breaking (`perl-lsp-rs-core`): `performance::IncrementalParser` removed.**
   The type performed no parsing: it silently swapped reversed endpoints,
   fabricated one-byte extents for zero-length insertions, and answered
