@@ -570,7 +570,7 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
         }
         NodeKind::LabeledStatement { label, .. } => write_named(out, "label", label),
         NodeKind::StatementModifier { modifier, .. } => write_named(out, "modifier", modifier),
-        NodeKind::Subroutine { name, declarator, attributes, name_span: _, .. } => {
+        NodeKind::Subroutine { name, declarator, attributes, .. } => {
             if let Some(name) = name {
                 write_named(out, "name", name)?;
             }
@@ -586,7 +586,7 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
             }
             write_flag(out, "required", *required)
         }
-        NodeKind::Method { name, attributes, name_span: _, .. } => {
+        NodeKind::Method { name, attributes, .. } => {
             write_named(out, "name", name)?;
             write_named_list(out, "attributes", attributes)
         }
@@ -639,12 +639,12 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
             write_named(out, "modifiers", modifiers)?;
             write_flag(out, "negated", *negated)
         }
-        NodeKind::Package { name, name_span: _, .. } => write_named(out, "name", name),
-        NodeKind::Class { name, parents, name_span: _, .. } => {
+        NodeKind::Package { name, .. } => write_named(out, "name", name),
+        NodeKind::Class { name, parents, .. } => {
             write_named(out, "name", name)?;
             write_named_list(out, "parents", parents)
         }
-        NodeKind::Format { name, body, name_span: _, .. } => {
+        NodeKind::Format { name, body, .. } => {
             write_named(out, "name", name)?;
             write_named(out, "body", body)
         }
@@ -654,7 +654,7 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
             write_named_list(out, "args", args)?;
             write_flag(out, "has_filter_risk", *has_filter_risk)
         }
-        NodeKind::PhaseBlock { phase, phase_span: _, .. } => write_named(out, "phase", phase),
+        NodeKind::PhaseBlock { phase, .. } => write_named(out, "phase", phase),
         NodeKind::DataSection { marker, body, marker_span: _, body_span: _ } => {
             write_named(out, "marker", marker)?;
             if let Some(body) = body {

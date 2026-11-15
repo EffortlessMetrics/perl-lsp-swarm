@@ -7,7 +7,12 @@ pub use catalog::{
     HTMX_ATTRIBUTES, HTMX_CATALOG_PROVENANCE, HTMX_HEADERS, HtmxAttributeFamily, HtmxAttributeSpec,
     HtmxCatalogProvenance, HtmxHeaderDirection, HtmxHeaderSpec,
 };
-pub use markup::{HtmxAttributeNameContext, MAX_MARKUP_SCAN_BYTES, htmx_attribute_name_context};
+pub use markup::{
+    HtmxAttributeNameContext, MAX_MARKUP_SCAN_BYTES, htmx_attribute_name_context,
+    markup_attribute_name_suffix_end,
+};
+
+pub use crate::providers::completion::htmx_attribute_name_completion_admitted;
 
 use crate::providers::completion_item::{CompletionItem, CompletionItemKind, InsertTextFormat};
 use crate::providers::file_completion::FileCompletionContext;

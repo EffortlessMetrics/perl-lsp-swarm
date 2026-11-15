@@ -14,6 +14,7 @@ use crate::protocol::{REQUEST_FAILED, internal_error};
 use crate::state::document_symbol_cap;
 #[cfg(test)]
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::sync::OnceLock;
 
 #[cfg(test)]
@@ -69,7 +70,6 @@ impl FoldingRangeTestFault {
 
 static SUB_REGEX: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 static PACKAGE_REGEX: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
-static HEAD_REGEX: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 fn get_sub_regex() -> Option<&'static regex::Regex> {
     SUB_REGEX.get_or_init(|| regex::Regex::new(r"^\s*sub\s+([a-zA-Z_]\w*)\b")).as_ref().ok()
@@ -82,97 +82,38 @@ fn get_package_regex() -> Option<&'static regex::Regex> {
         .ok()
 }
 
-fn get_head_regex() -> Option<&'static regex::Regex> {
-    HEAD_REGEX.get_or_init(|| regex::Regex::new(r"^=(head[1-4])\s+(.+)$")).as_ref().ok()
-}
-
-/// Scan source text for POD =head1..=head4 directives and return them as document symbols.
-/// Stops scanning at __DATA__ or __END__ blocks. Uses LSP SymbolKind 26 (TypeParameter).
-fn pod_section_symbols(source: &str) -> Vec<Value> {
-    let Some(head_regex) = get_head_regex() else {
-        return Vec::new();
-    };
-    let mut symbols = Vec::new();
-    for (line_num, line) in source.lines().enumerate() {
-        if line == "__DATA__" || line == "__END__" {
-            break;
-        }
-        if let Some(caps) = head_regex.captures(line) {
-            let name = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("").to_string();
-            if name.is_empty() {
-                continue;
-            }
-            let line_end_char = byte_to_utf16_col(line, line.len());
-            symbols.push(json!({
-                "name": name,
-                "detail": "",
-                "kind": 26,  // TypeParameter -- used for POD sections
-                "range": {
-                    "start": { "line": line_num, "character": 0 },
-                    "end": { "line": line_num, "character": line_end_char }
-                },
-                "selectionRange": {
-                    "start": { "line": line_num, "character": 0 },
-                    "end": { "line": line_num, "character": line_end_char }
-                },
-                "children": []
-            }));
-        }
-    }
-    symbols
-}
-
 impl LspServer {
-    /// Canonical Dancer2 route/hook document symbols (#8928).
-    ///
-    /// Returns labeled `[Dancer2 route]` / `[Dancer2 hook]` entries anchored
-    /// to the source declaration. Under exact activation only; zero entries
-    /// otherwise. Byte spans are converted to LSP positions through the
-    /// document's canonical rope converter.
-    fn dancer2_document_symbol_values(
+    fn dancer2_document_symbols_structured(
         &self,
         uri: &str,
         snapshot: &crate::state::ParsedSnapshot,
         text: &str,
         ast: &perl_parser::ast::Node,
-    ) -> Vec<Value> {
+    ) -> Vec<perl_lsp_rs_core::providers::document_symbols::DocumentSymbol> {
         use perl_lsp_rs_core::providers::dancer2::{
             dancer2_document_symbols, dancer2_request_kind,
         };
+        use perl_lsp_rs_core::providers::document_symbols::leaf_document_symbol;
+        use perl_position_tracking::WireRange;
 
         let context = self.dancer2_request_context(uri, text, snapshot.content_hash(), ast);
         if !context.activations.has_exact() {
             return Vec::new();
         }
-        let symbols = dancer2_document_symbols(&context.facts);
-        let mut values = Vec::with_capacity(symbols.len());
-        for symbol in symbols {
-            let ((sl, sc), (el, ec)) = {
-                let documents = self.documents_guard();
-                self.get_document(&documents, uri)
-                    .map(|doc| {
-                        (
-                            self.offset_to_pos16(doc, usize::try_from(symbol.start).unwrap_or(0)),
-                            self.offset_to_pos16(doc, usize::try_from(symbol.end).unwrap_or(0)),
-                        )
-                    })
-                    .unwrap_or(((0, 0), (0, 0)))
-            };
-            values.push(json!({
-                "name": symbol.name,
-                "detail": symbol.detail,
-                "kind": dancer2_request_kind(symbol.is_route),
-                "range": {
-                    "start": { "line": sl, "character": sc },
-                    "end": { "line": el, "character": ec },
-                },
-                "selectionRange": {
-                    "start": { "line": sl, "character": sc },
-                    "end": { "line": el, "character": ec },
-                },
-            }));
-        }
-        values
+        dancer2_document_symbols(&context.facts)
+            .into_iter()
+            .map(|symbol| {
+                let start = usize::try_from(symbol.start).unwrap_or(0);
+                let end = usize::try_from(symbol.end).unwrap_or(0);
+                let range = WireRange::from_byte_offsets(text, start, end);
+                leaf_document_symbol(
+                    symbol.name,
+                    symbol.detail,
+                    dancer2_request_kind(symbol.is_route),
+                    range,
+                )
+            })
+            .collect()
     }
 
     /// Cancellation-aware wrapper for `textDocument/documentSymbol`.
@@ -222,103 +163,110 @@ impl LspServer {
         }
 
         let cap = document_symbol_cap();
+        clear_document_symbol_projection_receipt();
 
         if let Some(params) = params {
             let uri = req_uri(&params)?;
 
-            // Canonical Dancer2 route/hook symbols (#8928): labeled,
-            // source-anchored framework projections appended to the outline.
-            // Computed without holding the documents lock (module resolution
-            // inside the request context re-locks).
-            let dancer2_probe = {
-                let documents = self.documents_guard();
-                self.get_document(&documents, uri).and_then(|doc| {
-                    let text = doc.text_for_user_answers()?.to_string();
-                    doc.current_parsed().and_then(|snapshot| {
-                        snapshot.ast().cloned().map(|ast| (snapshot, text, ast))
-                    })
-                })
-            };
-            // Computed with the documents lock released: the request
-            // context re-enters module resolution, which locks documents.
-            let dancer2_symbols = dancer2_probe
-                .map(|(snapshot, text, ast)| {
-                    self.dancer2_document_symbol_values(uri, &snapshot, &text, &ast)
-                })
-                .unwrap_or_default();
+            enum DocumentSymbolCapture {
+                Missing,
+                FullSyncPending,
+                Ast {
+                    snapshot: std::sync::Arc<crate::state::ParsedSnapshot>,
+                    text: String,
+                    ast: std::sync::Arc<perl_parser::ast::Node>,
+                },
+                Fallback {
+                    text: String,
+                },
+            }
 
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                // Full-sync unavailability is not an ordinary parse failure.
-                // The AST-less regex fallback must keep using live `doc.text`
-                // for synchronized pending-parse gaps, and must not scan
-                // predecessor text while `full_sync_required` is set.
-                if doc.text_for_user_answers().is_none() {
+            let capture = {
+                let documents = self.documents_guard();
+                match self.get_document(&documents, uri) {
+                    None => DocumentSymbolCapture::Missing,
+                    Some(doc) => {
+                        if doc.text_for_user_answers().is_none() {
+                            DocumentSymbolCapture::FullSyncPending
+                        } else {
+                            let text = doc.text.clone();
+                            match doc.current_parsed() {
+                                Some(snapshot) => match snapshot.ast().cloned() {
+                                    Some(ast) => DocumentSymbolCapture::Ast { snapshot, text, ast },
+                                    None => DocumentSymbolCapture::Fallback { text },
+                                },
+                                None => DocumentSymbolCapture::Fallback { text },
+                            }
+                        }
+                    }
+                }
+            };
+
+            let finish_outline = |outline: Vec<
+                perl_lsp_rs_core::providers::document_symbols::DocumentSymbol,
+            >| {
+                let budget_outcome =
+                        perl_lsp_rs_core::providers::document_symbols::apply_document_symbol_node_budget(
+                            outline,
+                            cap,
+                        );
+                record_document_symbol_projection_receipt(cap, &budget_outcome, None);
+                let symbols = document_symbols_to_json(budget_outcome.symbols);
+                Ok(Some(json!(symbols)))
+            };
+
+            match capture {
+                DocumentSymbolCapture::Missing | DocumentSymbolCapture::FullSyncPending => {
                     return Ok(Some(json!([])));
                 }
-                let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    // Source-backed compiler document symbols are live for fresh,
-                    // high-confidence parser syntax facts. Astless documents keep
-                    // the legacy text fallback below.
+                DocumentSymbolCapture::Fallback { text } => {
+                    tracing::debug!(uri, "Using fallback symbol extraction");
+                    let mut outline = fallback_document_symbols(&text);
+                    let pod_headings =
+                        perl_lsp_rs_core::providers::document_symbols::pod_heading_document_symbols(
+                            &text,
+                        );
+                    perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
+                        &mut outline,
+                        pod_headings,
+                    );
+                    return finish_outline(outline);
+                }
+                DocumentSymbolCapture::Ast { snapshot, text, ast } => {
                     let live_result =
                         perl_lsp_rs_core::providers::document_symbols::source_backed_document_symbols_from_ast(
-                            ast,
-                            &doc.text,
+                            &ast,
+                            &text,
                         );
 
-                    // Merge Test2/Test::More subtests into their lexically
-                    // enclosing outline scopes (#1792): each subtest nests under
-                    // the innermost scope the parse proves instead of floating at
-                    // the top level. Subtest calls only exist in test files, so
-                    // this is empty for ordinary source.
                     let mut outline = live_result.symbols;
                     let subtests = perl_lsp_rs_core::providers::testing::subtest::discover_subtests(
-                        ast, &doc.text,
+                        &ast, &text,
                     );
                     if !subtests.is_empty() {
                         perl_lsp_rs_core::providers::testing::subtest::nest_subtest_symbols_in_outline(
                             &mut outline,
                             &subtests,
-                            &doc.text,
+                            &text,
                         );
                     }
-                    let mut document_symbols = document_symbols_to_json(outline);
 
-                    // Append POD section symbols from a direct line scan
-                    document_symbols.extend(pod_section_symbols(&doc.text));
-
-                    // Canonical Dancer2 route/hook entries (#8928).
-                    document_symbols.extend(dancer2_symbols);
-
-                    // Apply cap to document symbols
-                    if document_symbols.len() > cap {
-                        tracing::debug!(
-                            from = document_symbols.len(),
-                            to = cap,
-                            "DocumentSymbol: capping"
+                    let dancer2_outline =
+                        self.dancer2_document_symbols_structured(uri, &snapshot, &text, &ast);
+                    perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
+                        &mut outline,
+                        dancer2_outline,
+                    );
+                    let pod_headings =
+                        perl_lsp_rs_core::providers::document_symbols::pod_heading_document_symbols(
+                            &text,
                         );
-                        document_symbols.truncate(cap);
-                    }
+                    perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
+                        &mut outline,
+                        pod_headings,
+                    );
 
-                    return Ok(Some(json!(document_symbols)));
-                } else {
-                    // Fallback: Extract symbols via regex when parse fails
-                    tracing::debug!(uri, "Using fallback symbol extraction");
-                    let mut symbols = self.extract_symbols_fallback(&doc.text);
-                    // Append POD section symbols from a direct line scan
-                    symbols.extend(pod_section_symbols(&doc.text));
-                    // Apply cap to fallback symbols
-                    if symbols.len() > cap {
-                        tracing::debug!(
-                            from = symbols.len(),
-                            to = cap,
-                            "DocumentSymbol (fallback): capping"
-                        );
-                        symbols.truncate(cap);
-                    }
-                    tracing::debug!(count = symbols.len(), "Returning fallback symbols");
-                    return Ok(Some(json!(symbols)));
+                    return finish_outline(outline);
                 }
             }
         }
@@ -553,72 +501,97 @@ impl LspServer {
         let ranges = folding_ranges_from_text(&text, 128);
         Ok(serde_json::to_value(ranges).unwrap_or(serde_json::json!([])))
     }
+}
 
-    /// Fallback symbol extraction using regex when parser fails
-    fn extract_symbols_fallback(&self, content: &str) -> Vec<Value> {
-        let mut symbols = Vec::new();
-        let lines: Vec<&str> = content.lines().collect();
+thread_local! {
+    static LAST_DOCUMENT_SYMBOL_PROJECTION_RECEIPT: RefCell<
+        Option<perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt>,
+    > = const { RefCell::new(None) };
+}
 
-        // Get pre-compiled regexes
-        let Some(sub_regex) = get_sub_regex() else {
-            return symbols;
-        };
-        let Some(package_regex) = get_package_regex() else {
-            return symbols;
-        };
+fn record_document_symbol_projection_receipt(
+    configured_cap: usize,
+    outcome: &perl_lsp_rs_core::providers::document_symbols::DocumentSymbolBudgetOutcome,
+    operation_result_identity: Option<String>,
+) {
+    let receipt = perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt::from_budget_outcome(
+        configured_cap,
+        outcome,
+        operation_result_identity,
+    );
+    LAST_DOCUMENT_SYMBOL_PROJECTION_RECEIPT.with(|cell| {
+        *cell.borrow_mut() = Some(receipt);
+    });
+}
 
-        for (line_num, line) in lines.iter().enumerate() {
-            // Check for subroutines
-            if let Some(captures) = sub_regex.captures(line)
-                && let Some(name_match) = captures.get(1)
-            {
-                let name = name_match.as_str().to_string();
-                // Convert byte positions to UTF-16 code units for LSP compliance
-                let start_char = byte_to_utf16_col(line, name_match.start());
-                let end_char = byte_to_utf16_col(line, name_match.end());
-                let line_end_utf16 = byte_to_utf16_col(line, line.len());
+fn clear_document_symbol_projection_receipt() {
+    LAST_DOCUMENT_SYMBOL_PROJECTION_RECEIPT.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
 
-                symbols.push(json!({
-                    "name": name,
-                    "kind": 12, // Function
-                    "range": {
-                        "start": { "line": line_num, "character": 0 },
-                        "end": { "line": line_num, "character": line_end_utf16 }
-                    },
-                    "selectionRange": {
-                        "start": { "line": line_num, "character": start_char },
-                        "end": { "line": line_num, "character": end_char }
-                    }
-                }));
-            }
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) fn last_document_symbol_projection_receipt()
+-> Option<perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt> {
+    LAST_DOCUMENT_SYMBOL_PROJECTION_RECEIPT.with(|cell| cell.borrow().clone())
+}
 
-            // Check for packages
-            if let Some(captures) = package_regex.captures(line)
-                && let Some(name_match) = captures.get(1)
-            {
-                let name = name_match.as_str().to_string();
-                // Convert byte positions to UTF-16 code units for LSP compliance
-                let start_char = byte_to_utf16_col(line, name_match.start());
-                let end_char = byte_to_utf16_col(line, name_match.end());
-                let line_end_utf16 = byte_to_utf16_col(line, line.len());
+fn fallback_document_symbols(
+    content: &str,
+) -> Vec<perl_lsp_rs_core::providers::document_symbols::DocumentSymbol> {
+    use perl_lsp_rs_core::providers::document_symbols::leaf_document_symbol;
+    use perl_position_tracking::{WirePosition, WireRange};
 
-                symbols.push(json!({
-                    "name": name,
-                    "kind": 4, // Module
-                    "range": {
-                        "start": { "line": line_num, "character": 0 },
-                        "end": { "line": line_num, "character": line_end_utf16 }
-                    },
-                    "selectionRange": {
-                        "start": { "line": line_num, "character": start_char },
-                        "end": { "line": line_num, "character": end_char }
-                    }
-                }));
-            }
+    let mut symbols = Vec::new();
+    let Some(sub_regex) = get_sub_regex() else {
+        return symbols;
+    };
+    let Some(package_regex) = get_package_regex() else {
+        return symbols;
+    };
+
+    for (line_num, line) in content.lines().enumerate() {
+        let line_index = u32::try_from(line_num).unwrap_or(u32::MAX);
+        let line_end = u32::try_from(byte_to_utf16_col(line, line.len())).unwrap_or(0);
+
+        if let Some(captures) = sub_regex.captures(line)
+            && let Some(name_match) = captures.get(1)
+        {
+            let range = WireRange {
+                start: WirePosition::new(line_index, 0),
+                end: WirePosition::new(line_index, line_end),
+            };
+            let start_char =
+                u32::try_from(byte_to_utf16_col(line, name_match.start())).unwrap_or(0);
+            let end_char = u32::try_from(byte_to_utf16_col(line, name_match.end())).unwrap_or(0);
+            let mut symbol = leaf_document_symbol(name_match.as_str(), "", 12, range);
+            symbol.selection_range = WireRange {
+                start: WirePosition::new(line_index, start_char),
+                end: WirePosition::new(line_index, end_char),
+            };
+            symbols.push(symbol);
         }
 
-        symbols
+        if let Some(captures) = package_regex.captures(line)
+            && let Some(name_match) = captures.get(1)
+        {
+            let range = WireRange {
+                start: WirePosition::new(line_index, 0),
+                end: WirePosition::new(line_index, line_end),
+            };
+            let start_char =
+                u32::try_from(byte_to_utf16_col(line, name_match.start())).unwrap_or(0);
+            let end_char = u32::try_from(byte_to_utf16_col(line, name_match.end())).unwrap_or(0);
+            let mut symbol = leaf_document_symbol(name_match.as_str(), "", 4, range);
+            symbol.selection_range = WireRange {
+                start: WirePosition::new(line_index, start_char),
+                end: WirePosition::new(line_index, end_char),
+            };
+            symbols.push(symbol);
+        }
     }
+
+    symbols
 }
 
 fn document_symbols_to_json(
@@ -741,6 +714,7 @@ impl LspServer {
             "live_provider_count": live_provider_count,
             "shadow_state": "partial_live_source_backed",
             "source_backed_receipt": source_backed_receipt,
+            "projection_receipt": last_document_symbol_projection_receipt(),
             "no_live_behavior_change": no_live_behavior_change,
             "notes": [
                 format!(
@@ -1622,6 +1596,67 @@ mod tests {
         assert!(
             !restored_ranges.is_empty(),
             "accepted full replacement must restore current foldingRange: {restored}"
+        );
+        Ok(())
+    }
+
+    fn assert_single_imports_fold_bounds(
+        source: &str,
+        expected_end: usize,
+    ) -> Result<(), JsonRpcError> {
+        let ranges = folding_ranges_for_source(source)?;
+        let imports: Vec<&Value> =
+            ranges.iter().filter(|range| range.get("kind") == Some(&json!("imports"))).collect();
+        assert_eq!(imports.len(), 1, "expected exactly one imports range: {ranges:?}");
+        assert_eq!(imports[0].get("startLine"), Some(&json!(0)));
+        assert_eq!(
+            imports[0].get("endLine"),
+            Some(&json!(expected_end)),
+            "imports fold must include its last statement: {ranges:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_two_imports() -> Result<(), JsonRpcError> {
+        assert_single_imports_fold_bounds("use Module0;\nuse Module1;\nmy $x = 1;\n", 1)
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_three_imports() -> Result<(), JsonRpcError> {
+        assert_single_imports_fold_bounds(
+            "use Module0;\nuse Module1;\nuse Module2;\nmy $x = 1;\n",
+            2,
+        )
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_five_imports() -> Result<(), JsonRpcError> {
+        assert_single_imports_fold_bounds(
+            "use Module0;\nuse Module1;\nuse Module2;\nuse Module3;\nuse Module4;\nmy $x = 1;\n",
+            4,
+        )
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_strict_warnings_posix() -> Result<(), JsonRpcError> {
+        assert_single_imports_fold_bounds(
+            "use strict;\nuse warnings;\nuse POSIX qw(floor);\nmy $x = 1;\n",
+            2,
+        )
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_preserves_non_import_brace() -> Result<(), JsonRpcError> {
+        // Ordinary block spans end at a closing brace, which must remain visible.
+        let ranges = folding_ranges_for_source("sub full {\n    my $x = 1;\n    my $y = 2;\n}\n")?;
+        assert_eq!(ranges.len(), 1, "expected one deduplicated block fold: {ranges:?}");
+        assert_ne!(ranges[0].get("kind"), Some(&json!("imports")));
+        assert_eq!(ranges[0].get("startLine"), Some(&json!(0)));
+        assert_eq!(
+            ranges[0].get("endLine"),
+            Some(&json!(2)),
+            "non-import fold must keep its closing brace visible: {ranges:?}"
         );
         Ok(())
     }

@@ -1,9 +1,0 @@
-project: vscode
-component: Packaging and distribution
-kind: Security
-body: "Pinned the brace-expansion npm dependency to patched versions (1.1.16 / 2.1.3 / 5.0.8) to remediate a known runtime security alert in the VS Code extension's dependency tree."
-time: 2026-07-29T06:43:23Z
-custom:
-  PR: "5263"
-  Slug: brace-expansion-runtime-alert
-  Breaking: "no"

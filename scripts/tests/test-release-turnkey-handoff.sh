@@ -187,7 +187,7 @@ cat >"$STUB_BIN/cargo" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >> "${CARGO_STUB_LOG:-/dev/null}"
 if [[ "${1:-}" == "--version" ]]; then
-  printf '%s\n' 'cargo 1.95.0 (turnkey-test-stub)'
+  printf '%s\n' 'cargo 1.100.0 (turnkey-test-stub)'
   exit 0
 fi
 # branch-deletion-admission retain

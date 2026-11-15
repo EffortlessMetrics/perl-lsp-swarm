@@ -863,6 +863,8 @@ pub mod perl_lsp::util::command_timeout
 pub fn perl_lsp::util::command_timeout::run_command_with_timeout(cmd: std::process::Command, timeout_secs: u64) -> core::result::Result<std::process::Output, alloc::string::String>
 pub mod perl_lsp::util::uri
 pub use perl_lsp::util::uri::parse_uri
+pub use perl_lsp::util::uri::parse_uri_or_err
+pub use perl_lsp::util::uri::try_parse_uri
 pub fn perl_lsp::util::anchor_arg_start(body: &str, rel: usize) -> usize
 pub fn perl_lsp::util::arg_starts_in_call_body(body: &str) -> alloc::vec::Vec<usize>
 pub fn perl_lsp::util::arg_starts_top_level(src: &str) -> alloc::vec::Vec<usize>

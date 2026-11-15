@@ -48,11 +48,19 @@
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
     },
+    "release_history_domain6_rerender": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
+    },
     "source_commit_api_check": {
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
     },
     "perl_token_leaf_contract": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
+    },
+    "public_api_baseline_canonical": {
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
     },

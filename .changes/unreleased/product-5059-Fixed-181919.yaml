@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "&foo() (ampersand-sigil) calls are now recognized by call hierarchy, inlay hints, hover, moniker, and symbol extraction, instead of being silently skipped by those five providers as if they didn't exist."
-time: 2026-07-29T18:19:19Z
-custom:
-  PR: "5059"
-  Slug: ampercall-provider-coverage
-  Breaking: "no"

@@ -9,9 +9,27 @@ route sets `RUSTUP_AUTO_INSTALL=0` before even the version probe, preserves it f
 Cargo, and forces it in Cargo's child environment; a missing pinned toolchain
 refuses instead of automatically installing. This changes no global rustup setting.
 See the [rustup environment reference](https://rust-lang.github.io/rustup/environment-variables.html).
-Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Python 3.11+ and the exact installed repository pin 1.95.0. Keep the qualification
+Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Python 3.11+ and the exact installed repository pin 1.100.0. Keep the qualification
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
+Cargo's child environment also receives the admitted target/build paths, jobs and
+incremental setting, overriding conflicting forced `[env]` values after local
+configuration. Tests and build scripts that launch nested Cargo inherit those
+settings. This does not constrain a child that explicitly replaces its own
+environment or Cargo arguments. Cargo itself refuses `CARGO_HOME` in `[env]`.
+
+Cargo accepts string and table forms of `[env]`, but rejects merging between
+those forms. Execution validates the controlled entries with noncompiling
+`cargo locate-project --message-format=json` under the same lease and Linux
+process owner as the product. The usual absent/table configuration needs one
+probe; all-string configuration needs two. Mixed forms use at most two probes
+per controlled key plus three, within an aggregate 15-second/64-KiB observation
+bound. Table values are forced; string values project the admitted value and
+preserve the admitted process environment. A final combined projection must
+pass before the product runs once. Failed setup never retries the product.
+This adds setup work to warm builds. Preflight still invokes no Cargo and cannot
+predict configuration compatibility. Other platforms keep their legacy
+descendant-settlement limitation.
 
 Host profiles for the jobs knob (#17673): the default of two protects
 constrained and shared hosts. On a dedicated host with at least eight logical
@@ -25,6 +43,55 @@ win is concentrated in cold and multi-crate work. Peak memory at jobs=4
 was not captured, so treat the profile as unqualified on memory-tight
 hosts and on hosted CI runners, which have different core/memory envelopes
 and should keep the default.
+
+## Plan storage and run focused proof
+
+`just devplane-init` projects this route's existing resource plan for the invoking
+worktree and shell. It prints the shared Cargo home and private target/build paths
+without creating directories, acquiring a lease, probing Cargo, or assessing capacity.
+The output is explicitly **planned, not allocated; capacity not assessed**. It does
+not create per-worktree dependency/compiler caches or enable a compiler wrapper.
+Invalid Git selectors and incompatible storage overrides retain the admission
+owner's refusal behavior. Planning does not establish that a later build can run.
+
+`just agent-check PACKAGE [ARGS...]` and `just agent-test PACKAGE SELECTOR [ARGS...]`
+require an explicit package. They invoke `scripts/cargo-admitted` with
+`check|test -p PACKAGE --profile agent --locked`, then forward the selector and all
+remaining arguments literally, including the test-program separator `--`.
+
+For `agent-test`, the target selector must immediately follow the package:
+
+- `--lib` or `--doc` selects library unit tests or documentation tests.
+- `--test NAME`, `--bin NAME`, `--example NAME`, or `--bench NAME` selects a named
+  target. Joined forms such as `--test=NAME` also work. A separate name must be
+  nonempty and cannot start with `-`; use the joined form for such a name.
+- `--tests`, `--bins`, `--examples`, `--benches`, or `--all-targets` explicitly
+  requests a broader target population.
+
+A [test-name filter](https://doc.rust-lang.org/cargo/commands/cargo-test.html),
+including one after `--`, filters test execution after Cargo has selected and
+compiled targets. It does not limit that compilation. The recipe
+refuses a missing or invalid first selector before delegation; it never silently
+selects library-only proof. Remaining arguments are Cargo's responsibility.
+The direct admitted route still supports deliberately broader package requests.
+Choose the target population required by the change, and preflight the **same
+underlying argv** before execution:
+
+```bash
+scripts/cargo-admitted --preflight check -p perl-token --profile agent --locked --lib
+just agent-check perl-token --lib
+
+scripts/cargo-admitted --preflight test -p perl-token --profile agent --locked --lib -- --nocapture
+just agent-test perl-token --lib -- --nocapture
+```
+
+Run each execution only after its matching preflight succeeds, from the same task
+shell and worktree. The recipes do not interpret wrapper options such as
+`--preflight` or `--budget-file`; use the direct admitted entrypoint when those
+options are needed. Raw `cargo agent-*` aliases and the remaining legacy Just
+recipes retain their compatibility behavior and provide no admission guarantees.
+
+## Resource ownership
 
 One admission/lease slot is keyed by canonical Git common directory, hostname and
 OS, under `DEVPLANE` (default `~/.cache/devplane`). Sibling worktrees share this
@@ -59,6 +126,42 @@ normal edits, not one new target per task or commit. Storage therefore grows wit
 retained worktrees, and the capacity gate remains necessary. Do not repurpose a
 worktree path or restore backdated source over its build state without a separately
 verified fresh qualification; this path partition is not content-addressed state.
+
+### Private allocation creation evidence
+
+On native Linux, an admitted invocation that creates both previously absent
+private target/build directories writes one bounded `allocation.json` beside
+them. The immutable `cargo_private_allocation.v1` record binds the canonical
+worktree, Git common/admin directories, private member and both output roots to
+their original device/inode identities. It also binds its own exclusively
+created regular-file identity and records the creating admission source digest.
+Copying the record's bytes cannot transfer that identity to another file. The
+creator digest is historical provenance; later admission code revisions and
+ordinary source edits do not invalidate unchanged directory identities.
+
+Preflight reads and validates an existing record without allocating or writing.
+Execution validates it again under the existing lease and immediately before
+Cargo launch. A replaced worktree, output root or record refuses; the command
+preserves the existing state for its owner. Record creation requires exclusive
+creation, complete write, file and parent-directory fsync, and matching readback
+before a completed creation receipt is emitted. A failed attempt retains partial
+data and launches no Cargo. Removing a record is not a supported recovery or
+migration procedure.
+
+The resource descriptor's `private_allocation_provenance.status` distinguishes
+`matching_creation_record` from `unknown`. Pre-existing unrecorded roots retain
+their existing compatibility behavior and remain unknown; the route does not
+adopt them. A partial allocation that created only one root also remains unknown.
+Other platforms retain their existing behavior and report unknown provenance.
+Temporary storage and shared Cargo/compiler caches are outside this record.
+
+Creation evidence does not prove source-content freshness, a successful build,
+process settlement, independently retained consumers, or safe deletion. Both
+`consumer_custody` and `reclaim_eligibility` stay unknown. The record supplies
+original allocation facts for [#19235](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/19235)
+and the later #19218/#11671 handoff; it adds no cleanup command, adoption route,
+new lease, quota or capacity-policy change. Native identities are checked within
+the existing cooperative ownership boundary, not as a hostile-filesystem sandbox.
 
 For a focused `xtask` gate, use the supported builtin `run` route from the same
 canonical worktree and with the same admitted `DEVPLANE`, Cargo home and temporary-storage
@@ -121,10 +224,12 @@ $env:RUSTUP_AUTO_INSTALL = '0'
 Selecting only `DEVPLANE` can still leave Cargo home or temporary files on an
 overfull system volume. Keep existing caches intact. Do not export target/build
 paths or enable compiler wrappers: the admitted route owns both private output
-paths. A copied `.cargo/config.local.toml` is not automatically loaded by Cargo's
-[configuration discovery](https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure)
-and cannot configure Python's pre-admission resolver. The adjacent example no
-longer recommends shared output paths or sccache for this route.
+paths. Copy `.cargo/config.local.toml.example` to `.cargo/config.local.toml`
+(gitignored) for other machine-local knobs. `scripts/cargo-safe` and
+`scripts/cargo-admitted` pass `--config` when the file exists; for direct
+`cargo`, pass `--config .cargo/config.local.toml` explicitly (or use `CARGO_*`
+in the task shell). Admitted `--config` overrides still own target/build paths
+and jobs policy; do not put those keys in the local file.
 
 For missing hooks, use the existing lightweight installer owner (#17861), from
 the intended worktree with the repository-pinned native toolchain installed:
@@ -251,17 +356,22 @@ Incomplete closure or failed release returns 75 and retains ownership.
 ### Explicit Linux proc-parent/pidfd discovery
 
 `CARGO_ADMITTED_CHILD_DISCOVERY=proc-parent-pidfd` explicitly selects a bounded
-alternative for Linux hosts lacking `CONFIG_PROC_CHILDREN`. The default
-`proc-children` profile is unchanged; no missing-table detection silently selects
-a namespace scan. The alternate profile reads only visible numeric PID `stat`
+alternative for Linux hosts lacking `CONFIG_PROC_CHILDREN`. Linux builtin Cargo and
+staged Clippy preflight and execution check the selected profile's discovery capability
+before resource planning or lease acquisition. An unavailable default `proc-children`
+interface therefore refuses even a build that might otherwise complete normally; select
+the alternate explicitly only when its capability checks pass. No missing-table
+detection silently selects a namespace scan. The alternate profile reads only visible numeric PID `stat`
 records, including their parent and kernel starttime. It does not read process
 environments, command lines, descriptors, mappings or executable paths.
 
 `child_discovery_capability(mode)` validates the live calling owner before any
 lease or allocation. The profile requires one native CPython owner thread, default
 SIGCHLD, matching singleton procfs/native PID identities, the same current and
-child PID namespaces, and one full procfs root without hidepid restrictions or
-numeric/task-path overmounts. It revalidates these observations on discovery
+child PID namespaces, and at least one full procfs root without hidepid restrictions
+or numeric/task-path overmounts. When mounts are stacked at `/proc`, every root
+record must describe a complete, unrestricted procfs root; an invalid hidden lower
+layer still refuses. It revalidates these observations on discovery
 turns. Unreadable or malformed records, changed roots, more than 32,768 numeric
 entries, or a discovery turn exceeding one second refuse. This elapsed-time
 threshold includes metadata and the final observation; it does not preempt an
@@ -371,11 +481,12 @@ product failures even when the cohort subsequently settles successfully.
 
 ### Staged native Clippy
 
-The existing owner admits these finite Linux requests (optional `--offline`):
+The existing owner admits these finite Linux requests (optional `--offline`; optional
+`--keep-going` on either selector shape):
 
 ```text
-python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked -- -D warnings
-python3 scripts/cargo_admitted.py clippy -p PACKAGE --test NAME --profile agent --locked -- -D warnings
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked [--offline] [--keep-going] -- -D warnings
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --test NAME --profile agent --locked [--offline] [--keep-going] -- -D warnings
 ```
 
 Select exactly one of `--all-targets` or `--test NAME`. A named test uses one literal
@@ -387,7 +498,13 @@ remains in the request digest, so its budget cannot transfer to another target o
 all-targets work. A focused result covers only the selected compilation graph; it
 does not replace a required all-targets gate or qualify an unvisited target.
 
-Python 3.11+ and the already-installed repository pin 1.95.0 are required. No
+`--keep-going` forwards Cargo's continue-after-failure behavior for independent work
+within the admitted selector. It does not convert failing diagnostics to success, does
+not turn a named-target run into a complete all-targets census, and cannot compile a
+target whose prerequisite failed; such targets remain blocked or not-proven rather
+than reported clean.
+
+Python 3.11+ and the already-installed repository pin 1.100.0 are required. No
 installation occurs. The route fingerprints direct Cargo/rustc/rustdoc,
 cargo-clippy and sibling clippy-driver plus compiler runtimes, repository pin,
 owner source and discovered Cargo/Clippy configuration into the budget scope;
@@ -431,6 +548,19 @@ deadline/error retains the lease. There is no automatic broad /proc fallback;
 the separately selected proc-parent/pidfd profile above supplies discovery only.
 Missing
 capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
+deadline/error retains the lease. There is no broad /proc fallback. Missing
+`/proc/self/task/<native-tid>/children` can be a kernel capability boundary,
+not a wrong PID or namespace: Linux builds this entry only with
+[`CONFIG_PROC_CHILDREN`](https://github.com/torvalds/linux/blob/v6.18/fs/proc/Kconfig).
+The calling thread and its procfs task identity must be checked before drawing
+that conclusion. Known pidfds and an empty live-handle ledger do not replace
+the table: nonblocking exited-child waits return no identity for a running
+unknown adopted child. They must not promote missing discovery to ECHILD or
+authorize release. A staged consumer that requires this capability must refuse
+before launch when it is unavailable; a mount or alternate task path cannot
+restore an entry compiled out of the running kernel.
+
+Missing capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
 owner death and incomplete cancellation never become release authority.
 
 The opt-in `scripts/tests/qualify_admitted_clippy.py --proof-root ABSOLUTE_DIR`
@@ -520,6 +650,33 @@ roots and hardlinks. These are retained snapshots, not reclaimable or exclusive
 ownership. Peak demand, build deltas, open-unlinked bytes, WSL guest free space,
 VHDX allocation and backing-host capacity remain separate unknown fields. No
 `df` minus `du` inference, cleanup or compaction is performed.
+
+For retained private storage across this repository's registered and removed
+worktrees, run `bash scripts/storage-doctor --current-slot --json`. This read-only
+census resolves the current host/common-repository slot through the admission
+owner and inventories only its immediate private worktree members. Root, nested,
+and linked-worktree invocations agree. One entry/time budget and inode map cover
+the whole census; Git output and member counts are also bounded. It reads no
+fingerprint contents and allocates no storage. Git trace/redirection outputs and
+optional locks are disabled for these observations, including configured Trace2
+targets. Existing descriptor and no-argument modes retain their behavior.
+
+The separate `cargo_private_storage_census.v1` envelope distinguishes registration,
+presence, discovery, and measurement completeness. A registered source can have
+missing storage; retained output can have no matching current registration.
+Each valid row includes its opaque `member_key`, the private directory name
+beneath the slot's `worktrees/`, alongside its path hash; invalid members have
+no member key. Native source and storage paths are not emitted.
+Invalid, unavailable, changing, or clipped observations keep partial byte counts
+and unknown complete totals. Native Windows allocated bytes remain unknown.
+Unregistered does not establish a safe orphan, and same-path worktree recreation
+does not establish allocation ownership. Every row retains unknown allocation
+ownership and reclaim eligibility. Exit zero means this inventory completed,
+not admission or permission to delete. The census excludes shared Cargo/compiler
+caches, slot containers, temporary storage, and other repositories or host slots.
+It does not execute the separate repo-local target guard or establish live process,
+lease, quota, or peak-demand facts. See [#19216](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/19216);
+exact reclamation remains under #11650/#11666/#11671.
 
 `observe-xtask-build.sh` captures the emitted descriptor in a bounded private
 temporary file outside its output directory and emits only this sanitized

@@ -40,6 +40,9 @@ use std::path::{Path, PathBuf};
 use color_eyre::eyre::{Context, Result};
 use serde_json::Value;
 
+// Mechanical read is `perl_lsp_ux_tests::cargo_failure` (#16907). These three
+// names are the xtask-facing adapters: first-occurrence uniqueness, run-trailer
+// trimming, and the digest's `file:line:col` panic form.
 use crate::tasks::cargo_failure_blocks::{failing_test_names, failure_blocks, panic_location};
 
 /// Longest assertion excerpt carried into the summary for one test.

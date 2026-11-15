@@ -45,14 +45,14 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
     let required = &workflow["jobs"]["check-all-targets"];
     assert_eq!(required["name"].as_str(), Some("Compile All Targets (bit-rot guard)"));
     let required_steps = required["steps"].as_sequence().ok_or("missing required steps")?;
-    let route = required_steps
+    let producer_step = required_steps
         .iter()
         .find(|step| {
-            step["name"].as_str()
-                == Some("Routed test preparation contract (required merge surface)")
+            step["run"].as_str() == Some("bash scripts/ci/required-merge-surface.sh")
+                && step["name"].as_str() == Some("Required merge surface")
         })
-        .ok_or("missing required preparation contract route")?;
-    let route_command = route["run"].as_str().ok_or("missing required contract command")?;
+        .ok_or("missing shared required preparation contract producer")?;
+    let route_command = fs::read_to_string(root()?.join("scripts/ci/required-merge-surface.sh"))?;
     assert!(
         route_command
             .contains("cargo test -p xtask --test routed_test_preparation_contract --locked --")
@@ -60,60 +60,96 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
     assert!(route_command.contains("2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"));
     assert!(route_command.contains("preparation_preserves_runtime_command_and_budget"));
     assert!(route_command.contains("preparation_precedes_watchdog_and_has_separate_evidence"));
-    assert_eq!(route["continue-on-error"], Value::Null);
-    let job = &workflow["jobs"]["pr-smoke"];
-    assert_eq!(job["timeout-minutes"].as_u64(), Some(75));
-    let steps = job["steps"].as_sequence().ok_or("missing steps")?;
-    let prepare = steps
-        .iter()
-        .position(|step| step["name"].as_str() == Some("Prepare routed integration-test targets"))
-        .ok_or("missing preparation")?;
-    let execute = steps
-        .iter()
-        .position(|step| step["name"].as_str() == Some("Run PR-fast via shared xtask gate runner"))
-        .ok_or("missing runtime")?;
-    assert!(prepare < execute);
-    let build = steps[prepare]["run"].as_str().ok_or("missing preparation command")?;
-    assert!(
-        build.contains("--gate unit_routed_full_build --subject target/receipts/ci-subject.json")
-    );
-    assert!(build.contains("--receipt-path target/receipts/routed-test-build/receipt.json"));
-    assert!(!build.contains("--receipt-path target/receipts/receipt.json"));
-    assert!(!build.contains("|| true"));
-    assert!(build.contains("preparation_status=$?"));
-    assert!(build.contains("exit \"$preparation_status\""));
-    assert!(build.contains("target/receipts/routed-test-build/logs/unit_routed_full_build.log"));
-    assert_eq!(
-        steps[prepare]["continue-on-error"].as_bool(),
-        Some(true),
-        "failed preparation must retain its receipt and allow all independent full-tier proofs"
-    );
-    assert_eq!(
-        steps[prepare]["timeout-minutes"].as_u64(),
-        Some(25),
-        "preparation must be bounded inside the 75m job envelope"
-    );
-    assert!(build.contains("routed-test-build/logs/unit_routed_full_build.log"));
-    let runtime = steps[execute]["run"].as_str().ok_or("missing runtime command")?;
-    assert!(runtime.contains("timeout --signal=TERM --kill-after=60s 3600s"));
-    assert!(
-        runtime
-            .contains("gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt")
-    );
-    assert!(!runtime.contains("--gate unit_routed_full_build"));
-    let upload = steps
-        .iter()
-        .find(|step| {
-            step["with"]["name"].as_str().is_some_and(|name| name.starts_with("pr-fast-receipt-"))
-        })
-        .ok_or("missing receipt artifact")?;
-    let paths = upload["with"]["path"].as_str().ok_or("missing artifact paths")?;
-    assert!(
-        paths.lines().any(|path| path.trim() == "target/receipts/routed-test-build/receipt.json")
-    );
-    assert!(paths.lines().any(|path| path.trim() == "target/receipts/logs/*.log"));
-    assert!(
-        paths.lines().any(|path| path.trim() == "target/receipts/routed-test-build/logs/*.log")
-    );
+    assert_eq!(producer_step["continue-on-error"], Value::Null);
+    // The revival sibling (pr-fast-unblocked, #19045) copies the preparation
+    // and watchdog shape so the tier runs without the fatal disk floor.
+    // Assert both jobs stay in lockstep; a one-sided edit must fail here,
+    // not drift silently.
+    for (job_name, receipt_prefix, missing_prefix) in [
+        ("pr-smoke", "pr-fast-receipt-", "pr-fast-missing-receipt-"),
+        ("pr-fast-unblocked", "pr-fast-unblocked-receipt-", "pr-fast-unblocked-missing-receipt-"),
+    ] {
+        let job = &workflow["jobs"][job_name];
+        assert_eq!(job["timeout-minutes"].as_u64(), Some(75));
+        let steps = job["steps"].as_sequence().ok_or("missing steps")?;
+        let prepare = steps
+            .iter()
+            .position(|step| {
+                step["name"].as_str() == Some("Prepare routed integration-test targets")
+            })
+            .ok_or("missing preparation")?;
+        let execute = steps
+            .iter()
+            .position(|step| {
+                step["name"].as_str() == Some("Run PR-fast via shared xtask gate runner")
+            })
+            .ok_or("missing runtime")?;
+        assert!(prepare < execute);
+        let build = steps[prepare]["run"].as_str().ok_or("missing preparation command")?;
+        assert!(
+            build.contains(
+                "--gate unit_routed_full_build --subject target/receipts/ci-subject.json"
+            )
+        );
+        assert!(build.contains("--receipt-path target/receipts/routed-test-build/receipt.json"));
+        assert!(!build.contains("--receipt-path target/receipts/receipt.json"));
+        assert!(!build.contains("|| true"));
+        assert!(build.contains("preparation_status=$?"));
+        assert!(build.contains("exit \"$preparation_status\""));
+        assert!(
+            build.contains("target/receipts/routed-test-build/logs/unit_routed_full_build.log")
+        );
+        assert_eq!(
+            steps[prepare]["continue-on-error"].as_bool(),
+            Some(true),
+            "failed preparation must retain its receipt and allow all independent full-tier proofs"
+        );
+        assert_eq!(
+            steps[prepare]["timeout-minutes"].as_u64(),
+            Some(25),
+            "preparation must be bounded inside the 75m job envelope"
+        );
+        assert!(build.contains("routed-test-build/logs/unit_routed_full_build.log"));
+        let runtime = steps[execute]["run"].as_str().ok_or("missing runtime command")?;
+        assert!(runtime.contains("timeout --signal=TERM --kill-after=60s 3600s"));
+        assert!(
+            runtime.contains(
+                "gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt"
+            )
+        );
+        assert!(!runtime.contains("--gate unit_routed_full_build"));
+        let upload = steps
+            .iter()
+            .find(|step| {
+                step["with"]["name"].as_str().is_some_and(|name| name.starts_with(receipt_prefix))
+            })
+            .ok_or("missing receipt artifact")?;
+        let upload_if = upload["if"].as_str().ok_or("missing receipt upload guard")?;
+        assert!(
+            upload_if.contains("hashFiles('target/receipts/receipt.json') != ''"),
+            "tier-named receipt upload must require receipt.json (#17915)"
+        );
+        let missing = steps
+            .iter()
+            .find(|step| {
+                step["with"]["name"].as_str().is_some_and(|name| name.starts_with(missing_prefix))
+            })
+            .ok_or("missing missing-receipt diagnostics artifact")?;
+        let missing_if = missing["if"].as_str().ok_or("missing diagnostics upload guard")?;
+        assert!(
+            missing_if.contains("hashFiles('target/receipts/receipt.json') == ''"),
+            "missing-receipt diagnostics must publish only without receipt.json"
+        );
+        let paths = upload["with"]["path"].as_str().ok_or("missing artifact paths")?;
+        assert!(
+            paths
+                .lines()
+                .any(|path| path.trim() == "target/receipts/routed-test-build/receipt.json")
+        );
+        assert!(paths.lines().any(|path| path.trim() == "target/receipts/logs/*.log"));
+        assert!(
+            paths.lines().any(|path| path.trim() == "target/receipts/routed-test-build/logs/*.log")
+        );
+    }
     Ok(())
 }

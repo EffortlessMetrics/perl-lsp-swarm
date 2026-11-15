@@ -226,6 +226,8 @@ impl LspServer {
                     // No static callable fact: LSP 3.17 defines a null
                     // result when no signatures are available (#17582).
                     // Never fabricate a `name(...)` signature.
+                    // A call's spelling alone does not establish a signature.
+                    // Complete the request without inventing a callable contract.
                     return Ok(Some(Value::Null));
                 }
             }

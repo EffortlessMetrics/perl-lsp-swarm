@@ -19,6 +19,13 @@ use perl_workspace::semantic_shadow_compare::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+mod budget;
+pub use budget::{
+    DOCUMENT_SYMBOL_NODE_BUDGET_ID, DocumentSymbolBudgetOutcome, DocumentSymbolProjectionReceipt,
+    apply_document_symbol_node_budget, count_document_symbol_nodes,
+    merge_document_symbol_roots_in_source_order, pod_heading_document_symbols,
+};
+
 /// LSP-compatible document symbol produced from source-backed compiler facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +46,25 @@ pub struct DocumentSymbol {
     /// Internal assembler ordering fact; never emitted on the LSP wire.
     #[serde(skip)]
     pub(crate) sort_priority: u8,
+}
+
+/// Build a leaf document symbol with no nested children.
+#[must_use]
+pub fn leaf_document_symbol(
+    name: impl Into<String>,
+    detail: impl Into<String>,
+    kind: u32,
+    range: WireRange,
+) -> DocumentSymbol {
+    DocumentSymbol {
+        name: name.into(),
+        detail: detail.into(),
+        kind,
+        range,
+        selection_range: range,
+        children: Vec::new(),
+        sort_priority: 0,
+    }
 }
 
 /// Assembler priority shared by source-backed callables and synthesized subtests.

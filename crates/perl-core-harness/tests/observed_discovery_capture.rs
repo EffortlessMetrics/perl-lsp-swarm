@@ -621,3 +621,50 @@ fn core_selector_observation_uses_switches_only_argv() -> Result<()> {
     ensure_reconstructs("selector_test_core", receipt)?;
     Ok(())
 }
+
+#[test]
+fn select_stderr_core_observation_matches_select_membership() -> Result<()> {
+    // #17850: #17823 widened `selected_rows` with `core: bool`; #17805 then
+    // added the `select_stderr` arm against the old 1-arg spelling. Threading
+    // `core` (not hardcoding `false`) is the repair that keeps zero-selector
+    // `--core` membership identical to the `select` arm. Passing `false`
+    // would still compile and would leak the non-core roots planted below.
+    let temp = tempfile::tempdir()?;
+    let tree = fixture_tree(temp.path(), "select_stderr")?;
+    let t_dir = tree.join("t");
+    fs::create_dir_all(t_dir.join("porting"))?;
+    fs::write(t_dir.join("porting").join("maintainers.t"), "1;\n")?;
+    fs::create_dir_all(t_dir.join("lib"))?;
+    fs::write(t_dir.join("lib").join("sample.t"), "1;\n")?;
+    let config = config_for(
+        &tree,
+        temp.path().join("core-stderr-receipt.json"),
+        "selector_test_core",
+        default_limits(),
+    );
+    let receipt = observe_discovery(&config)?;
+    let receipt = &receipt;
+    assert_eq!(receipt.payload.state, DiscoveryObservationState::ObservedComplete);
+    assert_eq!(
+        receipt.payload.invocation.argv,
+        vec!["TEST".to_string(), "--dumptests".to_string(), "--core".to_string()],
+        "core argv must be switches only"
+    );
+    assert_eq!(
+        accepted_paths(receipt),
+        vec!["t/base/cond.t", "t/base/if.t", "t/comp/require.t", "t/run/exit.t"],
+        "select_stderr must apply the same --core root filter as select"
+    );
+    let stderr_bytes = receipt
+        .payload
+        .stderr
+        .bytes()
+        .map_err(|error| color_eyre::eyre::eyre!("decoding retained stderr bytes: {error}"))?;
+    let stderr_text = String::from_utf8_lossy(&stderr_bytes);
+    assert!(
+        stderr_text.contains("fixture warning on ordinary stderr"),
+        "must exercise the select_stderr arm, got stderr: {stderr_text:?}"
+    );
+    ensure_reconstructs("selector_test_core_select_stderr", receipt)?;
+    Ok(())
+}

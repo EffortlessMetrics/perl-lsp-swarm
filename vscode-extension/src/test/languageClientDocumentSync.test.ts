@@ -143,6 +143,81 @@ describe('replayOpenPerlDocuments', () => {
     await expect(replay).rejects.toBeInstanceOf(StaleDocumentReplayError);
   });
 
+  describe('readiness deadline and registration race', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    test('rejects at the deadline and cannot replay after a late Running event', async () => {
+      const client = replayClient();
+      const replay = replayOpenPerlDocumentsWhenReady(client, [PERL_DOCUMENT], 2, () => true, 25);
+      const rejection = expect(replay).rejects.toThrow(
+        'Language client did not reach Running within 25ms.',
+      );
+
+      jest.advanceTimersByTime(24);
+      await Promise.resolve();
+      expect(client.sendNotification).not.toHaveBeenCalled();
+      expect(client.listenerCount()).toBe(1);
+      expect(jest.getTimerCount()).toBe(1);
+
+      jest.advanceTimersByTime(1);
+      await rejection;
+      expect(client.listenerCount()).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);
+      expect(client.sendNotification).not.toHaveBeenCalled();
+
+      client.transitionTo(2);
+      await Promise.resolve();
+      expect(client.sendNotification).not.toHaveBeenCalled();
+    });
+
+    test('clears the readiness deadline and replays exact Unicode and CRLF source', async () => {
+      const client = replayClient();
+      const replay = replayOpenPerlDocumentsWhenReady(
+        client,
+        [{ ...PERL_DOCUMENT, text: 'my $value = "é🙂e\u0301";\r\n' }],
+        2,
+        () => true,
+        25,
+      );
+      expect(jest.getTimerCount()).toBe(1);
+      client.transitionTo(0);
+      await Promise.resolve();
+      expect(client.sendNotification).not.toHaveBeenCalled();
+
+      client.transitionTo(2);
+      await replay;
+      expect(client.listenerCount()).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);
+      expect(client.sendNotification).toHaveBeenCalledTimes(1);
+      expect(client.sendNotification).toHaveBeenCalledWith('textDocument/didOpen', {
+        textDocument: {
+          uri: 'file:///workspace/probe.pl',
+          languageId: 'perl',
+          version: 7,
+          text: 'my $value = "é🙂e\u0301";\r\n',
+        },
+      });
+    });
+
+    test('observes Running reached before the listener was installed without an event', async () => {
+      const client = replayClient();
+      const registerListener = client.onDidChangeState;
+      jest.spyOn(client, 'onDidChangeState').mockImplementation((listener) => {
+        // Running arrived after the initial state read; this listener missed its event.
+        client.state = 2;
+        return registerListener(listener);
+      });
+
+      const replay = replayOpenPerlDocumentsWhenReady(client, [PERL_DOCUMENT], 2, () => true, 25);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(client.sendNotification).toHaveBeenCalledTimes(1);
+      expect(client.listenerCount()).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);
+      await replay;
+    });
+  });
+
   test('propagates replay failure so startup cannot finalize as recovered', async () => {
     const client = replayClient(2);
     const failure = new Error('client disposed during didOpen');

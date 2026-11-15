@@ -87,9 +87,10 @@ perl-dap --stdio  # Standard DAP transport
 | Tool/env check | `just devex` | Checks required tools, Rust components, and local setup. |
 | Before push | `just ready` | Runs doctor plus the fast PR gate. |
 | Fast PR loop | `just pr-fast` | Cheapest useful proof while iterating. |
-| Agent compile/test | `just agent-check` / `just agent-test` | Uses cargo-safe agent profiles and bounded build directories. |
-| Agent lint | `just agent-clippy` | Runs clippy through the cargo-safe agent profile. |
-| Agent PR proof | `just agent-pr-fast` | Runs the PR-fast gate through cargo-safe. |
+| Plan build storage | `just devplane-init` | Prints admitted resource paths; allocates nothing and does not assess capacity. |
+| Agent package check/test | `just agent-check <package> [args...]` / `just agent-test <package> <selector> [args...]` | Uses cargo-admitted with the agent profile and locked dependencies; tests require an explicit target selector such as `--lib` or `--test NAME`. Requires matching exact-command preflight. |
+| Agent lint | [Staged native Clippy](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/agents/CARGO_STORAGE.md#staged-native-clippy) | Uses the separately qualified admitted route. |
+| Legacy lint/PR compatibility | `just agent-clippy` / `just agent-pr-fast` | Retains cargo-safe behavior; does not provide admission. |
 | Full pre-merge | `just ci-gate` or `nix develop -c just ci-gate` | Canonical local merge gate. |
 | Memory touched | `cargo xtask check-memory-lifecycle-policy` | Enforces retained-state lifecycle and receipt policy. |
 | Retained owner added | `cargo xtask check-memory-retained-owner-drift --base origin/master` | Checks whether long-lived storage/task additions need retained-state inventory coverage. |
@@ -120,12 +121,12 @@ just devex          # Alias: just doctor-env
 # Pre-push preflight (doctor + fast gate)
 just ready
 
-# Agent-safe compile/test/lint
-just agent-preflight
-just agent-check
-just agent-test
-just agent-clippy
-just agent-pr-fast
+# Agent storage plan and focused proof (run only after matching preflight passes)
+just devplane-init
+scripts/cargo-admitted --preflight check -p perl-token --profile agent --locked --lib
+just agent-check perl-token --lib
+scripts/cargo-admitted --preflight test -p perl-token --profile agent --locked --lib -- --nocapture
+just agent-test perl-token --lib -- --nocapture
 
 # Fast validation while iterating
 just pr-fast
@@ -1116,15 +1117,15 @@ cargo test -p perl-parser scope_analyzer_tests::test_hash_key_context_detection
 cargo test -p perl-parser --test symbol_documentation_tests
 
 # Test specific comment patterns and edge cases
-cargo test -p perl-parser symbol_documentation_tests::comment_separated_by_blank_line_is_not_captured
-cargo test -p perl-parser symbol_documentation_tests::comment_with_extra_hashes_and_spaces
-cargo test -p perl-parser symbol_documentation_tests::multi_package_comment_scenarios
-cargo test -p perl-parser symbol_documentation_tests::complex_comment_formatting
-cargo test -p perl-parser symbol_documentation_tests::unicode_in_comments
-cargo test -p perl-parser symbol_documentation_tests::performance_with_large_comment_blocks
+cargo test -p perl-parser --test symbol_documentation_tests comment_separated_by_blank_line_is_not_captured
+cargo test -p perl-parser --test symbol_documentation_tests comment_with_extra_hashes_and_spaces
+cargo test -p perl-parser --test symbol_documentation_tests multi_package_comment_scenarios
+cargo test -p perl-parser --test symbol_documentation_tests complex_comment_formatting
+cargo test -p perl-parser --test symbol_documentation_tests unicode_in_comments
+cargo test -p perl-parser --test symbol_documentation_tests performance_with_large_comment_blocks
 
 # Performance benchmarking (<100µs per iteration target)
-cargo test -p perl-parser symbol_documentation_tests::performance_benchmark_comment_extraction -- --nocapture
+cargo test -p perl-parser --test symbol_documentation_tests performance_benchmark_comment_extraction -- --nocapture
 ```
 
 ### Testing Position Tracking
@@ -1141,14 +1142,14 @@ cargo test -p perl-parser parser_context_tests::test_multiline_string_token_posi
 ### Testing File Completion
 ```bash
 # Run file completion specific tests
-cargo test -p perl-parser --test file_completion_tests
+cargo test -p perl-lsp-rs --test file_completion_tests
 
 # Test individual scenarios
-cargo test -p perl-parser file_completion_tests::completes_files_in_src_directory
-cargo test -p perl-parser file_completion_tests::basic_security_test_rejects_path_traversal
+cargo test -p perl-lsp-rs --test file_completion_tests completes_files_in_src_directory
+cargo test -p perl-lsp-rs --test file_completion_tests basic_security_test_rejects_path_traversal
 
 # Test with various file patterns
-cargo test -p perl-parser --test lsp_comprehensive_e2e_test -- test_completion
+cargo test -p perl-lsp-rs --test lsp_comprehensive_e2e_test test_e2e_code_completion
 ```
 
 ## Parser Generation Commands

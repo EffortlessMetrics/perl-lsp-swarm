@@ -18,6 +18,16 @@ fn validation_error(
 }
 
 #[test]
+fn receipt_content_digest_is_deterministic() -> Result<(), Box<dyn Error>> {
+    let receipt = valid_fixture()?;
+    let first = xtask::actual_host_receipt::receipt_content_digest(&receipt)?;
+    let second = xtask::actual_host_receipt::receipt_content_digest(&receipt)?;
+    assert_eq!(first, second);
+    assert!(first.starts_with("sha256:"));
+    Ok(())
+}
+
+#[test]
 fn valid_manual_eglot_receipt_is_accepted() -> Result<(), Box<dyn Error>> {
     let receipt = valid_fixture()?;
     validate_receipt(&receipt)?;

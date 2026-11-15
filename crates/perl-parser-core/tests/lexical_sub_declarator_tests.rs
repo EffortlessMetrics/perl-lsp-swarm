@@ -2,18 +2,22 @@ mod cpan_test_helpers;
 use cpan_test_helpers::*;
 use perl_parser_core::{Node, NodeKind};
 
-/// Extract the declarator field from the first named subroutine in the AST.
-/// Only looks at top-level Program statements to avoid interference from
-/// nested subs (closures, inner subs, etc.).
-fn extract_subroutine_declarator(ast: &Node) -> Option<String> {
+/// Project the optional declarator from the named top-level subroutine.
+///
+/// Returns `Ok(None)` when the subroutine exists but has no declarator (plain `sub`).
+/// Returns `Err` when no top-level subroutine with `expected_name` is present, so
+/// regressions cannot pass by observing `None` from a missing or wrong subroutine.
+fn top_level_sub_declarator(ast: &Node, expected_name: &str) -> Result<Option<String>, String> {
     if let NodeKind::Program { statements } = &ast.kind {
         for stmt in statements {
-            if let NodeKind::Subroutine { declarator, name: Some(_), .. } = &stmt.kind {
-                return declarator.clone();
+            if let NodeKind::Subroutine { declarator, name: Some(n), .. } = &stmt.kind {
+                if n == expected_name {
+                    return Ok(declarator.clone());
+                }
             }
         }
     }
-    None
+    Err(format!("AST must contain top-level sub {expected_name}"))
 }
 
 /// Extract declarator fields from ALL top-level named subroutines in program order.
@@ -36,7 +40,7 @@ fn test_my_sub_declarator() {
     let source = r#"my sub counter { return 42; }"#;
     assert_clean_parse(source);
     let ast = parse(source);
-    let declarator = extract_subroutine_declarator(&ast);
+    let declarator = top_level_sub_declarator(&ast, "counter").expect("fixture sub counter");
     assert_eq!(
         declarator,
         Some("my".to_string()),
@@ -49,7 +53,7 @@ fn test_our_sub_declarator() {
     let source = r#"our sub global_sub { return 42; }"#;
     assert_clean_parse(source);
     let ast = parse(source);
-    let declarator = extract_subroutine_declarator(&ast);
+    let declarator = top_level_sub_declarator(&ast, "global_sub").expect("fixture sub global_sub");
     assert_eq!(
         declarator,
         Some("our".to_string()),
@@ -62,7 +66,7 @@ fn test_state_sub_declarator() {
     let source = r#"state sub memo { return 42; }"#;
     assert_clean_parse(source);
     let ast = parse(source);
-    let declarator = extract_subroutine_declarator(&ast);
+    let declarator = top_level_sub_declarator(&ast, "memo").expect("fixture sub memo");
     assert_eq!(
         declarator,
         Some("state".to_string()),
@@ -75,7 +79,7 @@ fn test_regular_sub_no_declarator() {
     let source = r#"sub regular { return 42; }"#;
     assert_clean_parse(source);
     let ast = parse(source);
-    let declarator = extract_subroutine_declarator(&ast);
+    let declarator = top_level_sub_declarator(&ast, "regular").expect("fixture sub regular");
     assert_eq!(declarator, None, "regular sub should have no declarator (None)");
 }
 
@@ -88,7 +92,7 @@ fn test_my_sub_with_prototype_has_declarator() {
     let source = r#"my sub add ($$) { $_[0] + $_[1] }"#;
     assert_clean_parse(source);
     let ast = parse(source);
-    let declarator = extract_subroutine_declarator(&ast);
+    let declarator = top_level_sub_declarator(&ast, "add").expect("fixture sub add");
     assert_eq!(
         declarator,
         Some("my".to_string()),
@@ -103,7 +107,7 @@ fn test_my_sub_with_signature_has_declarator() {
     let source = r#"my sub greet ($name) { "hello $name" }"#;
     assert_clean_parse(source);
     let ast = parse(source);
-    let declarator = extract_subroutine_declarator(&ast);
+    let declarator = top_level_sub_declarator(&ast, "greet").expect("fixture sub greet");
     assert_eq!(
         declarator,
         Some("my".to_string()),
@@ -119,7 +123,7 @@ fn test_my_sub_forward_declaration_has_declarator() {
     let source = r#"my sub helper;"#;
     assert_clean_parse(source);
     let ast = parse(source);
-    let declarator = extract_subroutine_declarator(&ast);
+    let declarator = top_level_sub_declarator(&ast, "helper").expect("fixture sub helper");
     assert_eq!(
         declarator,
         Some("my".to_string()),
@@ -176,7 +180,7 @@ sub outer {
     assert_clean_parse(source);
     let ast = parse(source);
     // outer is a plain sub — no declarator
-    let declarator = extract_subroutine_declarator(&ast);
+    let declarator = top_level_sub_declarator(&ast, "outer").expect("fixture sub outer");
     assert_eq!(
         declarator, None,
         "outer plain sub should have no declarator even when it contains a my sub"
