@@ -18,9 +18,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 // The pre-existing modules also support the broader safe-ICF comparison
-// example. This binary deliberately consumes only their shared identity/path
-// substrate, so unused comparison-only items remain valid rather than being
-// copied into a second authority.
+// example. This binary consumes only their shared identity/path substrate.
 #[allow(dead_code)]
 #[path = "release_artifact_size/measure.rs"]
 mod measure;
@@ -38,16 +36,13 @@ const SCHEMA_VERSION: &str = "release_executable_budget.v1";
 const DEFAULT_HARD_CAP_BYTES: u64 = 10_485_760;
 const CLAIM_BOUNDARY: &str = concat!(
     "topology-derived local measurement of exact executable files against the ",
-    "v0.18 10 MiB per-executable cap; does not establish target-native strip ",
+    "v0.18 10 MiB per-executable cap; observed file evidence proves format and ",
+    "architecture only, not target ABI; does not establish target-native strip ",
     "success, release-core capability parity, exact built-product handoff, ",
     "installed behavior, publication eligibility, or public verification"
 );
-const KNOWN_NON_EXECUTABLE_MEMBERS: &[&str] = &[
-    "README.md",
-    "LICENSE-APACHE",
-    "LICENSE-MIT",
-    "SHA256SUMS.txt",
-];
+const KNOWN_NON_EXECUTABLE_MEMBERS: &[&str] =
+    &["README.md", "LICENSE-APACHE", "LICENSE-MIT", "SHA256SUMS.txt"];
 
 #[derive(Debug, Parser)]
 #[command(name = "release-artifact-size")]
@@ -166,7 +161,7 @@ struct ArtifactEvidence {
     bytes: Option<u64>,
     sha256: Option<String>,
     executable_identity: Option<ExecutableIdentity>,
-    target_identity_matches: bool,
+    format_architecture_matches: bool,
     within_hard_cap: bool,
     state: BudgetState,
 }
@@ -213,10 +208,8 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
     let subject = measure::subject_identity(&root, &args.target, "", "", &mut limitations)?;
     let topology_schema_supported = topology.schema == 1;
     if !topology_schema_supported {
-        limitations.push(format!(
-            "unsupported release topology schema {}; expected 1",
-            topology.schema
-        ));
+        limitations
+            .push(format!("unsupported release topology schema {}; expected 1", topology.schema));
     }
     let source_identity_matches = topology.frozen_product_sha == subject.git_sha;
     if !source_identity_matches {
@@ -225,6 +218,10 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
             topology.frozen_product_sha, subject.git_sha
         ));
     }
+    limitations.push(
+        "file header evidence proves executable format and architecture, not target ABI; #19438 must bind the exact build-plan target"
+            .to_string(),
+    );
 
     let capability_manifest = match args.capability_manifest.as_ref() {
         Some(path) => match file_identity(&root, path) {
@@ -252,19 +249,19 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
             Ok(identity) => {
                 total_executable_bytes = total_executable_bytes.saturating_add(identity.bytes);
                 let executable_identity = detect_executable_identity(&path)?;
-                let target_identity_matches = executable_identity
+                let format_architecture_matches = executable_identity
                     .as_ref()
                     .is_some_and(|observed| target_matches_identity(&args.target, observed));
-                if !target_identity_matches {
+                if !format_architecture_matches {
                     limitations.push(format!(
-                        "required executable `{member}` does not prove target identity `{}`",
+                        "required executable `{member}` does not match the format and architecture for `{}`",
                         args.target
                     ));
                 }
                 let within_hard_cap = identity.bytes <= args.hard_cap_bytes;
                 let state = if !within_hard_cap {
                     BudgetState::Failed
-                } else if target_identity_matches {
+                } else if format_architecture_matches {
                     BudgetState::Pass
                 } else {
                     BudgetState::NotProven
@@ -275,7 +272,7 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
                     bytes: Some(identity.bytes),
                     sha256: Some(identity.sha256),
                     executable_identity,
-                    target_identity_matches,
+                    format_architecture_matches,
                     within_hard_cap,
                     state,
                 }
@@ -288,7 +285,7 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
                     bytes: None,
                     sha256: None,
                     executable_identity: None,
-                    target_identity_matches: false,
+                    format_architecture_matches: false,
                     within_hard_cap: false,
                     state: BudgetState::NotProven,
                 }
@@ -331,7 +328,10 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
     write_receipt(&root, &args.json, &receipt)?;
     println!(
         "release executable budget: target={} state={:?} cap={} total={}",
-        receipt.topology.target, receipt.state, receipt.hard_cap_bytes, receipt.total_executable_bytes
+        receipt.topology.target,
+        receipt.state,
+        receipt.hard_cap_bytes,
+        receipt.total_executable_bytes
     );
     if receipt.state.is_blocking() {
         bail!(
@@ -357,9 +357,7 @@ fn executable_members(required_members: &[String]) -> Result<Vec<String>> {
         if KNOWN_NON_EXECUTABLE_MEMBERS.contains(&file_name) {
             continue;
         }
-        executables.push(
-            member.clone(),
-        );
+        executables.push(member.clone());
     }
     if executables.is_empty() {
         bail!("release topology target contains no executable members");
@@ -404,9 +402,7 @@ fn file_identity_absolute(root: &Path, path: &Path) -> Result<FileIdentity> {
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read = file
-            .read(&mut buffer)
-            .with_context(|| format!("hashing {}", path.display()))?;
+        let read = file.read(&mut buffer).with_context(|| format!("hashing {}", path.display()))?;
         if read == 0 {
             break;
         }
@@ -421,7 +417,7 @@ fn file_identity_absolute(root: &Path, path: &Path) -> Result<FileIdentity> {
 
 fn detect_executable_identity(path: &Path) -> Result<Option<ExecutableIdentity>> {
     let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    let mut bytes = vec![0_u8; 512];
+    let mut bytes = vec![0_u8; 4096];
     let read = file
         .read(&mut bytes)
         .with_context(|| format!("reading executable header {}", path.display()))?;
@@ -440,8 +436,7 @@ fn detect_executable_identity(path: &Path) -> Result<Option<ExecutableIdentity>>
     }
 
     if bytes.starts_with(b"MZ") {
-        let pe_offset =
-            read_u32_le(&bytes, 0x3c).and_then(|value| usize::try_from(value).ok());
+        let pe_offset = read_u32_le(&bytes, 0x3c).and_then(|value| usize::try_from(value).ok());
         let machine = pe_offset.and_then(|offset| {
             let signature = bytes.get(offset..offset.saturating_add(4))?;
             if signature != b"PE\0\0" {
@@ -493,9 +488,8 @@ fn expected_identity(target: &str) -> Option<(&'static str, &'static str)> {
 }
 
 fn target_matches_identity(target: &str, observed: &ExecutableIdentity) -> bool {
-    expected_identity(target).is_some_and(|(format, architecture)| {
-        observed.format == format && observed.architecture == architecture
-    })
+    expected_identity(target)
+        .is_some_and(|(format, architecture)| observed.format == format && observed.architecture == architecture)
 }
 
 fn architecture_from_elf(machine: Option<u16>) -> &'static str {
@@ -534,22 +528,12 @@ fn read_u16_be(bytes: &[u8], offset: usize) -> Option<u16> {
 
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     let value = bytes.get(offset..offset.checked_add(4)?)?;
-    Some(u32::from_le_bytes([
-        *value.first()?,
-        *value.get(1)?,
-        *value.get(2)?,
-        *value.get(3)?,
-    ]))
+    Some(u32::from_le_bytes([*value.first()?, *value.get(1)?, *value.get(2)?, *value.get(3)?]))
 }
 
 fn read_u32_be(bytes: &[u8], offset: usize) -> Option<u32> {
     let value = bytes.get(offset..offset.checked_add(4)?)?;
-    Some(u32::from_be_bytes([
-        *value.first()?,
-        *value.get(1)?,
-        *value.get(2)?,
-        *value.get(3)?,
-    ]))
+    Some(u32::from_be_bytes([*value.first()?, *value.get(1)?, *value.get(2)?, *value.get(3)?]))
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -573,8 +557,7 @@ fn write_receipt(root: &Path, path: &Path, receipt: &Receipt) -> Result<()> {
 mod tests {
     use super::{
         BudgetState, ExecutableIdentity, architecture_from_elf, architecture_from_mach,
-        architecture_from_pe, classify_state, executable_members,
-        target_matches_identity,
+        architecture_from_pe, classify_state, executable_members, target_matches_identity,
     };
     use color_eyre::eyre::Result;
 
@@ -596,12 +579,8 @@ mod tests {
 
     #[test]
     fn one_oversized_executable_fails_the_complete_set() {
-        let state = classify_state(
-            [BudgetState::Pass, BudgetState::Failed].into_iter(),
-            true,
-            true,
-            true,
-        );
+        let state =
+            classify_state([BudgetState::Pass, BudgetState::Failed].into_iter(), true, true, true);
         assert_eq!(state, BudgetState::Failed);
     }
 
@@ -639,22 +618,10 @@ mod tests {
     }
 
     #[test]
-    fn target_identity_does_not_cross_os_or_architecture() {
-        let linux_x64 = ExecutableIdentity {
-            format: "elf",
-            architecture: "x86_64",
-        };
-        assert!(target_matches_identity(
-            "x86_64-unknown-linux-gnu",
-            &linux_x64
-        ));
-        assert!(!target_matches_identity(
-            "aarch64-unknown-linux-gnu",
-            &linux_x64
-        ));
-        assert!(!target_matches_identity(
-            "x86_64-pc-windows-msvc",
-            &linux_x64
-        ));
+    fn format_and_architecture_do_not_cross_operating_system_or_cpu() {
+        let linux_x64 = ExecutableIdentity { format: "elf", architecture: "x86_64" };
+        assert!(target_matches_identity("x86_64-unknown-linux-gnu", &linux_x64));
+        assert!(!target_matches_identity("aarch64-unknown-linux-gnu", &linux_x64));
+        assert!(!target_matches_identity("x86_64-pc-windows-msvc", &linux_x64));
     }
 }
