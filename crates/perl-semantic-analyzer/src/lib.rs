@@ -74,3 +74,12 @@ pub use analysis::semantic;
 pub use analysis::symbol;
 pub use analysis::type_facts;
 pub use analysis::type_inference;
+
+/// Shared local unreachable-code analysis.
+pub use analysis::unreachable_code::collect_unreachable_spans;
+/// Existing per-variant flow dispositions, shared by diagnostic and critic consumers.
+pub use analysis::unreachable_code_disposition::{
+    PL406_DISPOSITION_SCHEMA_VERSION, PL406_DISPOSITIONS, Pl406ConditionalRule, Pl406Disposition,
+    Pl406ProofCeiling, Pl406Scope, Pl406SemanticClass, all_pl406_dispositions, pl406_disposition,
+    pl406_disposition_of,
+};

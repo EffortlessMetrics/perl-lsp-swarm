@@ -63,3 +63,8 @@ pub mod type_inference;
 /// Lightweight value-shape inference from constructor calls, bless, and `$self`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod value_shape_inferrer;
+
+/// Shared local unreachable-code analysis; exported at the crate root.
+pub(crate) mod unreachable_code;
+/// Per-variant semantic dispositions for the shared local flow walk.
+pub(crate) mod unreachable_code_disposition;

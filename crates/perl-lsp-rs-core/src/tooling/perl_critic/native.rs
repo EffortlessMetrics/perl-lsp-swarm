@@ -9,12 +9,12 @@
 use super::CriticConfig;
 use super::{CriticFindingShape, Severity, insertion_range};
 use crate::providers::diagnostics::known_scalar_argument_count;
-use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_parser_core::Node;
 use perl_parser_core::NodeKind;
 use perl_parser_core::position::{Position, Range};
 use perl_parser_core::syntax::source_context::{SourceRegionIndex, SourceRegionKind};
 use perl_pragma::PragmaTracker;
+use perl_semantic_analyzer::collect_unreachable_spans;
 use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 
 mod native_contract;
@@ -1909,11 +1909,11 @@ fn collect_unreachable_code_findings(
     node: &Node,
     out: &mut Vec<CriticFinding>,
 ) {
-    let mut diagnostics = Vec::new();
-    check_unreachable_code(node, &mut diagnostics);
-    out.extend(diagnostics.into_iter().map(|diagnostic| {
-        unreachable_code_finding(rule, source, diagnostic.range.0, diagnostic.range.1)
-    }));
+    out.extend(
+        collect_unreachable_spans(node)
+            .into_iter()
+            .map(|span| unreachable_code_finding(rule, source, span.start, span.end)),
+    );
 }
 
 fn collect_stale_dollar_at_in_statements(

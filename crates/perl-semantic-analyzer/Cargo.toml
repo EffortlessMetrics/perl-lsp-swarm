@@ -34,6 +34,7 @@ rustc-hash = "2.1.2"
 tracing.workspace = true
 
 [dev-dependencies]
+perl-ast = { workspace = true }
 perl-tdd-support = { workspace = true }
 perl-test-generators = { path = "../perl-test-generators" }
 proptest = { workspace = true }

@@ -38,6 +38,7 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 | `semantic` | `SemanticAnalyzer`, `SemanticToken`, `SemanticTokenType`, `SemanticTokenModifier`, `HoverInfo` | Semantic token classification and hover info for LSP |
 | `symbol` | `SymbolExtractor`, `SymbolTable`, `Symbol`, `SymbolReference`, `Scope`, `ScopeKind`, `ScopeId` | Symbol extraction and symbol table construction from AST |
 | `scope_analyzer` | `ScopeAnalyzer`, `ScopeIssue`, `IssueKind` | Scope issue detection (unused/undeclared/shadowed variables) |
+| `unreachable_code` / `unreachable_code_disposition` | `collect_unreachable_spans`, existing `Pl406*` disposition types (crate-root exports) | One protocol-neutral local flow walk and its canonical traversal coverage; LSP and native critic own output projection |
 | `type_inference` | `TypeInferenceEngine`, `TypeEnvironment`, `PerlType`, `ScalarType`, `TypeConstraint` | Type inference with scoped environments |
 | `declaration` | `DeclarationProvider`, `LocationLink`, `ParentMap` | Go-to-declaration with parent-map AST traversal |
 | `dead_code_detector` | `DeadCodeDetector`, `DeadCode`, `DeadCodeType`, `DeadCodeAnalysis`, `DeadCodeStats` | Workspace-level dead code detection (non-WASM only) |
