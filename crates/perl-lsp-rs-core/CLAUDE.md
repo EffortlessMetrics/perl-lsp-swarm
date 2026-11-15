@@ -19,7 +19,7 @@ By module (see `src/lib.rs` doc comments for the authoritative list):
 - `governance` -- feature-profile / rollout policy APIs
 - `hashing` -- shared hashing helpers
 - `performance` -- caches and allocation strategies for large workspaces
-- `platform` -- cross-platform interpreter/toolchain detection
+- `platform` -- compatibility re-exports of `perl-interpreter` resolution APIs
 - `protocol` -- JSON-RPC/LSP types (capabilities, errors, jsonrpc, methods)
 - `providers` -- every LSP request/notification provider (completion,
   navigation, code_actions, diagnostics, rename, formatting,
@@ -37,6 +37,7 @@ By module (see `src/lib.rs` doc comments for the authoritative list):
 - Perl parsing itself -- delegates to `perl-parser-core` / `perl-parser` /
   `perl-lexer`.
 - Module resolution -- delegates to `perl-module`.
+- Interpreter discovery -- delegates to the application-independent `perl-interpreter` crate.
 - The DAP protocol -- that's `perl-dap`, which depends on this crate only
   for shared runtime/protocol types, not for LSP behavior.
 

@@ -1,0 +1,26 @@
+[package]
+name = "perl-interpreter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Perl interpreter discovery shared by language-server and debugger consumers"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/perl-interpreter"
+readme = "README.md"
+keywords = ["perl", "interpreter", "toolchain", "perlbrew", "plenv"]
+categories = ["development-tools"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE*"]
+
+[dependencies]
+anyhow.workspace = true
+
+[dev-dependencies]
+perl-test-must.workspace = true
+tempfile.workspace = true
+serial_test = { version = "4.0.1", default-features = false }
+
+[lints]
+workspace = true

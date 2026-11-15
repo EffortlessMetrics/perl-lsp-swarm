@@ -1,5 +1,5 @@
 //! Verification that perl-dap platform re-exports are consistent with
-//! perl-lsp-rs-core canonical implementations (#4545).
+//! the shared perl-interpreter implementation (#19439; originally #4545).
 
 use std::path::PathBuf;
 
@@ -74,8 +74,27 @@ fn dap_platform_re_exports_are_function_identical_not_just_name_identical() {
         perl_dap::platform::resolve_perl_path_with_toolchain;
     let core_fn: fn() -> anyhow::Result<PathBuf> =
         perl_lsp_rs_core::platform::resolve_perl_path_with_toolchain;
+    let canonical_fn: fn() -> anyhow::Result<PathBuf> =
+        perl_interpreter::resolve_perl_path_with_toolchain;
     assert_eq!(
         dap_fn as usize, core_fn as usize,
         "re-export should point to the same function, not a wrapper"
     );
+    assert_eq!(core_fn as usize, canonical_fn as usize);
+}
+
+#[test]
+fn discovery_reexports_keep_canonical_result_type_and_cached_function() {
+    let canonical: perl_interpreter::PerlInterpreterResult =
+        perl_dap::platform::PerlInterpreterResult::ConfiguredPath(PathBuf::from("perl"));
+    let through_dap: perl_dap::platform::PerlInterpreterResult = canonical;
+    assert_eq!(
+        through_dap,
+        perl_interpreter::PerlInterpreterResult::ConfiguredPath(PathBuf::from("perl")),
+    );
+    let dap_fn: fn(Option<&str>) -> perl_interpreter::PerlInterpreterResult =
+        perl_dap::platform::find_perl_interpreter_cached;
+    let canonical_fn: fn(Option<&str>) -> perl_interpreter::PerlInterpreterResult =
+        perl_interpreter::find_perl_interpreter_cached;
+    assert_eq!(dap_fn as usize, canonical_fn as usize, "both paths must share the same cache");
 }

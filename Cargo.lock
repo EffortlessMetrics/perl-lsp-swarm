@@ -1764,6 +1764,7 @@ dependencies = [
  "libc",
  "nix",
  "perl-ast",
+ "perl-interpreter",
  "perl-lexer",
  "perl-lsp-rs-core",
  "perl-module",
@@ -1821,6 +1822,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-interpreter"
+version = "0.17.0"
+dependencies = [
+ "anyhow",
+ "perl-test-must",
+ "serial_test",
+ "tempfile",
+]
+
+[[package]]
 name = "perl-lexer"
 version = "0.17.0"
 dependencies = [
@@ -1875,8 +1886,8 @@ dependencies = [
  "parking_lot",
  "perl-ast",
  "perl-corpus",
- "perl-dap",
  "perl-diagnostics",
+ "perl-interpreter",
  "perl-lexer",
  "perl-lsp-perltidy",
  "perl-lsp-rs-core",
@@ -1928,6 +1939,7 @@ dependencies = [
  "moka",
  "perl-ast",
  "perl-diagnostics",
+ "perl-interpreter",
  "perl-lexer",
  "perl-lsp-perltidy",
  "perl-module",
