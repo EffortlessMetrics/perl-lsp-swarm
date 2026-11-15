@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 
 use url::Url;
 
-use crate::mojibake::repair_path_mojibake;
-
 /// Convert a `file://` URI to a filesystem path.
 ///
 /// Properly handles percent-encoding and works with spaces, Windows paths,
 /// and non-ASCII characters. Returns `None` if the URI is not a valid `file://` URI.
+/// No heuristic Unicode repair is applied to decoded filenames.
+/// Legacy drive-relative Windows inputs are rejected rather than made absolute.
 ///
 /// # Examples
 ///
@@ -38,6 +38,9 @@ use crate::mojibake::repair_path_mojibake;
 ///
 /// This function is not available on `wasm32` targets (no filesystem).
 pub fn uri_to_fs_path(uri: &str) -> Option<PathBuf> {
+    if crate::classify::is_legacy_windows_drive_relative(uri) {
+        return None;
+    }
     let normalized = crate::classify::normalize_legacy_windows_uri(uri);
     let parse_input = normalized.as_deref().unwrap_or(uri);
     let url = Url::parse(parse_input).ok()?;
@@ -61,10 +64,9 @@ pub fn uri_to_fs_path(uri: &str) -> Option<PathBuf> {
         if windows_to_file_path_wont_panic(&url) { url.to_file_path().ok() } else { None };
     #[cfg(not(windows))]
     let direct_path = url.to_file_path().ok();
-    let path = direct_path
+    direct_path
         .or_else(|| local_authority_file_uri_to_path(&url))
-        .or_else(|| windows_rooted_file_uri_to_path(&url))?;
-    Some(repair_path_mojibake(path))
+        .or_else(|| windows_rooted_file_uri_to_path(&url))
 }
 
 /// Whether `Url::to_file_path()` is safe to call on this URL without
@@ -130,7 +132,8 @@ pub fn source_path_from_uri_or_path(input: &str) -> Option<PathBuf> {
 /// # Errors
 ///
 /// Returns an error if the path cannot be converted to an absolute path
-/// or if the conversion to a URI fails.
+/// or if the conversion to a URI fails. Windows drive-relative paths require an
+/// explicit drive base and are rejected instead of using ambient directory state.
 ///
 /// # Platform Support
 ///
@@ -142,6 +145,10 @@ pub fn source_path_from_uri_or_path(input: &str) -> Option<PathBuf> {
               context is lost."
 )]
 pub fn fs_path_to_uri<P: AsRef<Path>>(path: P) -> Result<String, String> {
+    if crate::classify::is_windows_drive_relative_path(path.as_ref().as_os_str().as_encoded_bytes())
+    {
+        return Err("Windows drive-relative paths require an explicit drive base".to_string());
+    }
     let path = normalize_filesystem_path(path.as_ref());
 
     // Convert to absolute path if relative

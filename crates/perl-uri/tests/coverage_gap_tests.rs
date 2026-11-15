@@ -42,11 +42,9 @@ fn uri_key_bare_unc_path_with_trailing_separator() {
 
 #[test]
 fn uri_key_drive_only_short_form_is_returned_as_is() {
-    // Drive letter without separator is exactly two bytes after stripping —
-    // `normalize_windows_path_to_key` rejects it, normalize_unc rejects it,
-    // and the URL crate parses `C:` as scheme-only with empty path.
+    // A drive-relative compatibility input retains its exact spelling.
     let key = uri_key("C:");
-    assert_eq!(key, "c:");
+    assert_eq!(key, "C:");
 }
 
 #[test]
@@ -62,29 +60,21 @@ fn uri_key_empty_after_file_double_slash_falls_through() {
     assert_eq!(uri_key("file://"), "file:///");
 }
 
-// ── classify::normalize_windows_path_to_key (missing separator) ─────
-//
-// `classify.rs:142-144` inserts a `/` after the drive colon when the
-// caller supplied `C:foo` style paths (no separator). Without the
-// insertion, downstream consumers would see `file:///c:foo`.
+// Drive-relative inputs cannot acquire an absolute file identity.
 
 #[test]
 fn uri_key_windows_path_missing_separator_after_colon() {
-    // Forces the `normalized.insert(2, '/')` path.
-    assert_eq!(uri_key("C:foo"), "file:///c:/foo");
+    assert_eq!(uri_key("C:foo"), "C:foo");
 }
 
 #[test]
 fn uri_key_windows_path_missing_separator_with_pipe_drive() {
-    // Pipe-drive variant (`C|foo`) must also gain the separator after
-    // the legacy `|` → `:` rewrite.
-    assert_eq!(uri_key("C|foo"), "file:///c:/foo");
+    assert_eq!(uri_key("C|foo"), "C|foo");
 }
 
 #[test]
 fn uri_key_windows_path_missing_separator_via_two_slash_form() {
-    // `file://C:foo` strips to `C:foo` and lands in the same insertion path.
-    assert_eq!(uri_key("file://C:foo"), "file:///c:/foo");
+    assert_eq!(uri_key("file://C:foo"), "file://C:foo");
 }
 
 #[test]
@@ -149,97 +139,33 @@ mod non_windows_stub {
     }
 }
 
-// ── lib::repair_path_mojibake / repair_mojibake_text branches ───────
-//
-// `lib.rs:204-237` covers the mojibake repair pipeline. The existing
-// test exercises the happy path where a percent-encoded mojibake
-// double-encoding round-trips to readable UTF-8. The four lesser-trod
-// branches are exercised below.
-
+// Literal path data remains unchanged after standards-based URI decoding.
 #[cfg(not(target_arch = "wasm32"))]
-mod mojibake_branches {
+mod literal_path_bytes {
     use perl_uri::uri_to_fs_path;
 
     #[cfg(unix)]
     #[test]
     fn non_utf8_path_bytes_pass_through_unchanged() -> Result<(), String> {
-        // `%FF` decodes to a single 0xFF byte which is invalid UTF-8 in
-        // a path. `path.to_str()` returns `None`, so the repair function
-        // bails early and returns the path unchanged (`lib.rs:205-207`).
-        let path = uri_to_fs_path("file:///tmp/%FF.pl").ok_or("expected Some")?;
-        let bytes = path_bytes(&path);
-        // The 0xFF byte survives the round-trip; we only assert the path
-        // exists and contains the raw byte to keep this stable across
-        // PathBuf debug formatting changes.
-        if !bytes.contains(&0xFF) {
-            return Err(format!("expected 0xFF in path bytes, got {bytes:?}"));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn mojibake_marker_with_high_codepoint_bails() -> Result<(), String> {
-        // `%C3%83%E4%B8%AD.pl` → "Ã中.pl". `Ã` trips `looks_like_mojibake`,
-        // but `中` (U+4E2D) exceeds u8::MAX, so the byte-collection loop
-        // returns early via `u8::try_from(...)` failure
-        // (`lib.rs:221-224`).
-        let path = uri_to_fs_path("file:///%C3%83%E4%B8%AD.pl").ok_or("expected Some")?;
-        let display = path.to_string_lossy();
-        // The original text must round-trip unchanged.
-        if !display.contains('Ã') {
-            return Err(format!("Ã missing in {display}"));
-        }
-        if !display.contains('中') {
-            return Err(format!("中 missing in {display}"));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn mojibake_text_producing_invalid_utf8_bytes_bails() -> Result<(), String> {
-        // `%C3%83a.pl` → "Ãa.pl". `Ã` (0xC3) plus `a` (0x61) collapses to
-        // bytes [0xC3, 0x61] which is invalid UTF-8 (`0x61` is not a
-        // continuation byte). `String::from_utf8` errors and the text is
-        // returned as-is (`lib.rs:228-230`).
-        let path = uri_to_fs_path("file:///%C3%83a.pl").ok_or("expected Some")?;
-        let display = path.to_string_lossy();
-        if !display.contains('Ã') {
-            return Err(format!("Ã missing in {display}"));
-        }
-        // The `a` after Ã must survive — the repair should not fire here.
-        if !display.contains("Ãa") {
-            return Err(format!("expected 'Ãa' in {display}"));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn mojibake_text_that_does_not_reduce_markers_is_kept() -> Result<(), String> {
-        // `%C3%83%C2%83.pl` → "Ã\u{83}.pl". Collapsing to bytes gives
-        // [0xC3, 0x83, 0xC2, 0x83]:
-        //   - 0xC3 0x83 → "Ã"  (marker)
-        //   - 0xC2 0x83 → "\u{83}" (control char, not a marker)
-        // The candidate "Ã\u{83}" therefore has the same marker count as
-        // the original, so the function falls through to returning the
-        // original text (`lib.rs:232-236`).
-        let path = uri_to_fs_path("file:///%C3%83%C2%83.pl").ok_or("expected Some")?;
-        let display = path.to_string_lossy();
-        // The original mojibake marker must survive.
-        if !display.contains('Ã') {
-            return Err(format!("Ã missing in {display}"));
-        }
-        // And the trailing control byte must remain (not collapsed to a
-        // single repaired Ã).
-        if !display.contains('\u{83}') {
-            return Err(format!("control byte missing in {display}"));
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    fn path_bytes(path: &std::path::Path) -> Vec<u8> {
         use std::os::unix::ffi::OsStrExt;
-        path.as_os_str().as_bytes().to_vec()
+        let path = uri_to_fs_path("file:///tmp/%FF.pl").ok_or("expected Some")?;
+        assert_eq!(path.as_os_str().as_bytes(), b"/tmp/\xff.pl");
+        Ok(())
+    }
+
+    #[test]
+    fn literal_marker_and_control_codepoints_are_not_repaired() -> Result<(), String> {
+        for (uri, name) in [
+            ("file:///%C3%83%E4%B8%AD.pl", "Ã中.pl"),
+            ("file:///%C3%83a.pl", "Ãa.pl"),
+            ("file:///%C3%83%C2%83.pl", "Ã\u{0083}.pl"),
+        ] {
+            let expected =
+                std::path::PathBuf::from(std::path::MAIN_SEPARATOR.to_string()).join(name);
+            let path = uri_to_fs_path(uri).ok_or("expected Some")?;
+            assert_eq!(path, expected);
+        }
+        Ok(())
     }
 }
 

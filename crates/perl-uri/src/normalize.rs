@@ -43,6 +43,10 @@ pub fn normalize_uri(uri: &str) -> String {
         return String::new();
     }
 
+    if crate::classify::is_legacy_windows_drive_relative(trimmed) {
+        return trimmed.to_string();
+    }
+
     if let Some(normalized) = crate::classify::normalize_legacy_windows_uri(trimmed) {
         return normalized;
     }
@@ -101,6 +105,10 @@ pub fn normalize_uri(uri: &str) -> String {
 
     if trimmed.is_empty() {
         return String::new();
+    }
+
+    if crate::classify::is_legacy_windows_drive_relative(trimmed) {
+        return trimmed.to_string();
     }
 
     if let Some(normalized) = crate::classify::normalize_legacy_windows_uri(trimmed) {

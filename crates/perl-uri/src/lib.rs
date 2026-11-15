@@ -37,8 +37,6 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 mod fs;
-#[cfg(not(target_arch = "wasm32"))]
-mod mojibake;
 mod normalize;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -120,10 +118,12 @@ mod tests {
         }
 
         #[test]
-        fn test_uri_to_fs_path_repairs_common_mojibake() {
+        fn test_uri_to_fs_path_preserves_literal_mojibake_markers() {
             let path = must_some(uri_to_fs_path("file:///tmp/caf%C3%83%C2%A9.pl"));
-            let path_str = path.to_string_lossy();
-            assert!(path_str.contains("café.pl"), "expected repaired UTF-8 path, got {path_str}");
+            let expected = std::path::PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+                .join("tmp")
+                .join("cafÃ©.pl");
+            assert_eq!(path, expected);
         }
 
         #[test]

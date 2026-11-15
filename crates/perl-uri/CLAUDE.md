@@ -67,6 +67,8 @@ let key = uri_key("file:///C:/Users/test.pl"); // "file:///c:/Users/test.pl"
 
 - Always use these functions for URI/path conversion instead of manual string manipulation
 - `fs_path_to_uri` resolves relative paths via `std::env::current_dir` before conversion
+- Windows drive-relative inputs are refused by path projection and remain unprojected in compatibility keys; they are never made drive-absolute.
+- Do not add heuristic Unicode or mojibake repair to identity-bearing conversions. The legacy `url` projection still has normalization limitations; strict raw-path projection belongs to #8198.
 - Percent-encoding/decoding is handled automatically by the `url` crate
 - Tests use `perl_test_must::must` / `must_some` instead of `unwrap()` / `expect()`
 - The `#[allow(clippy::unwrap_used, clippy::expect_used)]` attribute is applied only to the test module

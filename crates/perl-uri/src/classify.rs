@@ -33,6 +33,12 @@ const URI_PATH_KEY_ENCODE_SET: &AsciiSet = &CONTROLS
 pub fn uri_key(uri: &str) -> String {
     let trimmed = uri.trim();
 
+    // A missing drive-root separator is meaningful. Keep this compatibility
+    // input unprojected rather than assigning an absolute file identity.
+    if is_legacy_windows_drive_relative(trimmed) {
+        return trimmed.to_string();
+    }
+
     // Try to normalize legacy Windows path forms before URL parsing, since
     // `file://C:\...` and `C:\...` are not valid URLs and fall through to the
     // else branch as-is without this pre-pass.
@@ -77,6 +83,25 @@ pub fn uri_key(uri: &str) -> String {
 ///
 /// Returns `None` for any URI that is not one of these legacy forms.
 pub(crate) fn normalize_legacy_windows_uri(uri: &str) -> Option<String> {
+    let path = legacy_windows_path(uri)?;
+    normalize_windows_path_to_key(path).or_else(|| normalize_unc_path_to_key(path))
+}
+
+/// Recognize only the drive-relative part of the existing legacy input grammar.
+/// The typed URI/path classifier is a separate successor; this predicate prevents
+/// compatibility APIs from strengthening this path into an absolute identity.
+pub(crate) fn is_legacy_windows_drive_relative(uri: &str) -> bool {
+    legacy_windows_path(uri).is_some_and(|path| is_windows_drive_relative_path(path.as_bytes()))
+}
+
+pub(crate) fn is_windows_drive_relative_path(bytes: &[u8]) -> bool {
+    bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && matches!(bytes[1], b':' | b'|')
+        && !matches!(bytes.get(2), Some(b'/' | b'\\'))
+}
+
+fn legacy_windows_path(uri: &str) -> Option<&str> {
     let trimmed = uri.trim();
     if trimmed.is_empty() {
         return None;
@@ -99,9 +124,7 @@ pub(crate) fn normalize_legacy_windows_uri(uri: &str) -> Option<String> {
     // Accept malformed localhost authorities commonly emitted by some clients,
     // e.g. `file://localhost/C:\dir\file.pl`, `FILE://LOCALHOST/C:/dir/file.pl`,
     // and the backslash-delimited `file://localhost\C:\dir\file.pl` variant.
-    let path = strip_localhost_authority(path).unwrap_or(path);
-
-    normalize_windows_path_to_key(path).or_else(|| normalize_unc_path_to_key(path))
+    Some(strip_localhost_authority(path).unwrap_or(path))
 }
 
 pub(crate) fn is_local_file_authority(host: Option<&str>) -> bool {
@@ -165,7 +188,10 @@ fn normalize_windows_path_to_key(path: &str) -> Option<String> {
     }
 
     let bytes = path.as_bytes();
-    if !bytes[0].is_ascii_alphabetic() || (bytes[1] != b':' && bytes[1] != b'|') {
+    if !bytes[0].is_ascii_alphabetic()
+        || (bytes[1] != b':' && bytes[1] != b'|')
+        || !matches!(bytes[2], b'/' | b'\\')
+    {
         return None;
     }
 
@@ -175,11 +201,6 @@ fn normalize_windows_path_to_key(path: &str) -> Option<String> {
     // Convert legacy drive separators (`C|`) to `C:`.
     if normalized.as_bytes().get(1) == Some(&b'|') {
         normalized.replace_range(1..2, ":");
-    }
-
-    // Ensure there is a separator after the drive colon: `C:foo` → `C:/foo`.
-    if normalized.as_bytes().get(2) != Some(&b'/') {
-        normalized.insert(2, '/');
     }
 
     // Lowercase the drive letter.
@@ -298,9 +319,9 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_windows_drive_paths_without_directory_separator() {
-        assert_eq!(uri_key(r"C:relative\script.pl"), "file:///c:/relative/script.pl");
-        assert_eq!(uri_key("file://D:relative/script.pl"), "file:///d:/relative/script.pl");
+    fn preserves_drive_relative_paths_without_directory_separator() {
+        assert_eq!(uri_key(r"C:relative\script.pl"), r"C:relative\script.pl");
+        assert_eq!(uri_key("file://D:relative/script.pl"), "file://D:relative/script.pl");
     }
 
     #[test]

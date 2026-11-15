@@ -9,10 +9,6 @@
 //! - `normalize_uri`: malformed `file://` URI fallback branch (lines 317-319)
 //! - `normalize_uri`: non-URL, non-absolute path fallback (e.g. `"file:///tmp"` which can't
 //!   be resolved via `fs_path_to_uri`) and final as-is return
-//! - `repair_mojibake_text`: the `u8::try_from` failure path (char > 255)
-//! - `repair_mojibake_text`: `String::from_utf8` failure path (invalid byte sequence)
-//! - `repair_mojibake_text`: case where candidate has MORE markers than original (no repair)
-//! - `repair_path_mojibake`: path where `repaired != path_text` (mojibake actually repaired)
 //! - `fs_path_to_uri`: relative path branch (False on `path.is_absolute()`)
 //!
 //! ## `classify.rs` gaps
@@ -103,128 +99,25 @@ mod normalize_uri_branches {
     }
 }
 
-/// Tests that exercise `repair_mojibake_text` / `repair_path_mojibake` branches.
-///
-/// The internal functions are not public; we drive them through `uri_to_fs_path`
-/// which calls `repair_path_mojibake` on every result.
+/// Filename spellings remain literal after the former repair heuristic is removed.
 #[cfg(not(target_arch = "wasm32"))]
-mod mojibake_repair_branches {
+mod literal_filename_projection {
     use perl_uri::uri_to_fs_path;
 
-    /// A plain ASCII path produces no mojibake markers, so `looks_like_mojibake`
-    /// returns false and `repair_mojibake_text` returns `text.to_string()` early.
-    /// This covers the `if !looks_like_mojibake(text)` True branch on line 215.
     #[test]
-    fn clean_ascii_path_not_repaired() -> Result<(), String> {
-        let path =
-            uri_to_fs_path("file:///tmp/clean_ascii.pl").ok_or("should resolve clean ASCII URI")?;
-        let s = path.to_string_lossy();
-        if !s.contains("clean_ascii.pl") {
-            return Err(format!("filename should be unchanged: {s}"));
-        }
-        Ok(())
-    }
-
-    /// A double-encoded UTF-8 caf\u{e9} path goes through the mojibake repair path.
-    /// The raw decoding of `%C3%83%C2%A9` produces `\u{c3}\u{c2}\u{a9}` (the \u{c3}/\u{c2} markers),
-    /// so `looks_like_mojibake` returns true, the repair loop collects the bytes,
-    /// and the candidate `caf\u{e9}` has fewer markers.
-    ///
-    /// Covers: the repair loop, `u8::try_from` success, `String::from_utf8`
-    /// success, and `mojibake_marker_count(candidate) < mojibake_marker_count(text)` True.
-    #[test]
-    fn double_encoded_utf8_accent_is_repaired() -> Result<(), String> {
-        // %C3%83%C2%A9 = double-encoded "\u{e9}" (0xC3 0xA9 -> UTF-8 for \u{e9},
-        // themselves encoded in Latin-1 as two bytes -> decoded as \u{c3}\u{c2}\u{a9})
-        let path = uri_to_fs_path("file:///tmp/caf%C3%83%C2%A9.pl")
-            .ok_or("should resolve mojibake URI")?;
-        let s = path.to_string_lossy();
-        if !s.contains("caf\u{e9}") {
-            return Err(format!("expected repaired caf\u{e9}, got: {s}"));
-        }
-        Ok(())
-    }
-
-    /// A path with a high-plane Unicode character whose code point > 255 causes
-    /// `u8::try_from(code)` to fail, so `repair_mojibake_text` returns `text.to_string()`
-    /// unchanged even though `looks_like_mojibake` returned true.
-    ///
-    /// `%C3%83` decodes to "\u{c3}" (mojibake marker, U+00C3 = 195 <= 255).
-    /// `%F0%9F%9A%80` decodes to "U+1F680" (U+1F680, code point 128640 > 255).
-    /// When the repair loop hits the emoji char, `u8::try_from(0x1F680)` returns Err.
-    #[test]
-    fn mojibake_with_high_codepoint_not_repaired() {
-        // %C3%83 = \u{c3} (mojibake marker, U+00C3 = 195)
-        // %F0%9F%9A%80 = U+1F680 (U+1F680, code point 128640)
-        let path = uri_to_fs_path("file:///tmp/dir-%C3%83%F0%9F%9A%80/file.pl");
-        // Whether Some or None, the important thing is that it doesn't panic.
-        // If Some, the path contains the raw decoded characters (no repair).
-        if let Some(p) = path {
-            let s = p.to_string_lossy();
-            // The path should NOT have been "repaired" to something else.
-            // It contains the rocket emoji or its raw bytes.
-            assert!(s.contains("file.pl"), "filename should be present: {s}");
-        }
-    }
-
-    /// Exercises the `String::from_utf8(bytes)` Err branch in `repair_mojibake_text`.
-    ///
-    /// We need all chars with code points <= 255 (so `u8::try_from` succeeds for each),
-    /// but the resulting byte sequence is invalid UTF-8.
-    ///
-    /// `%C3%83%C3%83` percent-decodes to bytes [0xC3, 0x83, 0xC3, 0x83] which is
-    /// the valid UTF-8 encoding of "\u{c3}\u{c3}" (two U+00C3 chars = two \u{c3} mojibake markers).
-    ///
-    /// `repair_mojibake_text("...\u{c3}\u{c3}...")` sees mojibake markers (\u{c3}), collects the byte
-    /// values of all chars: for \u{c3}->0xC3, \u{c3}->0xC3, so the relevant bytes are [0xC3, 0xC3].
-    /// The full byte array has `0xC3` followed by `0xC3`: 0xC3 starts a 2-byte UTF-8
-    /// sequence and expects a continuation byte (0x80-0xBF), but 0xC3 is NOT a
-    /// continuation byte, so `String::from_utf8` returns Err.
-    /// Exercises the `String::from_utf8(bytes)` Err branch in `repair_mojibake_text`.
-    ///
-    /// `%C3%83%C3%83` percent-decodes to bytes [0xC3, 0x83, 0xC3, 0x83] which is
-    /// the valid UTF-8 encoding of "\u{c3}\u{c3}".  The repair loop collects \u{c3}->0xC3, \u{c3}->0xC3.
-    /// The full byte array has `0xC3, 0xC3`: the first 0xC3 starts a 2-byte UTF-8
-    /// sequence but the second 0xC3 is NOT a valid continuation byte, so
-    /// `String::from_utf8` returns Err and the original text is returned.
-    #[test]
-    fn mojibake_with_invalid_utf8_bytes_not_repaired() -> Result<(), String> {
-        // %C3%83 = \u{c3} (U+00C3, mojibake marker) - encoded twice.
-        let path = uri_to_fs_path("file:///tmp/dir-%C3%83%C3%83/file.pl")
-            .ok_or("should decode to a valid path")?;
-        let s = path.to_string_lossy();
-        if !s.contains("file.pl") {
-            return Err(format!("filename should be present: {s}"));
-        }
-        // The path contains the original "\u{c3}\u{c3}" (not repaired to some other form).
-        if !s.contains("\u{c3}\u{c3}") {
-            return Err(format!("mojibake should not have been repaired: {s}"));
-        }
-        Ok(())
-    }
-
-    // Exercises line 235:
-    // `mojibake_marker_count(&candidate) >= mojibake_marker_count(text)`.
-    // The repair produced a candidate that does not reduce markers, so the
-    // original text is returned.
-    //
-    // `%C3%83%C2%83` decodes to "\u{c3}\u{0083}" (\u{c3} marker + U+0083 C1 control).
-    // The repair loop collects \u{c3}->0xC3, U+0083->0x83.
-    // `String::from_utf8([..., 0xC3, 0x83, ...])` succeeds -> "\u{c3}".
-    // `mojibake_marker_count("\u{c3}") = 1` is not less than
-    // `mojibake_marker_count("\u{c3}\u{0083}") = 1`.
-    #[test]
-    fn mojibake_repair_candidate_not_better() -> Result<(), String> {
-        // %C3%83 = \u{c3} (U+00C3, mojibake marker)
-        // %C2%83 = U+0083 (C1 control)
-        // Decoded: "\u{c3}\u{0083}" - one \u{c3} marker.
-        // Repair: bytes [0xC3, 0x83] -> "\u{c3}" - still one \u{c3} marker.
-        // Count not reduced -> original text returned (line 235).
-        let path = uri_to_fs_path("file:///tmp/dir-%C3%83%C2%83/file.pl")
-            .ok_or("should decode to a valid path")?;
-        let s = path.to_string_lossy();
-        if !s.contains("file.pl") {
-            return Err(format!("filename should be present: {s}"));
+    fn decoded_names_preserve_every_literal_component() -> Result<(), String> {
+        for (uri, suffix) in [
+            ("file:///tmp/clean_ascii.pl", "clean_ascii.pl"),
+            ("file:///tmp/caf%C3%83%C2%A9.pl", "cafÃ©.pl"),
+            ("file:///tmp/dir-%C3%83%F0%9F%9A%80/file.pl", "dir-Ã🚀/file.pl"),
+            ("file:///tmp/dir-%C3%83%C3%83/file.pl", "dir-ÃÃ/file.pl"),
+            ("file:///tmp/dir-%C3%83%C2%83/file.pl", "dir-Ã\u{0083}/file.pl"),
+        ] {
+            let expected = std::path::PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+                .join("tmp")
+                .join(suffix);
+            let actual = uri_to_fs_path(uri).ok_or("literal URI was not projected")?;
+            assert_eq!(actual, expected, "literal subject changed for {uri}");
         }
         Ok(())
     }
@@ -312,8 +205,7 @@ mod classify_gaps {
         // then normalize_unc_path_to_key also returns None, so the string
         // falls through to Url::parse (which may succeed as a "C" scheme or fail).
         let key = uri_key("C:");
-        // Must not panic; exact value is implementation-defined.
-        assert!(!key.is_empty() || key.is_empty(), "should not panic");
+        assert_eq!(key, "C:", "bare drive must remain unprojected");
     }
 
     /// Single character - even shorter than 2.
@@ -353,12 +245,11 @@ mod classify_gaps {
 
     // -- normalize_windows_path_to_key: no separator after drive ------
 
-    /// `C:foo` - no separator after the drive colon; `get(2) != Some(&b'/')` is True
-    /// so a `/` is inserted: becomes `C:/foo`.
+    /// A drive-relative path cannot acquire a root separator during keying.
     #[test]
     fn uri_key_windows_path_no_separator_after_drive() {
         let key = uri_key("C:foo/bar.pl");
-        assert_eq!(key, "file:///c:/foo/bar.pl", "separator should be inserted after drive");
+        assert_eq!(key, "C:foo/bar.pl", "drive-relative input must remain unprojected");
     }
 
     // -- normalize_unc_path_to_key: share-only (no rest) --------------

@@ -1,0 +1,12 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  File URI decoding preserves literal filenames instead of guessing a Unicode
+  repair. Windows drive-relative input such as C:lib/Foo.pm is no longer
+  promoted to an absolute file identity or resolved through the process directory.
+time: 2026-11-15T00:00:00Z
+custom:
+  PR: "8156"
+  Slug: exact-uri-source-paths
+  Breaking: "no"
