@@ -2860,7 +2860,7 @@ fn count_branch_points(node: &Node) -> usize {
         NodeKind::StatementModifier { modifier, .. }
             if matches!(
                 modifier.as_str(),
-                "if" | "unless" | "while" | "until" | "for" | "foreach"
+                "if" | "unless" | "while" | "until" | "for" | "foreach" | "when"
             ) =>
         {
             1
@@ -6828,6 +6828,24 @@ if ($x = 1) { print $x; }
         let findings = registry.check(&ctx);
         assert_eq!(findings.len(), 1, "eleven whens (default adds none) should fire: {findings:?}");
         assert!(findings[0].message.contains("11 branches"), "got: {}", findings[0].message);
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_counts_postfix_when_modifiers() {
+        // The parser treats `when` as a statement-modifier kind, so eleven
+        // postfix `when` statements are eleven branch points.
+        let mut source = String::from("use strict;\nuse warnings;\nsub postfix_when {\n");
+        for index in 0..=DEFAULT_MAX_BRANCHES {
+            source.push_str(&format!("    print {index} when $flag{index};\n"));
+        }
+        source.push_str("}\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1, "eleven postfix whens should fire: {findings:?}");
     }
 
     #[test]
