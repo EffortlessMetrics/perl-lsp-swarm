@@ -175,10 +175,31 @@ mod tests {
     use color_eyre::eyre::Result;
     use std::fs;
 
-    use super::parse_first_failure;
+    use super::{is_cargo_test_command, parse_first_failure};
     use perl_tdd_support::must_some_with;
 
     const CARGO_TEST_COMMAND: &str = "cargo test -p xtask --locked";
+
+    #[test]
+    fn is_cargo_test_command_falls_back_when_shlex_refuses_the_spelling() {
+        // An unbalanced quote makes shlex::split fail; the whitespace
+        // fallback must still recognize the cargo test invocation. If the
+        // fallback were deleted, this would read as a non-test command
+        // and its failures would lose first-failure extraction.
+        assert!(is_cargo_test_command("cargo test 'unclosed"));
+        assert!(!is_cargo_test_command("echo 'unclosed"));
+    }
+
+    #[test]
+    fn is_cargo_test_command_rejects_assignment_only_and_env_only_spellings() {
+        // When assignments (or a bare `env`) exhaust the token stream,
+        // there is no wrapped command to recognize. These spellings must
+        // not read as cargo test commands.
+        assert!(!is_cargo_test_command("FOO=bar"));
+        assert!(!is_cargo_test_command("FOO=bar BAZ=qux"));
+        assert!(!is_cargo_test_command("env"));
+        assert!(!is_cargo_test_command("env -u RUSTC_WRAPPER"));
+    }
 
     /// A doctest's name is `<file> - <path> (line N)`, so it contains spaces.
     /// Cargo prints that same spaced name on the result line and on the block
