@@ -22,7 +22,9 @@ dap_binary = "perl-dap"
 product_requires = ["perl-lsp-rs"]
 mcp_requires = ["perl-code-intelligence"]
 lsp_forbids = ["perl-mcp"]
-dap_forbids = ["perllsp", "perl-lsp-rs", "perl-mcp", "perl-mcp-rs"]
+# DAP consumes syntax directly from the parser kernel. The facade and a second
+# direct AST edge must not return through dev, build, renamed, or target gates.
+dap_forbids = ["perllsp", "perl-lsp-rs", "perl-mcp", "perl-mcp-rs", "perl-parser", "perl-ast"]
 mcp_forbids = [
   "perllsp",
   "perl-lsp-rs",

@@ -6,8 +6,7 @@
 //! exposes a small [`BreakpointOracle`] trait backed by the existing
 //! [`crate::breakpoint::AstBreakpointValidator`] (decision D5).
 
-use perl_parser::Parser;
-use perl_parser::ast::{Node, NodeKind};
+use perl_parser_core::{Node, NodeKind, Parser};
 #[cfg(test)]
 use perl_tdd_support::{must, must_some};
 use ropey::Rope;

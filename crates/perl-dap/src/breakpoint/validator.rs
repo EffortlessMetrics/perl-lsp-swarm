@@ -5,8 +5,7 @@
 //! a non-executable location like a comment, blank line, or heredoc interior.
 
 use super::BreakpointError;
-use perl_parser::Parser;
-use perl_parser::ast::{Node, NodeKind};
+use perl_parser_core::{Node, NodeKind, Parser};
 use ropey::Rope;
 
 /// Reason why a breakpoint was rejected or adjusted

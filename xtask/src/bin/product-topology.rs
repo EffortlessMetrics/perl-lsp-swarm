@@ -1193,13 +1193,51 @@ mod tests {
     }
 
     #[test]
-    fn dap_rejects_code_intelligence_dependencies() -> Result<()> {
-        let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
-        if let Some(dap) = metadata.packages.iter_mut().find(|package| package.name == "perl-dap") {
-            dap.dependencies.push(dependency("perllsp"));
+    fn dap_rejects_code_intelligence_and_redundant_syntax_dependencies() -> Result<()> {
+        // Consume the actual policy so removing one of its DAP edges cannot
+        // leave a self-contained fixture green.
+        let policy: ProductTopologyPolicy =
+            toml::from_str(include_str!("../../../policy/product-topology.toml"))?;
+        for forbidden in
+            ["perllsp", "perl-lsp-rs", "perl-mcp", "perl-mcp-rs", "perl-parser", "perl-ast"]
+        {
+            for kind in [None, Some("dev"), Some("build")] {
+                for disguised in [false, true] {
+                    let (_, mut metadata, manifest) = fixture(McpStage::Absent);
+                    let dap = metadata
+                        .packages
+                        .iter_mut()
+                        .find(|package| package.name == "perl-dap")
+                        .context("fixture is missing the DAP package")?;
+                    let mut edge = dependency(forbidden);
+                    edge.kind = kind.map(str::to_owned);
+                    if disguised {
+                        edge.rename = Some("syntax_support".to_owned());
+                        // Cargo does not permit optional dev dependencies.
+                        edge.optional = kind != Some("dev");
+                        edge.target = Some("cfg(windows)".to_owned());
+                    }
+                    dap.dependencies.push(edge);
+                    let report = validate(&policy, &metadata, &manifest);
+                    require_finding(
+                        &report,
+                        &format!("DAP package package=perl-dap forbids dependency={forbidden}"),
+                    )?;
+                }
+            }
         }
+        let (_, mut metadata, manifest) = fixture(McpStage::Absent);
+        let dap = metadata
+            .packages
+            .iter_mut()
+            .find(|package| package.name == "perl-dap")
+            .context("fixture is missing the DAP package")?;
+        dap.dependencies.push(dependency("perl-parser-core"));
         let report = validate(&policy, &metadata, &manifest);
-        require_finding(&report, "DAP package package=perl-dap forbids dependency=perllsp")
+        if !report.findings.is_empty() {
+            bail!("the direct parser-kernel dependency must remain allowed: {:?}", report.findings);
+        }
+        Ok(())
     }
 
     #[test]

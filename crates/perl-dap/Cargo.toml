@@ -59,8 +59,6 @@ tracing.workspace = true
 clap = { workspace = true }
 
 # Inlined satellite dependencies (Wave H collapse)
-perl-ast = { workspace = true }
-perl-parser = { workspace = true }
 perl-parser-core = { workspace = true }
 thiserror.workspace = true
 ropey.workspace = true
