@@ -716,7 +716,7 @@ impl LspServer {
         // republish), actions drop to text-only until the parse catches up.
         let parsed = doc.current_parsed().or_else(|| {
             let latest = doc.latest_parsed()?;
-            let matches = perl_lsp_rs_core::tooling::perl_critic::hash_content(&doc.text)
+            let matches = perl_parser_core::syntax::source_context::hash_source_content(&doc.text)
                 == latest.content_hash();
             matches.then_some(latest)
         });

@@ -346,8 +346,9 @@ impl LspServer {
                         let current_or_matching = doc.current_parsed().or_else(|| {
                             let latest = doc.latest_parsed()?;
                             let matches =
-                                perl_lsp_rs_core::tooling::perl_critic::hash_content(&doc.text)
-                                    == latest.content_hash();
+                                perl_parser_core::syntax::source_context::hash_source_content(
+                                    &doc.text,
+                                ) == latest.content_hash();
                             matches.then_some(latest)
                         });
                         (doc.text_arc.clone(), current_or_matching, doc.current_generation())

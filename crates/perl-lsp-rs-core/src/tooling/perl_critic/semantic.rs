@@ -326,7 +326,7 @@ impl UnresolvedNativeFindingIdentity {
 /// it; output ordering never depends on hash values.
 #[must_use]
 pub fn critic_source_identity_for_uri(uri: &str, generation: u32) -> CriticSourceIdentity {
-    let uri_hash = super::hash_content(uri);
+    let uri_hash = perl_parser_core::syntax::source_context::hash_source_content(uri);
     let (high, low) = (uri_hash.to_be_bytes(), (!uri_hash).to_be_bytes());
     let mut source_key = [0u8; 16];
     source_key[..8].copy_from_slice(&high);
