@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Removed
+body: Remove the parser ErrorClass implementation from FramingError. Existing transport type paths remain available, and framing_error_category preserves application classification, including DAP peer errors. Framing and wire handling are unchanged.
+time: 2026-11-15T10:03:10Z
+custom:
+  PR: "19464"
+  Slug: neutral-framing-error-facts
+  Breaking: "yes"
