@@ -6,6 +6,7 @@
 mod analyzer;
 mod built_in;
 mod identity;
+mod legacy_bridge;
 mod native;
 mod normalized;
 mod quick_fix;
@@ -13,6 +14,7 @@ mod remediation;
 mod result_identity;
 mod semantic;
 mod service;
+mod severity;
 mod state;
 #[cfg(test)]
 mod test_core_authority_policy;

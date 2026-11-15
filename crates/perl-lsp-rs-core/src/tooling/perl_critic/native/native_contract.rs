@@ -1,7 +1,7 @@
 //! Core native critic rule and diagnostic contracts.
 
 use super::super::identity::CriticFindingShape;
-use super::super::{CriticConfig, Severity, Violation};
+use super::super::{CriticConfig, Severity};
 use perl_parser_core::Node;
 use perl_parser_core::position::Range;
 use serde::{Deserialize, Serialize};
@@ -93,25 +93,6 @@ pub struct CriticFinding {
     pub related: Vec<CriticRelatedInformation>,
     /// Optional fix.
     pub fix: Option<CriticFix>,
-}
-
-impl CriticFinding {
-    /// Convert this native finding into the existing violation shape.
-    ///
-    /// This is the bridge that lets native rules flow through current LSP,
-    /// execute-command, and diagnostic consumers while those consumers still
-    /// expect `Violation` values.
-    #[must_use]
-    pub fn to_violation(&self, file: impl Into<String>) -> Violation {
-        Violation {
-            policy: self.rule_id.clone(),
-            description: self.message.clone(),
-            explanation: self.explanation.clone(),
-            severity: self.severity,
-            range: self.range,
-            file: file.into(),
-        }
-    }
 }
 
 /// Type alias for the pre-computed pragma-map entries shared across rules.

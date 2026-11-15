@@ -9,7 +9,7 @@ use super::super::identity::{
     CriticFindingOrigin, CriticFindingShape, CriticIdentityRegistry,
     NativeCriticIdentityDisposition,
 };
-use super::super::{CriticConfig, Severity, Violation};
+use super::super::{CriticConfig, Severity};
 use super::native_contract::{CriticContext, CriticFinding, CriticRule, PragmaEntries};
 use super::native_suppressions::CriticSuppressionMap;
 use super::{
@@ -558,20 +558,6 @@ impl NativeCriticRegistry {
         }
 
         findings
-    }
-
-    /// Run all registered rules and return current legacy violation values.
-    ///
-    /// This keeps native rule execution single-sourced while callers migrate
-    /// from `Violation` consumers to richer native finding/code-action data.
-    #[must_use]
-    pub fn check_violations(
-        &self,
-        ctx: &CriticContext<'_>,
-        file: impl Into<String>,
-    ) -> Vec<Violation> {
-        let file = file.into();
-        self.check(ctx).into_iter().map(|finding| finding.to_violation(file.clone())).collect()
     }
 }
 
