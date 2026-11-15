@@ -1589,7 +1589,9 @@ gates:
     # pr_fast residual: unit_routed_full still runs the perl-dap leg without
     # `--features test-helpers`, so the four test-helpers targets stay absent
     # from the pr_fast lane; closing that leg is tracked in #14458.
-    #   perl-ci-hygiene               6
+    # perl-ci-hygiene is bin-only, so the `--lib` leg above selects zero of
+    # its tests; its `tests/` targets (6 files) are executed explicitly in
+    # the appended invocation below (#19399).
     #   perl-dap                    115
     #   perl-tdd-support              4
     #   perl-test-generators          2
@@ -1618,6 +1620,8 @@ gates:
       --test dap_variable_reference_hardening_tests
       --test pause_signal_delivery_tests
       --test dap_entry_stop_stack_trace_18491
+      -- --test-threads=4 &&
+      cargo test --locked -p perl-ci-hygiene --tests
       -- --test-threads=4
     timeout_seconds: 450
     retry_count: 1
