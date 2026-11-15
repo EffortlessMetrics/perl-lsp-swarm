@@ -34,6 +34,7 @@ SOURCES = (
     CORE + "runtime/cancellation/mod.rs",
 )
 CONTRACT = "scripts/ci/fixtures/lsp_error_contract.rs"
+STRICT_DECODE = "crates/perl-lsp-rs-core/tests/strict_transport_decode.rs"
 ERROR_TYPES = (
     "protocol::JsonRpcError",
     "transport::FramingError",
@@ -65,7 +66,7 @@ def quoted(value: str) -> str:
 
 def snapshot(root: Path) -> dict[str, str]:
     result = {}
-    for relative in (*SOURCES, CONTRACT, "Cargo.lock", "rust-toolchain.toml"):
+    for relative in (*SOURCES, CONTRACT, STRICT_DECODE, "Cargo.lock", "rust-toolchain.toml"):
         path = (root / relative).resolve(strict=True)
         path.relative_to(root)  # No external symlink may supply selected source.
         result[relative] = digest(path.read_bytes())
@@ -208,12 +209,24 @@ def validate_metadata(metadata: dict, directory: Path, lock: dict) -> None:
 
 
 def verify_compiled_sources(directory: Path, root: Path) -> list[str]:
-    """Use rustc dep-info, not the driver's intended imports, as the read set."""
-    depfiles = list(directory.rglob("neutral_lsp_error_probe-*.d"))
-    if not depfiles:
-        raise NotProven("compiler_dependency_file_missing")
     expected = {(root / relative).resolve() for relative in SOURCES}
     expected.add((directory / "src/lib.rs").resolve())
+    return verify_compiler_inputs(directory, "neutral_lsp_error_probe-*.d", expected)
+
+
+def verify_compiled_contract(directory: Path, root: Path) -> list[str]:
+    # include_str! inputs in the real decoder suite are also compiler inputs.
+    expected = {(root / path).resolve() for path in (
+        CONTRACT, STRICT_DECODE, CORE + "transport/incoming.rs", CORE + "transport/framing.rs",
+    )}
+    return verify_compiler_inputs(directory, "error_contract-*.d", expected)
+
+
+def verify_compiler_inputs(directory: Path, pattern: str, expected: set[Path]) -> list[str]:
+    """Use rustc dep-info, not the driver's intended imports, as the read set."""
+    depfiles = list(directory.rglob(pattern))
+    if not depfiles:
+        raise NotProven("compiler_dependency_file_missing")
     observed = set()
     for depfile in depfiles:
         lines = depfile.read_text(encoding="utf-8").replace("\\\n", " ").splitlines()
@@ -229,6 +242,37 @@ def verify_compiled_sources(directory: Path, root: Path) -> list[str]:
     if observed != expected:
         raise Rejected("compiled_sources_omitted_copied_or_unregistered")
     return sorted(str(path) for path in observed)
+
+
+def expected_contract_tests(root: Path) -> set[str]:
+    """Bind named execution to the nine contract and 29 real decoder tests.
+
+    These selected files use top-level #[test] functions. Refuse another
+    shape rather than guessing Rust syntax or quietly shrinking coverage.
+    """
+    expected = set()
+    for path, prefix, count in ((CONTRACT, "", 9), (STRICT_DECODE, "strict_transport_decode::", 29)):
+        source = (root / path).read_text(encoding="utf-8")
+        names = re.findall(r"(?m)^#\[test\]\s*\nfn ([A-Za-z_]\w*)\(", source)
+        if len(names) != count or len(set(names)) != count:
+            raise Rejected(f"test_source_denominator_changed:{path}")
+        expected.update(prefix + name for name in names)
+    return expected
+
+
+def verify_test_execution(result: subprocess.CompletedProcess[str], expected: set[str] | None = None) -> list[str]:
+    """Require named passing tests and one complete, unfiltered libtest suite."""
+    summaries = re.findall(
+        r"test result: ok\. (\d+) passed; 0 failed; (\d+) ignored; 0 measured; (\d+) filtered out;",
+        result.stdout,
+    )
+    names = re.findall(r"(?m)^test ([A-Za-z_][A-Za-z_0-9:]*) \.\.\. ok$", result.stdout)
+    if (result.returncode != 0 or len(summaries) != 1
+            or summaries[0] != (str(len(names)), "0", "0")
+            or not names or len(names) != len(set(names))
+            or (expected is not None and set(names) != expected)):
+        raise Rejected("production_and_contract_tests_not_proven")
+    return sorted(names)
 
 
 def forbidden_dependency_failure(result: subprocess.CompletedProcess[str]) -> bool:
@@ -304,6 +348,8 @@ def execute(root: Path) -> tuple[int, dict]:
             raise NotProven("cargo_or_rustc_not_found")
         root = root.resolve(strict=True)
         before = snapshot(root)
+        contract_tests = expected_contract_tests(root)
+        receipt["expected_contract_tests"] = sorted(contract_tests)
         baseline = tomllib.loads((root / "Cargo.lock").read_text(encoding="utf-8"))
         versions = selected_versions(baseline)
         toolchain = tomllib.loads((root / "rust-toolchain.toml").read_text(encoding="utf-8"))["toolchain"]["channel"]
@@ -357,14 +403,15 @@ def execute(root: Path) -> tuple[int, dict]:
             if run("neutral", checked).returncode != 0:
                 raise Rejected("selected_production_graph_did_not_compile")
             receipt["compiler_read_set"] = verify_compiled_sources(directory, root)
-            # Both production unit tests and the fixed error-family contract
-            # must execute. No test filters, ignores, or zero-test successes.
-            tests = run("tests", ["test", "--offline", "--locked", "--lib", "--test", "error_contract"])
-            summaries = re.findall(r"test result: ok\. (\d+) passed; 0 failed; (\d+) ignored; 0 measured; (\d+) filtered out;", tests.stdout)
-            if (tests.returncode != 0 or len(summaries) != 2
-                    or any(int(n) == 0 or int(i) or int(f) for n, i, f in summaries)
-                    or summaries[-1] != ("9", "0", "0")):
-                raise Rejected("production_and_contract_tests_not_proven")
+            # Separate invocations bind each named suite; a summary alone or
+            # another nine passing tests cannot stand in for the real consumer.
+            receipt["production_tests"] = verify_test_execution(run(
+                "production-tests", ["test", "--offline", "--locked", "--lib", "--", "--format=pretty"],
+            ))
+            receipt["contract_tests"] = verify_test_execution(run(
+                "contract-tests", ["test", "--offline", "--locked", "--test", "error_contract", "--", "--format=pretty"],
+            ), contract_tests)
+            receipt["contract_compiler_read_set"] = verify_compiled_contract(directory, root)
             for error_type in ERROR_TYPES:
                 for alias in (False, True):
                     library.write_text(source + mutation(error_type, alias), encoding="utf-8")
