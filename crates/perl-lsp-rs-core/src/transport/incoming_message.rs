@@ -196,6 +196,20 @@ mod tests {
     use crate::transport::{ContentLengthMessageReader, frame, read_incoming_message_outcome};
     use std::io::{self, BufReader, Cursor, Read};
 
+    #[test]
+    fn canonical_decoder_does_not_use_lossy_utf8_or_payload_preview() {
+        let source = include_str!("incoming_message.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            !production.contains("from_utf8_lossy"),
+            "canonical decoder must reject invalid UTF-8"
+        );
+        assert!(
+            !production.contains("body_preview"),
+            "canonical decoder must not log private body text"
+        );
+    }
+
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn decoded(value: Value) -> Result<IncomingMessage, Box<dyn std::error::Error>> {

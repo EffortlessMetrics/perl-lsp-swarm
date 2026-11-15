@@ -49,6 +49,13 @@ def failure(code="E0432", text="unresolved import `perl_parser_core`", returncod
     return completed(returncode, json.dumps(message) + "\n")
 
 
+
+def suite_output(names):
+    return "".join(f"test {name} ... ok\n" for name in sorted(names)) + (
+        f"test result: ok. {len(names)} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n"
+    )
+
+
 def metadata(directory):
     packages = [{"id": "probe-root", "name": probe.ROOT_NAME, "version": "0.0.0", "source": None,
                  "manifest_path": str(directory / "Cargo.toml")}]
@@ -283,10 +290,14 @@ class ExecutionTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="error-closure-unit-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        for relative in (*probe.SOURCES, probe.CONTRACT):
+        for relative in (*probe.SOURCES, probe.CONTRACT, probe.STRICT_DECODE):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("// test-double source for routing tests; not Rust proof\n")
+        for relative, count in ((probe.CONTRACT, 9), (probe.STRICT_DECODE, 29)):
+            (self.root / relative).write_text("".join(
+                f"#[test]\nfn case_{index}() {{}}\n" for index in range(count)
+            ))
         (self.root / "Cargo.lock").write_text(lock_text(BASELINE))
         (self.root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "stable"\n')
         self.overrides = {}
@@ -310,9 +321,17 @@ class ExecutionTests(unittest.TestCase):
         elif "metadata" in command:
             result, key = completed(stdout=json.dumps(metadata(directory))), "metadata"
         elif "test" in command:
-            result, key = completed(stdout=(
-                "test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n"
-                "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n")), "tests"
+            if "--lib" in command:
+                result, key = completed(stdout=suite_output({"unit::case"})), "production-tests"
+            else:
+                result, key = completed(stdout=suite_output(probe.expected_contract_tests(self.root))), "contract-tests"
+                depfile = directory / "build/error_contract-test.d"
+                depfile.parent.mkdir(exist_ok=True)
+                paths = [self.root / path for path in (
+                    probe.CONTRACT, probe.STRICT_DECODE,
+                    probe.CORE + "transport/incoming.rs", probe.CORE + "transport/framing.rs",
+                )]
+                depfile.write_text(str(depfile) + ": " + " ".join(shlex.quote(str(p)) for p in paths))
         else:
             source = (directory / "src/lib.rs").read_text()
             key = "negative" if "impl " in source else "neutral"
@@ -336,7 +355,9 @@ class ExecutionTests(unittest.TestCase):
         code, report = self.run_probe()
         self.assertEqual(code, 0, report)
         names = [step["name"] for step in report["steps"]]
-        self.assertEqual(len(names), 15)
+        self.assertEqual(len(names), 16)
+        self.assertEqual(len(report["contract_tests"]), 38)
+        self.assertEqual(sum(name.startswith("strict_transport_decode::") for name in report["contract_tests"]), 29)
         self.assertEqual(sum(n.startswith(("alias:", "direct:")) for n in names), 8)
         self.assertEqual(names[-1], "restored-neutral")
         self.assertEqual(report["denominator"], list(probe.ERROR_TYPES))
@@ -380,10 +401,66 @@ class ExecutionTests(unittest.TestCase):
             "test result: ok. 8 passed; 0 failed; 0 ignored;",
             "",
         ):
-            self.overrides["tests"] = completed(stdout="test result: ok. 90 passed; 0 failed; 0 ignored;\n" + summary)
+            self.overrides["contract-tests"] = completed(stdout="test result: ok. 90 passed; 0 failed; 0 ignored;\n" + summary)
             code, report = self.run_probe()
             self.assertEqual(code, 1)
             self.assertEqual(report["reason"], "production_and_contract_tests_not_proven")
+
+    def test_only_the_old_nine_contract_tests_cannot_pass(self):
+        self.overrides["contract-tests"] = completed(stdout=suite_output({f"case_{i}" for i in range(9)}))
+        code, report = self.run_probe()
+        self.assertEqual(code, 1)
+        self.assertEqual(report["reason"], "production_and_contract_tests_not_proven")
+        self.assertFalse(any(step["name"].startswith("direct:") for step in report["steps"]))
+
+    def test_changed_real_consumer_source_invalidates_probe(self):
+        def mutate_test(directory, result):
+            path = self.root / probe.STRICT_DECODE
+            path.write_text(path.read_text() + "// changed after snapshot\n")
+            return result
+        self.overrides["contract-tests"] = mutate_test
+        code, report = self.run_probe()
+        self.assertEqual(code, 2)
+        self.assertEqual(report["reason"], "selected_sources_changed_during_probe")
+
+    def test_production_suite_cannot_be_skipped(self):
+        self.overrides["production-tests"] = completed(stdout=suite_output(set()))
+        code, report = self.run_probe()
+        self.assertEqual(code, 1)
+        self.assertFalse(any(step["name"] == "contract-tests" for step in report["steps"]))
+
+    def test_contract_depinfo_cannot_omit_real_consumer(self):
+        def omit_consumer(directory, result):
+            depfile = directory / "build/error_contract-test.d"
+            source = self.root / probe.STRICT_DECODE
+            depfile.write_text(depfile.read_text().replace(shlex.quote(str(source)), ""))
+            return result
+        self.overrides["contract-tests"] = omit_consumer
+        code, report = self.run_probe()
+        self.assertEqual(code, 1)
+        self.assertEqual(report["reason"], "compiled_sources_omitted_copied_or_unregistered")
+
+    def test_copied_consumer_cannot_inherit_real_test_names(self):
+        def substitute_consumer(directory, result):
+            original = self.root / probe.STRICT_DECODE
+            copied = directory / "copied_strict_transport_decode.rs"
+            copied.write_bytes(original.read_bytes())
+            depfile = directory / "build/error_contract-test.d"
+            depfile.write_text(depfile.read_text().replace(shlex.quote(str(original)), shlex.quote(str(copied))))
+            return result
+        self.overrides["contract-tests"] = substitute_consumer
+        code, report = self.run_probe()
+        self.assertEqual(code, 1)
+        self.assertEqual(report["reason"], "compiled_sources_omitted_copied_or_unregistered")
+
+    def test_missing_contract_depinfo_is_not_proof(self):
+        def remove_depinfo(directory, result):
+            (directory / "build/error_contract-test.d").unlink()
+            return result
+        self.overrides["contract-tests"] = remove_depinfo
+        code, report = self.run_probe()
+        self.assertEqual(code, 2)
+        self.assertEqual(report["reason"], "compiler_dependency_file_missing")
 
     def test_changed_source_is_not_credited_with_old_compiler_result(self):
         def mutate_source(directory, result):
@@ -411,6 +488,58 @@ class ExecutionTests(unittest.TestCase):
         code, report = self.run_probe()
         self.assertEqual(code, 2)
         self.assertEqual(report["outcome"], "not_proven")
+
+
+
+class NamedSuiteTests(unittest.TestCase):
+    def test_named_results_and_count_both_required(self):
+        names = {"one", "strict_transport_decode::real_test"}
+        self.assertEqual(probe.verify_test_execution(completed(stdout=suite_output(names)), names), sorted(names))
+        with self.assertRaises(probe.Rejected):
+            probe.verify_test_execution(completed(stdout=suite_output(names).splitlines()[-1]), names)
+
+    def test_equal_count_cannot_replace_real_consumer_test(self):
+        expected = {"one", "strict_transport_decode::real_test"}
+        with self.assertRaises(probe.Rejected):
+            probe.verify_test_execution(completed(stdout=suite_output({"one", "impostor"})), expected)
+
+    def test_failure_filter_ignore_duplicate_or_zero_rejects(self):
+        valid = suite_output({"real_test"})
+        for result in (
+            completed(101, valid),
+            completed(stdout=valid.replace("0 ignored", "1 ignored")),
+            completed(stdout=valid.replace("0 filtered", "1 filtered")),
+            completed(stdout="test real_test ... ok\n" + valid),
+            completed(stdout=suite_output(set())),
+            completed(stdout=valid + valid),
+        ):
+            with self.subTest(result=result.stdout), self.assertRaises(probe.Rejected):
+                probe.verify_test_execution(result, {"real_test"})
+
+    def test_source_denominator_is_fixed_and_duplicate_names_refuse(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for relative, count in ((probe.CONTRACT, 9), (probe.STRICT_DECODE, 29)):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("".join(f"#[test]\nfn c_{index}() {{}}\n" for index in range(count)))
+            self.assertEqual(len(probe.expected_contract_tests(root)), 38)
+            strict = root / probe.STRICT_DECODE
+            original = strict.read_text()
+            for broken in (original.replace("#[test]", "// no test", 1), original.replace("c_28", "c_0")):
+                strict.write_text(broken)
+                with self.assertRaises(probe.Rejected):
+                    probe.expected_contract_tests(root)
+
+    def test_real_contract_includes_exact_existing_integration_source(self):
+        root = Path(__file__).resolve().parents[2]
+        fixture = (root / probe.CONTRACT).read_text()
+        self.assertIn("extern crate neutral_lsp_error_probe as perl_lsp_rs_core;", fixture)
+        self.assertIn('#[path = "../../../' + probe.STRICT_DECODE + '"]', fixture)
+        self.assertIn("mod strict_transport_decode;", fixture)
+        names = probe.expected_contract_tests(root)
+        self.assertEqual(len(names), 38)
+        self.assertIn("strict_transport_decode::incoming_errors_keep_typed_stage_size_and_framing_source", names)
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX process-group execution only")

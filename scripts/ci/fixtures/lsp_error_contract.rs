@@ -1,6 +1,13 @@
 //! Selected error-family behavior, using only the exact source-linked library.
 //! No parser taxonomy, copied error, or replacement decoder belongs here.
 
+// Use the same selected production library under the application crate name
+// expected by the real integration test. No test source or API is copied.
+extern crate neutral_lsp_error_probe as perl_lsp_rs_core;
+
+#[path = "../../../crates/perl-lsp-rs-core/tests/strict_transport_decode.rs"]
+mod strict_transport_decode;
+
 use neutral_lsp_error_probe::protocol::{JsonRpcError, JsonRpcId};
 use neutral_lsp_error_probe::runtime::cancellation::{
     CancellationError, CancellationRegistry, PerlLspCancellationToken,
