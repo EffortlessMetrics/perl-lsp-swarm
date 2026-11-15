@@ -32,6 +32,7 @@ SOURCES = (
     CORE + "transport/incoming.rs",
     CORE + "transport/incoming_error.rs",
     CORE + "runtime/cancellation/mod.rs",
+    CORE + "transport/incoming_message.rs",
 )
 CONTRACT = "scripts/ci/fixtures/lsp_error_contract.rs"
 ERROR_TYPES = (

@@ -185,6 +185,11 @@ class GraphTests(unittest.TestCase):
         self.assertIn(probe.CORE + "transport/incoming_error.rs", probe.SOURCES)
         self.assertEqual(len(probe.SOURCES), len(set(probe.SOURCES)))
 
+    def test_typed_message_decoder_is_in_the_exact_source_denominator(self):
+        self.assertEqual(len(probe.SOURCES), 8)
+        self.assertIn(probe.CORE + "transport/incoming_message.rs", probe.SOURCES)
+        self.assertEqual(probe.SOURCES[6], probe.CORE + "runtime/cancellation/mod.rs")
+
     def test_every_type_gets_both_direct_and_facade_control(self):
         for name in probe.ERROR_TYPES:
             for alias in (False, True):
@@ -243,7 +248,7 @@ class CompilerReadSetTests(unittest.TestCase):
 
     def test_complete_exact_read_set_with_spaces_and_unicode(self):
         self.write_dependencies(self.paths)
-        self.assertEqual(len(probe.verify_compiled_sources(self.probe_dir, self.root)), 8)
+        self.assertEqual(len(probe.verify_compiled_sources(self.probe_dir, self.root)), 9)
 
     def test_missing_dependency_evidence_is_not_proof(self):
         with self.assertRaises(probe.NotProven):
@@ -255,7 +260,7 @@ class CompilerReadSetTests(unittest.TestCase):
             probe.verify_compiled_sources(self.probe_dir, self.root)
 
     def test_copied_source_outside_checkout_cannot_substitute_for_production(self):
-        copied = self.base / "copied-cancellation.rs"
+        copied = self.base / "copied-source.rs"
         copied.write_bytes(self.paths[-1].read_bytes())
         self.write_dependencies([*self.paths[:-1], copied])
         with self.assertRaises(probe.Rejected):
@@ -270,7 +275,7 @@ class CompilerReadSetTests(unittest.TestCase):
 
     def test_make_escaped_space_round_trips(self):
         self.depfile.write_text(str(self.depfile) + ": " + " ".join(str(p).replace(" ", "\\ ") for p in self.paths))
-        self.assertEqual(len(probe.verify_compiled_sources(self.probe_dir, self.root)), 8)
+        self.assertEqual(len(probe.verify_compiled_sources(self.probe_dir, self.root)), 9)
 
 
 class ExecutionTests(unittest.TestCase):
