@@ -2280,6 +2280,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-tidy-cli"
+version = "0.17.0"
+dependencies = [
+ "clap",
+ "perl-source-identity",
+ "perl-tidy",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "perl-tidy-perltidy"
 version = "0.17.0"
 dependencies = [

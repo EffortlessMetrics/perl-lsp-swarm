@@ -80,6 +80,7 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-test-generators` | _pending_ | published | `workspace_path` | #7400 |
 | `perl-test-must` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-tidy` | swarm-product | published | `workspace_path` | #8653 |
+| `perl-tidy-cli` | swarm-product | published | `workspace_path` | #9306 |
 | `perl-tidy-perltidy` | swarm-product | published | `workspace_path` | #8653 |
 | `perl-token` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-tree-sitter-compat` | _pending_ | private | `workspace_path` | #7400 |

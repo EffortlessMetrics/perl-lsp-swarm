@@ -183,7 +183,7 @@ Do not install `perl-lsp` from crates.io; that is a different project.
 
 ## Crate surface
 
-The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates. The published surface is 36 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).
+The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates. The published surface is 37 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).
 
 | Need | Crate |
 |---|---|
@@ -193,6 +193,7 @@ The current architecture collapsed the old microcrate graph into a smaller publi
 | Parser facade | `perl-parser` |
 | Parser engine | `perl-parser-core` |
 | Lexer | `perl-lexer` |
+| Standalone native formatter (source install) | [`perl-tidy-cli`](crates/perl-tidy-cli/README.md), executable `perl-tidy` |
 | Semantic analysis | `perl-semantic-analyzer` |
 | Workspace index | `perl-workspace` |
 | Diagnostics catalog | `perl-diagnostics` |

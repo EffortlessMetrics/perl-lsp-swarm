@@ -48,6 +48,7 @@ members = [
     # (perl-lsp-tooling absorbed into perl-lsp-rs-core::tooling — Wave G3 step 6)
     "crates/perl-lsp-perltidy",
     "crates/perl-tidy",
+    "crates/perl-tidy-cli",
     "crates/perl-tidy-perltidy",
     # (perl-lsp-symbol-query absorbed into perl-lsp-rs-core::providers — Wave G1a)
     # (perl-lsp-performance absorbed into perl-lsp-rs-core::tooling::performance — Wave G3 step 5)
@@ -202,6 +203,7 @@ allow = [
     # (perl-refactoring absorbed into perl-parser::refactor — Wave 4-Completion, deleted #5840)
 
     # Tier 5 — Application crates
+    "perl-tidy-cli",
     # (perl-dead-code absorbed into perl-parser::dead_code — Wave 4-Completion)
     "perl-parser",
     # (perl-parser-bench is benchmark-only; publish = false)
