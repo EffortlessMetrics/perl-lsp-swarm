@@ -86,7 +86,6 @@ export async function runCheckSyntaxCommand(
 
   const filePath = editor.document.uri.fsPath;
   if (editor.document.isDirty) {
-    const versionBeforeSave = editor.document.version;
     let saved: boolean;
     try {
       saved = await editor.document.save();
@@ -96,11 +95,7 @@ export async function runCheckSyntaxCommand(
       );
       return;
     }
-    if (
-      !saved ||
-      editor.document.isDirty ||
-      editor.document.version !== versionBeforeSave
-    ) {
+    if (!saved || editor.document.isDirty) {
       vscode.window.showErrorMessage(
         `Could not save ${path.basename(filePath)}. Syntax not checked.`,
       );

@@ -151,7 +151,7 @@ describe('document command implementations', () => {
     expect(execFile).not.toHaveBeenCalled();
   });
 
-  test('refuses syntax check when the document version changes during save (#17993)', async () => {
+  test('checks syntax when save participants advance the document version (#17993)', async () => {
     const editor = makeEditor({ isDirty: true });
     editor.document.save.mockImplementation(async () => {
       editor.document.version = 2;
@@ -159,7 +159,9 @@ describe('document command implementations', () => {
       return true;
     });
     setActiveEditor(editor);
-    const execFile: ExecFileLike = jest.fn();
+    const execFile: ExecFileLike = jest.fn((_file, _args, _options, callback) => {
+      callback(null, '', '');
+    });
 
     await runCheckSyntaxCommand({
       outputChannel: makeOutputChannel(),
@@ -167,10 +169,9 @@ describe('document command implementations', () => {
       execFile,
     });
 
-    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
-      'Could not save Example.pm. Syntax not checked.',
-    );
-    expect(execFile).not.toHaveBeenCalled();
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('Syntax OK: Example.pm');
+    expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
   });
 
   test('offers syntax failure output and writes it to the injected channel', async () => {
