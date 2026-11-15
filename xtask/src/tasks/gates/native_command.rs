@@ -263,9 +263,15 @@ fn mask_single_quoted_dollars(segment: &str) -> String {
                 masked.push(ch);
             }
             '\\' if in_double => {
-                masked.push(ch);
                 if let Some(next) = chars.next() {
-                    masked.push(next);
+                    if next == '$' {
+                        masked.push(SINGLE_QUOTED_DOLLAR);
+                    } else {
+                        masked.push(ch);
+                        masked.push(next);
+                    }
+                } else {
+                    masked.push(ch);
                 }
             }
             '$' if in_single => masked.push(SINGLE_QUOTED_DOLLAR),
@@ -301,31 +307,49 @@ fn parse_step(
         tokens.into_iter().map(|token| expand_pwd(&token, working_dir)).collect();
     let mut env_ops: Vec<EnvOp> = Vec::new();
     let mut index = 0usize;
-    if tokens.first().map(String::as_str) == Some("env") {
-        index = 1;
+    while let Some((name, value)) = tokens.get(index).and_then(|token| parse_assignment(token)) {
+        let value = if name == "PERL_LSP_BIN" { resolve_perl_lsp_bin(&value) } else { value };
+        env_ops.push(EnvOp::Set(name, value));
+        index += 1;
+    }
+    if tokens.get(index).map(String::as_str) == Some("env") {
+        index += 1;
+        let mut options_done = false;
         loop {
             let Some(token) = tokens.get(index) else { break };
-            if token == "-u" || token == "--unset" {
-                let name = tokens
-                    .get(index + 1)
-                    .ok_or_else(|| unsupported(command, "'env -u' requires a variable name"))?;
-                if !is_valid_name(name) {
-                    return Err(unsupported(command, "'env -u' requires a valid variable name"));
+            if !options_done {
+                if token == "-u" || token == "--unset" {
+                    let name = tokens
+                        .get(index + 1)
+                        .ok_or_else(|| unsupported(command, "'env -u' requires a variable name"))?;
+                    if !is_valid_name(name) {
+                        return Err(unsupported(
+                            command,
+                            "'env -u' requires a valid variable name",
+                        ));
+                    }
+                    env_ops.push(EnvOp::Unset(name.clone()));
+                    index += 2;
+                    continue;
+                } else if let Some(name) = token.strip_prefix("--unset=") {
+                    if !is_valid_name(name) {
+                        return Err(unsupported(
+                            command,
+                            "'env -u' requires a valid variable name",
+                        ));
+                    }
+                    env_ops.push(EnvOp::Unset(name.to_string()));
+                    index += 1;
+                    continue;
+                } else if token == "--" {
+                    index += 1;
+                    options_done = true;
+                    continue;
+                } else if token.starts_with('-') && token.len() > 1 {
+                    return Err(unsupported(command, "unsupported 'env' option"));
                 }
-                env_ops.push(EnvOp::Unset(name.clone()));
-                index += 2;
-            } else if let Some(name) = token.strip_prefix("--unset=") {
-                if !is_valid_name(name) {
-                    return Err(unsupported(command, "'env -u' requires a valid variable name"));
-                }
-                env_ops.push(EnvOp::Unset(name.to_string()));
-                index += 1;
-            } else if token == "--" {
-                index += 1;
-                break;
-            } else if token.starts_with('-') && token.len() > 1 {
-                return Err(unsupported(command, "unsupported 'env' option"));
-            } else if let Some((name, value)) = parse_assignment(token) {
+            }
+            if let Some((name, value)) = parse_assignment(token) {
                 let value =
                     if name == "PERL_LSP_BIN" { resolve_perl_lsp_bin(&value) } else { value };
                 env_ops.push(EnvOp::Set(name, value));
@@ -333,13 +357,6 @@ fn parse_step(
             } else {
                 break;
             }
-        }
-    } else {
-        while let Some((name, value)) = tokens.get(index).and_then(|token| parse_assignment(token))
-        {
-            let value = if name == "PERL_LSP_BIN" { resolve_perl_lsp_bin(&value) } else { value };
-            env_ops.push(EnvOp::Set(name, value));
-            index += 1;
         }
     }
     let Some(program) = tokens.get(index) else {
@@ -404,10 +421,7 @@ pub(crate) fn parse_native_command(
 fn resolve_program(program: &str, working_dir: &Path) -> String {
     let path = Path::new(program);
     if path.is_relative() && program.contains(['/', '\\']) {
-        let candidate = working_dir.join(path);
-        if candidate.exists() {
-            return candidate.display().to_string();
-        }
+        return working_dir.join(path).display().to_string();
     }
     program.to_string()
 }
@@ -459,7 +473,7 @@ pub(crate) fn run_native_command(
     let mut last_heartbeat = start;
     let mut child_started = false;
 
-    for step in &steps {
+    for (step_index, step) in steps.iter().enumerate() {
         match &step.action {
             NativeAction::Echo { args } => {
                 child_started = true;
@@ -541,8 +555,10 @@ pub(crate) fn run_native_command(
             }
         }
         // The shared deadline also bounds builtin-only chains and the gap
-        // between segments: an expired deadline never reports a pass.
-        if start.elapsed() >= deadline && steps.len() > 1 {
+        // between segments: an expired deadline stops the chain before the
+        // next segment starts. It is not applied after the final step, so a
+        // completed run keeps its real result.
+        if start.elapsed() >= deadline && step_index + 1 < steps.len() {
             return Ok(NativeOutcome { exit_code: 124, timed_out: true });
         }
     }
@@ -553,6 +569,7 @@ pub(crate) fn run_native_command(
 mod tests {
     use super::*;
     use color_eyre::eyre::{Result, ensure};
+    use serial_test::serial;
     use std::fs;
 
     fn workdir() -> PathBuf {
@@ -677,6 +694,95 @@ mod tests {
     }
 
     #[test]
+    fn parses_env_terminator_and_assignment_before_env() -> Result<()> {
+        let steps = parse_native_command(
+            "env -u STALE -- PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test",
+            &workdir(),
+        )?;
+        ensure!(
+            steps[0].env_ops
+                == vec![
+                    EnvOp::Unset("STALE".to_string()),
+                    EnvOp::Set(
+                        "PERL_LSP_BIN".to_string(),
+                        "C:\\work dir/target/debug/perllsp.exe".to_string(),
+                    ),
+                ],
+            "assignments after 'env --' must be consumed: {:?}",
+            steps[0].env_ops
+        );
+        ensure!(
+            steps[0].action
+                == NativeAction::Exec {
+                    program: "cargo".to_string(),
+                    args: vec!["test".to_string()],
+                },
+            "program after 'env --' assignments drifted: {:?}",
+            steps[0].action
+        );
+        let steps = parse_native_command("FOO=bar env -u STALE cargo test", &workdir())?;
+        ensure!(
+            steps[0].env_ops
+                == vec![
+                    EnvOp::Set("FOO".to_string(), "bar".to_string()),
+                    EnvOp::Unset("STALE".to_string()),
+                ],
+            "leading assignment before 'env' must be kept: {:?}",
+            steps[0].env_ops
+        );
+        ensure!(
+            steps[0].action
+                == NativeAction::Exec {
+                    program: "cargo".to_string(),
+                    args: vec!["test".to_string()],
+                },
+            "'env' after assignments must not become the program: {:?}",
+            steps[0].action
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn escaped_dollar_in_double_quotes_stays_literal() -> Result<()> {
+        let steps = parse_native_command(
+            "MARKER=\"\\$PWD\" probe \"\\$PWD\" \"\\${PWD}\" \"\\\\$PWD\"",
+            &workdir(),
+        )?;
+        ensure!(
+            steps[0].env_ops == vec![EnvOp::Set("MARKER".to_string(), "$PWD".to_string())],
+            "escaped $PWD in an assignment must stay literal: {:?}",
+            steps[0].env_ops
+        );
+        ensure!(
+            steps[0].action
+                == NativeAction::Exec {
+                    program: "probe".to_string(),
+                    args: vec![
+                        "$PWD".to_string(),
+                        "${PWD}".to_string(),
+                        "\\C:\\work dir".to_string(),
+                    ],
+                },
+            "escaped dollars must stay literal while an unescaped $PWD after '\\\\' expands: {:?}",
+            steps[0].action
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolves_extensionless_relative_program_against_working_dir() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::write(temp.path().join("tool.exe"), b"")?;
+        let resolved = resolve_program("./tool", temp.path());
+        ensure!(
+            Path::new(&resolved) == temp.path().join("tool"),
+            "'./tool' must resolve against the working dir even when only tool.exe exists: {resolved}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
     fn executor_assignment_reaches_child_with_observed_work() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let root = temp.path();
@@ -868,7 +974,7 @@ mod tests {
         for _ in 0..100 {
             let output =
                 Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output()?;
-            if !String::from_utf8_lossy(&output.stdout).contains(&pid) {
+            if output.status.success() && !String::from_utf8_lossy(&output.stdout).contains(&pid) {
                 settled = true;
                 break;
             }

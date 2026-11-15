@@ -105,13 +105,21 @@ fn first_panic(lines: &[&str]) -> (Option<String>, Option<String>) {
     (None, None)
 }
 
+fn is_assignment_token(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else { return false };
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
 /// Check whether a gate command is a `cargo test`-class command.
 ///
 /// Returns `true` for commands whose first word-token is `cargo` and second is `test`,
 /// ignoring leading whitespace and path prefixes. A leading `env` invocation
 /// (optionally followed by `-u NAME` unset flags and/or `NAME=VALUE`
 /// assignments, per env(1)'s `[flags/assignments] command` grammar) is
-/// transparent: the merge-gate `lsp_smoke` gate runs its test binary as
+/// transparent, as are bare leading `NAME=VALUE` assignments without `env`:
+/// the merge-gate `lsp_smoke` gate runs its test binary as
 /// `env -u RUSTC_WRAPPER cargo test ...`, and its log is as much a cargo
 /// test log as any other.
 pub fn is_cargo_test_command(command: &str) -> bool {
@@ -120,8 +128,19 @@ pub fn is_cargo_test_command(command: &str) -> bool {
     // output whose failures must be extracted comes from the final segment,
     // so recognition applies to the last `&&`-separated segment.
     let final_segment = command.split("&&").last().unwrap_or("").trim();
-    let mut tokens = final_segment.split_whitespace();
+    // Quote-aware tokenization so a quoted assignment value containing
+    // spaces (`MARKER="a b" cargo test`) stays one token; fall back to
+    // whitespace splitting for spellings shlex refuses.
+    let owned_tokens: Vec<String> = shlex::split(final_segment)
+        .unwrap_or_else(|| final_segment.split_whitespace().map(str::to_string).collect());
+    let mut tokens = owned_tokens.iter().map(String::as_str);
     let mut first = tokens.next().unwrap_or("");
+    // Bare leading assignments (`RUST_TEST_THREADS=2 cargo test`) name the
+    // environment, not the executable — as does an `env` prefix after them
+    // (`FOO=bar env -u X cargo test`).
+    while is_assignment_token(first) {
+        first = tokens.next().unwrap_or("");
+    }
     if first == "env" {
         // Skip env(1) arguments until the wrapped command: assignments
         // (`NAME=VALUE`), single-token options, and option+argument pairs

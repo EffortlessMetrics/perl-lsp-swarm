@@ -7905,6 +7905,19 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
             "env wrapping does not make a non-test command a test"
         );
         assert!(!is_cargo_test_command("env"), "bare env with no wrapped command");
+        assert!(is_cargo_test_command("RUST_TEST_THREADS=2 cargo test"), "bare assignment prefix");
+        assert!(
+            is_cargo_test_command("MARKER=\"a b\" cargo test"),
+            "quoted assignment containing spaces"
+        );
+        assert!(
+            is_cargo_test_command("FOO=bar env -u RUSTC_WRAPPER cargo test"),
+            "assignment before env prefix"
+        );
+        assert!(
+            !is_cargo_test_command("RUST_TEST_THREADS=2 cargo build"),
+            "bare assignment does not make a non-test command a test"
+        );
     }
 
     #[test]
