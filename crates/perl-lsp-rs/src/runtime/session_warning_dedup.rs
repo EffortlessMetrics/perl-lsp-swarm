@@ -337,6 +337,22 @@ mod tests {
     }
 
     #[test]
+    fn family_state_with_cap_applies_the_configured_cap_to_its_return_value() {
+        // The returned state's own decisions are the observable sink for
+        // the per-family cap: at cap 2 the third distinct identity emits
+        // without retaining, while the default cap (32) would retain it.
+        let mut state = FamilyState::with_cap(2);
+        assert_eq!(state.note(identity("strict")), SessionWarningDecision::EmitFirst);
+        assert_eq!(state.note(identity("warnings")), SessionWarningDecision::EmitFirst);
+        assert_eq!(
+            state.note(identity("utf8")),
+            SessionWarningDecision::EmitWithoutRetaining
+        );
+        assert_eq!(state.seen.len(), 2);
+        assert_eq!(state.emitted_without_retaining, 1);
+    }
+
+    #[test]
     fn with_cap_bounds_retention_at_the_configured_cap() {
         // The per-family cap is the seam: at cap 2 the third distinct
         // identity emits without retaining, and a repeat of it emits
