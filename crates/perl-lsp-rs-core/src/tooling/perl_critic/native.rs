@@ -8,14 +8,13 @@
 #[cfg(test)]
 use super::CriticConfig;
 use super::{CriticFindingShape, Severity, insertion_range};
-use crate::providers::diagnostics::known_scalar_argument_count;
-use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_parser_core::Node;
 use perl_parser_core::NodeKind;
 use perl_parser_core::position::{Position, Range};
 use perl_parser_core::syntax::source_context::{SourceRegionIndex, SourceRegionKind};
 use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
+use perl_semantic_analyzer::{collect_unreachable_spans, known_scalar_argument_count};
 
 mod native_contract;
 mod native_registry;
@@ -1909,11 +1908,11 @@ fn collect_unreachable_code_findings(
     node: &Node,
     out: &mut Vec<CriticFinding>,
 ) {
-    let mut diagnostics = Vec::new();
-    check_unreachable_code(node, &mut diagnostics);
-    out.extend(diagnostics.into_iter().map(|diagnostic| {
-        unreachable_code_finding(rule, source, diagnostic.range.0, diagnostic.range.1)
-    }));
+    out.extend(
+        collect_unreachable_spans(node)
+            .into_iter()
+            .map(|span| unreachable_code_finding(rule, source, span.start, span.end)),
+    );
 }
 
 fn collect_stale_dollar_at_in_statements(
@@ -3844,13 +3843,23 @@ mod tests {
 
     #[test]
     fn native_printf_format_arity_skips_unknown_list_cardinality() {
-        let source = "my @values = ('a', 'b'); printf '%s %s', @values; sprintf '%s %s', $prefix, @values; printf '%s %s', qx{printf 'a\\nb\\n'};";
-        let ast = parse_source(source);
-        let config = CriticConfig::default();
-        let ctx = CriticContext::new(source, &ast, &config);
-        let registry = NativeCriticRegistry::with_rules(vec![Box::new(PrintfFormatArityRule)]);
+        for source in [
+            "my @values = ('a', 'b'); printf '%s %s', @values;",
+            "sprintf '%s %s', $prefix, @values;",
+            "sub values { return ('a', 'b') } printf '%s %s', values();",
+            "printf '%s %s', @values[0, 1];",
+            "printf '%s %s', @{$values};",
+            "printf '%s %s', qx{printf 'a\\nb\\n'};",
+            "printf '%s %s', `command`;",
+            "printf '%s %s', <<`END`;\ncommand\nEND\n",
+        ] {
+            let ast = parse_source(source);
+            let config = CriticConfig::default();
+            let ctx = CriticContext::new(source, &ast, &config);
+            let registry = NativeCriticRegistry::with_rules(vec![Box::new(PrintfFormatArityRule)]);
 
-        assert!(registry.check(&ctx).is_empty());
+            assert!(registry.check(&ctx).is_empty(), "unknown list cardinality: {source}");
+        }
     }
 
     #[test]

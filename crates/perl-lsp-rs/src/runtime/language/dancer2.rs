@@ -318,7 +318,7 @@ mod activation_anchoring_tests {
         doc_path: &Path,
         source: &str,
     ) -> Result<Dancer2RequestContext, TestError> {
-        let content_hash = perl_lsp_rs_core::tooling::perl_critic::hash_content(source);
+        let content_hash = perl_parser_core::syntax::source_context::hash_source_content(source);
         let ast = parse_ast(source)?;
         Ok(server.dancer2_request_context(&path_uri(doc_path)?, source, content_hash, &ast))
     }

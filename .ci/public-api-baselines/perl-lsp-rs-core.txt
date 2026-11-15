@@ -3656,58 +3656,16 @@ pub fn perl_lsp_rs_core::providers::diagnostics::strict_warnings::check_strict_w
 pub mod perl_lsp_rs_core::providers::diagnostics::unreachable_code
 pub fn perl_lsp_rs_core::providers::diagnostics::unreachable_code::check_unreachable_code(root: &perl_ast::ast::Node, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition
-pub enum perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule::ModifierGated
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule::None
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule::ShortCircuitBinary
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule::TernaryAlternatives
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling::ConservativeFallthrough
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling::ExactLocalTransfer
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling::RecoveredFallthrough
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Scope
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Scope::Inherited
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Scope::Introduced
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Alternatives
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::CallableBoundary
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Conditional
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::EvaluationBoundary
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::ExpressionContainer
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Leaf
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Loop
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Recovery
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Sequential
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::analyzed_not_propagated: &'static [&'static str]
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::class: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::conditional_rule: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::executable_children: &'static [&'static str]
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::fallthrough_determining: &'static [&'static str]
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::kind_name: &'static str
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::leaf_reason: core::option::Option<&'static str>
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::proof_ceiling: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::scope: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub const perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::PL406_DISPOSITIONS: &[perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition]
-pub const perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::PL406_DISPOSITION_SCHEMA_VERSION: u32
-pub const fn perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::all_pl406_dispositions() -> &'static [perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition]
-pub fn perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::pl406_disposition(kind_name: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition>
-pub fn perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::pl406_disposition_of(kind: &perl_ast::ast::NodeKind) -> core::option::Option<&'static perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition>
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::PL406_DISPOSITIONS
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::PL406_DISPOSITION_SCHEMA_VERSION
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Scope
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::all_pl406_dispositions
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::pl406_disposition
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::pl406_disposition_of
 pub mod perl_lsp_rs_core::providers::diagnostics::unused_imports
 pub fn perl_lsp_rs_core::providers::diagnostics::unused_imports::check_unused_imports(node: &perl_ast::ast::Node, source: &str, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::diagnostics::version_compat
@@ -7386,58 +7344,16 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> perl_lsp
 pub mod perl_lsp_rs_core::providers::unreachable_code
 pub fn perl_lsp_rs_core::providers::unreachable_code::check_unreachable_code(root: &perl_ast::ast::Node, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::unreachable_code_disposition
-pub enum perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::ModifierGated
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::None
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::ShortCircuitBinary
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::TernaryAlternatives
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::ConservativeFallthrough
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::ExactLocalTransfer
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::RecoveredFallthrough
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::Inherited
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::Introduced
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Alternatives
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::CallableBoundary
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Conditional
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::EvaluationBoundary
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::ExpressionContainer
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Leaf
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Loop
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Recovery
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Sequential
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::analyzed_not_propagated: &'static [&'static str]
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::class: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::conditional_rule: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::executable_children: &'static [&'static str]
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::fallthrough_determining: &'static [&'static str]
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::kind_name: &'static str
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::leaf_reason: core::option::Option<&'static str>
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::proof_ceiling: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::scope: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub const perl_lsp_rs_core::providers::unreachable_code_disposition::PL406_DISPOSITIONS: &[perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition]
-pub const perl_lsp_rs_core::providers::unreachable_code_disposition::PL406_DISPOSITION_SCHEMA_VERSION: u32
-pub const fn perl_lsp_rs_core::providers::unreachable_code_disposition::all_pl406_dispositions() -> &'static [perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition]
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::pl406_disposition(kind_name: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition>
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::pl406_disposition_of(kind: &perl_ast::ast::NodeKind) -> core::option::Option<&'static perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition>
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::PL406_DISPOSITIONS
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::PL406_DISPOSITION_SCHEMA_VERSION
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::all_pl406_dispositions
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::pl406_disposition
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::pl406_disposition_of
 pub mod perl_lsp_rs_core::providers::unused_imports
 pub fn perl_lsp_rs_core::providers::unused_imports::check_unused_imports(node: &perl_ast::ast::Node, source: &str, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::uri

@@ -64,6 +64,7 @@ pub use perl_parser_core::{
 /// Semantic analysis, symbol extraction, and type inference.
 pub mod analysis;
 
+pub use analysis::argument_cardinality::known_scalar_argument_count;
 pub use analysis::class_model;
 #[cfg(not(target_arch = "wasm32"))]
 pub use analysis::declaration;
@@ -75,3 +76,12 @@ pub use analysis::semantic;
 pub use analysis::symbol;
 pub use analysis::type_facts;
 pub use analysis::type_inference;
+
+/// Shared local unreachable-code analysis.
+pub use analysis::unreachable_code::collect_unreachable_spans;
+/// Existing per-variant flow dispositions, shared by diagnostic and critic consumers.
+pub use analysis::unreachable_code_disposition::{
+    PL406_DISPOSITION_SCHEMA_VERSION, PL406_DISPOSITIONS, Pl406ConditionalRule, Pl406Disposition,
+    Pl406ProofCeiling, Pl406Scope, Pl406SemanticClass, all_pl406_dispositions, pl406_disposition,
+    pl406_disposition_of,
+};

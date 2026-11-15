@@ -2174,6 +2174,7 @@ dependencies = [
 name = "perl-semantic-analyzer"
 version = "0.17.0"
 dependencies = [
+ "perl-ast",
  "perl-lexer",
  "perl-module",
  "perl-parser-core",

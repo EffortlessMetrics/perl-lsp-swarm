@@ -1,5 +1,7 @@
 //! Semantic analysis, symbol extraction, and type inference.
 
+/// Conservative value counts for arguments in Perl list context.
+pub(crate) mod argument_cardinality;
 /// Pure callsite materialization for canonical callable-result relations.
 pub mod call_result_materializer;
 /// Bounded syntax-level callable exit summaries.
@@ -65,3 +67,8 @@ pub mod type_inference;
 /// Lightweight value-shape inference from constructor calls, bless, and `$self`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod value_shape_inferrer;
+
+/// Shared local unreachable-code analysis; exported at the crate root.
+pub(crate) mod unreachable_code;
+/// Per-variant semantic dispositions for the shared local flow walk.
+pub(crate) mod unreachable_code_disposition;

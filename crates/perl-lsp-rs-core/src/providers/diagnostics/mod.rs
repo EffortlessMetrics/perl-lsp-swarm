@@ -77,9 +77,7 @@ pub use lints::common_mistakes;
 pub use lints::deprecated;
 pub use lints::missing_module;
 pub use lints::package_subroutine;
-pub(crate) use lints::printf_format::{
-    count_format_specifiers, known_scalar_argument_count, unquote_string,
-};
+pub(crate) use lints::printf_format::{count_format_specifiers, unquote_string};
 /// Same-file Moo/Moose role conflict detection.
 pub use lints::role_conflicts;
 pub use lints::security;
@@ -88,6 +86,7 @@ pub use lints::unreachable_code;
 pub use lints::unreachable_code_disposition;
 pub use lints::unused_imports;
 pub use lints::version_compat;
+pub(crate) use perl_semantic_analyzer::known_scalar_argument_count;
 
 // Re-export dead code detection (when not targeting WASM)
 #[cfg(not(target_arch = "wasm32"))]

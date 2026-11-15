@@ -739,7 +739,8 @@ impl LspServer {
             // facts (excluded keyword use; handler-only keyword outside an
             // exact handler). Computed with the documents lock released.
             {
-                let content_hash = perl_lsp_rs_core::tooling::perl_critic::hash_content(&text);
+                let content_hash =
+                    perl_parser_core::syntax::source_context::hash_source_content(&text);
                 let context = self.dancer2_request_context(uri, &text, content_hash, ast);
                 for diagnostic in perl_lsp_rs_core::providers::dancer2::bounded_diagnostics(
                     ast,

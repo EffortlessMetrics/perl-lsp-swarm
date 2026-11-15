@@ -19,6 +19,12 @@ workspace, refactoring, and LSP layers can consume.
 - `analysis::semantic::SemanticAnalyzer`
 - `analysis::declaration::DeclarationProvider`
 - `analysis::index::WorkspaceIndex`
+- `known_scalar_argument_count`
+
+`known_scalar_argument_count` supplies the shared conservative argument count for
+critic, diagnostics, and quick-fix admission. It returns `None` when any argument
+has unknown cardinality in Perl list context, including calls, arrays, and command
+output. An empty argument list returns `Some(0)`.
 
 ## Example
 
@@ -40,3 +46,12 @@ or document caching, pair it with `perl-workspace`.
 ## Architecture notes
 
 - [Dependency boundary audit](docs/dependency-boundary-audit.md)
+
+## Local unreachable-code facts
+
+`collect_unreachable_spans(&Node)` returns ordered source spans from one local
+control-flow analysis. The semantic analyzer also owns the existing `Pl406*`
+per-variant disposition registry. These crate-root exports keep implementation
+modules private to the analysis layer. LSP PL406 diagnostics and native critic
+findings project the same facts into their own messages, severity and remediation.
+The lower analysis does not depend on either output representation.

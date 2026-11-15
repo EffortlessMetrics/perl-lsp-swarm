@@ -41,6 +41,7 @@ tracing.workspace = true
 test-instrumentation = []
 
 [dev-dependencies]
+perl-ast = { workspace = true }
 perl-test-must = { workspace = true }
 perl-tdd-support = { workspace = true }
 perl-test-generators = { path = "../perl-test-generators" }
