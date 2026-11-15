@@ -502,15 +502,6 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
-    /// Whether the "this is a Perl core module, use hover instead" goto-definition
-    /// notice has already been written to the output channel this session.
-    ///
-    /// Same shape and same reason as `root_undetected_shown`: goto-definition is a
-    /// per-request action, so an unguarded notice repeats on every F12 over
-    /// `use strict` and trains the user to ignore the channel. Instance-level
-    /// rather than a process-level `Once`, so each `LspServer` session is its own
-    /// window (#16551).
-    pub(crate) core_module_notice_shown: Arc<AtomicBool>,
     /// Bounded pending/notified module identities and background scan capacity.
     pub(crate) module_ambiguity_notices:
         Arc<lifecycle::module_resolution::ModuleAmbiguityNoticeState>,

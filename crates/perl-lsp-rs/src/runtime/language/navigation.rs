@@ -1917,27 +1917,34 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
-    /// Emit the core-module goto-definition notice at most once per server
-    /// session. Returns whether *this* call emitted (#16551).
+    /// Emit the core-module goto-definition notice at most once per module
+    /// per server session. Returns whether *this* call emitted (#16551, #16666).
     ///
-    /// Extracted from [`Self::handle_definition_inner`] so the once-per-session
-    /// contract is enforced in one place. A test that pokes
-    /// `core_module_notice_shown` directly would stay green if the `swap` guard
-    /// were deleted — it would be testing `AtomicBool` semantics rather than
-    /// the once-per-session behavior, which is the hole this extraction closes.
+    /// Dedup is per module through the typed session-warning store,
+    /// fingerprinted on the module name: F12 on `strict` does not silence
+    /// `warnings`, while a repeat on the same module stays silent. A failed
+    /// send rolls the retention back, so the notice can retry next time.
     fn emit_core_module_notice_once(&self, module_name: &str) -> bool {
-        if self.core_module_notice_shown.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            return false;
-        }
-        let _ = self.log_message(
-            crate::runtime::window::MessageType::Info,
-            &format!(
-                "'{module_name}' is a Perl core module. \
-                 No source file is available for goto-definition. \
-                 Use hover (K) to view documentation."
+        let decision = self.session_warning_dedup.emit_once_with(
+            super::super::session_warning_dedup::SessionWarningFamily::CoreModuleNotice,
+            super::super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
+                super::super::session_warning_dedup::SessionWarningCode::CoreModuleGotoDefNotice,
+                super::super::session_warning_dedup::SessionWarningSubjectTag::CoreModuleName,
+                module_name,
             ),
+            || {
+                self.log_message(
+                    crate::runtime::window::MessageType::Info,
+                    &format!(
+                        "'{module_name}' is a Perl core module. \
+                         No source file is available for goto-definition. \
+                         Use hover (K) to view documentation."
+                    ),
+                )
+                .is_ok()
+            },
         );
-        true
+        !matches!(decision, super::super::session_warning_dedup::SessionWarningDecision::Suppress)
     }
 
     /// Handle textDocument/definition request
@@ -2236,13 +2243,12 @@ impl LspServer {
                             // (visible in the VSCode Output panel) so users can discover that
                             // hover (K) shows documentation for core modules.
                             //
-                            // Once per session: goto-definition is a per-request action, so an
-                            // unguarded notice repeats every time the user presses F12 on
-                            // `use strict`, filling the Output panel with a line they have
-                            // already read. The fact - "this module has no source" - does not
-                            // change between invocations, so neither does the need to say so
-                            // (#16551). The per-module detail stays in the debug log, which is
-                            // not user-facing, so nothing is actually lost.
+                            // Once per module per session: goto-definition is a
+                            // per-request action, so an unguarded notice repeats every
+                            // time the user presses F12 on `use strict`, filling the
+                            // Output panel with a line they have already read. A
+                            // different core module still gets its own notice, since
+                            // its name is the subject the user jumped on (#16666).
                             self.emit_core_module_notice_once(&module_name);
                             tracing::debug!(
                                 module = %module_name,
@@ -5905,36 +5911,137 @@ mod tests {
     }
 
     /// The core-module goto-definition notice must reach the output channel
-    /// once per server session, not once per F12 (#16551).
+    /// once per module per server session, not once per F12 (#16551, #16666).
     ///
     /// `window/logMessage` is a per-request action path, so an unguarded notice
     /// repeats on every jump to `use strict` and trains the user to ignore the
-    /// channel that carries it.
+    /// channel that carries it. A different core module is a different subject
+    /// and must still get its own notice.
     ///
     /// Drives [`LspServer::emit_core_module_notice_once`] — the unit that
-    /// actually enforces the guard — rather than the flag behind it, so deleting
+    /// actually enforces the guard — rather than the store behind it, so deleting
     /// the guard fails this test.
     #[test]
-    fn the_core_module_notice_is_emitted_once_per_server_session() {
+    fn the_core_module_notice_is_emitted_once_per_module() {
         let first = crate::runtime::LspServer::new();
         assert!(
             first.emit_core_module_notice_once("strict"),
-            "the first notice in a session must be emitted"
+            "the first notice for a module must be emitted"
         );
         assert!(
             !first.emit_core_module_notice_once("strict"),
             "a second F12 on the same module must stay silent, not repeat the notice"
         );
         assert!(
-            !first.emit_core_module_notice_once("warnings"),
-            "the guard is per session, not per module: a different core module is also silent"
+            first.emit_core_module_notice_once("warnings"),
+            "the guard is per module, not per session: a different core module must emit"
         );
+        assert!(!first.emit_core_module_notice_once("warnings"));
 
         let second = crate::runtime::LspServer::new();
         assert!(
             second.emit_core_module_notice_once("strict"),
             "the guard is instance-level: a second server session must still emit"
         );
+    }
+
+    // Wire-level falsifiers: drive real `textDocument/definition` requests
+    // through captured output and count `window/logMessage` notices.
+
+    struct CoreModuleCaptureWriter(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CoreModuleCaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn core_module_server_and_notices()
+    -> (crate::runtime::LspServer, std::sync::Arc<parking_lot::Mutex<Vec<u8>>>) {
+        let bytes = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let server =
+            crate::runtime::LspServer::with_output(std::sync::Arc::new(parking_lot::Mutex::new(
+                Box::new(CoreModuleCaptureWriter(std::sync::Arc::clone(&bytes)))
+                    as Box<dyn std::io::Write + Send>,
+            )));
+        (server, bytes)
+    }
+
+    fn core_module_log_messages(
+        bytes: &std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let raw = bytes.lock().clone();
+        let mut framer = perl_lsp_rs_core::transport::framing::ContentLengthFramer::new();
+        framer.push(&raw);
+        let mut texts = Vec::new();
+        while let Some(body) = framer.try_next()? {
+            let message: Value = serde_json::from_slice(&body)?;
+            if message.get("method").and_then(Value::as_str) == Some("window/logMessage")
+                && let Some(text) = message.pointer("/params/message").and_then(Value::as_str)
+                && text.contains("is a Perl core module")
+            {
+                texts.push(text.to_string());
+            }
+        }
+        Ok(texts)
+    }
+
+    fn goto_core_module(
+        server: &crate::runtime::LspServer,
+        uri: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let result = server.handle_definition(Some(json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character}
+        })))?;
+        assert!(
+            result.as_ref().is_some_and(|v| v.is_null() || v.as_array().is_some_and(Vec::is_empty)),
+            "goto-def on a core module must return empty, got: {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn core_module_goto_def_notice_emits_once_across_two_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, bytes) = core_module_server_and_notices();
+        let uri = "file:///core-module-once.pl";
+        server.test_apply_did_open(uri, "use strict;\nuse warnings;\n1;\n", 1)?;
+        goto_core_module(&server, uri, 0, 5)?;
+        goto_core_module(&server, uri, 0, 5)?;
+        drop(server);
+        let texts = core_module_log_messages(&bytes)?;
+        assert_eq!(texts.len(), 1, "two F12 on strict must emit one notice: {texts:?}");
+        assert!(texts[0].contains("'strict'"), "{texts:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn core_module_notice_is_per_module_not_session_wide() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (server, bytes) = core_module_server_and_notices();
+        let uri = "file:///core-module-per-module.pl";
+        server.test_apply_did_open(uri, "use strict;\nuse warnings;\n1;\n", 1)?;
+        goto_core_module(&server, uri, 0, 5)?;
+        goto_core_module(&server, uri, 0, 5)?;
+        goto_core_module(&server, uri, 1, 5)?;
+        goto_core_module(&server, uri, 1, 5)?;
+        drop(server);
+        let texts = core_module_log_messages(&bytes)?;
+        assert_eq!(
+            texts.len(),
+            2,
+            "strict x2 + warnings x2 must emit exactly 2 notices: {texts:?}"
+        );
+        assert!(texts.iter().any(|t| t.contains("'strict'")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.contains("'warnings'")), "{texts:?}");
+        Ok(())
     }
 
     /// #17158: goto-definition with the cursor on a hash-key word inside a
