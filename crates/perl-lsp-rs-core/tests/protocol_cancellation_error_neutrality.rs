@@ -25,7 +25,6 @@ use perl_lsp_rs_core::protocol::{
 use perl_lsp_rs_core::runtime::cancellation::{
     CancellationError, CancellationRegistry, PerlLspCancellationToken,
 };
-use perl_lsp_rs_core::transport::FramingError;
 use perl_parser_core::ErrorCategory;
 
 // ---------------------------------------------------------------------------
@@ -53,12 +52,19 @@ impl<T: perl_parser_core::ErrorClass> ErrorClassProbe<T> {
 // These are `const` items on purpose: reintroducing the trait impl must fail
 // the build of this target, not merely fail an assertion at run time.
 
-/// Positive control, same crate and same trait as the subject. Without it the
-/// neutrality assertion below would also hold if the probe were simply broken
-/// and always answered `false`.
+// A dedicated control must not depend on another generic error retaining the
+// very coupling its own extraction removes (#13996).
+struct ClassifiedControl;
+
+impl perl_parser_core::ErrorClass for ClassifiedControl {
+    fn error_class(&self) -> ErrorCategory {
+        ErrorCategory::Protocol
+    }
+}
+
 const _: () = assert!(
-    ErrorClassProbe::<FramingError>::IMPLEMENTS_ERROR_CLASS,
-    "probe is broken: FramingError does implement ErrorClass and must be reported"
+    ErrorClassProbe::<ClassifiedControl>::IMPLEMENTS_ERROR_CLASS,
+    "probe must detect the test-local positive control"
 );
 
 /// The subject: `CancellationError` must stay a language-neutral runtime fact

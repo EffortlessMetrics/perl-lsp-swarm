@@ -7,6 +7,7 @@
 //! `perl-lsp-rs-core::transport` in Wave G3 (#4535).
 
 pub mod framing;
+mod framing_error;
 pub mod incoming;
 mod incoming_error;
 

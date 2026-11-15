@@ -8,6 +8,7 @@ use perl_dap::peer_protocol::PeerFrameError;
 use perl_dap::security::SecurityError;
 use perl_dap::stack::{FixedOriginStackParseError, StackParseError};
 use perl_dap::variables::{FixedOriginVariableParseError, VariableParseError};
+use perl_lsp_rs_core::protocol::framing_error_category;
 use perl_lsp_rs_core::transport::framing::{FramingError, MAX_FRAME_SIZE};
 use perl_parser_core::path_security::WorkspacePathError;
 use perl_parser_core::{ErrorCategory, ErrorClass};
@@ -47,7 +48,13 @@ fn expected_security_class(error: &SecurityError) -> ErrorCategory {
 
 fn expected_peer_frame_class(error: &PeerFrameError) -> ErrorCategory {
     match error {
-        PeerFrameError::Framing(inner) => inner.error_class(),
+        PeerFrameError::Framing(inner) => match inner {
+            FramingError::InvalidHeader
+            | FramingError::InvalidHeaderUtf8
+            | FramingError::MissingContentLength
+            | FramingError::InvalidContentLength => ErrorCategory::Protocol,
+            FramingError::FrameTooLarge { .. } => ErrorCategory::ResourceLimit,
+        },
         PeerFrameError::Json(_) => ErrorCategory::Protocol,
     }
 }
@@ -125,9 +132,9 @@ fn peer_frame_error_current_variant_matrix() {
 fn wrapped_oversized_frame_retains_resource_limit() {
     let inner = FramingError::FrameTooLarge { len: MAX_FRAME_SIZE + 1 };
     let error = PeerFrameError::Framing(inner.clone());
-    assert_eq!(inner.error_class(), ErrorCategory::ResourceLimit);
+    assert_eq!(framing_error_category(&inner), ErrorCategory::ResourceLimit);
     assert_eq!(error.error_class(), ErrorCategory::ResourceLimit);
-    assert_eq!(error.error_class(), inner.error_class());
+    assert_eq!(error.error_class(), framing_error_category(&inner));
 }
 
 #[test]
