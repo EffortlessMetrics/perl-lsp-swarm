@@ -146,6 +146,7 @@ describe('navigation command implementations', () => {
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       'Perl LSP workspace status\nProduct: perl-lsp\nServer state: running\nWorkspace files: 50000+ (scan limited)\nWorkspace index: legacy server (enhanced readiness unavailable)',
+      { modal: true },
       'Run Health Check',
       'Show Output',
       'Open Actions',
