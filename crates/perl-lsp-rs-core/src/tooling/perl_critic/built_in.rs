@@ -208,7 +208,7 @@ fn missing_use_statement_violation(
     // importer unless disabled via `-no_strict` / `-no_warnings` / `-no_pragmas`.
     // Treat that as satisfying the pragma so ordinary Test2 tests don't get a
     // false "missing use strict/warnings" finding.
-    if crate::providers::testing::test2::Test2Facts::from_source(content).provides_pragma(feature) {
+    if perl_semantic_analyzer::Test2Facts::from_source(content).provides_pragma(feature) {
         return Vec::new();
     }
 

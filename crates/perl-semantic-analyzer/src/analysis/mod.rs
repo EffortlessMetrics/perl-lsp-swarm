@@ -60,6 +60,8 @@ pub mod scope_analyzer;
 pub mod semantic;
 /// Symbol extraction and symbol table construction.
 pub mod symbol;
+/// Shared compatibility analysis for Test2 source imports.
+pub(crate) mod test2;
 /// Rich type facts for expression and receiver inference.
 pub mod type_facts;
 /// Type inference engine for Perl variable analysis.

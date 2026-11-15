@@ -828,7 +828,7 @@ fn test2_limited_analysis_is_distinguishable_from_a_proven_empty_import() {
 
 #[test]
 fn test2_facts_propagate_limited_analysis_across_a_file() {
-    let analyzed = Test2Facts::from_source_with_analysis(
+    let analyzed = analyze_test2_source(
         "use Test2::V0;\nuse Test2::Tools::Compare qw/is/, ok => {-as => 'my_ok';\n",
     );
     assert!(analyzed.facts.uses_test2());
@@ -836,7 +836,7 @@ fn test2_facts_propagate_limited_analysis_across_a_file() {
     // The clean statement's facts survive; the failed one contributes nothing.
     assert!(analyzed.facts.is_imported("ok"), "the clean Test2::V0 bundle still resolves");
 
-    let clean = Test2Facts::from_source_with_analysis("use Test2::V0;\n");
+    let clean = analyze_test2_source("use Test2::V0;\n");
     assert!(!clean.analysis_limited);
 }
 

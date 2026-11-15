@@ -2562,7 +2562,7 @@ fn has_use_statement(ast: &Node, feature: &str) -> bool {
 /// unless disabled via `-no_strict` / `-no_warnings` / `-no_pragmas`, so an
 /// ordinary Test2 test must not trip the require-use-strict/warnings rules.
 fn test2_provides_pragma(content: &str, feature: &str) -> bool {
-    crate::providers::testing::test2::Test2Facts::from_source(content).provides_pragma(feature)
+    perl_semantic_analyzer::Test2Facts::from_source(content).provides_pragma(feature)
 }
 
 fn missing_pod_sections(source: &str) -> Vec<MissingPodSection> {

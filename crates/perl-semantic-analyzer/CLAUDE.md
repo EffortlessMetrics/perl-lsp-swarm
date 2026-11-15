@@ -43,6 +43,7 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 | `symbol` | `SymbolExtractor`, `SymbolTable`, `Symbol`, `SymbolReference`, `Scope`, `ScopeKind`, `ScopeId` | Symbol extraction and symbol table construction from AST |
 | `scope_analyzer` | `ScopeAnalyzer`, `ScopeIssue`, `IssueKind` | Scope issue detection (unused/undeclared/shadowed variables) |
 | `unreachable_code` / `unreachable_code_disposition` | `collect_unreachable_spans`, existing `Pl406*` disposition types (crate-root exports) | One protocol-neutral local flow walk and its canonical traversal coverage; LSP and native critic own output projection |
+| `test2` (private; selected root exports) | `Test2Facts`, `Test2FactsAnalysis`, `Test2Pragmas`, `Test2ResolvedImport` | Existing Test2 import/pragma compatibility reader shared by completion and critic; canonical adapter migration remains #4907/#6946/#6948/#7661/#6981 |
 | `type_inference` | `TypeInferenceEngine`, `TypeEnvironment`, `PerlType`, `ScalarType`, `TypeConstraint` | Type inference with scoped environments |
 | `declaration` | `DeclarationProvider`, `LocationLink`, `ParentMap` | Go-to-declaration with parent-map AST traversal |
 | `dead_code_detector` | `DeadCodeDetector`, `DeadCode`, `DeadCodeType`, `DeadCodeAnalysis`, `DeadCodeStats` | Workspace-level dead code detection (non-WASM only) |

@@ -7276,36 +7276,13 @@ pub fn perl_lsp_rs_core::providers::testing::tap::focus_subtest(report: &perl_ls
 pub fn perl_lsp_rs_core::providers::testing::tap::parse_tap(output: &str) -> perl_lsp_rs_core::providers::testing::tap::TapReport
 pub fn perl_lsp_rs_core::providers::testing::tap::parse_tap_facts(output: &str) -> perl_test_facts::TapReport
 pub mod perl_lsp_rs_core::providers::testing::test2
-pub struct perl_lsp_rs_core::providers::testing::test2::ResolvedImport
-pub perl_lsp_rs_core::providers::testing::test2::ResolvedImport::pragmas: core::option::Option<perl_lsp_rs_core::providers::testing::test2::Test2Pragmas>
-pub perl_lsp_rs_core::providers::testing::test2::ResolvedImport::symbols: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub fn perl_lsp_rs_core::providers::testing::test2::ResolvedImport::clone(&self) -> perl_lsp_rs_core::providers::testing::test2::ResolvedImport
-pub fn perl_lsp_rs_core::providers::testing::test2::ResolvedImport::eq(&self, other: &perl_lsp_rs_core::providers::testing::test2::ResolvedImport) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::ResolvedImport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::testing::test2::Test2Facts
-pub perl_lsp_rs_core::providers::testing::test2::Test2Facts::imported_symbols: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub perl_lsp_rs_core::providers::testing::test2::Test2Facts::modules: alloc::vec::Vec<alloc::string::String>
-pub perl_lsp_rs_core::providers::testing::test2::Test2Facts::strict: bool
-pub perl_lsp_rs_core::providers::testing::test2::Test2Facts::warnings: bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::from_source(source: &str) -> perl_lsp_rs_core::providers::testing::test2::Test2Facts
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::is_imported(&self, name: &str) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::provides_pragma(&self, feature: &str) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::uses_test2(&self) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::uses_test2_bundle(&self) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::clone(&self) -> perl_lsp_rs_core::providers::testing::test2::Test2Facts
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::eq(&self, other: &perl_lsp_rs_core::providers::testing::test2::Test2Facts) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::default() -> perl_lsp_rs_core::providers::testing::test2::Test2Facts
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::testing::test2::Test2Pragmas
-pub perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::strict: bool
-pub perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::warnings: bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::clone(&self) -> perl_lsp_rs_core::providers::testing::test2::Test2Pragmas
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::eq(&self, other: &perl_lsp_rs_core::providers::testing::test2::Test2Pragmas) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_lsp_rs_core::providers::testing::test2::is_test2_bundle(module: &str) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::is_test2_module(module: &str) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::module_default_exports(module: &str) -> core::option::Option<&'static [&'static str]>
-pub fn perl_lsp_rs_core::providers::testing::test2::resolve_import(module: &str, raw_args: &str) -> core::option::Option<perl_lsp_rs_core::providers::testing::test2::ResolvedImport>
+pub use perl_lsp_rs_core::providers::testing::test2::ResolvedImport
+pub use perl_lsp_rs_core::providers::testing::test2::Test2Facts
+pub use perl_lsp_rs_core::providers::testing::test2::Test2Pragmas
+pub use perl_lsp_rs_core::providers::testing::test2::is_test2_bundle
+pub use perl_lsp_rs_core::providers::testing::test2::is_test2_module
+pub use perl_lsp_rs_core::providers::testing::test2::module_default_exports
+pub use perl_lsp_rs_core::providers::testing::test2::resolve_import
 pub mod perl_lsp_rs_core::providers::type_hierarchy
 pub enum perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchySymbolKind
 pub perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchySymbolKind::Class = 5

@@ -74,6 +74,12 @@ pub use analysis::receiver_facts;
 pub use analysis::scope_analyzer;
 pub use analysis::semantic;
 pub use analysis::symbol;
+/// Shared Test2 compatibility source facts and import resolution.
+pub use analysis::test2::{
+    ResolvedImport as Test2ResolvedImport, Test2Facts, Test2FactsAnalysis, Test2Pragmas,
+    analyze_test2_source, is_test2_bundle, is_test2_module,
+    module_default_exports as test2_module_default_exports, resolve_import as resolve_test2_import,
+};
 pub use analysis::type_facts;
 pub use analysis::type_inference;
 

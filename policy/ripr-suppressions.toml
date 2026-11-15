@@ -1971,7 +1971,7 @@ expires = "2027-01-06"
 [[suppress]]
 id = "ripr-suppress-test2-v1-import-scanner-predicates"
 kind = "predicate_infection_untraceable"
-paths = ["crates/perl-lsp-rs-core/src/providers/testing/test2.rs"]
+paths = ["crates/perl-semantic-analyzer/src/analysis/test2.rs"]
 classification = ["weakly_exposed"]
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1429"
