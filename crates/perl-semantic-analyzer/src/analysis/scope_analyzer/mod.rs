@@ -2414,11 +2414,7 @@ pub(super) fn is_builtin_global(sigil: &str, name: &str) -> bool {
                 // Numbered capture variables ($1, $2, etc.)
                 // Note: $0-$9 are already handled in the match above, but this covers $10+
                 // Optimization: use byte check to avoid utf-8 decoding
-                if !name.is_empty() && name.as_bytes().iter().all(|c| c.is_ascii_digit()) {
-                    return true;
-                }
-
-                false
+                !name.is_empty() && name.as_bytes().iter().all(|c| c.is_ascii_digit())
             }
         },
         b'@' => matches!(name, "_" | "+" | "-" | "INC" | "ARGV" | "EXPORT" | "EXPORT_OK" | "ISA"),

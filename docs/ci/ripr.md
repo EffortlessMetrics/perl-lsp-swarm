@@ -227,14 +227,19 @@ never infer success from emptiness.
   sorting and truncation, so excluded seams cannot crowd out a production seam
   from the named-evidence list. Findings with no resolvable path are never
   classified non-production (fail closed).
-- In CI, review guidance has an explicit timeout. When the guidance pass does
-  not finish, the harness emits an `incomplete` receipt that names the
-  gate-actionable seams (`reachable_unrevealed` / `no_static_path`) from the
-  completed diff-scoped raw check, so the quality gate blocks on named
-  file/line/seam evidence instead of an unnameable count (#10054). The
-  suggested-proof text on these fallback names is generic, not
-  analyzer-derived, and the receipt warning says so. Only when the raw check
-  is also unavailable does the gate report the missing repair packet.
+- In CI, the completed diff-scoped raw check owns the required new-gap verdict;
+  review guidance is advisory. Timeout, absence, or an oversized guidance pass
+  leaves an `incomplete` advisory receipt but adds no independent blocker.
+  Actionable raw gaps still block on named file/line/seam evidence when fallback
+  guidance can supply it. Missing, stale, malformed, or required-scope partial
+  analysis remains `NOT_PROVEN` and blocks, including every limitation that names
+  a Rust path. A bounded `language_scope_unsupported` limitation confined to a
+  non-Rust file, or RIPR 0.11.0's `language_adapter_unavailable` limitation for
+  the named Python-preview absence, does not add a blocker when the required raw
+  gap count is zero; its reason remains visible rather than being relabelled as
+  clean. Other adapter-unavailable limitations still block. Fallback
+  suggested-proof text is generic, not analyzer-derived, and the advisory receipt
+  warning says so.
 - Emits non-blocking warning annotations from `comments[]` only.
 - Produces mutation-routing evidence under
   `target/xtask/impacted-evidence/`.
@@ -302,15 +307,17 @@ burn-down closes.
 
 ## Toolchain
 
-`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.10.0` as
-the current advisory version for this lane.
+`rust-toolchain.toml` pins `1.100.0`. The workflow installs `ripr` `0.11.0` as
+the current advisory version for this lane, built from
+`https://github.com/EffortlessMetrics/ripr-swarm.git` at revision
+`9b9143798615bbf1a14c2dbd23a2359a29942078`.
 
 ---
 
 ## Running locally
 
 ```bash
-cargo install ripr --version 0.10.0 --locked
+cargo install ripr --git https://github.com/EffortlessMetrics/ripr-swarm.git --rev 9b9143798615bbf1a14c2dbd23a2359a29942078 --locked
 ripr doctor
 cargo xtask ripr-pr --base origin/HEAD --head HEAD --pr-head "$PR_HEAD_SHA"
 cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json

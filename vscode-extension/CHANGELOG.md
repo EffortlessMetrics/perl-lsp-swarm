@@ -134,8 +134,6 @@ All notable changes to the Perl Language Server extension will be documented in 
   granted. This prevents untrusted workspace content from triggering binary
   downloads or spawning server processes. (#4631)
 
-## [0.18.0] - 2026-11-03
-
 ### Language intelligence
 
 #### Fixed

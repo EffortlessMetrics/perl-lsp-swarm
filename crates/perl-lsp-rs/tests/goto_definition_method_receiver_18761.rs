@@ -119,10 +119,35 @@ sub restock {
     return $count;
 }
 
+1;
+"#;
+
+/// The constructor-bound call lives in a different package and file from the
+/// class, so no same-file `sub restock` can answer the hover on its own.
+const HOVER_SHOP_PM: &str = r#"package Shop;
+use Inventory;
+
 sub check {
     my ($self) = @_;
     my $inv = Inventory->new;
     return $inv->restock(5);
+}
+
+1;
+"#;
+
+/// A sub-param receiver whose caller package declares a same-named decoy
+/// `sub in_stock`: the old current-package fallback answered exactly that sub.
+const ORDER_PM_LOCAL_IN_STOCK: &str = r#"package Store::Order;
+
+sub in_stock {
+    my ($self) = @_;
+    return 0;
+}
+
+sub add_item {
+    my ($self, $product) = @_;
+    return $product->in_stock;
 }
 
 1;
@@ -312,7 +337,7 @@ fn untyped_chain_refuses_instead_of_same_named_enclosing_sub() -> TestResult {
 #[test]
 fn sub_param_receiver_refuses_on_token_and_on_arrow() -> TestResult {
     let workspace = TempWorkspace::new()?;
-    workspace.write("lib/Store/Order.pm", ORDER_PM)?;
+    workspace.write("lib/Store/Order.pm", ORDER_PM_LOCAL_IN_STOCK)?;
     workspace.write("lib/Store/Inventory.pm", INVENTORY_PM)?;
 
     let mut harness = LspHarness::new();
@@ -320,18 +345,21 @@ fn sub_param_receiver_refuses_on_token_and_on_arrow() -> TestResult {
     open_files(
         &mut harness,
         &workspace,
-        &[("lib/Store/Order.pm", ORDER_PM), ("lib/Store/Inventory.pm", INVENTORY_PM)],
+        &[
+            ("lib/Store/Order.pm", ORDER_PM_LOCAL_IN_STOCK),
+            ("lib/Store/Inventory.pm", INVENTORY_PM),
+        ],
     )?;
     wait_ready(&mut harness, &workspace, "in_stock", "lib/Store/Inventory.pm")?;
 
     let order_uri = workspace.uri("lib/Store/Order.pm");
-    let (line, character) = pos_of(ORDER_PM, "return $product->in_stock", 0)?;
+    let (line, character) = pos_of(ORDER_PM_LOCAL_IN_STOCK, "return $product->in_stock", 0)?;
 
     let on_token =
         goto_def(&mut harness, &order_uri, line, character + "return $product->".len() as u32)?;
     assert_refusal(
         &on_token,
-        "a sub-param receiver must refuse even though Store::Inventory::in_stock exists",
+        "a sub-param receiver must refuse rather than answer the caller package's same-named `sub in_stock`",
     );
 
     // The `>` of the arrow: `return $product->in_stock` — the arrow starts
@@ -459,48 +487,49 @@ fn heredoc_cursor_refuses_while_same_call_in_code_resolves() -> TestResult {
 fn hover_on_constructor_bound_receiver_shows_signature_card() -> TestResult {
     let workspace = TempWorkspace::new()?;
     workspace.write("lib/Inventory.pm", HOVER_INVENTORY_PM)?;
+    workspace.write("lib/Shop.pm", HOVER_SHOP_PM)?;
 
     let mut harness = LspHarness::new();
     harness.initialize_with_root(&workspace.root_uri, None)?;
-    open_files(&mut harness, &workspace, &[("lib/Inventory.pm", HOVER_INVENTORY_PM)])?;
+    open_files(
+        &mut harness,
+        &workspace,
+        &[("lib/Inventory.pm", HOVER_INVENTORY_PM), ("lib/Shop.pm", HOVER_SHOP_PM)],
+    )?;
     wait_ready(&mut harness, &workspace, "restock", "lib/Inventory.pm")?;
 
-    let inventory_uri = workspace.uri("lib/Inventory.pm");
-    let (line, character) = pos_of(HOVER_INVENTORY_PM, "$inv->restock", 0)?;
-    let on_method =
-        hover_at(&mut harness, &inventory_uri, line, character + "$inv->".len() as u32)?;
+    let shop_uri = workspace.uri("lib/Shop.pm");
+    let (line, character) = pos_of(HOVER_SHOP_PM, "$inv->restock", 0)?;
+    let on_method = hover_at(&mut harness, &shop_uri, line, character + "$inv->".len() as u32)?;
     let typed_markdown = hover_markdown(&on_method);
     assert!(
-        !typed_markdown.is_empty(),
-        "hover on a constructor-bound receiver call must answer, got null"
-    );
-    assert_ne!(
-        typed_markdown.trim(),
-        "**Perl**: `restock`",
-        "constructor-bound receiver hover must not be the generic token card, got: {typed_markdown:?}"
-    );
-    assert!(
-        typed_markdown.contains("restock"),
-        "the card must still name the method, got: {typed_markdown:?}"
+        typed_markdown.contains("Inventory::restock"),
+        "a constructor-bound receiver must reach Inventory's method card, got: {typed_markdown:?}"
     );
 
-    // Slice boundary: the untyped receiver (`$self->in_stock` in Inventory.pm's
-    // lookup) keeps the generic card — richer untyped cards are #9047.
+    // Slice boundary: an untyped sub-param receiver (`$product->in_stock`)
+    // keeps exactly the generic token card even though Store::Inventory
+    // declares `in_stock` — richer untyped cards are #9047.
     let workspace2 = TempWorkspace::new()?;
+    workspace2.write("lib/Store/Order.pm", ORDER_PM)?;
     workspace2.write("lib/Store/Inventory.pm", INVENTORY_PM)?;
     let mut harness2 = LspHarness::new();
     harness2.initialize_with_root(&workspace2.root_uri, None)?;
-    open_files(&mut harness2, &workspace2, &[("lib/Store/Inventory.pm", INVENTORY_PM)])?;
+    open_files(
+        &mut harness2,
+        &workspace2,
+        &[("lib/Store/Order.pm", ORDER_PM), ("lib/Store/Inventory.pm", INVENTORY_PM)],
+    )?;
     wait_ready(&mut harness2, &workspace2, "in_stock", "lib/Store/Inventory.pm")?;
 
-    let inventory2_uri = workspace2.uri("lib/Store/Inventory.pm");
-    let (line2, character2) = pos_of(INVENTORY_PM, "$self->in_stock", 0)?;
+    let order_uri = workspace2.uri("lib/Store/Order.pm");
+    let (line2, character2) = pos_of(ORDER_PM, "$product->in_stock", 0)?;
     let untyped =
-        hover_at(&mut harness2, &inventory2_uri, line2, character2 + "$self->".len() as u32)?;
-    let untyped_markdown = hover_markdown(&untyped);
-    assert!(
-        untyped_markdown.contains("in_stock"),
-        "untyped receiver hover must still answer something about the token, got: {untyped_markdown:?}"
+        hover_at(&mut harness2, &order_uri, line2, character2 + "$product->".len() as u32)?;
+    assert_eq!(
+        hover_markdown(&untyped).trim(),
+        "**Perl**: `in_stock`",
+        "an untyped receiver must keep the generic token card"
     );
     Ok(())
 }

@@ -2073,20 +2073,21 @@ impl LspServer {
     ///
     /// Returns `None` when the target is not an open document, so the caller
     /// keeps the existing provider (disk) path for unopened files. For an
-    /// open document the analyzed subject is the in-memory text and its
-    /// current-generation parse snapshot, bound to the accepted critic
-    /// snapshot captured for that document — the same subject composition
-    /// pull diagnostics use. A run that is not publishable, or whose subject
-    /// moved while rules evaluated, yields an explicit non-success `status`
-    /// with no violations rather than stale findings.
+    /// open document the native run is taken from the pull-diagnostics
+    /// composition itself ([`PullDiagnosticsProvider::critic_outcome_for_document`])
+    /// over the in-memory text, its current-generation parse snapshot and the
+    /// same pull context, so the command and `textDocument/diagnostic` return
+    /// the same findings for one buffer generation. A run that is not
+    /// publishable, or whose document or accepted policy moved while rules
+    /// evaluated, yields an explicit non-success `status` with no violations
+    /// rather than stale findings.
+    ///
+    /// [`PullDiagnosticsProvider::critic_outcome_for_document`]: crate::features::diagnostics::PullDiagnosticsProvider::critic_outcome_for_document
     fn run_critic_for_open_document(
         &self,
         arguments: &[Value],
     ) -> Option<Result<Option<Value>, JsonRpcError>> {
-        use perl_lsp_rs_core::tooling::perl_critic::{
-            NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject, RunGate,
-            critic_source_identity_for_uri,
-        };
+        use crate::features::diagnostics::PullCriticOutcome;
 
         let raw_target = arguments.first()?.as_str()?;
         // Same argument-length rejection as the provider disk path
@@ -2242,7 +2243,7 @@ impl LspServer {
         let Some(parsed) = doc.current_parsed() else {
             return stale_result("stale", "open document has no current-generation parse snapshot");
         };
-        let Some(ast) = parsed.ast().cloned() else {
+        if parsed.ast().is_none() {
             // No AST: the disk provider path reports a Syntax::ParseError
             // violation for this case; emit the equivalent here.
             if parsed.parse_errors().is_empty() {
@@ -2270,87 +2271,74 @@ impl LspServer {
                 "violationCount": violation_count,
                 "analyzerUsed": "native"
             }))));
-        };
-        let source_text: std::sync::Arc<str> = std::sync::Arc::from(parsed.source());
+        }
+        // A rejected ranged change leaves last-good text that no longer claims
+        // currentness; pull diagnostics refuse it too (#17752).
+        if doc.full_sync_required() {
+            return stale_result("stale", "open document requires a full resync before analysis");
+        }
         let generation = doc.current_generation();
         let document_instance = std::sync::Arc::clone(&doc.generation);
-        let diagnostic_analysis = parsed.diagnostic_analysis();
-
-        let snapshot = self.capture_accepted_critic(&doc_uri);
-        let documents_handle = std::sync::Arc::clone(&self.documents);
-        let gate_uri = doc_uri.clone();
-        let gate_snapshot = snapshot.clone();
-        let is_current = || {
-            let doc_still_current = {
-                let documents = documents_handle.lock();
-                documents.get(&gate_uri).is_some_and(|live| {
-                    std::sync::Arc::ptr_eq(&live.generation, &document_instance)
-                        && live.current_generation() == generation
-                })
-            };
-            doc_still_current && self.capture_accepted_critic(&gate_uri) == gate_snapshot
+        let document_is_current = || {
+            let documents = self.documents.lock();
+            documents.get(&doc_uri).is_some_and(|live| {
+                std::sync::Arc::ptr_eq(&live.generation, &document_instance)
+                    && live.current_generation() == generation
+            })
         };
 
-        // Merged lint contributors (#11918): pull diagnostics feed the
-        // service the core diagnostics' critic-overlap observations, so a
-        // built-in finding (e.g. PL603 for `system($cmd)`) merges with its
-        // native alias into one logical row. Compute the same core set for
-        // this document and offer its observations, for pull parity.
-        let overlap_observations = {
-            use perl_lsp_rs_core::providers::diagnostics::{
-                DiagnosticsProvider, critic_overlap_observations,
-            };
-            let provider = match parsed.regex_analysis().cloned() {
-                Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
-                None => DiagnosticsProvider::new(),
-            };
-            let core_diagnostics = provider.get_diagnostics_with_path_with_analysis(
-                &ast,
-                parsed.parse_errors(),
-                &source_text,
-                None,
-                &[],
-                Some(&canonical_doc_path),
-                None,
-                diagnostic_analysis.as_deref(),
-            );
-            critic_overlap_observations(&core_diagnostics)
+        // One Critic answer per buffer generation (#6969): build the same
+        // pull-diagnostics context (owning folder, accepted Critic snapshot and
+        // its live currentness authority, include paths, project facts) and
+        // take the native run from the pull composition itself, rather than
+        // assembling a second subject here.
+        let context = match self.pull_diagnostics_orchestrator.build_context(self, &doc_uri) {
+            Ok(context) => context,
+            Err(error) => return Some(Err(error)),
+        };
+        let Ok(lsp_uri) = doc_uri.parse::<lsp_types::Uri>() else {
+            return stale_result("stale", "open document URI cannot be analyzed");
+        };
+        let outcome = crate::features::diagnostics::PullDiagnosticsProvider::new()
+            .critic_outcome_for_document(&lsp_uri, &doc.text, &context, Some(&doc));
+
+        let findings = match outcome {
+            PullCriticOutcome::Current(findings) if document_is_current() => findings,
+            PullCriticOutcome::Withheld { cancelled: true } => {
+                return stale_result(
+                    "cancelled",
+                    "native critic run is not publishable for current text",
+                );
+            }
+            PullCriticOutcome::NotEvaluated => {
+                return stale_result("stale", "open document parse produced no AST");
+            }
+            PullCriticOutcome::Current(_) | PullCriticOutcome::Withheld { cancelled: false } => {
+                return stale_result(
+                    "stale",
+                    "native critic run is not publishable for current text",
+                );
+            }
         };
 
-        let subject = NativeCriticSubject::accepted(
-            &doc_uri,
-            critic_source_identity_for_uri(&doc_uri, generation),
-            &ast,
-            &source_text,
-            snapshot.state().clone(),
-            overlap_observations,
-            RunGate::open(),
-            RunGate::new(&is_current),
-        );
-        let run = NativeCriticService::analyze(match diagnostic_analysis.as_deref() {
-            Some(analysis) => subject.with_analysis(analysis),
-            None => subject,
-        });
-
-        if !run.is_publishable() || !is_current() {
-            let status = match run.completeness() {
-                NativeCriticRunCompleteness::Cancelled => "cancelled",
-                _ => "stale",
-            };
-            return stale_result(status, "native critic run is not publishable for current text");
-        }
-
-        let violations: Vec<Value> = run
-            .findings()
+        // Each row is exactly the one the pull report shows for the finding
+        // (code, message, position); severity and explanation stay the
+        // finding's native Critic values.
+        let violations: Vec<Value> = findings
             .iter()
-            .map(|finding| {
+            .map(|row| {
+                let policy = match &row.shown.code {
+                    Some(lsp_types::NumberOrString::String(code)) => code.clone(),
+                    Some(lsp_types::NumberOrString::Number(code)) => code.to_string(),
+                    None => row.finding.public_code().to_string(),
+                };
                 json!({
-                    "policy": finding.public_code(),
-                    "description": finding.user_visible_message(),
-                    "explanation": finding.explanation().unwrap_or_default(),
-                    "severity": finding.severity() as u8,
-                    "line": (finding.range().start.line + 1) as usize,
-                    "column": (finding.range().start.column + 1) as usize,
+                    "policy": policy,
+                    "description": row.shown.message,
+                    "explanation": row.finding.explanation().unwrap_or_default(),
+                    "severity": row.finding.severity() as u8,
+                    "line": row.shown.range.start.line as usize + 1,
+                    "column": row.shown.range.start.character as usize + 1,
                     "file": display_file
                 })
             })

@@ -2,7 +2,10 @@ name: Triage Issues
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # every 6 hours (staleness measured in days, hourly is wasteful)
+    # Staleness is measured in days, so a 12-hour cadence still surfaces a
+    # newly stale issue within half a day while halving the scheduled runner
+    # cost. The job is maintenance, not a merge gate.
+    - cron: '0 */12 * * *'
   workflow_dispatch:
 
 permissions:

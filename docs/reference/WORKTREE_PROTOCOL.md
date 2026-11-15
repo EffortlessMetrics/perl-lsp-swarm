@@ -111,25 +111,32 @@ The worktree must be on a named candidate branch, not `main` and not detached HE
 
 ## Cargo target directories
 
-Cargo's ordinary default target directory is `<worktree>/target`, which is already
-isolated per worktree. Do not export a persistent shell-level `CARGO_TARGET_DIR`; a stale
-profile export can redirect every worktree into another candidate's build output.
+Cargo's ordinary default uses `<worktree>/target` for outputs and intermediates.
+Inherited configuration can override either path. Do not export persistent shell-level
+`CARGO_TARGET_DIR` or `CARGO_BUILD_BUILD_DIR`; stale values can redirect work into
+another candidate's outputs.
 
-The repository's `scripts/cargo-safe` and `just agent-*` commands are a deliberate
-exception: they set a process-local devplane cache with disk and build-lock controls.
-That bounded wrapper does not justify a persistent shell-profile export.
-
-Use either:
+For new agent work, [Cargo storage admission](../agents/CARGO_STORAGE.md) owns
+canonical-worktree-private target **and** build paths, with independently shared
+Cargo home. `just devplane-init` prints that plan without allocating storage or
+assessing capacity. Preflight and execute the same focused request:
 
 ```bash
-# Native per-worktree target directory
-cargo test -p <package> --all-targets --locked
-
-# Repository-managed bounded devplane
-just agent-test
+scripts/cargo-admitted --preflight test -p perl-token --profile agent --locked --lib
+just agent-test perl-token --lib
 ```
 
-Do not mix the two accidentally through an inherited environment variable.
+Choose the actual owning package/target and preserve all arguments in preflight and
+execution. The package is mandatory for `just agent-check` and `just agent-test`.
+`agent-test` also requires an explicit target selector immediately after the package;
+a runtime filter alone does not narrow compilation.
+
+The repository's `scripts/cargo-safe` and `just agent-*` commands are a deliberate
+mixed compatibility surface, not one equivalent route: `agent-check` and `agent-test`
+delegate to focused `cargo-admitted` commands, while `agent-clippy`, `agent-nextest`,
+`agent-pr-fast`, and `cached` remain legacy compatibility entrypoints without
+host-admission or output-isolation guarantees. Do not mix their outputs through
+inherited overrides.
 
 ## Ownership before mutation
 

@@ -15,7 +15,7 @@ import unittest
 OWNER = Path(__file__).resolve().parents[1] / 'cargo_admitted.py'
 PRELUDE = '''import importlib.util,json,os,subprocess,sys,time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 spec=importlib.util.spec_from_file_location('owner',sys.argv[1])
 owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
 '''
@@ -29,12 +29,14 @@ if mode=='nested-deferred':
  owner.ClippyTree.reap_adopted=lambda self:None
 if mode=='unproven':
  owner.ClippyTree.finish=lambda self,**kw:original(self,timeout=.01,**kw)
-with patch.dict(os.environ,env,clear=True),patch.object(owner,'resource_plan',return_value=(root,root/'slot',paths)):
+with patch.dict(os.environ,env,clear=True),patch.object(owner,'resource_plan',return_value=(root,root/'slot',paths)),patch.object(owner,'PrivateAllocation',return_value=Mock(receipt={'status':'unknown','reason':'synthetic_process_fixture'})):
  result=owner.main(['test','-p','consumer','--locked','--offline'])
 print(json.dumps({'result':result}),flush=True)
 '''
 FAKE = '''import json,os,signal,sys,time
 from pathlib import Path
+if sys.argv[-2:]==['locate-project','--message-format=json']:
+ print('{}');sys.exit(0)
 root=Path(os.environ['FIXTURE_ROOT']);status=int(os.environ['FIXTURE_STATUS'])
 if os.environ['FIXTURE_MODE'].startswith('nested'):
  read_fd,write_fd=os.pipe()
@@ -230,11 +232,14 @@ class BuiltinAdmissionControls(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('safe',OWNER)
         self.safe=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.safe)
         from unittest.mock import patch
+        self.enterContext(patch.object(self.safe, "PrivateAllocation", return_value=Mock(
+            receipt={"status": "unknown", "reason": "synthetic_process_fixture"})))
         self.enterContext(patch.object(self.safe, "child_discovery_capability", return_value={}))
         self.temp=tempfile.TemporaryDirectory(prefix='builtin-admission-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         self.paths={key:self.root/key for key in ('target','build','cargo_home','temp')}
         self.guard=Mock();self.guard.finish.return_value={'tree_settled':True,'cancelled':False}
+        self.guard.probe.return_value=subprocess.CompletedProcess([],0,b'{}\n',b'')
 
     def invoke(self,status=0,settled=True,cancelled=False,host='linux',failure=None):
         import contextlib,io
@@ -245,6 +250,7 @@ class BuiltinAdmissionControls(unittest.TestCase):
              patch.object(self.safe.sys,'platform',host),contextlib.redirect_stderr(output), \
              patch.object(self.safe,'resource_plan',return_value=(self.root,self.root/'slot',self.paths)), \
              patch.object(self.safe,'ClippyTree',return_value=self.guard) as tree, \
+             patch.object(self.safe.subprocess,'run',return_value=subprocess.CompletedProcess([],0)), \
              patch.object(self.safe,'call_clippy',launch),patch.object(self.safe.subprocess,'call',return_value=status,side_effect=failure if host != 'linux' else None) as legacy:
             result=self.safe.main(['test','-p','consumer','--locked','--offline'])
         return result,output.getvalue(),tree,launch,legacy

@@ -563,6 +563,12 @@ static IDENTITIES: &[CriticIdentityEntry] = &[
         &[CriticAlias::new(NATIVE, "native.maintainability.sub_too_long", GENERAL)],
     ),
     CriticIdentityEntry::distinct(
+        "critic.maintainability.too_many_branches",
+        CriticIdentityCategory::Maintainability,
+        "no built-in diagnostic has the same branch-count policy",
+        &[CriticAlias::new(NATIVE, "native.maintainability.too_many_branches", GENERAL)],
+    ),
+    CriticIdentityEntry::distinct(
         "critic.maintainability.too_many_nested_blocks",
         CriticIdentityCategory::Maintainability,
         "no built-in diagnostic has the same block-nesting policy",

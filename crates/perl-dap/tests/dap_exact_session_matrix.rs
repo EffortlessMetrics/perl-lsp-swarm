@@ -70,16 +70,9 @@ fn resolve_matrix_binary() -> Result<PathBuf> {
         }
         return Ok(path);
     }
-    // The Cargo test binary's sibling target tree holds the built perl-dap
-    // binary; fall back to locating it through CARGO_BIN_EXE-style layout.
-    let current = std::env::current_exe().context("resolving the test executable")?;
-    // <target>/debug/deps/<test>-<hash>.exe -> <target>/debug/perl-dap.exe
-    let profile_dir = current
-        .parent()
-        .and_then(Path::parent)
-        .context("test executable has no profile directory")?;
-    let binary_name = if cfg!(windows) { "perl-dap.exe" } else { "perl-dap" };
-    let candidate = profile_dir.join(binary_name);
+    // Cargo binds the product executable independently of its intermediate
+    // test layout, selected profile, platform suffix, and build directory.
+    let candidate = PathBuf::from(env!("CARGO_BIN_EXE_perl-dap"));
     if candidate.is_file() {
         return Ok(candidate);
     }

@@ -21,6 +21,14 @@ const EXT_ROOT = path.resolve(__dirname, '..', '..');
 // `require('vscode')` pattern requires a module outside src/.
 const runJest = require('../../scripts/run-jest.js');
 
+describe('jest.config.js load-sensitivity guard (#17335)', () => {
+  test('raises the suite default testTimeout above the 5s jest default', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const config = require('../../jest.config.js');
+    expect(config.testTimeout).toBe(15_000);
+  });
+});
+
 describe('package.json test script verbosity wiring', () => {
   test('base "test" script does not hardcode --verbose', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'));
