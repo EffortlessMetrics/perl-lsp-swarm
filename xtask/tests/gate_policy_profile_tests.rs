@@ -697,6 +697,9 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
                  changes what is executed"
             );
         }
+        // Presence checks cannot detect a flag added to only one lane (the
+        // exact divergence the identical-flags contract warns about), so the
+        // non-package flag sequence is compared across lanes below.
 
         // The union check below is satisfied by any partition of the surface,
         // including swapping the two lanes or collapsing everything into one.
@@ -725,6 +728,35 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
 
         seen.extend(packages);
     }
+
+    // Flag-set equality: strip each lane's package selection (`-p <crate>`
+    // pairs) and require the remaining token sequences to be identical, so
+    // a flag added to one lane (for example an extra `--test` selection)
+    // fails here instead of silently changing what one lane executes.
+    let flag_sequence = |lane_name: &str| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let lane = parsed
+            .gates
+            .iter()
+            .find(|gate| gate.name == lane_name)
+            .ok_or_else(|| format!("gate '{lane_name}' must exist"))?;
+        let tokens: Vec<&str> = lane.command.split_whitespace().collect();
+        let mut flags = Vec::new();
+        let mut index = 0;
+        while index < tokens.len() {
+            if tokens[index] == "-p" {
+                index += 2;
+                continue;
+            }
+            flags.push(tokens[index].to_string());
+            index += 1;
+        }
+        Ok(flags)
+    };
+    assert_eq!(
+        flag_sequence("unit_lsp_core_full")?,
+        flag_sequence("unit_lsp_full")?,
+        "LSP unit lanes must run under identical flags; only their package sets may differ"
+    );
 
     let mut deduped = seen.clone();
     deduped.sort();

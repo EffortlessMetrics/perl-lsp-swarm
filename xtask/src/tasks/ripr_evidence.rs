@@ -13508,6 +13508,10 @@ paths = ["archive/["]
     #[cfg(not(windows))]
     #[test]
     fn non_utf8_pr_diff_is_lossy_utf8_and_preserves_ripr_findings() -> Result<()> {
+        // `ripr_binary()` reads the process-global override, so hold the
+        // override lock for the whole comparison: a concurrent override
+        // test must not swap the binary between iterations.
+        let _exclusive = RIPR_BIN_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let clean = diff_repo_with_corpus(false)?;
         let lossy = diff_repo_with_corpus(true)?;
         let mut outputs = Vec::new();
@@ -13530,12 +13534,14 @@ paths = ["archive/["]
             assert_eq!(receipt, resolve_committed_diff(repo.path(), "HEAD~1", "HEAD")?);
 
             let binary = ripr_binary()?;
-            let Ok(version) = Command::new(&binary).arg("--version").output() else {
-                eprintln!("ripr is unavailable; lossy writer proof passed, comparison not run");
-                continue;
-            };
-            assert!(version.status.success(), "ripr --version failed: {version:?}");
-            let output = Command::new(&binary)
+            // The production ripr CLI rejects `--version` (#19414), so probe by
+            // running the supported `check` invocation itself. A spawn failure
+            // means ripr is unavailable on this runner; a non-zero exit is real
+            // evidence and stays blocking in the assertion below. The
+            // unavailable path records a typed limitation marker beside the
+            // receipt so the evidence distinguishes "ripr absent" from
+            // "ripr agreed" instead of silently continuing (#19414).
+            let output = match Command::new(&binary)
                 .args([
                     "check",
                     "--root",
@@ -13547,7 +13553,28 @@ paths = ["archive/["]
                 ])
                 .current_dir(repo.path())
                 .env("RIPR_CACHE_DIR", repo.path().join("target/ripr-facts"))
-                .output()?;
+                .output()
+            {
+                Ok(output) => output,
+                Err(error) => {
+                    let marker = repo.path().join("target/ripr/pr/ripr-comparison-limitation.json");
+                    if let Some(parent) = marker.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(
+                        &marker,
+                        serde_json::json!({
+                            "limitation": "ripr_unavailable",
+                            "binary": binary.clone(),
+                            "spawn_error": error.to_string(),
+                            "comparison": "not_run",
+                        })
+                        .to_string(),
+                    )?;
+                    eprintln!("ripr is unavailable; lossy writer proof passed, comparison not run");
+                    continue;
+                }
+            };
             assert!(
                 output.status.success(),
                 "ripr check failed: {}",
