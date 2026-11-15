@@ -13561,7 +13561,7 @@ paths = ["archive/["]
                         &marker,
                         serde_json::json!({
                             "limitation": "ripr_unavailable",
-                            "binary": binary.display().to_string(),
+                            "binary": binary.clone(),
                             "spawn_error": error.to_string(),
                             "comparison": "not_run",
                         })
