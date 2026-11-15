@@ -11,16 +11,22 @@ fn binary() -> Command {
 }
 
 fn stdin_command(args: &[&str], input: &[u8]) -> std::io::Result<Output> {
-    let mut child = binary()
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input)?;
+    command_with_stdin(binary().args(args), input)
+}
+
+fn command_with_stdin(command: &mut Command, input: &[u8]) -> std::io::Result<Output> {
+    let mut child =
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let write_result = match child.stdin.take() {
+        Some(mut stdin) => stdin.write_all(input),
+        None => Ok(()),
+    };
+    // Stdin is closed before waiting, including when the child rejects input early.
+    let output = child.wait_with_output();
+    match write_result {
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(error),
+        _ => output,
     }
-    child.wait_with_output()
 }
 
 #[test]
@@ -102,6 +108,8 @@ fn json_diagnostic_projection_does_not_disclose_source_tokens() -> TestResult {
 
 #[test]
 fn invalid_configuration_and_input_limits_are_not_clean() -> TestResult {
+    // Exercise early stdin rejection while the parent still has data to write.
+    let large_input = vec![b' '; 2 * 1024 * 1024];
     for (args, input, code, class) in [
         (
             vec!["--stdin", "--check", "--json", "--line-width", "0"],
@@ -116,6 +124,18 @@ fn invalid_configuration_and_input_limits_are_not_clean() -> TestResult {
             "resource_limited",
         ),
         (vec!["--stdin", "--check", "--json"], [255_u8].as_slice(), 9, "invalid_input"),
+        (
+            vec!["--stdin", "--check", "--json", "--line-width", "0"],
+            large_input.as_slice(),
+            3,
+            "invalid_configuration",
+        ),
+        (
+            vec!["--stdin", "--check", "--json", "--max-bytes", "4"],
+            large_input.as_slice(),
+            4,
+            "resource_limited",
+        ),
     ] {
         let output = stdin_command(&args, input)?;
         assert_eq!(output.status.code(), Some(code));
@@ -271,17 +291,14 @@ fn working_external_tools_on_path_are_never_invoked() -> TestResult {
         fs::read_to_string(&witness)?.lines().map(ToOwned::to_owned).collect::<Vec<_>>(),
         witnessed
     );
-    let mut child = binary()
-        .args(["--stdin", "--check", "--json"])
-        .env("PATH", directory.path())
-        .env("PERLTIDY", directory.path().join("perltidy"))
-        .env("PERL_TIDY_CLI_PROBE_LOG", &marker)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child.stdin.take().ok_or("stdin")?.write_all(b"my $x = 1;\n")?;
-    let output = child.wait_with_output()?;
+    let output = command_with_stdin(
+        binary()
+            .args(["--stdin", "--check", "--json"])
+            .env("PATH", directory.path())
+            .env("PERLTIDY", directory.path().join("perltidy"))
+            .env("PERL_TIDY_CLI_PROBE_LOG", &marker),
+        b"my $x = 1;\n",
+    )?;
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
     assert!(!marker.exists());
     Ok(())
