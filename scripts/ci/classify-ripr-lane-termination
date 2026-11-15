@@ -31,9 +31,7 @@
 #      receipt ...", xtask/src/tasks/quality_gate.rs bail!), the analysis
 #      completed and found gaps -> classification=ripr-failure. Such a log
 #      must NEVER take the infra/retry path even if the runner was torn down
-#      later during artifact upload. Without a scanned receipt, a failed gate
-#      also stays ripr-failure unless a receipt-validation step failed and
-#      positively proved the gate's inputs were incomplete (#14774).
+#      later during artifact upload.
 #   2. Infra termination requires positive platform teardown evidence
 #      produced by the runner itself, not by the analyzed workload. Log mode
 #      (same marker set as the landed #12771 classifier):
@@ -158,7 +156,7 @@ emit_api_verdict() {
   local ann_file="$1" steps_file="$2" receipt_file="$3"
   local gap_hits=0 shut_hits=0 term143_hits=0 cancel_hits=0 lost_hits=0 timeout_hits=0
   local stuck_hits=0 job_conclusion="" ann_read=false steps_read=false
-  local receipt_scanned=false receipt_capable_failed=false receipt_validation_failed=false
+  local receipt_scanned=false receipt_capable_failed=false
   local class msgs
 
   # The receipt outranks everything, exactly as in log mode. The gate hands
@@ -198,33 +196,28 @@ emit_api_verdict() {
       job_conclusion="$(jq -r '.conclusion // empty' "$steps_file" 2>/dev/null || true)"
       stuck_hits="$(jq -r '[.steps[]? | select(.status == "in_progress" and .conclusion == null)] | length' "$steps_file" 2>/dev/null || true)"
       case "$stuck_hits" in ''|*[!0-9]*) stuck_hits=0 ;; esac
-      # A receipt-capable step that itself concluded failure normally means a
-      # genuine red. exit-143 annotations are NOT runner-only — xtask SIGTERMs
-      # the ripr child at the guidance bound (ripr.yml guidance-step comment),
-      # so the annotations cannot attribute the SIGTERM to a particular step.
-      # A failed receipt-validation step is the narrow exception: it proves the
-      # gate ran with incomplete inputs and did not reach a source-gap verdict.
-      # The self-hosted Docker step has no such validation steps, so its failure
-      # keeps the original fail-closed guard (#16433 review, #14774).
+      # A receipt-capable step that itself concluded failure means the lane
+      # reached (and failed) the point where a gap receipt would exist: the
+      # missing receipt is the finding, not eviction evidence. exit-143
+      # annotations are NOT runner-only — xtask SIGTERMs the ripr child at
+      # the guidance bound (ripr.yml guidance-step comment) and the runner
+      # then writes the same 143 annotation for a genuine red.
+      # Receipt-capable steps: the hosted gate step and the self-hosted
+      # Docker step both produce the gap receipt when they run — a failure
+      # in either means a missing receipt is the finding, not eviction
+      # evidence (#16433 review).
       receipt_capable_failed="$(jq -r '[.steps[]? | select(.conclusion == "failure" and (.name | test("Enforce new RIPR gap quality gate|Run ripr evidence and gate")))] | length > 0' "$steps_file" 2>/dev/null || true)"
       [ "$receipt_capable_failed" = "true" ] || receipt_capable_failed=false
-      # #14774: a receipt-validation failure proves the gate ran with incomplete
-      # inputs, not that it reached a genuine source-gap verdict. Read both the
-      # mandatory contract check and the post-#19383 advisory review check.
-      receipt_validation_failed="$(jq -r '[.steps[]? | select(.conclusion == "failure" and (.name == "Validate PR evidence contracts" or .name == "Validate advisory review guidance"))] | length > 0' "$steps_file" 2>/dev/null || true)"
-      [ "$receipt_validation_failed" = "true" ] || receipt_validation_failed=false
     fi
   fi
 
   # When no receipt was scanned (log fetch failed), arming additionally
-  # requires readable steps state. A receipt-capable step that failed without
-  # any receipt-validation failure is a genuine red: the gate had its inputs.
-  # Only a failed receipt-validation step proves the gate ran with incomplete
-  # inputs and permits positive teardown evidence to arm instead (#14774).
+  # requires readable steps state in which no receipt-capable step concluded
+  # failure — without that, a genuine red wearing a teardown-shaped
+  # annotation could take the retry path (#16433 review).
   api_arming_allowed=true
   if [ "$receipt_scanned" != "true" ]; then
-    if [ "$steps_read" != "true" ] ||
-      { [ "$receipt_capable_failed" = "true" ] && [ "$receipt_validation_failed" != "true" ]; }; then
+    if [ "$steps_read" != "true" ] || [ "$receipt_capable_failed" = "true" ]; then
       api_arming_allowed=false
     fi
   fi
@@ -234,8 +227,9 @@ emit_api_verdict() {
     class="ripr-failure"
   elif [ "$api_arming_allowed" != "true" ]; then
     # Boundary rule 1b (receipt-unscanned guard): without a scanned receipt,
-    # unreadable steps state or a failed receipt-capable step with successful
-    # receipt validation means a genuine red cannot be ruled out.
+    # arming requires positive proof the receipt-capable step never ran to a
+    # failure; unreadable steps state or a failed receipt-capable step means
+    # a genuine red cannot be ruled out.
     class="ripr-failure"
   elif [ "$ann_read" = "true" ] && [ "$steps_read" = "true" ] &&
     [ "$job_conclusion" = "cancelled" ] && [ "$timeout_hits" -gt 0 ]; then
@@ -262,7 +256,6 @@ classification=$class
 gap_receipt_matches=$gap_hits
 receipt_scanned=$receipt_scanned
 receipt_capable_failed=$receipt_capable_failed
-receipt_validation_failed=$receipt_validation_failed
 shutdown_signal_matches=$shut_hits
 sigterm143_matches=$term143_hits
 op_cancelled_matches=$cancel_hits
@@ -274,7 +267,7 @@ annotations_read=$ann_read
 steps_read=$steps_read
 mode=api-evidence
 verdict=$class
-decision_boundary="genuine gap receipt outranks all markers; gate failure after successful receipt validation stays a genuine red; gate failure with failed receipt validation permits positive teardown evidence to arm; everything else fails closed"
+decision_boundary="genuine gap receipt outranks all markers; exact 2h15m0s annotation plus cancelled job proves configured timeout without retry; teardown annotations or a failed lane with an unconcluded step arm infra retry, everything else fails closed"
 EOF
 }
 
