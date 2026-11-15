@@ -16,6 +16,7 @@ after the extraction step above starts failing closed, if this script were
 ever invoked by hand against an old/partial results file.
 """
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -31,7 +32,7 @@ _COMPARE = _SCRIPTS_DIR / "compare.py"
 _SIDECAR = _SCRIPTS_DIR / "validate-native-pipeline-sidecar.py"
 _WORKFLOW = _SCRIPTS_DIR.parent.parent / ".github" / "workflows" / "ci-nightly.yml"
 _COUNTERS_RS = (
-    _REPO_ROOT / "crates" / "perl-lsp-perltidy" / "src" / "native" / "counters.rs"
+    _REPO_ROOT / "crates" / "perl-tidy" / "src" / "native" / "counters.rs"
 )
 
 
@@ -378,6 +379,50 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
         "native_pipeline_document/delimited_n32_lf_tabs",
     ]
     RUN_ID = "123-abc"
+
+    def test_clock_contract_resolves_the_native_package_owner(self) -> None:
+        spec = importlib.util.spec_from_file_location("native_sidecar_validator", _SIDECAR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(validator)
+
+        native = _REPO_ROOT / "crates" / "perl-tidy" / "src" / "native" / "counters.rs"
+        legacy = (
+            _REPO_ROOT / "crates" / "perl-lsp-perltidy" / "src" / "native" / "counters.rs"
+        )
+        self.assertTrue(native.is_file(), "the native package must own the counter contract")
+        self.assertFalse(legacy.exists(), "the compatibility facade must not own a second copy")
+        self.assertEqual(_COUNTERS_RS, native)
+        self.assertEqual(validator._COUNTERS_SOURCE, native)
+        self.assertEqual(validator.counter_clock_tag(), _rust_counter_clock_tag())
+
+    def test_legacy_clock_contract_is_not_a_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "benchmarks" / "scripts" / _SIDECAR.name
+            script.parent.mkdir(parents=True)
+            script.write_bytes(_SIDECAR.read_bytes())
+            legacy = root / "crates" / "perl-lsp-perltidy" / "src" / "native" / "counters.rs"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_text(
+                'pub const COUNTER_CLOCK_TAG: &str = "legacy-only-clock";\n',
+                encoding="utf-8",
+            )
+            native = root / "crates" / "perl-tidy" / "src" / "native" / "counters.rs"
+            sidecar = self._write(root, [self._row(bench_id) for bench_id in self.EXPECTED])
+            args = ["--sidecar", str(sidecar), "--expected-run-id", self.RUN_ID]
+            for bench_id in self.EXPECTED:
+                args.extend(["--expect-id", bench_id])
+
+            missing = _run(script, args)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn(f"cannot read the Rust counter clock contract {native}", missing.stderr)
+
+            native.parent.mkdir(parents=True)
+            native.write_bytes(_COUNTERS_RS.read_bytes())
+            accepted = _run(script, args)
+            self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
 
     def _row(
         self,

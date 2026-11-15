@@ -154,36 +154,6 @@
       }
     },
     {
-      "surface_id": "bench:perl-lsp-perltidy/native_pipeline_benchmark",
-      "class": "benchmark",
-      "class_authority": {
-        "kind": "derived",
-        "authority": "crates/perl-lsp-perltidy/Cargo.toml",
-        "rule": "cargo-bench-targets"
-      },
-      "semantic_authority": "crates/perl-lsp-perltidy/Cargo.toml#bench.native_pipeline_benchmark",
-      "consumers": [
-        "crates/perl-lsp-perltidy"
-      ],
-      "compile_profiles": [
-        "bench"
-      ],
-      "registration": {
-        "state": "established",
-        "authority": "crates/perl-lsp-perltidy/Cargo.toml",
-        "detail": "[[bench]] name = \"native_pipeline_benchmark\""
-      },
-      "proof_references": [],
-      "publication": {
-        "state": "not_applicable",
-        "authority": "crates/perl-lsp-perltidy/Cargo.toml"
-      },
-      "owner": "perl-lsp-perltidy",
-      "promotion": {
-        "state": "not_evaluated"
-      }
-    },
-    {
       "surface_id": "bench:perl-lsp-rs/lsp_stdio_roundtrip_benchmark",
       "class": "benchmark",
       "class_authority": {
@@ -509,6 +479,36 @@
         "authority": "crates/perl-symbol/Cargo.toml"
       },
       "owner": "perl-symbol",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-tidy/native_pipeline_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-tidy/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-tidy/Cargo.toml#bench.native_pipeline_benchmark",
+      "consumers": [
+        "crates/perl-tidy"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-tidy/Cargo.toml",
+        "detail": "[[bench]] name = \"native_pipeline_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-tidy/Cargo.toml"
+      },
+      "owner": "perl-tidy",
       "promotion": {
         "state": "not_evaluated"
       }
@@ -3165,7 +3165,7 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+      "notes": "Clippy --all-targets on the known-clean staged cohort (39/50 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     },
     {
       "surface_id": "gate:code_action_generation_ledger",

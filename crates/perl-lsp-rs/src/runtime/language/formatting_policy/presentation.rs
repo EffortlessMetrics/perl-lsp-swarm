@@ -97,7 +97,7 @@ pub(crate) struct FormattingUserNotification {
 pub(crate) struct FormattingWarningDedupKey {
     pub reason: FormatReasonCode,
     pub surface: FormattingPresentationSurface,
-    /// Hashed logical document identity (`FormatIdentity::source_id`), not raw URI text.
+    /// Hashed adapter document label (`FormatIdentity::source_id`), not raw URI text.
     pub source_document_fingerprint: u64,
     pub source_generation: u64,
     pub source_content_fingerprint: u64,
@@ -410,6 +410,12 @@ mod tests {
 
     fn minimal_outcome(disposition: FormatDisposition, reason: FormatReasonCode) -> FormatOutcome {
         FormatOutcome {
+            source: perl_lsp_rs_core::tooling::perltidy::FormatSourceIdentity::content_only(""),
+            admitted: Some(
+                perl_lsp_rs_core::tooling::perltidy::ExactSource::new("").whole_document(),
+            ),
+            widening: None,
+            coverage: Vec::new(),
             disposition,
             reason,
             identity: FormatIdentity {

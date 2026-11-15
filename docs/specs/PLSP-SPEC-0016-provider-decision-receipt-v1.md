@@ -74,6 +74,7 @@ type_definition
 references
 hover
 diagnostics
+formatting
 rename
 safe_delete
 workspace_symbols

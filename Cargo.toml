@@ -47,6 +47,8 @@ members = [
     # (perl-lsp-on-type-formatting absorbed into perl-lsp-rs-core::providers — Wave G1a)
     # (perl-lsp-tooling absorbed into perl-lsp-rs-core::tooling — Wave G3 step 6)
     "crates/perl-lsp-perltidy",
+    "crates/perl-tidy",
+    "crates/perl-tidy-perltidy",
     # (perl-lsp-symbol-query absorbed into perl-lsp-rs-core::providers — Wave G1a)
     # (perl-lsp-performance absorbed into perl-lsp-rs-core::tooling::performance — Wave G3 step 5)
     # (perl-lsp-critic-parser absorbed into perl-lsp-rs-core::critic_parser — Wave G3 step 7)
@@ -186,6 +188,8 @@ allow = [
     # (perl-lsp-workspace-symbols absorbed into perl-lsp-rs-core::providers — Wave G1a)
     # (perl-lsp-tooling absorbed into perl-lsp-rs-core::tooling — Wave G3 step 6)
     "perl-lsp-perltidy",
+    "perl-tidy",
+    "perl-tidy-perltidy",
     # (perl-lsp-performance absorbed into perl-lsp-rs-core::tooling::performance — Wave G3 step 5)
     # (perl-lsp-critic-parser absorbed into perl-lsp-rs-core::critic_parser — Wave G3 step 7)
     # (perl-lsp-formatting-types absorbed into perl-lsp-rs-core::providers — Wave G1a)
@@ -312,7 +316,8 @@ perl-core-harness = { path = "crates/perl-core-harness", version = "0.17.0" }
 perl-parser-core = { path = "crates/perl-parser-core", version = "0.17.0" }
 # (perl-lsp-transport absorbed into perl-lsp-rs-core::transport — Wave G3 step 4)
 # (perl-lsp-tooling absorbed into perl-lsp-rs-core::tooling — Wave G3 step 6)
-perl-lsp-perltidy = { path = "crates/perl-lsp-perltidy", version = "0.17.0" }
+perl-tidy = { path = "crates/perl-tidy", version = "0.17.0" }
+perl-tidy-perltidy = { path = "crates/perl-tidy-perltidy", version = "0.17.0" }
 # (perl-lsp-on-type-formatting absorbed into perl-lsp-rs-core::providers — Wave G1a)
 # (perl-lsp-formatting-types absorbed into perl-lsp-rs-core::providers — Wave G1a)
 # (perl-lsp-formatting absorbed into perl-lsp-rs-core::providers::formatting — Wave G1b)

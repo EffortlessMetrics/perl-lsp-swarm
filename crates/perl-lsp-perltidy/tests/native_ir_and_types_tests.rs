@@ -1,3 +1,4 @@
+#![allow(deprecated)] // These targets prove the intentionally retained compatibility API.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 /// Tests for the `FormatDoc` IR constructors and rendering, type-constructor
 /// round-trips, `TextPosition`/`TextRange`/`TextEdit` builders, `FormatConfig`

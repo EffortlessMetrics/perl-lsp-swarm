@@ -644,6 +644,8 @@ fn is_memory_sensitive_path(file: &str) -> bool {
         || file.starts_with("crates/perl-lsp-rs/src/runtime/language/")
         || file.starts_with("crates/perl-workspace/src/workspace/")
         || file.starts_with("crates/perl-lsp-perltidy/src/")
+        || file.starts_with("crates/perl-tidy/src/")
+        || file.starts_with("crates/perl-tidy-perltidy/src/")
         || file.starts_with("crates/perl-lsp-rs-core/src/tooling/")
         || file.starts_with("crates/perl-dap/src/")
         || file.starts_with("docs/large-workspaces/")
@@ -656,6 +658,8 @@ fn is_retained_owner_candidate_path(file: &str) -> bool {
         && (file.starts_with("crates/perl-lsp-rs/src/runtime/")
             || file.starts_with("crates/perl-workspace/src/workspace/")
             || file.starts_with("crates/perl-lsp-perltidy/src/")
+            || file.starts_with("crates/perl-tidy/src/")
+            || file.starts_with("crates/perl-tidy-perltidy/src/")
             || file.starts_with("crates/perl-lsp-rs-core/src/tooling/")
             || file.starts_with("crates/perl-dap/src/"))
 }

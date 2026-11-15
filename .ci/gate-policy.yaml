@@ -896,7 +896,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (39/50 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -1023,6 +1023,8 @@ gates:
       -p perl-semantic-analyzer
       -p perl-diagnostics
       -p perl-lsp-perltidy
+      -p perl-tidy
+      -p perl-tidy-perltidy
       -p perl-subprocess-runtime
       -p perl-test-facts
       -p perl-parser-bench
@@ -1547,7 +1549,7 @@ gates:
     #   perllsp                      33
     command: >-
       cargo test --locked --lib
-      -p perl-lsp-perltidy -p perl-lsp-rs
+      -p perl-lsp-perltidy -p perl-tidy -p perl-tidy-perltidy -p perl-lsp-rs
       -p perl-lsp-ux-tests
       -p perl-subprocess-runtime -p perllsp
       -- --test-threads=4

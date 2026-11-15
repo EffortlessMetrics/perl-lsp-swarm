@@ -117,6 +117,8 @@ struct Snapshot {
     text: String,
     version: i32,
     generation: u64,
+    // Versions and generations can repeat after close/reopen at the same URI.
+    incarnation: u64,
     options: FormattingOptions,
     config: EffectiveConfig,
 }
@@ -339,7 +341,7 @@ impl LspServer {
         self.ensure_surface_advertised(surface)?;
 
         let uri = self.normalize_uri_key(req_uri(params)?);
-        let (text, version, generation) = {
+        let (text, version, generation, incarnation) = {
             let documents = self.documents_guard();
             let document =
                 self.get_document(&documents, &uri).ok_or_else(|| document_not_open(&uri))?;
@@ -347,6 +349,7 @@ impl LspServer {
                 document.text_for_user_answers().map(str::to_string),
                 document.version,
                 u64::from(document.current_generation()),
+                document.incarnation,
             )
         };
         let Some(text) = text else {
@@ -357,6 +360,7 @@ impl LspServer {
                 text: String::new(),
                 version,
                 generation,
+                incarnation,
                 options: options(params)?,
                 config: self.effective_formatting_config()?,
             };
@@ -373,6 +377,7 @@ impl LspServer {
             text,
             version,
             generation,
+            incarnation,
             options: options(params)?,
             config: self.effective_formatting_config()?,
         };
@@ -399,7 +404,8 @@ impl LspServer {
         let current = {
             let documents = self.documents_guard();
             self.get_document(&documents, &snapshot.uri).is_some_and(|document| {
-                document.version == snapshot.version
+                document.incarnation == snapshot.incarnation
+                    && document.version == snapshot.version
                     && u64::from(document.current_generation()) == snapshot.generation
             })
         };

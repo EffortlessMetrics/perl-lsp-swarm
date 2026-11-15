@@ -86,17 +86,7 @@ impl TextEdit {
     }
 }
 
-/// Formatter diagnostic severity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum FormatDiagnosticSeverity {
-    /// Informational diagnostic.
-    Info,
-    /// Warning diagnostic.
-    Warning,
-    /// Error diagnostic.
-    Error,
-}
+pub use perl_tidy::FormatDiagnosticSeverity;
 
 /// Diagnostic produced while deciding whether formatting is safe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,31 +173,5 @@ impl FormatResult {
                 message,
             )],
         }
-    }
-}
-
-pub(super) fn utf16_len(s: &str) -> usize {
-    s.chars().map(|ch| if ch as u32 >= 0x10000 { 2 } else { 1 }).sum()
-}
-
-impl TextRange {
-    pub(super) fn at_byte_offset(source: &str, offset: usize) -> Self {
-        let clamped = offset.min(source.len());
-        let mut line = 0_u32;
-        let mut line_start = 0_usize;
-
-        for (idx, ch) in source.char_indices() {
-            if idx >= clamped {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                line_start = idx + ch.len_utf8();
-            }
-        }
-
-        let character = utf16_len(&source[line_start..clamped]) as u32;
-        let position = TextPosition::new(line, character);
-        Self::new(position, position)
     }
 }

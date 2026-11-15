@@ -5,9 +5,10 @@
 
 use super::{FormatRange, FormatTextEdit, FormattedDocument, FormattingOptions};
 use perl_subprocess_runtime::SubprocessRuntime;
+use perl_tidy_perltidy::{ExternalPerlTidyError, LegacyPerlTidyExecutor};
 
-/// Re-export PerlTidyConfig from perl-lsp-perltidy for convenience.
-pub use perl_lsp_perltidy::PerlTidyConfig;
+/// Legacy spelling for the external adapter configuration.
+pub use perl_tidy_perltidy::ExternalPerlTidyConfig as PerlTidyConfig;
 
 /// Formatting error reported by the external compatibility adapter.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +38,17 @@ impl FormattingError {
             Self::PerltidyError(_) => "perltidy_error",
             Self::InvalidOutputEncoding => "invalid_output_encoding",
             Self::IoError(_) => "io_error",
+        }
+    }
+}
+
+impl From<ExternalPerlTidyError> for FormattingError {
+    fn from(error: ExternalPerlTidyError) -> Self {
+        match error {
+            ExternalPerlTidyError::Runtime { message } => Self::PerltidyNotFound(message),
+            ExternalPerlTidyError::CommandNotFound { stderr, .. } => Self::PerltidyNotFound(stderr),
+            ExternalPerlTidyError::Rejected { stderr, .. } => Self::PerltidyError(stderr),
+            ExternalPerlTidyError::InvalidUtf8 { .. } => Self::InvalidOutputEncoding,
         }
     }
 }
@@ -131,51 +143,10 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         }
 
         let program = self.perltidy_path.as_deref().unwrap_or("perltidy");
-        let output = self
-            .runtime
-            .run_command(
-                program,
-                &args.iter().map(String::as_str).collect::<Vec<_>>(),
-                Some(content.as_bytes()),
-            )
-            .map_err(|error| FormattingError::PerltidyNotFound(error.message))?;
-        if !output.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            return Err(if command_launch_failed(output.status_code, &stderr) {
-                // The command resolved but the OS could not start it (a
-                // cmd.exe wrapper reporting an unresolvable or unstartable
-                // target). That is an install/repair problem, not a Perl
-                // syntax problem, so it must keep the not-found remediation
-                // advice (#17301).
-                FormattingError::PerltidyNotFound(stderr)
-            } else {
-                FormattingError::PerltidyError(stderr)
-            });
-        }
-        String::from_utf8(output.stdout).map_err(|_| FormattingError::InvalidOutputEncoding)
+        LegacyPerlTidyExecutor::new(&self.runtime)
+            .format(program, &args, content)
+            .map_err(FormattingError::from)
     }
-}
-
-/// Exit status `cmd.exe` is documented to report for an unresolvable command.
-/// Windows builds differ on whether the process exit code carries it, so this
-/// is a secondary signal beside the message text.
-const CMD_UNRESOLVED_COMMAND_STATUS: i32 = 9009;
-
-/// Decide whether a non-success subprocess exit means the command could not be
-/// started at all, rather than perltidy running and rejecting its input.
-///
-/// `run_command` reports process-start failures as errors, but on Windows a
-/// `.bat`/`.cmd` program runs through `cmd.exe /C`, so an unresolvable or
-/// unstartable target still yields a *completed* cmd.exe process: a non-zero
-/// status plus a complaint on stderr. Retain the observed unrecognized-command
-/// diagnostic as a compatibility heuristic, not proof of launch provenance.
-/// Generic OS error text can also come from a running perltidy's file operations
-/// or echoed paths and must remain a tool error (#17892).
-fn command_launch_failed(status_code: i32, stderr: &str) -> bool {
-    if status_code == CMD_UNRESOLVED_COMMAND_STATUS {
-        return true;
-    }
-    stderr.contains("is not recognized as an internal or external command")
 }
 
 #[cfg(test)]
@@ -227,6 +198,8 @@ mod tests {
         assert_eq!(formatted.edits.len(), 1);
         assert_eq!(formatted.edits[0].new_text, "my $external = 1;\n");
         let args = args.lock().map_err(|_| anyhow::anyhow!("args mutex poisoned"))?;
+        assert_eq!(args.first().map(String::as_str), Some("-st"));
+        assert_eq!(args.get(1).map(String::as_str), Some("-se"));
         assert!(
             args.contains(&"-i=4".to_string()),
             "editor indentation must reach perltidy: {args:?}"
@@ -412,6 +385,57 @@ mod tests {
             perl_parser_core::ErrorClass::error_class(&error),
             perl_parser_core::ErrorCategory::UserError
         );
+        Ok(())
+    }
+
+    #[test]
+    fn profile_does_not_receive_editor_fallbacks_or_scalar_defaults() -> Result<()> {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let provider = FormattingProvider::new(RecordingRuntime {
+            args: recorded.clone(),
+            output: b"my $x = 1;\n".to_vec(),
+        })
+        .with_perltidy_config(PerlTidyConfig {
+            profile: Some("unreadable profile.rc".to_string()),
+            extra_args: vec!["--keep-this-argument".to_string()],
+            ..PerlTidyConfig::default()
+        });
+        provider.format_document("my$x=1;\n", &options())?;
+        let args = recorded.lock().map_err(|_| anyhow::anyhow!("args mutex poisoned"))?;
+        assert_eq!(
+            *args,
+            ["-st", "-se", "--profile=unreadable profile.rc", "--keep-this-argument"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn configured_indentation_and_tabs_suppress_only_their_editor_fallbacks() -> Result<()> {
+        for (indent, tabs, expected_indent_fallback, expected_tabs_fallback) in [
+            (Some(2), Some(false), false, false),
+            (Some(2), None, false, true),
+            (None, Some(true), true, false),
+        ] {
+            let recorded = Arc::new(Mutex::new(Vec::new()));
+            let provider = FormattingProvider::new(RecordingRuntime {
+                args: recorded.clone(),
+                output: b"my $x = 1;\n".to_vec(),
+            })
+            .with_perltidy_config(PerlTidyConfig {
+                indent_columns: indent,
+                tabs,
+                ..PerlTidyConfig::default()
+            });
+            provider.format_document("my$x=1;\n", &options())?;
+            let args = recorded.lock().map_err(|_| anyhow::anyhow!("args mutex poisoned"))?;
+            assert_eq!(args.first().map(String::as_str), Some("-st"));
+            assert_eq!(args.get(1).map(String::as_str), Some("-se"));
+            assert_eq!(args.contains(&"-i=4".to_string()), expected_indent_fallback);
+            assert_eq!(args.contains(&"-et=4".to_string()), expected_tabs_fallback);
+            assert_eq!(args.contains(&"--indent-columns=2".to_string()), indent.is_some());
+            assert_eq!(args.contains(&"--tabs".to_string()), tabs == Some(true));
+            assert_eq!(args.contains(&"--notabs".to_string()), tabs == Some(false));
+        }
         Ok(())
     }
 }

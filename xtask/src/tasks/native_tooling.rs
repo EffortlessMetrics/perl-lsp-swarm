@@ -5,12 +5,13 @@ use crate::tasks::git_context::git_stdout_with_worktree_fallback;
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Context, Result, eyre};
 use perl_lsp_rs_core::config::{CriticEngine, FormatterMode, ServerConfig};
+use perl_lsp_rs_core::providers::formatting::{FormattingOptions, FormattingProvider};
 use perl_lsp_rs_core::tooling::native_compat::{
     PerlcriticCompatItem, PerlcriticCompatReport, PerlcriticNativeConfigSuggestion,
     classify_perlcritic_profile, render_perlcritic_compat_markdown,
 };
 use perl_lsp_rs_core::tooling::perl_critic::{NativeCriticProfile, NativeCriticRegistry};
-use perl_lsp_rs_core::tooling::perltidy::FormatConfig;
+use perl_lsp_rs_core::tooling::perltidy::native::{FormatContext, FormatEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -758,7 +759,17 @@ fn readiness_criterion(
 
 fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
     let server_defaults = ServerConfig::default();
-    let format_defaults = FormatConfig::default();
+    let format_default = FormattingProvider::default().format_document_decision(
+        "my$x=1;\n",
+        &FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            trim_trailing_whitespace: None,
+            insert_final_newline: None,
+            trim_final_newlines: None,
+        },
+        &FormatContext::default(),
+    )?;
     let formatting_provider_source =
         read_source(root, "crates/perl-lsp-rs-core/src/providers/formatting/formatting.rs")?;
     let diagnostics_source = read_source(root, "crates/perl-lsp-rs/src/runtime/diagnostics.rs")?;
@@ -793,8 +804,8 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         },
         DefaultCheck {
             name: "formatter_core_default_native",
-            passed: format_defaults.mode == FormatterMode::Native,
-            detail: format!("FormatConfig default formatter mode is {:?}", format_defaults.mode),
+            passed: format_default.outcome.identity.actual_engine == FormatEngine::Native,
+            detail: format!("Default provider executed {:?} without an external adapter", format_default.outcome.identity.actual_engine),
         },
         DefaultCheck {
             name: "critic_default_no_shell_out",

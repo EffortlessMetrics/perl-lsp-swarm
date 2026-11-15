@@ -44,7 +44,7 @@ By module (see `src/lib.rs` doc comments for the authoritative list):
 
 - Upstream: `perl-parser-core`, `perl-parser`, `perl-lexer`, `perl-ast`,
   `perl-module`, `perl-position-tracking`, `perl-semantic-analyzer`,
-  `perl-semantic-facts`, `perl-subprocess-runtime`, `perl-lsp-perltidy`,
+  `perl-semantic-facts`, `perl-subprocess-runtime`, `perl-tidy`, `perl-tidy-perltidy`,
   `perl-diagnostics`, `perl-workspace`, `perl-pragma`, `perl-symbol`.
 - Downstream: `perl-lsp-rs` (primary consumer, wires this into the actual
   server), `perl-dap` (shared protocol/runtime types).
