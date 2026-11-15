@@ -488,8 +488,9 @@ fn expected_identity(target: &str) -> Option<(&'static str, &'static str)> {
 }
 
 fn target_matches_identity(target: &str, observed: &ExecutableIdentity) -> bool {
-    expected_identity(target)
-        .is_some_and(|(format, architecture)| observed.format == format && observed.architecture == architecture)
+    expected_identity(target).is_some_and(|(format, architecture)| {
+        observed.format == format && observed.architecture == architecture
+    })
 }
 
 fn architecture_from_elf(machine: Option<u16>) -> &'static str {
