@@ -161,6 +161,29 @@ migration = "Rename or retire under #8411; Cargo features must not encode roadma
 note = "Consumed through #[cfg_attr(not(feature = \"slow_tests\"), ignore)]."
 
 [[feature]]
+crate = "perl-lsp-perltidy"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition"]
+
+[[feature]]
+crate = "perl-lsp-perltidy"
+name = "engine"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "propagated", "required_features"]
+note = "Native formatting engine; type-only consumers build without it and use the separate perllsp-perltidy helper build (#19427)."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "ai-provider"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+note = "AI inline-completion backend (TLS stack); opt-in so slim builds drop it (#19427)."
+
+[[feature]]
 crate = "perl-lsp-rs"
 name = "benchmarks"
 role = "build_composition"
@@ -176,6 +199,14 @@ owner = "#8409"
 consumers = []
 migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
 note = "Declared with no edges and no cfg consumer."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "dap"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+note = "Embedded DAP interpreter discovery; slim builds use configured+PATH discovery (#19427)."
 
 [[feature]]
 crate = "perl-lsp-rs"
@@ -229,6 +260,21 @@ consumers = ["cfg_gated", "composition", "propagated"]
 
 [[feature]]
 crate = "perl-lsp-rs"
+name = "legacy-runner"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+note = "Legacy perl/runTest execution + test discovery (perl-tdd-support TestRunner); slim builds answer METHOD_NOT_FOUND / empty discovery (#19427, #4972 precedent)."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "logging"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition", "propagated"]
+
+[[feature]]
+crate = "perl-lsp-rs"
 name = "lsp-advanced"
 role = "aspirational_milestone"
 owner = "#8409"
@@ -252,6 +298,13 @@ consumers = ["cfg_gated", "composition"]
 
 [[feature]]
 crate = "perl-lsp-rs"
+name = "native-formatting"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition", "propagated"]
+
+[[feature]]
+crate = "perl-lsp-rs"
 name = "package-qualified"
 role = "aspirational_milestone"
 owner = "#8409"
@@ -270,6 +323,14 @@ note = "Declared with no edges and no cfg consumer; perl-parser owns the impleme
 
 [[feature]]
 crate = "perl-lsp-rs"
+name = "ripr-facts"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+note = "perllsp ripr-facts batch CLI; slim builds answer not-compiled-in (#19427)."
+
+[[feature]]
+crate = "perl-lsp-rs"
 name = "stress-tests"
 role = "test_only"
 owner = "#8409"
@@ -283,6 +344,14 @@ role = "product_profile"
 owner = "#8409"
 consumers = ["cfg_gated"]
 note = "Selects strict JSON-RPC validation behavior."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "tcp"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+note = "TCP socket transport (tokio/net); slim builds are stdio-only (#19427)."
 
 [[feature]]
 crate = "perl-lsp-rs"
@@ -333,6 +402,14 @@ consumers = ["composition"]
 
 [[feature]]
 crate = "perl-lsp-rs-core"
+name = "logging"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+note = "stderr/file logging stack (tracing-subscriber/appender); off in the size-capped slim build (#19427)."
+
+[[feature]]
+crate = "perl-lsp-rs-core"
 name = "lsp-compat"
 role = "build_composition"
 owner = "#8409"
@@ -344,6 +421,14 @@ name = "lsp-ga-lock"
 role = "product_profile"
 owner = "#8409"
 consumers = ["cfg_gated", "propagated"]
+
+[[feature]]
+crate = "perl-lsp-rs-core"
+name = "native-formatting"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+note = "Native perltidy engine call sites; slim builds route to the external formatter path (#19427)."
 
 [[feature]]
 crate = "perl-lsp-rs-core"
@@ -430,9 +515,9 @@ crate = "perl-parser"
 name = "expose_lsp_test_api"
 role = "test_only"
 owner = "#8409"
-consumers = ["propagated"]
+consumers = ["cfg_gated", "propagated"]
 migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
-note = "Inert forwarding target: perl-lsp-rs/expose_lsp_test_api enables it but perl-parser gates nothing on it."
+note = "Forwards from perl-lsp-rs/expose_lsp_test_api; gates the perl_parser::tdd compatibility facade (perl-tdd-support is dev-only in production builds, #19427)."
 
 [[feature]]
 crate = "perl-parser"
@@ -656,7 +741,7 @@ crate = "perl-tdd-support"
 name = "lsp-compat"
 role = "build_composition"
 owner = "#8409"
-consumers = ["cfg_gated", "composition", "propagated"]
+consumers = ["cfg_gated", "composition"]
 
 [[feature]]
 crate = "perl-tdd-support"
@@ -714,6 +799,37 @@ name = "workspace"
 role = "build_composition"
 owner = "#8409"
 consumers = ["cfg_gated", "propagated"]
+
+[[feature]]
+crate = "perllsp"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition"]
+
+[[feature]]
+crate = "perllsp"
+name = "full"
+role = "product_profile"
+owner = "#8409"
+consumers = ["composition", "propagated"]
+note = "Full product build: every optional surface enabled (default)."
+
+[[feature]]
+crate = "perllsp"
+name = "product-extras"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated", "propagated"]
+note = "Claude/MCP setup surfaces in the binary entrypoint; rejected explicitly in slim builds (#19427)."
+
+[[feature]]
+crate = "perllsp"
+name = "slim"
+role = "product_profile"
+owner = "#8409"
+consumers = []
+migration = "Retained as the explicit size-capped build marker; no consumer by design (#19427)."
 
 [[feature]]
 crate = "tree-sitter-perl-c"

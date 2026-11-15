@@ -4,7 +4,7 @@
 //! `perl/runTestFile` custom LSP commands.
 
 use super::{JsonRpcError, LspServer, Value, document_not_found_error, json};
-#[cfg(feature = "test-runner")]
+#[cfg(feature = "legacy-runner")]
 use super::TestRunner;
 
 impl LspServer {
@@ -26,7 +26,7 @@ impl LspServer {
     }
 
     /// Run a specific test
-    #[cfg(not(feature = "test-runner"))]
+    #[cfg(not(feature = "legacy-runner"))]
     pub(crate) fn run_test(&self, test_id: &str) -> Result<Option<Value>, JsonRpcError> {
         Err(JsonRpcError::new(
             crate::protocol::METHOD_NOT_FOUND,
@@ -34,7 +34,7 @@ impl LspServer {
         ))
     }
 
-    #[cfg(feature = "test-runner")]
+    #[cfg(feature = "legacy-runner")]
     pub(crate) fn run_test(&self, test_id: &str) -> Result<Option<Value>, JsonRpcError> {
         tracing::debug!(test_id, "Running test");
 
@@ -95,7 +95,7 @@ impl LspServer {
     }
 
     /// Run all tests in a file
-    #[cfg(not(feature = "test-runner"))]
+    #[cfg(not(feature = "legacy-runner"))]
     pub(crate) fn run_test_file(&self, uri: &str) -> Result<Option<Value>, JsonRpcError> {
         Err(JsonRpcError::new(
             crate::protocol::METHOD_NOT_FOUND,
@@ -103,7 +103,7 @@ impl LspServer {
         ))
     }
 
-    #[cfg(feature = "test-runner")]
+    #[cfg(feature = "legacy-runner")]
     pub(crate) fn run_test_file(&self, uri: &str) -> Result<Option<Value>, JsonRpcError> {
         tracing::debug!(uri, "Running test file");
 
@@ -139,7 +139,7 @@ mod tests {
     use super::LspServer;
     use std::sync::Arc;
 
-    #[cfg(not(feature = "test-runner"))]
+    #[cfg(not(feature = "legacy-runner"))]
     #[test]
     fn slim_run_test_reports_method_not_found() {
         let server = LspServer::new();

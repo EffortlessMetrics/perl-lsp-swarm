@@ -114,7 +114,7 @@ ripr-facts = ["dep:perl-ripr-facts"]
 # Legacy test execution/discovery (perl-tdd-support TestRunner) behind
 # perl/runTest, perl/runTestFile and experimental/testDiscovery. Full builds
 # only; slim builds answer METHOD_NOT_FOUND / empty discovery.
-test-runner = ["dep:perl-tdd-support"]
+legacy-runner = ["dep:perl-tdd-support"]
 # TCP socket transport (tokio::net listener in cli.rs). Full builds only;
 # slim builds are stdio-only and reject socket mode with an error.
 tcp = ["tokio/net"]

@@ -30,7 +30,7 @@ path = "src/main.rs"
 [features]
 # Full product build (default): AI backend + embedded DAP discovery enabled.
 default = ["full"]
-full = ["perl-lsp-rs/ai-provider", "perl-lsp-rs/dap", "perl-lsp-rs/logging", "perl-lsp-rs/ripr-facts", "perl-lsp-rs/test-runner", "perl-lsp-rs/tcp", "perl-lsp-rs/native-formatting", "product-extras"]
+full = ["perl-lsp-rs/ai-provider", "perl-lsp-rs/dap", "perl-lsp-rs/logging", "perl-lsp-rs/ripr-facts", "perl-lsp-rs/legacy-runner", "perl-lsp-rs/tcp", "perl-lsp-rs/native-formatting", "product-extras"]
 # Claude/MCP product surfaces in src/main.rs (setup/doctor dispatch). Full
 # builds only; slim builds reject them with a not-compiled-in error.
 product-extras = []

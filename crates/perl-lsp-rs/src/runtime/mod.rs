@@ -106,7 +106,7 @@ pub(crate) struct WorkspaceTopologyTransitionGate {
     pub(crate) started: std::sync::mpsc::Sender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
 }
-#[cfg(feature = "test-runner")]
+#[cfg(feature = "legacy-runner")]
 use perl_tdd_support::test_runner::{TestKind, TestRunner};
 
 use crate::call_hierarchy_provider::CallHierarchyProvider;
