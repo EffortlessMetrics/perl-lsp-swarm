@@ -279,7 +279,7 @@ pub struct RustSmallProofReceipt {
     pub result: ProofResult,
 }
 
-/// The full ordered step vocabulary: the seven pinned cargo steps, then census,
+/// The full ordered step vocabulary: every pinned cargo step, then census,
 /// replay, and diff hygiene. Built from the same constants the runtime uses, so
 /// a step added to `CARGO_STEPS` without a receipt entry is impossible.
 fn expected_steps() -> Vec<(String, Vec<String>)> {
