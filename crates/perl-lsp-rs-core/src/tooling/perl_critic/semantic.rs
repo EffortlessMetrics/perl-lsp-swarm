@@ -326,7 +326,7 @@ impl UnresolvedNativeFindingIdentity {
 /// it; output ordering never depends on hash values.
 #[must_use]
 pub fn critic_source_identity_for_uri(uri: &str, generation: u32) -> CriticSourceIdentity {
-    let uri_hash = super::hash_content(uri);
+    let uri_hash = perl_parser_core::syntax::source_context::hash_source_content(uri);
     let (high, low) = (uri_hash.to_be_bytes(), (!uri_hash).to_be_bytes());
     let mut source_key = [0u8; 16];
     source_key[..8].copy_from_slice(&high);
@@ -501,14 +501,31 @@ pub fn normalize_with_native_policy(
     candidates: impl IntoIterator<Item = CriticFindingCandidate>,
     policy: &NativeCriticPolicy<'_>,
 ) -> Vec<NormalizedCriticFinding> {
-    normalize_critic_findings(candidates)
+    normalize_with_native_policy_and_suppression_count(candidates, policy).0
+}
+
+/// Observe the suppression stage of the same canonical normalization pipeline.
+///
+/// The count covers logical rows rejected by suppression after alias merging
+/// and severity/include/exclude retention. Other removals cannot inflate it.
+pub(super) fn normalize_with_native_policy_and_suppression_count(
+    candidates: impl IntoIterator<Item = CriticFindingCandidate>,
+    policy: &NativeCriticPolicy<'_>,
+) -> (Vec<NormalizedCriticFinding>, usize) {
+    let mut suppressed = 0;
+    let findings = normalize_critic_findings(candidates)
         .into_iter()
         .filter_map(|finding| {
             let retention = critic_policy_retention(&finding, policy);
             finding.retained_under_critic_policy(retention)
         })
-        .filter(|finding| !policy.suppressions.suppresses_normalized(finding))
-        .collect()
+        .filter(|finding| {
+            let rejected = policy.suppressions.suppresses_normalized(finding);
+            suppressed += usize::from(rejected);
+            !rejected
+        })
+        .collect();
+    (findings, suppressed)
 }
 
 /// Evaluate critic-owned severity and include/exclude policy for one merged
@@ -1288,6 +1305,70 @@ mod tests {
 
         let normalized = normalize_critic_findings(same_doc.into_iter().chain(other_doc));
         assert_eq!(normalized.len(), 2, "different source keys cannot merge");
+    }
+
+    #[test]
+    fn suppression_count_excludes_alias_merge_filtering_and_rejected_identities() {
+        let suppressions = CriticSuppressionMap::from_source(
+            "## no critic PL603 native.testing.require_use_strict native.testing.require_use_warnings\nsystem('ls');\n",
+        );
+        let (mut candidates, unresolved) = native_finding_candidates(
+            [
+                native_finding(
+                    "native.security.system_exec",
+                    CriticFindingShape::SystemCall,
+                    Severity::Harsh,
+                ),
+                native_finding(
+                    "native.testing.require_use_strict",
+                    CriticFindingShape::General,
+                    Severity::Harsh,
+                ),
+                native_finding(
+                    "native.testing.require_use_warnings",
+                    CriticFindingShape::General,
+                    Severity::Brutal,
+                ),
+                native_finding("native.unknown", CriticFindingShape::General, Severity::Harsh),
+            ],
+            subject(),
+        );
+        assert_eq!(unresolved.len(), 1);
+        candidates.push(CriticFindingCandidate::new(
+            CriticObservedIdentity::built_in_system_call(),
+            subject(),
+            Severity::Harsh,
+            range_at(1),
+            "core system finding",
+            None,
+        ));
+        let exclude = vec!["native.testing.require_use_strict".to_string()];
+        let policy = NativeCriticPolicy::new(3, &[], &exclude, &suppressions);
+        let expected = normalize_with_native_policy(candidates.clone(), &policy);
+        let (findings, suppressed) =
+            super::normalize_with_native_policy_and_suppression_count(candidates, &policy);
+        assert_eq!(findings, expected);
+        assert!(findings.is_empty());
+        assert_eq!(suppressed, 1, "only the merged system row reaches and fails suppression");
+
+        let (retained, suppressed) = super::normalize_with_native_policy_and_suppression_count(
+            qx_native_candidates(),
+            &policy,
+        );
+        assert_eq!(retained.len(), 1, "an unrelated admitted row remains visible");
+        assert_eq!(suppressed, 0);
+
+        let qx_suppressions = CriticSuppressionMap::from_source(
+            "## no critic native.security.qx_readpipe\nqx(ls);\n",
+        );
+        let include = vec!["native.security.system_exec".to_string()];
+        let policy = NativeCriticPolicy::new(1, &include, &[], &qx_suppressions);
+        let (findings, suppressed) = super::normalize_with_native_policy_and_suppression_count(
+            qx_native_candidates(),
+            &policy,
+        );
+        assert!(findings.is_empty());
+        assert_eq!(suppressed, 0, "a row rejected by include policy never reaches suppression");
     }
 
     #[test]

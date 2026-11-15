@@ -27,6 +27,12 @@ By module (see `src/lib.rs` doc comments for the authoritative list):
 - `runtime` -- cancellation, resource limits, input validation, process
   launcher, text-editing utilities
 - `tooling` -- perlcritic/perltidy integration glue
+- `providers::diagnostics::document_analysis` is a compatibility re-export;
+  `perl-semantic-analyzer` owns the shared `DocumentDiagnosticAnalysis` implementation.
+- `providers::testing::test2` re-exports the shared compatibility analysis from
+  `perl-semantic-analyzer`; native critic consumes that lower owner directly.
+- `providers::diagnostics::unreachable_code` projects shared semantic analysis into PL406;
+  `unreachable_code_disposition` re-exports the same lower registry.
 - `transport` -- Content-Length message framing for stdio/socket
 - `uri` -- URI parsing/conversion for protocol-facing code
 
@@ -37,6 +43,9 @@ By module (see `src/lib.rs` doc comments for the authoritative list):
 - Perl parsing itself -- delegates to `perl-parser-core` / `perl-parser` /
   `perl-lexer`.
 - Module resolution -- delegates to `perl-module`.
+- Perl argument cardinality -- delegates to
+  `perl-semantic-analyzer::known_scalar_argument_count`; diagnostics, critic,
+  and quick-fix admission share that implementation.
 - The DAP protocol -- that's `perl-dap`, which depends on this crate only
   for shared runtime/protocol types, not for LSP behavior.
 

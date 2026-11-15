@@ -9,7 +9,6 @@ use crate::critic_parser::parse_perlcritic_output;
 use perl_parser_core::position::{Position, Range};
 use perl_subprocess_runtime::SubprocessRuntime;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -259,9 +258,7 @@ impl CriticAnalyzer {
 /// Uses the standard library's `DefaultHasher` — suitable for within-process
 /// cache keys where stability across restarts is not required.
 pub fn hash_content(content: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    content.hash(&mut hasher);
-    hasher.finish()
+    perl_parser_core::syntax::source_context::hash_source_content(content)
 }
 
 fn build_perlcritic_args(config: &CriticConfig, path_str: &str) -> Vec<String> {

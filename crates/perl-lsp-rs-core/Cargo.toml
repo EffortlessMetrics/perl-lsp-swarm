@@ -98,9 +98,12 @@ ai-provider = ["dep:ureq"]
 # everything above `[dev-dependencies]`, so spelling the crate out even in a
 # comment trips it. Leaving the gate exactly as strict is worth the awkward
 # phrasing.
-test-instrumentation = []
+test-instrumentation = ["perl-semantic-analyzer/test-instrumentation"]
 
 [dev-dependencies]
+# cfg(test) does not cross crate boundaries; preserve the shared-analysis
+# materialization proof for this crate's provider tests.
+perl-semantic-analyzer = { workspace = true, features = ["test-instrumentation"] }
 jsonschema = { version = "0.58", default-features = false }
 perl-test-must.workspace = true
 perl-tdd-support.workspace = true

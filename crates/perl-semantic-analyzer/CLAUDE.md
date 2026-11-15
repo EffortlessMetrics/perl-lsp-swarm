@@ -24,8 +24,11 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 
 | Crate | Role |
 |-------|------|
+| `perl-ast` | Canonical AST variant and child authorities for local-flow disposition |
 | `perl-parser-core` | AST nodes (`Node`, `NodeKind`), `Parser`, source locations |
-| `perl-workspace` | Cross-file workspace index, `SymKind`, `SymbolKey` |
+| `perl-lexer` | Deferred source-only stray-cut facts for shared document analysis |
+| `perl-pragma` | Pragma timelines shared by scope analysis and native critic consumers |
+| `perl-module` | Known export-tag lookup; its current transitive workspace dependency remains owned by #7582/#7584 |
 | `perl-symbol` | Shared `SymbolKind`, `VarKind` enums |
 | `regex` | Pattern matching in semantic classification |
 | `rustc-hash` | `FxHashMap` for fast scope/parent-map lookups |
@@ -35,17 +38,31 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
+| `unreachable_code`, `unreachable_code_disposition` | `UnreachableStatement`, `Pl406Disposition` | One local-flow walk and disposition registry; neutral byte-span evidence for PL406 and native critic |
+| `argument_cardinality` | `known_scalar_argument_count` | Conservative list-context argument counts shared by diagnostics, native critic and action admission |
+| `document_analysis` | `DocumentDiagnosticAnalysis` | Generation-owned lazy pragma, scope, symbol, type and lexer facts; exact AST/source matching |
 | `semantic` | `SemanticAnalyzer`, `SemanticToken`, `SemanticTokenType`, `SemanticTokenModifier`, `HoverInfo` | Semantic token classification and hover info for LSP |
 | `symbol` | `SymbolExtractor`, `SymbolTable`, `Symbol`, `SymbolReference`, `Scope`, `ScopeKind`, `ScopeId` | Symbol extraction and symbol table construction from AST |
+| `test2` | `Test2Facts`, `Test2FactsAnalysis`, `ResolvedImport` | Shared compatibility import/pragma analysis; canonical framework migration remains #4907/#7661 |
 | `scope_analyzer` | `ScopeAnalyzer`, `ScopeIssue`, `IssueKind` | Scope issue detection (unused/undeclared/shadowed variables) |
 | `type_inference` | `TypeInferenceEngine`, `TypeEnvironment`, `PerlType`, `ScalarType`, `TypeConstraint` | Type inference with scoped environments |
 | `declaration` | `DeclarationProvider`, `LocationLink`, `ParentMap` | Go-to-declaration with parent-map AST traversal |
 | `dead_code_detector` | `DeadCodeDetector`, `DeadCode`, `DeadCodeType`, `DeadCodeAnalysis`, `DeadCodeStats` | Workspace-level dead code detection (non-WASM only) |
 | `index` | `WorkspaceIndex`, `SymbolDef` | Local cross-file symbol index (non-WASM only) |
 
+`DocumentDiagnosticAnalysis` is exported at the crate root. Its implementation
+module remains crate-private so `perl-parser`'s analysis wildcard re-export does
+not widen the parser's public API.
+
 ### Re-exports from `lib.rs`
 
-The crate re-exports core types from `perl-parser-core` (`Node`, `NodeKind`, `SourceLocation`, `Parser`, `ast`, `error`, etc.) and `perl-workspace::workspace_index`, so downstream crates can use a single import.
+The crate re-exports core types from `perl-parser-core` (`Node`, `NodeKind`, `SourceLocation`, `Parser`, `ast`, `error`, etc.) and its own `analysis::index` as `workspace_index`, so downstream crates can use a single import.
+
+`known_scalar_argument_count` is exported at the crate root. Its implementation
+module stays private so `perl-parser::analysis` does not acquire another public
+module through its compatibility wildcard export.
+The Test2 compatibility facts, unreachable spans and PL406 disposition items use
+the same selected root exports; their implementation modules are crate-private.
 
 ## Usage Examples
 

@@ -25,109 +25,14 @@ use super::{
     CriticEngine, CriticRuleIdSource, ProjectCriticConfig, ProjectDiagnosticsConfig, ServerConfig,
     as_config_u64, normalize_string_list, warn_unknown_rule_ids,
 };
-use crate::hashing::fnv1a64_hex;
 use crate::tooling::perl_critic::NativeCriticProfile;
+// Compatibility paths retain the same nominal types; the critic owns values.
+pub use crate::tooling::perl_critic::{EffectiveCriticState, EffectiveNativeCriticConfig};
 use perl_source_identity::ContentDigest;
-
-/// Separator used when serializing accepted-state content into its fingerprint
-/// input. Chosen so ordinary setting values cannot collide across fields.
-const FINGERPRINT_FIELD_SEPARATOR: &str = "\u{1f}";
-
-/// Version tag binding the fingerprint recipe to this accepted-state shape.
-const FINGERPRINT_RECIPE_VERSION: &str = "critic-state-v1";
 
 /// Domain/version for the collision-resistant accepted-state identity used by
 /// reusable diagnostic result IDs.
 const RESULT_IDENTITY_FINGERPRINT_VERSION: &str = "critic-state-result-identity-v1";
-
-/// One accepted critic runtime state (#8253).
-///
-/// Disabled carries no policy payload at all, so a disabled critic cannot
-/// accidentally retain live native analysis policy. Native always carries the
-/// complete behavior-bearing policy as one accepted transaction.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum EffectiveCriticState {
-    /// Critic analysis is disabled. No policy object exists in this state.
-    Disabled,
-    /// Critic analysis runs with the complete accepted native policy.
-    Native(EffectiveNativeCriticConfig),
-}
-
-impl EffectiveCriticState {
-    /// Deterministic identity of this accepted state.
-    ///
-    /// This compact FNV observation token predates reusable result identities.
-    /// It is deterministic, but it is not a collision-resistant authority and
-    /// must not decide whether a client-held diagnostic result ID is reusable.
-    #[must_use]
-    pub fn fingerprint(&self) -> String {
-        match self {
-            Self::Disabled => fnv1a64_hex(FINGERPRINT_RECIPE_VERSION.as_bytes()),
-            Self::Native(native) => native.fingerprint(),
-        }
-    }
-
-    /// Owning folder/root identity of this accepted subject, when bound.
-    #[must_use]
-    pub fn owning_root(&self) -> Option<&str> {
-        match self {
-            Self::Disabled => None,
-            Self::Native(native) => native.owning_root.as_deref(),
-        }
-    }
-}
-
-/// Complete accepted native critic policy (#8253).
-///
-/// Every behavior-bearing sibling advances as one transaction: consumers can
-/// rely on profile, threshold, filters, ownership, and fingerprint describing
-/// one configuration generation. No external executable, profile path, theme,
-/// engine selector, or process authority is representable here.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct EffectiveNativeCriticConfig {
-    /// Canonical selected native rule bundle.
-    pub profile: NativeCriticProfile,
-    /// Minimum severity threshold reported (1..=5, 5 = most severe).
-    pub severity_threshold: u8,
-    /// Canonical included rule IDs (trimmed, deduplicated, sorted).
-    pub include: Vec<String>,
-    /// Canonical excluded rule IDs (trimmed, deduplicated, sorted).
-    pub exclude: Vec<String>,
-    /// Owning folder/root identity; `None` is the server-global subject.
-    pub owning_root: Option<String>,
-}
-
-impl EffectiveNativeCriticConfig {
-    /// Deterministic fingerprint over the complete canonical policy content.
-    #[must_use]
-    pub fn fingerprint(&self) -> String {
-        let content = format!(
-            "{FINGERPRINT_RECIPE_VERSION}{sep}{profile}{sep}{severity}{sep}{include}{sep}{exclude}{sep}{root}",
-            sep = FINGERPRINT_FIELD_SEPARATOR,
-            profile = self.profile.as_str(),
-            severity = self.severity_threshold,
-            include = self.include.join(FINGERPRINT_FIELD_SEPARATOR),
-            exclude = self.exclude.join(FINGERPRINT_FIELD_SEPARATOR),
-            root = self.owning_root.as_deref().unwrap_or(""),
-        );
-        fnv1a64_hex(content.as_bytes())
-    }
-}
-
-/// Canonicalize a filter list: trimmed, empties dropped, deduplicated, sorted.
-///
-/// Sorting makes the accepted policy order-insensitive so equivalent updates
-/// spelled in different orders derive one identical accepted value.
-pub(crate) fn canonical_rule_ids(values: &[String]) -> Vec<String> {
-    let mut canonical: Vec<String> = values
-        .iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect();
-    canonical.sort();
-    canonical.dedup();
-    canonical
-}
 
 /// One accepted critic subject: the state, the root it was derived for, and the
 /// fingerprint that decides whether it is still current (#9062/#12067 review).
@@ -258,13 +163,13 @@ impl ServerConfig {
         if !self.perlcritic_enabled {
             return EffectiveCriticState::Disabled;
         }
-        EffectiveCriticState::Native(EffectiveNativeCriticConfig {
-            profile: NativeCriticProfile::parse(&self.native_critic_profile).unwrap_or_default(),
-            severity_threshold: self.perlcritic_severity.clamp(1, 5),
-            include: canonical_rule_ids(&self.native_critic_include),
-            exclude: canonical_rule_ids(&self.native_critic_exclude),
-            owning_root: owning_root.map(ToOwned::to_owned),
-        })
+        EffectiveCriticState::Native(EffectiveNativeCriticConfig::new(
+            NativeCriticProfile::parse(&self.native_critic_profile).unwrap_or_default(),
+            self.perlcritic_severity,
+            &self.native_critic_include,
+            &self.native_critic_exclude,
+            owning_root,
+        ))
     }
 }
 
@@ -751,7 +656,7 @@ mod tests {
     fn result_identity_fingerprint_discriminates_legacy_aliases()
     -> Result<(), Box<dyn std::error::Error>> {
         let joined = EffectiveCriticState::Native(EffectiveNativeCriticConfig {
-            include: vec![format!("a{FINGERPRINT_FIELD_SEPARATOR}b")],
+            include: vec!["a\u{1f}b".to_string()],
             ..native_config(Some("root-a"))
         });
         let split = EffectiveCriticState::Native(EffectiveNativeCriticConfig {
@@ -791,31 +696,6 @@ mod tests {
             EffectiveCriticState::Native(native_config(None)).owning_root(),
             None,
             "server-global subject stays distinct from every folder subject"
-        );
-    }
-
-    #[test]
-    fn filter_canonicalization_is_order_and_spelling_insensitive() {
-        let spelled_first = canonical_rule_ids(&[
-            "native.testing.require_use_warnings ".to_string(),
-            "native.testing.require_use_strict".to_string(),
-            "".to_string(),
-            "native.testing.require_use_strict".to_string(),
-        ]);
-        let spelled_second = canonical_rule_ids(&[
-            "native.testing.require_use_strict".to_string(),
-            "native.testing.require_use_warnings".to_string(),
-        ]);
-        assert_eq!(
-            spelled_first,
-            vec![
-                "native.testing.require_use_strict".to_string(),
-                "native.testing.require_use_warnings".to_string()
-            ]
-        );
-        assert_eq!(
-            spelled_first, spelled_second,
-            "input order must not change the canonical accepted filter set"
         );
     }
 

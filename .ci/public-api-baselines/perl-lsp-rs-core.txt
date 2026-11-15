@@ -251,6 +251,7 @@ pub perl_lsp_rs_core::config::EffectiveNativeCriticConfig::owning_root: core::op
 pub perl_lsp_rs_core::config::EffectiveNativeCriticConfig::profile: perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile
 pub perl_lsp_rs_core::config::EffectiveNativeCriticConfig::severity_threshold: u8
 pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::fingerprint(&self) -> alloc::string::String
+pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::new(profile: perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile, severity_threshold: u8, include: &[alloc::string::String], exclude: &[alloc::string::String], owning_root: core::option::Option<&str>) -> perl_lsp_rs_core::config::EffectiveNativeCriticConfig
 pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::clone(&self) -> perl_lsp_rs_core::config::EffectiveNativeCriticConfig
 pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::eq(&self, other: &perl_lsp_rs_core::config::EffectiveNativeCriticConfig) -> bool
 pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2718,6 +2719,7 @@ pub fn perl_lsp_rs_core::protocol::unclassified_types() -> alloc::vec::Vec<&'sta
 pub mod perl_lsp_rs_core::providers
 pub use perl_lsp_rs_core::providers::DiagnosticSeverity
 pub use perl_lsp_rs_core::providers::DiagnosticTag
+pub use perl_lsp_rs_core::providers::DocumentDiagnosticAnalysis
 pub use perl_lsp_rs_core::providers::Location
 pub use perl_lsp_rs_core::providers::MIN_LOOSE_MATCH_QUERY_CHARS
 pub use perl_lsp_rs_core::providers::PerlTidyConfig
@@ -3589,6 +3591,7 @@ pub fn perl_lsp_rs_core::providers::destination::validate_tcp_attach_host_with_r
 pub mod perl_lsp_rs_core::providers::diagnostics
 pub use perl_lsp_rs_core::providers::diagnostics::DiagnosticSeverity
 pub use perl_lsp_rs_core::providers::diagnostics::DiagnosticTag
+pub use perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis
 pub mod perl_lsp_rs_core::providers::diagnostics::common_mistakes
 pub fn perl_lsp_rs_core::providers::diagnostics::common_mistakes::check_common_mistakes(node: &perl_ast::ast::Node, symbol_table: &perl_semantic_analyzer::analysis::symbol::SymbolTable, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::diagnostics::deprecated
@@ -3620,17 +3623,7 @@ pub fn perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsShadowResult:
 pub fn perl_lsp_rs_core::providers::diagnostics::diagnostics_shadow::diagnostics_undefined_symbol_cutover<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_should_warn: bool, semantic_queries: &Q, symbol: &str, file_id: perl_semantic_facts::FileId, scope_id: core::option::Option<perl_semantic_facts::ScopeId>, byte_offset: u32, is_in_dynamic_scope: bool) -> perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsCutoverOutcome
 pub fn perl_lsp_rs_core::providers::diagnostics::diagnostics_shadow::diagnostics_undefined_symbol_shadow<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_should_warn: bool, semantic_queries: &Q, symbol: &str, file_id: perl_semantic_facts::FileId, scope_id: core::option::Option<perl_semantic_facts::ScopeId>, byte_offset: u32) -> perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsShadowResult
 pub mod perl_lsp_rs_core::providers::diagnostics::document_analysis
-pub struct perl_lsp_rs_core::providers::diagnostics::document_analysis::DocumentDiagnosticAnalysis
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::build(ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: impl core::convert::Into<alloc::sync::Arc<str>>) -> perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_node(&self, ast: &perl_ast::ast::Node, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::stray_cut_opens(&self) -> &[(usize, bool)]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::type_environment(&self) -> &perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub use perl_lsp_rs_core::providers::diagnostics::document_analysis::DocumentDiagnosticAnalysis
 pub mod perl_lsp_rs_core::providers::diagnostics::missing_module
 #[non_exhaustive] pub struct perl_lsp_rs_core::providers::diagnostics::missing_module::ModuleSearchPathDisplay
 pub perl_lsp_rs_core::providers::diagnostics::missing_module::ModuleSearchPathDisplay::path: alloc::string::String
@@ -3664,58 +3657,16 @@ pub fn perl_lsp_rs_core::providers::diagnostics::strict_warnings::check_strict_w
 pub mod perl_lsp_rs_core::providers::diagnostics::unreachable_code
 pub fn perl_lsp_rs_core::providers::diagnostics::unreachable_code::check_unreachable_code(root: &perl_ast::ast::Node, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition
-pub enum perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule::ModifierGated
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule::None
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule::ShortCircuitBinary
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule::TernaryAlternatives
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling::ConservativeFallthrough
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling::ExactLocalTransfer
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling::RecoveredFallthrough
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Scope
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Scope::Inherited
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Scope::Introduced
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Alternatives
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::CallableBoundary
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Conditional
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::EvaluationBoundary
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::ExpressionContainer
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Leaf
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Loop
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Recovery
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass::Sequential
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::analyzed_not_propagated: &'static [&'static str]
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::class: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::conditional_rule: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::executable_children: &'static [&'static str]
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::fallthrough_determining: &'static [&'static str]
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::kind_name: &'static str
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::leaf_reason: core::option::Option<&'static str>
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::proof_ceiling: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition::scope: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub const perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::PL406_DISPOSITIONS: &[perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition]
-pub const perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::PL406_DISPOSITION_SCHEMA_VERSION: u32
-pub const fn perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::all_pl406_dispositions() -> &'static [perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition]
-pub fn perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::pl406_disposition(kind_name: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition>
-pub fn perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::pl406_disposition_of(kind: &perl_ast::ast::NodeKind) -> core::option::Option<&'static perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition>
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::PL406_DISPOSITIONS
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::PL406_DISPOSITION_SCHEMA_VERSION
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ConditionalRule
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Disposition
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406ProofCeiling
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406Scope
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::Pl406SemanticClass
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::all_pl406_dispositions
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::pl406_disposition
+pub use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::pl406_disposition_of
 pub mod perl_lsp_rs_core::providers::diagnostics::unused_imports
 pub fn perl_lsp_rs_core::providers::diagnostics::unused_imports::check_unused_imports(node: &perl_ast::ast::Node, source: &str, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::diagnostics::version_compat
@@ -3754,28 +3705,17 @@ pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_pa
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_project_version(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_and_project_version<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
-pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
-pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_semantic_analyzer::analysis::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_semantic_analyzer::analysis::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_project_version(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_and_project_version<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
-pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
-pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_semantic_analyzer::analysis::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_semantic_analyzer::analysis::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::new() -> perl_lsp_rs_core::providers::DiagnosticsProvider
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::with_regex_analysis(self, table: alloc::sync::Arc<perl_parser_core::syntax::regex_analysis::RegexAnalysisTable>) -> perl_lsp_rs_core::providers::DiagnosticsProvider
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::default() -> perl_lsp_rs_core::providers::DiagnosticsProvider
-pub struct perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::build(ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: impl core::convert::Into<alloc::sync::Arc<str>>) -> perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_node(&self, ast: &perl_ast::ast::Node, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::stray_cut_opens(&self) -> &[(usize, bool)]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::type_environment(&self) -> &perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::diagnostics::RelatedInformation
 pub perl_lsp_rs_core::providers::diagnostics::RelatedInformation::location: (usize, usize)
 pub perl_lsp_rs_core::providers::diagnostics::RelatedInformation::message: alloc::string::String
@@ -3820,17 +3760,7 @@ pub fn perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsShadowResult:
 pub fn perl_lsp_rs_core::providers::diagnostics_shadow::diagnostics_undefined_symbol_cutover<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_should_warn: bool, semantic_queries: &Q, symbol: &str, file_id: perl_semantic_facts::FileId, scope_id: core::option::Option<perl_semantic_facts::ScopeId>, byte_offset: u32, is_in_dynamic_scope: bool) -> perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsCutoverOutcome
 pub fn perl_lsp_rs_core::providers::diagnostics_shadow::diagnostics_undefined_symbol_shadow<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_should_warn: bool, semantic_queries: &Q, symbol: &str, file_id: perl_semantic_facts::FileId, scope_id: core::option::Option<perl_semantic_facts::ScopeId>, byte_offset: u32) -> perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsShadowResult
 pub mod perl_lsp_rs_core::providers::document_analysis
-pub struct perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::build(ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: impl core::convert::Into<alloc::sync::Arc<str>>) -> perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_node(&self, ast: &perl_ast::ast::Node, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::stray_cut_opens(&self) -> &[(usize, bool)]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::type_environment(&self) -> &perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub use perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis
 pub mod perl_lsp_rs_core::providers::document_highlight
 pub mod perl_lsp_rs_core::providers::document_highlight
 pub enum perl_lsp_rs_core::providers::document_highlight::DocumentHighlightKind
@@ -7347,36 +7277,13 @@ pub fn perl_lsp_rs_core::providers::testing::tap::focus_subtest(report: &perl_ls
 pub fn perl_lsp_rs_core::providers::testing::tap::parse_tap(output: &str) -> perl_lsp_rs_core::providers::testing::tap::TapReport
 pub fn perl_lsp_rs_core::providers::testing::tap::parse_tap_facts(output: &str) -> perl_test_facts::TapReport
 pub mod perl_lsp_rs_core::providers::testing::test2
-pub struct perl_lsp_rs_core::providers::testing::test2::ResolvedImport
-pub perl_lsp_rs_core::providers::testing::test2::ResolvedImport::pragmas: core::option::Option<perl_lsp_rs_core::providers::testing::test2::Test2Pragmas>
-pub perl_lsp_rs_core::providers::testing::test2::ResolvedImport::symbols: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub fn perl_lsp_rs_core::providers::testing::test2::ResolvedImport::clone(&self) -> perl_lsp_rs_core::providers::testing::test2::ResolvedImport
-pub fn perl_lsp_rs_core::providers::testing::test2::ResolvedImport::eq(&self, other: &perl_lsp_rs_core::providers::testing::test2::ResolvedImport) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::ResolvedImport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::testing::test2::Test2Facts
-pub perl_lsp_rs_core::providers::testing::test2::Test2Facts::imported_symbols: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub perl_lsp_rs_core::providers::testing::test2::Test2Facts::modules: alloc::vec::Vec<alloc::string::String>
-pub perl_lsp_rs_core::providers::testing::test2::Test2Facts::strict: bool
-pub perl_lsp_rs_core::providers::testing::test2::Test2Facts::warnings: bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::from_source(source: &str) -> perl_lsp_rs_core::providers::testing::test2::Test2Facts
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::is_imported(&self, name: &str) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::provides_pragma(&self, feature: &str) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::uses_test2(&self) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::uses_test2_bundle(&self) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::clone(&self) -> perl_lsp_rs_core::providers::testing::test2::Test2Facts
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::eq(&self, other: &perl_lsp_rs_core::providers::testing::test2::Test2Facts) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::default() -> perl_lsp_rs_core::providers::testing::test2::Test2Facts
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Facts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::testing::test2::Test2Pragmas
-pub perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::strict: bool
-pub perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::warnings: bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::clone(&self) -> perl_lsp_rs_core::providers::testing::test2::Test2Pragmas
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::eq(&self, other: &perl_lsp_rs_core::providers::testing::test2::Test2Pragmas) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::Test2Pragmas::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_lsp_rs_core::providers::testing::test2::is_test2_bundle(module: &str) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::is_test2_module(module: &str) -> bool
-pub fn perl_lsp_rs_core::providers::testing::test2::module_default_exports(module: &str) -> core::option::Option<&'static [&'static str]>
-pub fn perl_lsp_rs_core::providers::testing::test2::resolve_import(module: &str, raw_args: &str) -> core::option::Option<perl_lsp_rs_core::providers::testing::test2::ResolvedImport>
+pub use perl_lsp_rs_core::providers::testing::test2::ResolvedImport
+pub use perl_lsp_rs_core::providers::testing::test2::Test2Facts
+pub use perl_lsp_rs_core::providers::testing::test2::Test2Pragmas
+pub use perl_lsp_rs_core::providers::testing::test2::is_test2_bundle
+pub use perl_lsp_rs_core::providers::testing::test2::is_test2_module
+pub use perl_lsp_rs_core::providers::testing::test2::module_default_exports
+pub use perl_lsp_rs_core::providers::testing::test2::resolve_import
 pub mod perl_lsp_rs_core::providers::type_hierarchy
 pub enum perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchySymbolKind
 pub perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchySymbolKind::Class = 5
@@ -7415,58 +7322,16 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> perl_lsp
 pub mod perl_lsp_rs_core::providers::unreachable_code
 pub fn perl_lsp_rs_core::providers::unreachable_code::check_unreachable_code(root: &perl_ast::ast::Node, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::unreachable_code_disposition
-pub enum perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::ModifierGated
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::None
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::ShortCircuitBinary
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::TernaryAlternatives
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::ConservativeFallthrough
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::ExactLocalTransfer
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::RecoveredFallthrough
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::Inherited
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::Introduced
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Alternatives
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::CallableBoundary
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Conditional
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::EvaluationBoundary
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::ExpressionContainer
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Leaf
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Loop
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Recovery
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::Sequential
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::analyzed_not_propagated: &'static [&'static str]
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::class: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::conditional_rule: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::executable_children: &'static [&'static str]
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::fallthrough_determining: &'static [&'static str]
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::kind_name: &'static str
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::leaf_reason: core::option::Option<&'static str>
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::proof_ceiling: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
-pub perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::scope: perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::clone(&self) -> perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::eq(&self, other: &perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition) -> bool
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub const perl_lsp_rs_core::providers::unreachable_code_disposition::PL406_DISPOSITIONS: &[perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition]
-pub const perl_lsp_rs_core::providers::unreachable_code_disposition::PL406_DISPOSITION_SCHEMA_VERSION: u32
-pub const fn perl_lsp_rs_core::providers::unreachable_code_disposition::all_pl406_dispositions() -> &'static [perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition]
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::pl406_disposition(kind_name: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition>
-pub fn perl_lsp_rs_core::providers::unreachable_code_disposition::pl406_disposition_of(kind: &perl_ast::ast::NodeKind) -> core::option::Option<&'static perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition>
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::PL406_DISPOSITIONS
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::PL406_DISPOSITION_SCHEMA_VERSION
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ConditionalRule
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Disposition
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406ProofCeiling
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406Scope
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::Pl406SemanticClass
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::all_pl406_dispositions
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::pl406_disposition
+pub use perl_lsp_rs_core::providers::unreachable_code_disposition::pl406_disposition_of
 pub mod perl_lsp_rs_core::providers::unused_imports
 pub fn perl_lsp_rs_core::providers::unused_imports::check_unused_imports(node: &perl_ast::ast::Node, source: &str, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::uri
@@ -8677,28 +8542,17 @@ pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_pa
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_project_version(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_and_project_version<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
-pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
-pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_semantic_analyzer::analysis::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_semantic_analyzer::analysis::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_project_version(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_and_project_version<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
-pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
-pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_semantic_analyzer::analysis::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_semantic_analyzer::analysis::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::new() -> perl_lsp_rs_core::providers::DiagnosticsProvider
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::with_regex_analysis(self, table: alloc::sync::Arc<perl_parser_core::syntax::regex_analysis::RegexAnalysisTable>) -> perl_lsp_rs_core::providers::DiagnosticsProvider
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::default() -> perl_lsp_rs_core::providers::DiagnosticsProvider
-pub struct perl_lsp_rs_core::providers::DocumentDiagnosticAnalysis
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::build(ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: impl core::convert::Into<alloc::sync::Arc<str>>) -> perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_node(&self, ast: &perl_ast::ast::Node, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::stray_cut_opens(&self) -> &[(usize, bool)]
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::type_environment(&self) -> &perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine
-pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::DocumentHighlight
 pub perl_lsp_rs_core::providers::DocumentHighlight::kind: perl_lsp_rs_core::providers::DocumentHighlightKind
 pub perl_lsp_rs_core::providers::DocumentHighlight::location: perl_position_tracking::span::SourceLocation
@@ -11710,6 +11564,16 @@ pub perl_lsp_rs_core::tooling::perl_critic::DiagnosticFactIdentity::Unavailable
 pub fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticFactIdentity::clone(&self) -> perl_lsp_rs_core::tooling::perl_critic::DiagnosticFactIdentity
 pub fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticFactIdentity::eq(&self, other: &perl_lsp_rs_core::tooling::perl_critic::DiagnosticFactIdentity) -> bool
 pub fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticFactIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::tooling::perl_critic::EffectiveCriticState
+pub perl_lsp_rs_core::tooling::perl_critic::EffectiveCriticState::Disabled
+pub perl_lsp_rs_core::tooling::perl_critic::EffectiveCriticState::Native(perl_lsp_rs_core::config::EffectiveNativeCriticConfig)
+pub fn perl_lsp_rs_core::config::EffectiveCriticState::fingerprint(&self) -> alloc::string::String
+pub fn perl_lsp_rs_core::config::EffectiveCriticState::owning_root(&self) -> core::option::Option<&str>
+pub fn perl_lsp_rs_core::config::EffectiveCriticState::clone(&self) -> perl_lsp_rs_core::config::EffectiveCriticState
+pub fn perl_lsp_rs_core::config::EffectiveCriticState::eq(&self, other: &perl_lsp_rs_core::config::EffectiveCriticState) -> bool
+pub fn perl_lsp_rs_core::config::EffectiveCriticState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::config::EffectiveCriticState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::config::EffectiveCriticState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::config::EffectiveCriticState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_lsp_rs_core::tooling::perl_critic::FixSafety
 pub perl_lsp_rs_core::tooling::perl_critic::FixSafety::ManualOnly
 pub perl_lsp_rs_core::tooling::perl_critic::FixSafety::Safe
@@ -12045,6 +11909,19 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::DuplicateParameterRule::category(
 pub fn perl_lsp_rs_core::tooling::perl_critic::DuplicateParameterRule::check(&self, ctx: &perl_lsp_rs_core::tooling::perl_critic::CriticContext<'_>, out: &mut alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::CriticFinding>)
 pub fn perl_lsp_rs_core::tooling::perl_critic::DuplicateParameterRule::default_severity(&self) -> perl_lsp_rs_core::tooling::perl_critic::Severity
 pub fn perl_lsp_rs_core::tooling::perl_critic::DuplicateParameterRule::id(&self) -> &'static str
+pub struct perl_lsp_rs_core::tooling::perl_critic::EffectiveNativeCriticConfig
+pub perl_lsp_rs_core::tooling::perl_critic::EffectiveNativeCriticConfig::exclude: alloc::vec::Vec<alloc::string::String>
+pub perl_lsp_rs_core::tooling::perl_critic::EffectiveNativeCriticConfig::include: alloc::vec::Vec<alloc::string::String>
+pub perl_lsp_rs_core::tooling::perl_critic::EffectiveNativeCriticConfig::owning_root: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::tooling::perl_critic::EffectiveNativeCriticConfig::profile: perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile
+pub perl_lsp_rs_core::tooling::perl_critic::EffectiveNativeCriticConfig::severity_threshold: u8
+pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::fingerprint(&self) -> alloc::string::String
+pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::new(profile: perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile, severity_threshold: u8, include: &[alloc::string::String], exclude: &[alloc::string::String], owning_root: core::option::Option<&str>) -> perl_lsp_rs_core::config::EffectiveNativeCriticConfig
+pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::clone(&self) -> perl_lsp_rs_core::config::EffectiveNativeCriticConfig
+pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::eq(&self, other: &perl_lsp_rs_core::config::EffectiveNativeCriticConfig) -> bool
+pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::config::EffectiveNativeCriticConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::config::EffectiveNativeCriticConfig, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticIdentityDisposition
 pub const fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticIdentityDisposition::observed(self) -> perl_lsp_rs_core::tooling::perl_critic::CriticObservedIdentity<'static>
 pub const fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticIdentityDisposition::rule_id(self) -> &'static str
@@ -12078,6 +11955,7 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRegistry::default() -
 pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::completeness(&self) -> &perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::findings(&self) -> &[perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding]
+pub const fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::findings_suppressed(&self) -> usize
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::is_publishable(&self) -> bool
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::owning_root(&self) -> core::option::Option<&str>
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::producer_findings(&self) -> &[perl_lsp_rs_core::tooling::perl_critic::CriticFinding]
@@ -12092,7 +11970,7 @@ pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticService
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticService::analyze(subject: perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'_>) -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun
 pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>::accepted(label: &'a str, source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity, ast: &'a perl_ast::ast::Node, source: &'a str, accepted_state: perl_lsp_rs_core::config::EffectiveCriticState, overlap_observations: alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>, cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>, currentness: perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>) -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>
-pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>::with_analysis(self, analysis: &'a perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis) -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>::with_analysis(self, analysis: &'a perl_semantic_analyzer::analysis::document_analysis::DocumentDiagnosticAnalysis) -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'_>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt
 pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::findings_after_policy: usize

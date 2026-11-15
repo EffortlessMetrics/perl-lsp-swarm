@@ -42,6 +42,8 @@ chrono = { version = "0.4.43", features = ["serde"] }
 perl-parser = { workspace = true, features = ["incremental"] }
 perl-lexer = { workspace = true }
 perl-parser-core = { workspace = true }
+perl-uri = { workspace = true }
+perl-source-identity = { workspace = true }
 perl-position-tracking = { workspace = true }
 perl-corpus = { workspace = true }
 perl-lsp-ux-tests = { workspace = true }

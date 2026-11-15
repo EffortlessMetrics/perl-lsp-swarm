@@ -270,10 +270,10 @@ impl ParsedSnapshot {
     /// This is the *only* way to construct a `ParsedSnapshot` -- it derives
     /// every dependent field from `source`/`ast`/`parse_errors` so the
     /// result is internally consistent by construction:
-    /// - `content_hash` is `hash_content(source)` (the same
+    /// - `content_hash` is `hash_source_content(source)` (the same
     ///   `DefaultHasher`-over-text scheme the semantic-analyzer /
     ///   type-inference caches already use --
-    ///   `perl_lsp_rs_core::tooling::perl_critic::hash_content`, reused
+    ///   `perl_parser_core::syntax::source_context::hash_source_content`, reused
     ///   here rather than a second hashing scheme). Callers must pass the
     ///   exact source text `ast` was parsed from.
     /// - `parent_map` is built from `ast` via
@@ -293,7 +293,7 @@ impl ParsedSnapshot {
         ast: Option<Arc<perl_parser::ast::Node>>,
         parse_errors: Vec<perl_parser::error::ParseError>,
     ) -> Self {
-        let content_hash = perl_lsp_rs_core::tooling::perl_critic::hash_content(source);
+        let content_hash = perl_parser_core::syntax::source_context::hash_source_content(source);
         let mut parent_map = ParentMap::default();
         if let Some(ref arc) = ast {
             crate::declaration::DeclarationProvider::build_parent_map(arc, &mut parent_map, None);

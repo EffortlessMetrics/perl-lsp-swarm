@@ -78,6 +78,7 @@ cargo xtask corpus-audit      # Run corpus audit for coverage analysis
 | `tasks/corpus_audit.rs` | Corpus coverage analysis |
 | `tasks/features.rs` | Feature catalog management |
 | `tasks/publish.rs` | Release publishing |
+| `tasks/native_critic.rs` | Repository critic evidence through `NativeCriticService`; schema 2 preserves normalized rows, exact suppression totals, and parse/service completeness |
 | `types/` | Shared type definitions |
 | `utils/` | Utility functions |
 
@@ -170,4 +171,9 @@ Notes for releases:
   `cargo run -p xtask --bin <name>` (e.g. `parser-behavior-proof`,
   `kubernetes-dap-profiles`), matching the existing gate-policy pattern
 - Gate receipts written to `target/receipts/` by default
+- Native critic check receipts use schema 2. Rule registrations are summed across
+  file runs; producer entry is observed separately. Per-rule suppression counts
+  are unavailable. Native tooling status also uses schema 2 and requires complete
+  current-schema evidence for critic readiness. Existing schema 1 receipts do not
+  establish a clean run. Other native tooling receipt schemas are unchanged.
 - See `.ci/gate-policy.yaml` for gate definitions

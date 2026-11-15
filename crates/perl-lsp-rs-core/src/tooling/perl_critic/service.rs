@@ -7,7 +7,7 @@
 //!
 //! The service composes the settled authorities instead of rebuilding them:
 //! accepted configuration arrives as one immutable
-//! [`crate::config::EffectiveCriticState`] (#8253), rule evaluation runs
+//! [`EffectiveCriticState`] (#8253), rule evaluation runs
 //! through [`NativeCriticRegistry`], and every producer output enters the
 //! canonical normalized finding set (#7475) before policy applies exactly
 //! once post-merge. Consumers can no longer assemble their own
@@ -23,14 +23,16 @@
 
 use perl_parser_core::Node;
 
+use super::semantic::normalize_with_native_policy_and_suppression_count;
+
+use super::EffectiveCriticState;
 use super::{
     BuiltInCriticObservation, CriticConfig, CriticContext, CriticFinding, CriticSourceIdentity,
     CriticSuppressionMap, NativeCriticPolicy, NativeCriticRegistry, NativeCriticWorkReceipt,
     NormalizedCriticFinding, account_unresolved_native_identities, built_in_observation_candidates,
-    native_finding_candidates, normalize_with_native_policy,
+    native_finding_candidates,
 };
-use crate::config::EffectiveCriticState;
-use crate::providers::diagnostics::DocumentDiagnosticAnalysis;
+use perl_semantic_analyzer::DocumentDiagnosticAnalysis;
 use perl_source_identity::ContentDigest;
 
 /// Gate consulted at deterministic barrier points of one run.
@@ -252,6 +254,8 @@ pub struct NativeCriticRun {
     source_digest: ContentDigest,
     /// Ordered normalized findings after canonical merge and policy.
     findings: Vec<NormalizedCriticFinding>,
+    /// Logical rows rejected at the scoped-suppression stage.
+    findings_suppressed: usize,
     /// Raw producer findings of this run, in registry order. Remediation
     /// carriers only; consumers must not re-derive logical rows from them.
     producer_findings: Vec<CriticFinding>,
@@ -294,6 +298,17 @@ impl NativeCriticRun {
     #[must_use]
     pub fn findings(&self) -> &[NormalizedCriticFinding] {
         &self.findings
+    }
+
+    /// Logical rows rejected at the scoped-suppression stage of this run.
+    ///
+    /// Measured after alias merging and severity/include/exclude retention;
+    /// never inferred by subtracting retained findings from raw producer output.
+    /// Zero for skipped work; consult [`Self::work`] and [`Self::completeness`]
+    /// before interpreting this count as evidence of a completed evaluation.
+    #[must_use]
+    pub const fn findings_suppressed(&self) -> usize {
+        self.findings_suppressed
     }
 
     /// Raw producer findings of this run, in registry order. Remediation
@@ -375,6 +390,7 @@ impl NativeCriticService {
                 source_identity: subject.source_identity,
                 source_digest: subject.source_digest,
                 findings: Vec::new(),
+                findings_suppressed: 0,
                 producer_findings: Vec::new(),
                 work: NativeCriticWorkReceipt::default(),
             };
@@ -399,6 +415,7 @@ impl NativeCriticService {
                 source_identity: subject.source_identity,
                 source_digest: subject.source_digest,
                 findings: Vec::new(),
+                findings_suppressed: 0,
                 producer_findings: Vec::new(),
                 work: NativeCriticWorkReceipt::default(),
             };
@@ -461,7 +478,8 @@ impl NativeCriticService {
             &accepted.exclude,
             &suppressions,
         );
-        let findings = normalize_with_native_policy(candidates, &policy);
+        let (findings, suppressed) =
+            normalize_with_native_policy_and_suppression_count(candidates, &policy);
         work.findings_after_policy = findings.len();
 
         // Mid-flight cancellation re-check (#9062): a caller whose
@@ -479,6 +497,7 @@ impl NativeCriticService {
                 source_identity: subject.source_identity,
                 source_digest: subject.source_digest,
                 findings,
+                findings_suppressed: suppressed,
                 producer_findings: raw_findings,
                 work,
             };
@@ -496,6 +515,7 @@ impl NativeCriticService {
             source_identity: subject.source_identity,
             source_digest: subject.source_digest,
             findings,
+            findings_suppressed: suppressed,
             producer_findings: raw_findings,
             work,
         }
@@ -547,6 +567,56 @@ mod tests {
     }
 
     #[test]
+    fn shared_analysis_reuses_scope_only_for_the_exact_tree() {
+        use crate::tooling::perl_critic::{
+            native_critic_scope_rebuild_count, native_critic_scope_reuse_count,
+            reset_native_critic_scope_rebuild_count, reset_native_critic_scope_reuse_count,
+        };
+        use std::sync::Arc;
+
+        let source = "use strict;\nsub f { my $unused = 1; print $undeclared; }\n";
+        let ast = Arc::new(parse(source));
+        let shared = perl_semantic_analyzer::DocumentDiagnosticAnalysis::build(&ast, source);
+        let identity = critic_source_identity_for_uri("file:///shared-analysis.pm", 1);
+
+        reset_native_critic_scope_rebuild_count();
+        reset_native_critic_scope_reuse_count();
+        let reused = NativeCriticService::analyze(
+            subject("file:///shared-analysis.pm", &ast, source, native_state(None), identity)
+                .with_analysis(&shared),
+        );
+
+        assert_eq!(reused.completeness(), &NativeCriticRunCompleteness::Complete);
+        assert!(!reused.findings().is_empty(), "the fixture must reach native rule evaluation");
+        assert!(
+            shared.pragma_map_materialized() && shared.scope_issues_materialized(),
+            "the service must consume the lower-owned cells, not rebuild identical facts"
+        );
+        assert_eq!(native_critic_scope_rebuild_count(), 0);
+        assert_eq!(native_critic_scope_reuse_count(), 1);
+        assert!(!shared.symbol_table_materialized(), "critic does not consume symbols");
+        assert!(!shared.type_environment_materialized(), "critic does not consume inferred types");
+
+        // Same bytes, distinct tree: accepting source equality alone would warm
+        // these foreign cells and take the reuse branch incorrectly. The local
+        // fallback also proves the zero-rebuild instrument above is live.
+        let other_ast = Arc::new(parse(source));
+        assert!(!Arc::ptr_eq(&ast, &other_ast));
+        let foreign = perl_semantic_analyzer::DocumentDiagnosticAnalysis::build(&ast, source);
+        let rebuilt = NativeCriticService::analyze(
+            subject("file:///shared-analysis.pm", &other_ast, source, native_state(None), identity)
+                .with_analysis(&foreign),
+        );
+
+        assert!(!foreign.pragma_map_materialized(), "foreign pragma facts must remain cold");
+        assert!(!foreign.scope_issues_materialized(), "foreign scope facts must remain cold");
+        assert_eq!(native_critic_scope_rebuild_count(), 1);
+        assert_eq!(native_critic_scope_reuse_count(), 1);
+        assert_eq!(rebuilt.completeness(), &NativeCriticRunCompleteness::Complete);
+        assert_eq!(reused.findings(), rebuilt.findings());
+    }
+
+    #[test]
     fn same_accepted_subject_produces_identical_ordered_runs() {
         let source = STRICT_SOURCE;
         let ast = parse(source);
@@ -578,6 +648,38 @@ mod tests {
         assert!(
             !first.findings().is_empty(),
             "the strict probe source must produce at least one row"
+        );
+    }
+
+    #[test]
+    fn work_receipt_observes_suppression_without_replaying_source() {
+        let source =
+            "## no critic native.variables.unused_lexical\nsub run { my $unused = 1; return 1; }\n";
+        let ast = parse(source);
+        let state = EffectiveCriticState::Native(EffectiveNativeCriticConfig::new(
+            crate::tooling::perl_critic::NativeCriticProfile::Recommended,
+            1,
+            &["native.variables.unused_lexical".to_string()],
+            &[],
+            None,
+        ));
+        let run = NativeCriticService::analyze(subject(
+            "file:///suppressed.pm",
+            &ast,
+            source,
+            state,
+            critic_source_identity_for_uri("file:///suppressed.pm", 0),
+        ));
+        assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Complete);
+        assert!(run.findings().is_empty());
+        assert_eq!(run.work().rules_registered, 1);
+        assert_eq!(run.work().producer_evaluation_entered, 1);
+        assert_eq!(run.work().native_findings_collected, 1);
+        assert_eq!(run.findings_suppressed(), 1);
+        assert_eq!(run.work().findings_after_policy, 0);
+        assert_eq!(
+            run.source_digest(),
+            &perl_source_identity::ContentDigest::of_bytes(source.as_bytes())
         );
     }
 

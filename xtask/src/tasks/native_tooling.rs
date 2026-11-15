@@ -19,6 +19,7 @@ use std::{env, fs};
 use walkdir::WalkDir;
 
 const SCHEMA_VERSION: u32 = 1;
+const STATUS_SCHEMA_VERSION: u32 = 2;
 const LITERAL_PRESERVE_CODE: &str = "native.format.literal_preserve_region";
 
 /// Options for `cargo xtask native-tooling status`.
@@ -193,16 +194,20 @@ struct CriticStatus {
     critic_check_receipt_present: bool,
     critic_check_profile: Option<String>,
     critic_check_files_checked: Option<usize>,
+    critic_check_files_complete: Option<usize>,
+    critic_check_producer_evaluation_entered: Option<usize>,
     critic_check_files_with_parse_errors: Option<usize>,
-    critic_check_rules_run: Option<usize>,
+    critic_check_rules_registered: Option<usize>,
     critic_check_findings_count: Option<usize>,
     critic_check_suppressed_findings_count: Option<usize>,
     critic_check_fixable_findings_count: Option<usize>,
     critic_false_positive_receipt: String,
     critic_false_positive_receipt_present: bool,
     critic_false_positive_files_checked: Option<usize>,
+    critic_false_positive_files_complete: Option<usize>,
+    critic_false_positive_producer_evaluation_entered: Option<usize>,
     critic_false_positive_files_with_parse_errors: Option<usize>,
-    critic_false_positive_rules_run: Option<usize>,
+    critic_false_positive_rules_registered: Option<usize>,
     critic_false_positive_findings_count: Option<usize>,
     critic_false_positive_suppressed_findings_count: Option<usize>,
     critic_false_positive_fixable_findings_count: Option<usize>,
@@ -373,7 +378,7 @@ fn build_status_receipt(config: &NativeToolingStatusConfig) -> Result<NativeTool
     )?;
     Ok(NativeToolingStatusReceipt {
         kind: "native_tooling_status".to_string(),
-        schema_version: SCHEMA_VERSION,
+        schema_version: STATUS_SCHEMA_VERSION,
         generated_at: Utc::now(),
         commit,
         receipt_freshness,
@@ -614,18 +619,22 @@ fn build_readiness_receipt(
     ));
     criteria.push(readiness_criterion(
         "critic",
-        "native critic check receipt is parse-clean",
-        critic.critic_check_files_checked.unwrap_or_default() > 0
+        "native critic check receipt is complete and parse-clean",
+        status.schema_version == STATUS_SCHEMA_VERSION
+            && critic.critic_check_files_checked.unwrap_or_default() > 0
+            && critic.critic_check_files_complete == critic.critic_check_files_checked
+            && critic.critic_check_producer_evaluation_entered == critic.critic_check_files_checked
             && critic.critic_check_files_with_parse_errors == Some(0),
         critic.critic_check_receipt_present,
         true,
         format!(
-            "profile={} files={} parse_errors={} findings={} fixable={}",
+            "profile={} files={} complete={} parse_errors={} findings={} fixable={}",
             optional_text_metric(
                 critic.critic_check_profile.as_deref(),
                 critic.critic_check_receipt_present,
             ),
             optional_metric(critic.critic_check_files_checked, critic.critic_check_receipt_present),
+            optional_metric(critic.critic_check_files_complete, critic.critic_check_receipt_present),
             optional_metric(
                 critic.critic_check_files_with_parse_errors,
                 critic.critic_check_receipt_present,
@@ -636,21 +645,30 @@ fn build_readiness_receipt(
                 critic.critic_check_receipt_present,
             )
         ),
-        "run `cargo xtask native-critic check` and fix parse errors before relying on critic receipts",
+        "run `cargo xtask native-critic check` with schema 2 and resolve incomplete or recovered files before relying on the receipt",
     ));
     criteria.push(readiness_criterion(
         "critic",
         "native critic false-positive fixtures are clean",
-        critic.critic_false_positive_files_checked.unwrap_or_default() > 0
+        status.schema_version == STATUS_SCHEMA_VERSION
+            && critic.critic_false_positive_files_checked.unwrap_or_default() > 0
+            && critic.critic_false_positive_files_complete
+                == critic.critic_false_positive_files_checked
+            && critic.critic_false_positive_producer_evaluation_entered
+                == critic.critic_false_positive_files_checked
             && critic.critic_false_positive_files_with_parse_errors == Some(0)
             && critic.critic_false_positive_findings_count == Some(0)
             && critic.critic_false_positive_suppressed_findings_count == Some(0),
         critic.critic_false_positive_receipt_present,
         true,
         format!(
-            "files={} parse_errors={} findings={} suppressed={}",
+            "files={} complete={} parse_errors={} findings={} suppressed={}",
             optional_metric(
                 critic.critic_false_positive_files_checked,
+                critic.critic_false_positive_receipt_present,
+            ),
+            optional_metric(
+                critic.critic_false_positive_files_complete,
                 critic.critic_false_positive_receipt_present,
             ),
             optional_metric(
@@ -1118,10 +1136,13 @@ fn critic_status(
     } else {
         None
     };
-    let check_receipt =
-        if critic_check_receipt.exists() { Some(read_json(critic_check_receipt)?) } else { None };
+    let check_receipt = if critic_check_receipt.exists() {
+        Some(read_critic_check_json(critic_check_receipt)?)
+    } else {
+        None
+    };
     let false_positive_receipt = if critic_false_positive_receipt.exists() {
-        Some(read_json(critic_false_positive_receipt)?)
+        Some(read_critic_check_json(critic_false_positive_receipt)?)
     } else {
         None
     };
@@ -1138,41 +1159,57 @@ fn critic_status(
         critic_check_receipt: critic_check_receipt.display().to_string(),
         critic_check_receipt_present: check_receipt.is_some(),
         critic_check_profile: optional_string(&check_receipt, "profile"),
-        critic_check_files_checked: optional_usize(&check_receipt, "files_checked"),
-        critic_check_files_with_parse_errors: optional_usize(
+        critic_check_files_checked: optional_critic_metric(&check_receipt, "files_checked"),
+        critic_check_files_complete: optional_critic_metric(&check_receipt, "files_complete"),
+        critic_check_producer_evaluation_entered: optional_critic_metric(
+            &check_receipt,
+            "producer_evaluation_entered",
+        ),
+        critic_check_files_with_parse_errors: optional_critic_metric(
             &check_receipt,
             "files_with_parse_errors",
         ),
-        critic_check_rules_run: optional_usize(&check_receipt, "rules_run"),
-        critic_check_findings_count: optional_usize(&check_receipt, "findings_count"),
-        critic_check_suppressed_findings_count: optional_usize(
+        critic_check_rules_registered: optional_critic_metric(&check_receipt, "rules_registered"),
+        critic_check_findings_count: optional_critic_metric(&check_receipt, "findings_count"),
+        critic_check_suppressed_findings_count: optional_critic_metric(
             &check_receipt,
             "suppressed_findings_count",
         ),
-        critic_check_fixable_findings_count: optional_usize(
+        critic_check_fixable_findings_count: optional_critic_metric(
             &check_receipt,
             "fixable_findings_count",
         ),
         critic_false_positive_receipt: critic_false_positive_receipt.display().to_string(),
         critic_false_positive_receipt_present: false_positive_receipt.is_some(),
-        critic_false_positive_files_checked: optional_usize(
+        critic_false_positive_files_checked: optional_critic_metric(
             &false_positive_receipt,
             "files_checked",
         ),
-        critic_false_positive_files_with_parse_errors: optional_usize(
+        critic_false_positive_files_complete: optional_critic_metric(
+            &false_positive_receipt,
+            "files_complete",
+        ),
+        critic_false_positive_producer_evaluation_entered: optional_critic_metric(
+            &false_positive_receipt,
+            "producer_evaluation_entered",
+        ),
+        critic_false_positive_files_with_parse_errors: optional_critic_metric(
             &false_positive_receipt,
             "files_with_parse_errors",
         ),
-        critic_false_positive_rules_run: optional_usize(&false_positive_receipt, "rules_run"),
-        critic_false_positive_findings_count: optional_usize(
+        critic_false_positive_rules_registered: optional_critic_metric(
+            &false_positive_receipt,
+            "rules_registered",
+        ),
+        critic_false_positive_findings_count: optional_critic_metric(
             &false_positive_receipt,
             "findings_count",
         ),
-        critic_false_positive_suppressed_findings_count: optional_usize(
+        critic_false_positive_suppressed_findings_count: optional_critic_metric(
             &false_positive_receipt,
             "suppressed_findings_count",
         ),
-        critic_false_positive_fixable_findings_count: optional_usize(
+        critic_false_positive_fixable_findings_count: optional_critic_metric(
             &false_positive_receipt,
             "fixable_findings_count",
         ),
@@ -1225,6 +1262,18 @@ fn fixable_rule_ids() -> BTreeSet<String> {
     .collect()
 }
 
+// Only the service-backed schema has stage-owned counts and explicit completeness.
+// Older receipts remain present evidence, but cannot supply current numeric claims.
+fn optional_critic_metric(receipt: &Option<Value>, key: &str) -> Option<usize> {
+    let value = receipt.as_ref()?;
+    if value.get("kind").and_then(Value::as_str) != Some("native_critic_check")
+        || value.get("schema_version").and_then(Value::as_u64) != Some(2)
+    {
+        return None;
+    }
+    optional_usize(receipt, key)
+}
+
 fn optional_usize(receipt: &Option<Value>, key: &str) -> Option<usize> {
     receipt
         .as_ref()
@@ -1239,6 +1288,63 @@ fn optional_bool(receipt: &Option<Value>, key: &str) -> Option<bool> {
 
 fn optional_string(receipt: &Option<Value>, key: &str) -> Option<String> {
     receipt.as_ref().and_then(|value| value.get(key)).and_then(Value::as_str).map(ToOwned::to_owned)
+}
+
+/// The critic status projection must see duplicate observations before a Value
+/// map can overwrite them. Other receipt families retain their own readers.
+struct CriticCheckReceiptValue(Value);
+
+impl<'de> Deserialize<'de> for CriticCheckReceiptValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(CriticCheckReceiptVisitor)
+    }
+}
+
+struct CriticCheckReceiptVisitor;
+
+impl<'de> serde::de::Visitor<'de> for CriticCheckReceiptVisitor {
+    type Value = CriticCheckReceiptValue;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a native-critic check receipt object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        const FIELDS: [&str; 12] = [
+            "kind",
+            "schema_version",
+            "commit",
+            "profile",
+            "files_checked",
+            "files_complete",
+            "producer_evaluation_entered",
+            "files_with_parse_errors",
+            "rules_registered",
+            "findings_count",
+            "suppressed_findings_count",
+            "fixable_findings_count",
+        ];
+        let mut fields = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let Some(field) = FIELDS.iter().copied().find(|field| *field == key.as_str()) else {
+                map.next_value::<serde::de::IgnoredAny>()?;
+                continue;
+            };
+            if fields.contains_key(field) {
+                return Err(serde::de::Error::duplicate_field(field));
+            }
+            fields.insert(key, map.next_value()?);
+        }
+        Ok(CriticCheckReceiptValue(Value::Object(fields)))
+    }
+}
+
+fn read_critic_check_json(path: &Path) -> Result<Value> {
+    let text =
+        fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str::<CriticCheckReceiptValue>(&text)
+        .map(|receipt| receipt.0)
+        .wrap_err_with(|| format!("failed to parse critic receipt {}", path.display()))
 }
 
 fn read_json(path: &Path) -> Result<Value> {
@@ -1354,12 +1460,18 @@ fn render_markdown(receipt: &NativeToolingStatusReceipt) -> String {
         critic.critic_check_profile.as_deref(),
         critic.critic_check_receipt_present,
     );
+    let critic_check_files_complete =
+        optional_metric(critic.critic_check_files_complete, critic.critic_check_receipt_present);
+    let critic_check_producer_evaluation_entered = optional_metric(
+        critic.critic_check_producer_evaluation_entered,
+        critic.critic_check_receipt_present,
+    );
     let critic_check_parse_errors = optional_metric(
         critic.critic_check_files_with_parse_errors,
         critic.critic_check_receipt_present,
     );
-    let critic_check_rules_run =
-        optional_metric(critic.critic_check_rules_run, critic.critic_check_receipt_present);
+    let critic_check_rules_registered =
+        optional_metric(critic.critic_check_rules_registered, critic.critic_check_receipt_present);
     let critic_check_findings =
         optional_metric(critic.critic_check_findings_count, critic.critic_check_receipt_present);
     let critic_check_suppressed = optional_metric(
@@ -1374,12 +1486,20 @@ fn render_markdown(receipt: &NativeToolingStatusReceipt) -> String {
         critic.critic_false_positive_files_checked,
         critic.critic_false_positive_receipt_present,
     );
+    let critic_false_positive_files_complete = optional_metric(
+        critic.critic_false_positive_files_complete,
+        critic.critic_false_positive_receipt_present,
+    );
+    let critic_false_positive_producer_evaluation_entered = optional_metric(
+        critic.critic_false_positive_producer_evaluation_entered,
+        critic.critic_false_positive_receipt_present,
+    );
     let critic_false_positive_parse_errors = optional_metric(
         critic.critic_false_positive_files_with_parse_errors,
         critic.critic_false_positive_receipt_present,
     );
-    let critic_false_positive_rules_run = optional_metric(
-        critic.critic_false_positive_rules_run,
+    let critic_false_positive_rules_registered = optional_metric(
+        critic.critic_false_positive_rules_registered,
         critic.critic_false_positive_receipt_present,
     );
     let critic_false_positive_findings = optional_metric(
@@ -1475,14 +1595,18 @@ fn render_markdown(receipt: &NativeToolingStatusReceipt) -> String {
 | Violation bridge coverage | {} |
 | Native critic check profile | {} |
 | Native critic check files | {} |
+| Native critic check complete files | {} |
+| Native critic check producer evaluations entered | {} |
 | Native critic check parse errors | {} |
-| Native critic check rules run | {} |
+| Native critic check rule registrations | {} |
 | Native critic check findings | {} |
 | Native critic check suppressed | {} |
 | Native critic check fixable | {} |
 | Native critic false-positive files | {} |
+| Native critic false-positive complete files | {} |
+| Native critic false-positive producer evaluations entered | {} |
 | Native critic false-positive parse errors | {} |
-| Native critic false-positive rules run | {} |
+| Native critic false-positive rule registrations | {} |
 | Native critic false-positive findings | {} |
 | Native critic false-positive suppressed | {} |
 | Native critic false-positive fixable | {} |
@@ -1537,14 +1661,18 @@ Fixable native rules:
         critic.rules_with_violation_bridge,
         critic_check_profile,
         critic_check_files_checked,
+        critic_check_files_complete,
+        critic_check_producer_evaluation_entered,
         critic_check_parse_errors,
-        critic_check_rules_run,
+        critic_check_rules_registered,
         critic_check_findings,
         critic_check_suppressed,
         critic_check_fixable,
         critic_false_positive_files_checked,
+        critic_false_positive_files_complete,
+        critic_false_positive_producer_evaluation_entered,
         critic_false_positive_parse_errors,
-        critic_false_positive_rules_run,
+        critic_false_positive_rules_registered,
         critic_false_positive_findings,
         critic_false_positive_suppressed,
         critic_false_positive_fixable,
@@ -1752,10 +1880,14 @@ mod tests {
             format!(
                 r#"{{
   "commit": "{commit}",
+  "kind": "native_critic_check",
+  "schema_version": 2,
   "profile": "strict",
   "files_checked": 3,
+  "files_complete": 3,
+  "producer_evaluation_entered": 3,
   "files_with_parse_errors": 0,
-  "rules_run": 28,
+  "rules_registered": 28,
   "findings_count": 4,
   "suppressed_findings_count": 1,
   "fixable_findings_count": 2
@@ -1768,9 +1900,13 @@ mod tests {
             &critic_false_positive_receipt,
             r#"{
   "commit": "old-test-commit",
+  "kind": "native_critic_check",
+  "schema_version": 2,
   "files_checked": 3,
+  "files_complete": 3,
+  "producer_evaluation_entered": 3,
   "files_with_parse_errors": 0,
-  "rules_run": 28,
+  "rules_registered": 28,
   "findings_count": 0,
   "suppressed_findings_count": 0,
   "fixable_findings_count": 0
@@ -1840,19 +1976,19 @@ mod tests {
         assert_eq!(value["formatter"]["format_else_placement"], "separate-line");
         assert_eq!(value["formatter"]["format_keyword_spacing"], "compact");
         assert_eq!(value["formatter"]["format_trailing_comma"], "add-when-wrapped");
-        assert_eq!(value["critic"]["native_rule_count"], 31);
+        assert_eq!(value["critic"]["native_rule_count"], 32);
         assert_eq!(value["critic"]["critic_check_receipt_present"], true);
         assert_eq!(value["critic"]["critic_check_profile"], "strict");
         assert_eq!(value["critic"]["critic_check_files_checked"], 3);
         assert_eq!(value["critic"]["critic_check_files_with_parse_errors"], 0);
-        assert_eq!(value["critic"]["critic_check_rules_run"], 28);
+        assert_eq!(value["critic"]["critic_check_rules_registered"], 28);
         assert_eq!(value["critic"]["critic_check_findings_count"], 4);
         assert_eq!(value["critic"]["critic_check_suppressed_findings_count"], 1);
         assert_eq!(value["critic"]["critic_check_fixable_findings_count"], 2);
         assert_eq!(value["critic"]["critic_false_positive_receipt_present"], true);
         assert_eq!(value["critic"]["critic_false_positive_files_checked"], 3);
         assert_eq!(value["critic"]["critic_false_positive_files_with_parse_errors"], 0);
-        assert_eq!(value["critic"]["critic_false_positive_rules_run"], 28);
+        assert_eq!(value["critic"]["critic_false_positive_rules_registered"], 28);
         assert_eq!(value["critic"]["critic_false_positive_findings_count"], 0);
         assert_eq!(value["critic"]["critic_false_positive_suppressed_findings_count"], 0);
         assert_eq!(value["critic"]["critic_false_positive_fixable_findings_count"], 0);
@@ -1914,13 +2050,13 @@ mod tests {
         assert!(markdown.contains("| Native critic check profile | strict |"));
         assert!(markdown.contains("| Native critic check files | 3 |"));
         assert!(markdown.contains("| Native critic check parse errors | 0 |"));
-        assert!(markdown.contains("| Native critic check rules run | 28 |"));
+        assert!(markdown.contains("| Native critic check rule registrations | 28 |"));
         assert!(markdown.contains("| Native critic check findings | 4 |"));
         assert!(markdown.contains("| Native critic check suppressed | 1 |"));
         assert!(markdown.contains("| Native critic check fixable | 2 |"));
         assert!(markdown.contains("| Native critic false-positive files | 3 |"));
         assert!(markdown.contains("| Native critic false-positive parse errors | 0 |"));
-        assert!(markdown.contains("| Native critic false-positive rules run | 28 |"));
+        assert!(markdown.contains("| Native critic false-positive rule registrations | 28 |"));
         assert!(markdown.contains("| Native critic false-positive findings | 0 |"));
         assert!(markdown.contains("| Native critic false-positive suppressed | 0 |"));
         assert!(markdown.contains("| Native critic false-positive fixable | 0 |"));
@@ -2029,6 +2165,154 @@ color = 1
     }
 
     #[test]
+    fn legacy_critic_receipts_cannot_supply_current_zero_or_completeness() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipt = temp.path().join("critic.json");
+        let absent = temp.path().join("absent.json");
+        let mut value = serde_json::json!({
+            "kind": "native_critic_check", "schema_version": 1,
+            "files_checked": 1, "files_complete": 1, "files_with_parse_errors": 0,
+            "rules_registered": 16, "producer_evaluation_entered": 1,
+            "findings_count": 0, "suppressed_findings_count": 0,
+        });
+        write_json(&receipt, &value)?;
+        let old = critic_status(&absent, &receipt, &receipt)?;
+        assert!(old.critic_check_receipt_present);
+        assert_eq!(old.critic_check_files_complete, None);
+        assert_eq!(old.critic_false_positive_findings_count, None);
+        assert_eq!(old.critic_false_positive_suppressed_findings_count, None);
+
+        value["schema_version"] = serde_json::json!(2);
+        write_json(&receipt, &value)?;
+        let current = critic_status(&absent, &receipt, &receipt)?;
+        assert_eq!(current.critic_check_files_complete, Some(1));
+        assert_eq!(current.critic_false_positive_findings_count, Some(0));
+        assert_eq!(current.critic_false_positive_suppressed_findings_count, Some(0));
+        value["suppressed_findings_count"] = Value::Null;
+        write_json(&receipt, &value)?;
+        assert_eq!(
+            critic_status(&absent, &receipt, &receipt)?
+                .critic_false_positive_suppressed_findings_count,
+            None
+        );
+        Ok(())
+    }
+
+    const CURRENT_CRITIC_RECEIPT: &str = r#"{"kind":"native_critic_check","schema_version":2,"profile":"recommended","files_checked":1,"files_complete":1,"producer_evaluation_entered":1,"files_with_parse_errors":0,"rules_registered":16,"findings_count":0,"suppressed_findings_count":0,"fixable_findings_count":0}"#;
+
+    #[test]
+    fn critic_receipt_raw_duplicates_are_rejected_before_status() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("critic.json");
+        let absent = temp.path().join("absent.json");
+        fs::write(&path, CURRENT_CRITIC_RECEIPT)?;
+        assert_eq!(critic_status(&absent, &path, &path)?.critic_check_findings_count, Some(0));
+        let prefix = CURRENT_CRITIC_RECEIPT.strip_suffix('}').ok_or_else(|| eyre!("object"))?;
+        for extra in [
+            r#""findings_count":2,"findings_count":0"#,
+            r#""suppressed_findings_count":1,"suppressed_findings_count":0"#,
+            r#""schema_version":1,"schema_version":2"#,
+            r#""files_complete":0,"files_complete":1"#,
+            r#""producer_evaluation_entered":0,"producer_evaluation_entered":1"#,
+            r#""files_with_parse_errors":1,"files_with_parse_errors":0"#,
+            r#""kind":"other","kind":"native_critic_check""#,
+            r#""commit":"old","commit":"current""#,
+        ] {
+            let raw = format!("{prefix},{extra}}}");
+            let _: Value = serde_json::from_str(&raw)?;
+            fs::write(&path, raw)?;
+            assert!(critic_status(&absent, &path, &absent).is_err(), "check receipt: {extra}");
+            assert!(critic_status(&absent, &absent, &path).is_err(), "fixture receipt: {extra}");
+        }
+        let raw = format!("{prefix},\"unrelated\":1,\"unrelated\":2}}");
+        let _: Value = serde_json::from_str(&raw)?;
+        fs::write(&path, raw)?;
+        assert_eq!(critic_status(&absent, &path, &path)?.critic_check_findings_count, Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn critic_status_and_readiness_preserve_raw_availability() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let fixtures = temp.path().join("fixtures");
+        fs::create_dir(&fixtures)?;
+        let critic = temp.path().join("critic.json");
+        let absent = temp.path().join("absent.json");
+        let status_path = temp.path().join("status.json");
+        let readiness_path = temp.path().join("readiness.json");
+        let config = |output: &Path| NativeToolingStatusConfig {
+            format_fixtures: fixtures.clone(),
+            format_receipt: absent.clone(),
+            format_corpus_receipt: absent.clone(),
+            format_perltidy_compat_receipt: absent.clone(),
+            format_config_receipt: absent.clone(),
+            critic_perlcritic_compat_receipt: absent.clone(),
+            critic_check_receipt: critic.clone(),
+            critic_false_positive_receipt: critic.clone(),
+            receipt: output.to_path_buf(),
+            markdown: None,
+        };
+        for (source, expected) in [
+            (Some(CURRENT_CRITIC_RECEIPT.to_string()), "ready"),
+            (
+                Some(CURRENT_CRITIC_RECEIPT.replace(
+                    "\"suppressed_findings_count\":0",
+                    "\"suppressed_findings_count\":null",
+                )),
+                "blocked",
+            ),
+            (
+                Some(CURRENT_CRITIC_RECEIPT.replace("\"suppressed_findings_count\":0,", "")),
+                "blocked",
+            ),
+            (None, "unverified"),
+        ] {
+            if let Some(source) = source {
+                let _: Value = serde_json::from_str(&source)?;
+                fs::write(&critic, source)?;
+            } else {
+                fs::remove_file(&critic)?;
+            }
+            status(config(&status_path))?;
+            readiness(NativeToolingReadinessConfig {
+                status_receipt: status_path.clone(),
+                receipt: readiness_path.clone(),
+                markdown: None,
+            })?;
+            let receipt = read_json(&readiness_path)?;
+            let criteria = receipt["criteria"].as_array().ok_or_else(|| eyre!("criteria"))?;
+            let criterion = criteria
+                .iter()
+                .find(|row| row["name"] == "native critic false-positive fixtures are clean")
+                .ok_or_else(|| eyre!("critic fixture criterion"))?;
+            assert_eq!(criterion["status"], expected);
+        }
+
+        let prefix = CURRENT_CRITIC_RECEIPT.strip_suffix('}').ok_or_else(|| eyre!("object"))?;
+        for (index, duplicate) in
+            [r#""findings_count":2,"findings_count":0"#, r#""schema_version":1,"schema_version":2"#]
+                .into_iter()
+                .enumerate()
+        {
+            let raw = format!("{prefix},{duplicate}}}");
+            let _: Value = serde_json::from_str(&raw)?;
+            fs::write(&critic, raw)?;
+            let rejected_status = temp.path().join(format!("rejected-{index}.json"));
+            assert!(status(config(&rejected_status)).is_err());
+            assert!(!rejected_status.exists(), "ambiguous input must not publish a new status");
+            assert!(
+                readiness(NativeToolingReadinessConfig {
+                    status_receipt: rejected_status,
+                    receipt: temp.path().join(format!("rejected-ready-{index}.json")),
+                    markdown: None,
+                })
+                .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn native_tooling_readiness_marks_default_cutover_blockers() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let status_receipt = temp.path().join("status.json");
@@ -2036,7 +2320,7 @@ color = 1
         let readiness_markdown = temp.path().join("readiness.md");
         let status = NativeToolingStatusReceipt {
             kind: "native_tooling_status".to_string(),
-            schema_version: SCHEMA_VERSION,
+            schema_version: STATUS_SCHEMA_VERSION,
             generated_at: Utc::now(),
             commit: "test".to_string(),
             receipt_freshness: ReceiptFreshnessStatus {
@@ -2107,16 +2391,20 @@ color = 1
                 critic_check_receipt_present: true,
                 critic_check_profile: Some("strict".to_string()),
                 critic_check_files_checked: Some(3),
+                critic_check_files_complete: Some(3),
+                critic_check_producer_evaluation_entered: Some(3),
                 critic_check_files_with_parse_errors: Some(0),
-                critic_check_rules_run: Some(2),
+                critic_check_rules_registered: Some(2),
                 critic_check_findings_count: Some(1),
                 critic_check_suppressed_findings_count: Some(0),
                 critic_check_fixable_findings_count: Some(1),
                 critic_false_positive_receipt: "native-critic-false-positive.json".to_string(),
                 critic_false_positive_receipt_present: true,
                 critic_false_positive_files_checked: Some(2),
+                critic_false_positive_files_complete: Some(2),
+                critic_false_positive_producer_evaluation_entered: Some(2),
                 critic_false_positive_files_with_parse_errors: Some(0),
-                critic_false_positive_rules_run: Some(2),
+                critic_false_positive_rules_registered: Some(2),
                 critic_false_positive_findings_count: Some(0),
                 critic_false_positive_suppressed_findings_count: Some(0),
                 critic_false_positive_fixable_findings_count: Some(0),
@@ -2186,6 +2474,45 @@ color = 1
             markdown
                 .contains("| critic | native critic false-positive fixtures are clean | ready |")
         );
+        let mut incomplete = status;
+        for completed in [None, Some(1)] {
+            incomplete.critic.critic_false_positive_files_complete = completed;
+            let readiness = build_readiness_receipt(Path::new("status.json"), &incomplete);
+            let criterion = readiness
+                .criteria
+                .iter()
+                .find(|criterion| {
+                    criterion.name == "native critic false-positive fixtures are clean"
+                })
+                .ok_or_else(|| eyre!("missing false-positive readiness criterion"))?;
+            assert_eq!(criterion.status, "blocked", "unknown or partial work is not a clean run");
+        }
+        incomplete.critic.critic_false_positive_files_complete = Some(2);
+        for suppressed in [None, Some(1)] {
+            incomplete.critic.critic_false_positive_suppressed_findings_count = suppressed;
+            let readiness = build_readiness_receipt(Path::new("status.json"), &incomplete);
+            assert!(
+                readiness.criteria.iter().any(|criterion| {
+                    criterion.name == "native critic false-positive fixtures are clean"
+                        && criterion.status == "blocked"
+                }),
+                "unknown or suppressed findings cannot establish a clean fixture run"
+            );
+        }
+        incomplete.critic.critic_false_positive_suppressed_findings_count = Some(0);
+        incomplete.critic.critic_false_positive_producer_evaluation_entered = None;
+        let readiness = build_readiness_receipt(Path::new("status.json"), &incomplete);
+        assert!(readiness.criteria.iter().any(|criterion| {
+            criterion.name == "native critic false-positive fixtures are clean"
+                && criterion.status == "blocked"
+        }));
+        incomplete.critic.critic_false_positive_producer_evaluation_entered = Some(2);
+        incomplete.schema_version = 1;
+        let readiness = build_readiness_receipt(Path::new("status.json"), &incomplete);
+        assert!(readiness.criteria.iter().any(|criterion| {
+            criterion.name == "native critic false-positive fixtures are clean"
+                && criterion.status == "blocked"
+        }));
         Ok(())
     }
 

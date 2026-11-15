@@ -47,6 +47,14 @@ The explicit compatibility surfaces are:
 The xtask command remains `cargo xtask perl-kwalitee`. Receipt paths stay under
 `target/receipts/kwalitee/`.
 
+The nightly native-critic reader distinguishes input versions. Schema 2 receipts
+must contain complete, observed file and producer work before zero findings can
+pass. Schema-absent and schema-1 receipts retain their historical projection for
+compatibility; that path does not establish complete-current service evidence.
+Unsupported versions and malformed current receipts never fall back to it. The
+historical evaluator's output kind, schema, catalog, and frozen fixtures remain
+unchanged.
+
 ## Migration sequence
 
 1. Freeze this contract and migration ledger (#7164).

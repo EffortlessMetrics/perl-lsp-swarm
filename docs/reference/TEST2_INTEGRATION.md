@@ -17,7 +17,7 @@ product surface already consumes it.
 
 | Surface | Current implementation | Canonical owner and target |
 | --- | --- | --- |
-| Test2 imports and pragma effects | `perl-lsp-rs-core::providers::testing::test2` reads Test2 source and feeds the current native critic and completion bridge. It models V0/V1 import and pragma behavior plus a bounded set of tools and generated target helpers; the exact first-party inventory, versions, and admission boundary are being reconciled under #13527 and #13347. | #4907 with #6946 and #6948: registered FrameworkAdapters emit versioned source facts once. |
+| Test2 imports and pragma effects | `perl-semantic-analyzer::Test2Facts` reads Test2 source for the current native critic and completion bridge; `perl-lsp-rs-core::providers::testing::test2` preserves the compatibility import path. It models V0/V1 import and pragma behavior plus a bounded set of tools and generated target helpers; the exact first-party inventory, versions, and admission boundary are being reconciled under #13527 and #13347. | #4907 with #6946 and #6948: registered FrameworkAdapters emit versioned source facts once. |
 | Completion | `providers::completion::completion::request::test_frameworks` walks parser-backed `use` statements in the active package and reconciles current `Test2Facts`. Covered forms include V0 exclusions, aliases, and tags; V1 `T2` and `-import`; currently modeled standalone-tool defaults; and statically proved V0/V1 `-target` helpers. Generic `.t` files no longer receive the entire Test::More table. This is live transitional behavior, not canonical fact authority. | #7661 and #7666, with conformance checklist #2384: complete only local names authorized by current canonical import facts and preserve framework, version, provenance, and limitations. |
 | Hover and signature help | These surfaces do not yet consume the same canonical local-import identity as completion. Test2-only documentation and signatures, aliases and original names, V1 handle methods, version/provenance, and mixed-framework collisions remain incomplete or can still route through Test::More presentation data. | #7661 and #7666, with #6951 and #2384: resolve completion, hover, and signature help from the same canonical imported-symbol row. |
 | Subtest discovery | The Rust parser-backed walker supplies document symbols and Run Subtest lenses. Other Rust and VS Code discovery paths still exist. | #4774 / #6953: one generation-aware, nested `TestItem` tree with stable typed identity. |
@@ -29,8 +29,8 @@ product surface already consumes it.
 
 ### Test2 imports
 
-The current provider-local reader recognizes substantial Test2 import behavior,
-including examples such as:
+The shared compatibility reader in `perl-semantic-analyzer` recognizes
+substantial Test2 import behavior, including examples such as:
 
 ```perl
 use Test2::V0;
@@ -56,7 +56,7 @@ scopes them to the active package, and then projects local names from
 V0/V1 `-target` helpers. A generic `.t` file no longer silently receives the
 whole Test::More callable table.
 
-This remains a provider-local migration path. It is not yet a version-aware
+This remains a compatibility migration path. It is not yet a version-aware
 first-party fact authority. Explicit-name admission remains fail-open for every
 recognized Test2 module, so a misspelled or unknown requested export can still
 be projected as a completion fact. The `Test2::Tools::*`, `Test2::Plugin::*`,
@@ -75,7 +75,8 @@ V1 handle methods, aliases, provenance, and mixed-framework collisions remain
 under #7661 and #7666.
 
 Current migration paths:
-[`providers::testing::test2`](../../crates/perl-lsp-rs-core/src/providers/testing/test2.rs)
+[`perl-semantic-analyzer` compatibility analysis](../../crates/perl-semantic-analyzer/src/analysis/test2.rs),
+its [`providers::testing::test2` compatibility re-export](../../crates/perl-lsp-rs-core/src/providers/testing/test2.rs),
 and
 [`providers::completion::completion::request::test_frameworks`](../../crates/perl-lsp-rs-core/src/providers/completion/completion/request/test_frameworks.rs).
 Canonical source-fact program: #4907, #6946, and #6948.

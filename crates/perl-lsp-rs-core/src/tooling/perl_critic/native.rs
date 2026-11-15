@@ -8,13 +8,13 @@
 #[cfg(test)]
 use super::CriticConfig;
 use super::{CriticFindingShape, Severity, insertion_range};
-use crate::providers::diagnostics::known_scalar_argument_count;
-use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_parser_core::Node;
 use perl_parser_core::NodeKind;
 use perl_parser_core::position::{Position, Range};
 use perl_parser_core::syntax::source_context::{SourceRegionIndex, SourceRegionKind};
 use perl_pragma::PragmaTracker;
+use perl_semantic_analyzer::find_unreachable_statements;
+use perl_semantic_analyzer::known_scalar_argument_count;
 use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 
 mod native_contract;
@@ -279,7 +279,7 @@ impl CriticRule for StaleDollarAtRule {
 
 /// Native rule that reports unreachable statements after unconditional exits.
 ///
-/// This delegates reachability to the existing PL406 analysis so the native
+/// This delegates reachability to the shared local-flow analysis so the native
 /// critic path and built-in diagnostic path share the same control-flow model.
 pub struct UnreachableCodeRule;
 
@@ -1909,10 +1909,8 @@ fn collect_unreachable_code_findings(
     node: &Node,
     out: &mut Vec<CriticFinding>,
 ) {
-    let mut diagnostics = Vec::new();
-    check_unreachable_code(node, &mut diagnostics);
-    out.extend(diagnostics.into_iter().map(|diagnostic| {
-        unreachable_code_finding(rule, source, diagnostic.range.0, diagnostic.range.1)
+    out.extend(find_unreachable_statements(node).into_iter().map(|statement| {
+        unreachable_code_finding(rule, source, statement.range.start, statement.range.end)
     }));
 }
 
@@ -2563,7 +2561,7 @@ fn has_use_statement(ast: &Node, feature: &str) -> bool {
 /// unless disabled via `-no_strict` / `-no_warnings` / `-no_pragmas`, so an
 /// ordinary Test2 test must not trip the require-use-strict/warnings rules.
 fn test2_provides_pragma(content: &str, feature: &str) -> bool {
-    crate::providers::testing::test2::Test2Facts::from_source(content).provides_pragma(feature)
+    perl_semantic_analyzer::Test2Facts::from_source(content).provides_pragma(feature)
 }
 
 fn missing_pod_sections(source: &str) -> Vec<MissingPodSection> {
@@ -3844,13 +3842,25 @@ mod tests {
 
     #[test]
     fn native_printf_format_arity_skips_unknown_list_cardinality() {
-        let source = "my @values = ('a', 'b'); printf '%s %s', @values; sprintf '%s %s', $prefix, @values; printf '%s %s', qx{printf 'a\\nb\\n'};";
-        let ast = parse_source(source);
-        let config = CriticConfig::default();
-        let ctx = CriticContext::new(source, &ast, &config);
-        let registry = NativeCriticRegistry::with_rules(vec![Box::new(PrintfFormatArityRule)]);
+        for source in [
+            "printf '%s %s', @values;",
+            "printf '%s %s', values();",
+            "my @values = ('a', 'b'); printf '%s %s', @values;",
+            "sprintf '%s %s', $prefix, @values;",
+            "sub values { return ('a', 'b') } printf '%s %s', values();",
+            "printf '%s %s', @values[0, 1];",
+            "printf '%s %s', @{$values};",
+            "printf '%s %s', qx{printf 'a\\nb\\n'};",
+            "printf '%s %s', `command`;",
+            "printf '%s %s', <<`END`;\ncommand\nEND\n",
+        ] {
+            let ast = parse_source(source);
+            let config = CriticConfig::default();
+            let ctx = CriticContext::new(source, &ast, &config);
+            let registry = NativeCriticRegistry::with_rules(vec![Box::new(PrintfFormatArityRule)]);
 
-        assert!(registry.check(&ctx).is_empty());
+            assert!(registry.check(&ctx).is_empty(), "unknown list cardinality: {source}");
+        }
     }
 
     #[test]

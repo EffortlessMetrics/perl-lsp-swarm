@@ -13,6 +13,7 @@ mod remediation;
 mod result_identity;
 mod semantic;
 mod service;
+mod state;
 #[cfg(test)]
 mod test_core_authority_policy;
 mod types;
@@ -63,6 +64,7 @@ pub use semantic::{
 pub use service::{
     NativeCriticRun, NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject, RunGate,
 };
+pub use state::{EffectiveCriticState, EffectiveNativeCriticConfig};
 pub use types::{CriticConfig, Severity, Violation};
 pub use work_receipt::NativeCriticWorkReceipt;
 

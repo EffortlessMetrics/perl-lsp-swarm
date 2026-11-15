@@ -10,14 +10,16 @@
 //! - `native_format_corpus` — `passed: bool`
 //!   (`xtask/src/tasks/native_format.rs::NativeFormatCorpusReceipt`).
 //! - `native_critic_check` (false-positive fixtures) — `findings_count`,
-//!   `suppressed_findings_count`, `files_with_parse_errors`
+//!   `suppressed_findings_count`, `files_with_parse_errors`; schema 2 also
+//!   requires observed file completeness and producer entry. Schema-absent
+//!   and schema-1 input retains the frozen historical projection below.
 //!   (`xtask/src/tasks/native_critic.rs::NativeCriticCheckReceipt`).
 //! - `native_format_perltidy_compat` / `native_tooling_perlcritic_compat` —
 //!   `external_only_count`.
 
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::evidence::{Outcome, is_stale};
 use crate::indicator::EvidenceRef;
@@ -114,7 +116,7 @@ pub(crate) fn formatter_corpus_idempotent(path: Option<&Path>, expected_commit: 
 }
 
 #[derive(Debug, Deserialize)]
-struct CriticFalsePositiveReceipt {
+struct LegacyCriticFalsePositiveReceipt {
     #[serde(default)]
     findings_count: u64,
     #[serde(default)]
@@ -125,9 +127,104 @@ struct CriticFalsePositiveReceipt {
     commit: String,
 }
 
+/// Current native-critic evidence has no default-zero numeric observations.
+#[derive(Debug, Deserialize)]
+struct CurrentCriticFalsePositiveReceipt {
+    files_checked: u64,
+    files_complete: u64,
+    producer_evaluation_entered: u64,
+    findings_count: u64,
+    suppressed_findings_count: Option<u64>,
+    files_with_parse_errors: u64,
+    #[serde(default)]
+    commit: String,
+}
+
+#[derive(Debug)]
+enum CriticFalsePositiveReceipt {
+    Legacy(LegacyCriticFalsePositiveReceipt),
+    Current(CurrentCriticFalsePositiveReceipt),
+}
+
+impl<'de> Deserialize<'de> for CriticFalsePositiveReceipt {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(CriticFalsePositiveReceiptVisitor)
+    }
+}
+
+struct CriticFalsePositiveReceiptVisitor;
+
+impl<'de> serde::de::Visitor<'de> for CriticFalsePositiveReceiptVisitor {
+    type Value = CriticFalsePositiveReceipt;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a native-critic receipt object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        const FIELDS: [&str; 9] = [
+            "schema_version",
+            "kind",
+            "files_checked",
+            "files_complete",
+            "producer_evaluation_entered",
+            "findings_count",
+            "suppressed_findings_count",
+            "files_with_parse_errors",
+            "commit",
+        ];
+        let mut fields = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let Some(field) = FIELDS.iter().copied().find(|field| *field == key.as_str()) else {
+                // Typed projections historically ignored unrelated fields.
+                map.next_value::<serde::de::IgnoredAny>()?;
+                continue;
+            };
+            if fields.contains_key(field) {
+                return Err(serde::de::Error::duplicate_field(field));
+            }
+            // Reject duplicates before Value's map insertion can erase them.
+            // Values retain explicit null; absent keys remain absent.
+            fields.insert(key, map.next_value()?);
+        }
+        CriticFalsePositiveReceipt::try_from(serde_json::Value::Object(fields))
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl TryFrom<serde_json::Value> for CriticFalsePositiveReceipt {
+    type Error = String;
+
+    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
+        let schema = value
+            .get("schema_version")
+            .map(|version| version.as_u64().ok_or("invalid native-critic receipt schema"))
+            .transpose()?;
+        match schema {
+            // This is historical compatibility, not complete-current proof.
+            // Keep its wire projection and advisory behavior unchanged.
+            None | Some(1) => {
+                serde_json::from_value(value).map(Self::Legacy).map_err(|error| error.to_string())
+            }
+            Some(2) => {
+                if value.get("kind").and_then(serde_json::Value::as_str)
+                    != Some("native_critic_check")
+                {
+                    return Err("invalid native-critic receipt kind".to_string());
+                }
+                serde_json::from_value(value).map(Self::Current).map_err(|error| error.to_string())
+            }
+            Some(version) => Err(format!("unsupported native-critic receipt schema {version}")),
+        }
+    }
+}
+
 impl ReceiptCommit for CriticFalsePositiveReceipt {
     fn commit(&self) -> &str {
-        &self.commit
+        match self {
+            Self::Legacy(receipt) => &receipt.commit,
+            Self::Current(receipt) => &receipt.commit,
+        }
     }
 }
 
@@ -138,17 +235,40 @@ pub(crate) fn critic_no_false_positives(path: Option<&Path>, expected_commit: &s
         expected_commit,
         "cargo xtask native-critic check (false-positive fixtures)",
         "Eliminate findings/parse errors the native critic raises on known-clean code.",
-        |r| {
-            let clean = r.findings_count == 0
-                && r.suppressed_findings_count == 0
-                && r.files_with_parse_errors == 0;
-            (
-                clean,
-                format!(
-                    "findings={} suppressed={} parse_errors={}",
-                    r.findings_count, r.suppressed_findings_count, r.files_with_parse_errors
-                ),
-            )
+        |receipt| match receipt {
+            CriticFalsePositiveReceipt::Legacy(r) => {
+                let clean = r.findings_count == 0
+                    && r.suppressed_findings_count == 0
+                    && r.files_with_parse_errors == 0;
+                (
+                    clean,
+                    format!(
+                        "findings={} suppressed={} parse_errors={}",
+                        r.findings_count, r.suppressed_findings_count, r.files_with_parse_errors
+                    ),
+                )
+            }
+            CriticFalsePositiveReceipt::Current(r) => {
+                let clean = r.files_checked > 0
+                    && r.files_complete == r.files_checked
+                    && r.producer_evaluation_entered == r.files_checked
+                    && r.findings_count == 0
+                    && r.suppressed_findings_count == Some(0)
+                    && r.files_with_parse_errors == 0;
+                (
+                    clean,
+                    format!(
+                        "schema=2 files={} complete={} producer_entries={} findings={} suppressed={} parse_errors={}",
+                        r.files_checked,
+                        r.files_complete,
+                        r.producer_evaluation_entered,
+                        r.findings_count,
+                        r.suppressed_findings_count
+                            .map_or_else(|| "unavailable".to_string(), |count| count.to_string()),
+                        r.files_with_parse_errors,
+                    ),
+                )
+            }
         },
     )
 }
@@ -234,6 +354,192 @@ mod tests {
             "{\"findings_count\":2,\"suppressed_findings_count\":0,\"files_with_parse_errors\":0,\"commit\":\"abc\"}",
         );
         assert_eq!(critic_no_false_positives(Some(&bad), "abc").status, IndicatorStatus::Warn);
+
+        let explicit_legacy = write(
+            &d,
+            "fp-v1.json",
+            "{\"schema_version\":1,\"findings_count\":0,\"suppressed_findings_count\":0,\"files_with_parse_errors\":0,\"commit\":\"abc\"}",
+        );
+        assert_eq!(
+            critic_no_false_positives(Some(&explicit_legacy), "abc").status,
+            IndicatorStatus::Pass,
+            "explicit legacy input retains its historical projection"
+        );
+    }
+
+    #[test]
+    fn current_critic_receipts_require_complete_observed_evidence() {
+        let d = tempfile::tempdir().expect("tmp");
+        let current = serde_json::json!({
+            "kind": "native_critic_check", "schema_version": 2,
+            "files_checked": 2, "files_complete": 2, "producer_evaluation_entered": 2,
+            "findings_count": 0, "suppressed_findings_count": 0, "files_with_parse_errors": 0,
+            "commit": "abc"
+        });
+        let path = write(&d, "current.json", &current.to_string());
+        assert_eq!(critic_no_false_positives(Some(&path), "abc").status, IndicatorStatus::Pass);
+        assert_eq!(critic_no_false_positives(Some(&path), "other").status, IndicatorStatus::Warn);
+
+        for (field, value) in [
+            ("files_complete", serde_json::json!(1)),
+            ("producer_evaluation_entered", serde_json::json!(0)),
+            ("findings_count", serde_json::json!(1)),
+            ("suppressed_findings_count", serde_json::json!(1)),
+            ("suppressed_findings_count", serde_json::Value::Null),
+            ("files_with_parse_errors", serde_json::json!(1)),
+        ] {
+            let mut changed = current.clone();
+            changed[field] = value;
+            fs::write(&path, changed.to_string()).expect("write");
+            assert_eq!(
+                critic_no_false_positives(Some(&path), "abc").status,
+                IndicatorStatus::Warn,
+                "{field} cannot establish a complete clean run"
+            );
+        }
+        let mut empty = current;
+        for field in ["files_checked", "files_complete", "producer_evaluation_entered"] {
+            empty[field] = serde_json::json!(0);
+        }
+        fs::write(&path, empty.to_string()).expect("write");
+        assert_eq!(
+            critic_no_false_positives(Some(&path), "abc").status,
+            IndicatorStatus::Warn,
+            "matching empty counts do not establish an evaluated fixture corpus"
+        );
+    }
+
+    #[test]
+    fn current_or_unknown_critic_schema_never_falls_back_to_legacy_defaults() {
+        let d = tempfile::tempdir().expect("tmp");
+        let current = serde_json::json!({
+            "kind": "native_critic_check", "schema_version": 2,
+            "files_checked": 2, "files_complete": 2, "producer_evaluation_entered": 2,
+            "findings_count": 0, "suppressed_findings_count": 0, "files_with_parse_errors": 0,
+            "commit": "abc"
+        });
+        for field in [
+            "kind",
+            "files_checked",
+            "files_complete",
+            "producer_evaluation_entered",
+            "findings_count",
+            "files_with_parse_errors",
+        ] {
+            let mut incomplete = current.clone();
+            incomplete.as_object_mut().expect("object").remove(field);
+            let path = write(&d, "missing.json", &incomplete.to_string());
+            assert_eq!(
+                critic_no_false_positives(Some(&path), "abc").status,
+                IndicatorStatus::Unverified
+            );
+        }
+        let mut missing_suppression = current.clone();
+        missing_suppression.as_object_mut().expect("object").remove("suppressed_findings_count");
+        let path = write(&d, "suppression.json", &missing_suppression.to_string());
+        assert_eq!(critic_no_false_positives(Some(&path), "abc").status, IndicatorStatus::Warn);
+
+        for (field, value) in [
+            ("kind", serde_json::json!("different_receipt")),
+            ("schema_version", serde_json::json!(3)),
+            ("schema_version", serde_json::Value::Null),
+            ("findings_count", serde_json::Value::Null),
+        ] {
+            let mut unsupported = current.clone();
+            unsupported[field] = value;
+            let path = write(&d, "unsupported.json", &unsupported.to_string());
+            assert_eq!(
+                critic_no_false_positives(Some(&path), "abc").status,
+                IndicatorStatus::Unverified
+            );
+        }
+    }
+
+    #[test]
+    fn raw_critic_receipts_reject_duplicate_observations_and_schema() {
+        let d = tempfile::tempdir().expect("tmp");
+        let legacy = r#"{"findings_count":0,"suppressed_findings_count":0,"files_with_parse_errors":0,"commit":"abc"}"#;
+        let current = r#"{"kind":"native_critic_check","schema_version":2,"files_checked":2,"files_complete":2,"producer_evaluation_entered":2,"findings_count":0,"suppressed_findings_count":0,"files_with_parse_errors":0,"commit":"abc"}"#;
+        for source in [legacy, current] {
+            let path = write(&d, "clean.json", source);
+            assert_eq!(critic_no_false_positives(Some(&path), "abc").status, IndicatorStatus::Pass);
+            for extra in [
+                r#""findings_count":2,"findings_count":0"#,
+                r#""suppressed_findings_count":1,"suppressed_findings_count":0"#,
+                r#""files_with_parse_errors":1,"files_with_parse_errors":0"#,
+                r#""commit":"different","commit":"abc""#,
+                r#""schema_version":2,"schema_version":1"#,
+                r#""schema_version":1,"schema_version":2"#,
+            ] {
+                let duplicate = format!("{},{extra}}}", source.strip_suffix('}').expect("object"));
+                serde_json::from_str::<serde_json::Value>(&duplicate)
+                    .expect("valid raw JSON containing duplicate fields");
+                let path = write(&d, "duplicate.json", &duplicate);
+                assert_eq!(
+                    critic_no_false_positives(Some(&path), "abc").status,
+                    IndicatorStatus::Unverified,
+                    "duplicate wire fields cannot be erased: {extra}"
+                );
+            }
+            let unrelated = format!(
+                "{},\"unrelated\":1,\"unrelated\":2}}",
+                source.strip_suffix('}').expect("object")
+            );
+            let path = write(&d, "unrelated.json", &unrelated);
+            assert_eq!(critic_no_false_positives(Some(&path), "abc").status, IndicatorStatus::Pass);
+        }
+        for extra in [
+            r#""files_complete":1,"files_complete":2"#,
+            r#""producer_evaluation_entered":0,"producer_evaluation_entered":2"#,
+            r#""kind":"other","kind":"native_critic_check""#,
+        ] {
+            let duplicate = format!("{},{extra}}}", current.strip_suffix('}').expect("object"));
+            serde_json::from_str::<serde_json::Value>(&duplicate)
+                .expect("valid raw JSON containing duplicate fields");
+            let path = write(&d, "current-duplicate.json", &duplicate);
+            assert_eq!(
+                critic_no_false_positives(Some(&path), "abc").status,
+                IndicatorStatus::Unverified
+            );
+        }
+        let regression = write(
+            &d,
+            "reported.json",
+            r#"{"findings_count":2,"findings_count":0,"suppressed_findings_count":0,"files_with_parse_errors":0,"commit":"abc"}"#,
+        );
+        assert_eq!(
+            critic_no_false_positives(Some(&regression), "abc").status,
+            IndicatorStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn raw_critic_receipts_preserve_absent_and_null_semantics() {
+        let d = tempfile::tempdir().expect("tmp");
+        let missing = write(
+            &d,
+            "legacy-missing.json",
+            r#"{"suppressed_findings_count":0,"files_with_parse_errors":0,"commit":"abc"}"#,
+        );
+        assert_eq!(critic_no_false_positives(Some(&missing), "abc").status, IndicatorStatus::Pass);
+        let null = write(
+            &d,
+            "legacy-null.json",
+            r#"{"findings_count":null,"suppressed_findings_count":0,"files_with_parse_errors":0,"commit":"abc"}"#,
+        );
+        assert_eq!(
+            critic_no_false_positives(Some(&null), "abc").status,
+            IndicatorStatus::Unverified
+        );
+        let unavailable = write(
+            &d,
+            "current-null.json",
+            r#"{"kind":"native_critic_check","schema_version":2,"files_checked":2,"files_complete":2,"producer_evaluation_entered":2,"findings_count":0,"suppressed_findings_count":null,"files_with_parse_errors":0,"commit":"abc"}"#,
+        );
+        assert_eq!(
+            critic_no_false_positives(Some(&unavailable), "abc").status,
+            IndicatorStatus::Warn
+        );
     }
 
     #[test]

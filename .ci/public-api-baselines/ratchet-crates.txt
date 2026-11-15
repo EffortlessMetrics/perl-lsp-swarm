@@ -42,3 +42,6 @@ perl-symbol
 
 # Absorbed LSP core: allowlisted, and its breaks reach releases (#14607).
 perl-lsp-rs-core
+
+# Shared analysis owns public types re-exported by the LSP core.
+perl-semantic-analyzer

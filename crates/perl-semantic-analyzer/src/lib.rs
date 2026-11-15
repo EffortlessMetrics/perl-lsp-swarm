@@ -54,6 +54,7 @@
     clippy::uninlined_format_args
 )]
 
+pub use analysis::document_analysis::DocumentDiagnosticAnalysis;
 pub use analysis::index as workspace_index;
 pub use perl_parser_core::{Node, NodeKind, SourceLocation};
 pub use perl_parser_core::{
@@ -63,6 +64,7 @@ pub use perl_parser_core::{
 /// Semantic analysis, symbol extraction, and type inference.
 pub mod analysis;
 
+pub use analysis::argument_cardinality::known_scalar_argument_count;
 pub use analysis::class_model;
 #[cfg(not(target_arch = "wasm32"))]
 pub use analysis::declaration;
@@ -74,3 +76,14 @@ pub use analysis::semantic;
 pub use analysis::symbol;
 pub use analysis::type_facts;
 pub use analysis::type_inference;
+
+pub use analysis::test2::{
+    ResolvedImport, Test2Facts, Test2FactsAnalysis, Test2Pragmas, is_test2_bundle, is_test2_module,
+    module_default_exports, resolve_import,
+};
+pub use analysis::unreachable_code::{UnreachableStatement, find_unreachable_statements};
+pub use analysis::unreachable_code_disposition::{
+    PL406_DISPOSITION_SCHEMA_VERSION, PL406_DISPOSITIONS, Pl406ConditionalRule, Pl406Disposition,
+    Pl406ProofCeiling, Pl406Scope, Pl406SemanticClass, all_pl406_dispositions, pl406_disposition,
+    pl406_disposition_of,
+};

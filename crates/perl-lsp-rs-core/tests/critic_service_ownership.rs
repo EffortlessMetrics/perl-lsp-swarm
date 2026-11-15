@@ -31,15 +31,52 @@ use std::path::{Path, PathBuf};
 /// and currentness gates, canonical normalization, and work receipt. After the
 /// #9062 cutover no diagnostic or action transport may reach it; only the
 /// #6969 command adapter is still allowed to, and that allowance is temporary.
-const SERVICE_ONLY_COMPOSITION: [&str; 7] = [
+const SERVICE_ONLY_COMPOSITION: [&str; 8] = [
     "native_finding_candidates(",
     "normalize_with_native_policy(",
+    "normalize_with_native_policy_and_suppression_count(",
     "NativeCriticPolicy::new(",
     "for_profile_with_config(",
     ".check_unfiltered(",
     "built_in_observation_candidates(",
     "BuiltInAnalyzer::new(",
 ];
+
+fn repository_adapter_violations(source: &str) -> Vec<&'static str> {
+    let production = production_portion(source);
+    [
+        "NativeCriticRegistry",
+        "CriticContext::",
+        "strip_native_suppression_lines",
+        "native_finding_candidates(",
+        "normalize_with_native_policy(",
+        "normalize_with_native_policy_and_suppression_count(",
+    ]
+    .into_iter()
+    .filter(|token| production.contains(token))
+    .collect()
+}
+
+#[test]
+fn repository_critic_adapter_uses_the_shared_service() -> Result<(), String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../xtask/src/tasks/native_critic.rs");
+    let source =
+        fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    assert!(production_portion(&source).contains("NativeCriticService::analyze("));
+    assert_eq!(repository_adapter_violations(&source), Vec::<&str>::new());
+    Ok(())
+}
+
+#[test]
+fn restored_raw_repository_composition_is_rejected() {
+    let restored = "fn check() { let registry = NativeCriticRegistry::for_profile(profile); let ctx = CriticContext::new(source, ast, config); registry.check(&ctx); }";
+    assert_eq!(
+        repository_adapter_violations(restored),
+        ["NativeCriticRegistry", "CriticContext::"]
+    );
+    let hidden_replay = "fn check() { strip_native_suppression_lines(source); }";
+    assert_eq!(repository_adapter_violations(hidden_replay), ["strip_native_suppression_lines"]);
+}
 
 /// Files allowed to contain composition entry points, with the reason each
 /// allowance exists. Paths are relative to the workspace `crates/` directory

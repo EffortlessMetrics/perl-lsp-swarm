@@ -1,5 +1,7 @@
 //! Semantic analysis, symbol extraction, and type inference.
 
+/// Conservative value counts for arguments in Perl list context.
+pub(crate) mod argument_cardinality;
 /// Pure callsite materialization for canonical callable-result relations.
 pub mod call_result_materializer;
 /// Bounded syntax-level callable exit summaries.
@@ -22,6 +24,8 @@ pub mod dbix_class_result;
 /// Go-to-declaration support and parent map construction.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod declaration;
+/// Generation-owned, source/AST-derived document analysis shared by consumers.
+pub(crate) mod document_analysis;
 /// Export symbol extraction for Exporter-based Perl modules.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod export_analyzer;
@@ -56,10 +60,16 @@ pub mod scope_analyzer;
 pub mod semantic;
 /// Symbol extraction and symbol table construction.
 pub mod symbol;
+/// Shared Test2 import/pragma compatibility analysis; canonical migration is #4907.
+pub(crate) mod test2;
 /// Rich type facts for expression and receiver inference.
 pub mod type_facts;
 /// Type inference engine for Perl variable analysis.
 pub mod type_inference;
+/// Local unreachable-statement evidence shared by diagnostic and critic consumers.
+pub(crate) mod unreachable_code;
+/// Per-variant semantic disposition contract for local unreachable-code analysis.
+pub(crate) mod unreachable_code_disposition;
 /// Lightweight value-shape inference from constructor calls, bless, and `$self`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod value_shape_inferrer;

@@ -524,6 +524,64 @@ mod tests {
     }
 
     #[test]
+    fn printf_metadata_preserves_parsed_cardinality_boundaries() {
+        use perl_parser_core::Parser;
+        use perl_test_must::must;
+
+        for source in [
+            "printf '%s %s', @values;",
+            "sprintf '%s %s', $prefix, @values;",
+            "printf '%s %s', values();",
+            "printf '%s %s', @{$values};",
+            "printf '%s %s', qx{command};",
+            "printf '%s %s', `command`;",
+            "printf '%s %s', <<`COMMAND`;\ncommand\nCOMMAND\n",
+        ] {
+            let ast = must(Parser::new(source).parse());
+            assert!(printf_format_arity_metadata_by_range(&ast).by_range.is_empty(), "{source}");
+        }
+
+        for source in ["printf '%s %s', $value;", "printf '%s %s', <<'TEXT';\nvalue\nTEXT\n"] {
+            let ast = must(Parser::new(source).parse());
+            let metadata = printf_format_arity_metadata_by_range(&ast);
+            assert_eq!(metadata.by_range.len(), 1, "{source}");
+            assert_eq!(
+                metadata.by_range.values().next(),
+                Some(&QuickFixMetadata::PrintfFormatArity {
+                    call_name: "printf".to_string(),
+                    missing_arguments: 1,
+                }),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn printf_metadata_rejects_command_heredoc_arguments() {
+        let format = Node::new(
+            NodeKind::String { value: "'%s %s'".to_string(), interpolated: false },
+            SourceLocation { start: 7, end: 14 },
+        );
+        let command = Node::new(
+            NodeKind::Heredoc {
+                delimiter: "END".to_string(),
+                content: "command\n".to_string(),
+                interpolated: true,
+                indented: false,
+                command: true,
+                body_span: Some(SourceLocation { start: 25, end: 33 }),
+            },
+            SourceLocation { start: 16, end: 23 },
+        );
+        let call = Node::new(
+            NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, command] },
+            SourceLocation { start: 0, end: 23 },
+        );
+
+        assert_eq!(printf_format_arity_metadata_by_range(&call).get(&(0, 23)), None);
+    }
+
+    #[test]
     fn printf_metadata_allows_literal_at_in_static_format() {
         let format = Node::new(
             NodeKind::String {

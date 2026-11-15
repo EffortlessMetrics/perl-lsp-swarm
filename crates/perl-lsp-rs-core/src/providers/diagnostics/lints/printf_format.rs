@@ -26,6 +26,7 @@
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
+use perl_semantic_analyzer::known_scalar_argument_count;
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
 use super::super::walker::walk_node;
@@ -98,9 +99,6 @@ fn check_format_args(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
     }
 }
 
-/// Count only values whose cardinality is known in Perl list context.
-/// Arrays, slices, calls, and other expressions may produce zero or many values;
-/// treating one AST argument as one value would fabricate an arity mismatch.
 /// Return unquoted format text only when the first argument is a static literal.
 ///
 /// Command output (`qx`, backticks) is represented as `String` nodes whose raw token
@@ -114,20 +112,6 @@ pub(crate) fn static_printf_format_content(fmt_node: &Node) -> Option<&str> {
         return None;
     }
     Some(unquote_string(value))
-}
-
-pub(crate) fn known_scalar_argument_count(args: &[Node]) -> Option<usize> {
-    args.iter()
-        .all(|arg| match &arg.kind {
-            NodeKind::Number { .. } | NodeKind::VString { .. } | NodeKind::Undef => true,
-            // The parser currently represents qx/backticks as String nodes,
-            // but they return output lines in list context.
-            NodeKind::String { value, .. } => !value.starts_with("qx") && !value.starts_with('`'),
-            NodeKind::Heredoc { command, .. } => !command,
-            NodeKind::Variable { sigil, .. } => sigil == "$",
-            _ => false,
-        })
-        .then_some(args.len())
 }
 
 /// Count argument-consuming format specifiers in a format string.

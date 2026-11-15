@@ -14,18 +14,17 @@
 //!   and the single-traversal-core guard.
 
 use perl_ast::{AstNodeClassification, NodeKind, ast_node_policy, node_kind_fixtures};
-use perl_lsp_rs_core::providers::diagnostics::Diagnostic;
-use perl_lsp_rs_core::providers::diagnostics::unreachable_code::check_unreachable_code;
-use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::{
+use perl_parser_core::Parser;
+use perl_semantic_analyzer::{
     PL406_DISPOSITION_SCHEMA_VERSION, Pl406ProofCeiling, Pl406SemanticClass,
     all_pl406_dispositions, pl406_disposition_of,
 };
-use perl_parser::Parser;
+use perl_semantic_analyzer::{UnreachableStatement, find_unreachable_statements};
 use perl_test_must::must_some_with;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn diagnostics(source: &str) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
+fn diagnostics(source: &str) -> Result<Vec<UnreachableStatement>, Box<dyn std::error::Error>> {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     assert!(
@@ -34,13 +33,11 @@ fn diagnostics(source: &str) -> Result<Vec<Diagnostic>, Box<dyn std::error::Erro
          would make presence assertions unreliable: {:?}",
         parser.errors()
     );
-    let mut diagnostics = Vec::new();
-    check_unreachable_code(&ast, &mut diagnostics);
-    Ok(diagnostics)
+    Ok(find_unreachable_statements(&ast))
 }
 
-fn count_pl406(diagnostics: &[Diagnostic]) -> usize {
-    diagnostics.iter().filter(|diagnostic| diagnostic.code.as_deref() == Some("PL406")).count()
+fn count_pl406(diagnostics: &[UnreachableStatement]) -> usize {
+    diagnostics.len()
 }
 
 fn assert_pl406_count(
@@ -366,9 +363,9 @@ fn no_variant_is_disposed_without_admission_evidence() {
 /// Negative control 8: PL406 keeps exactly one recursive traversal core and
 /// never opens a second structural walker.
 #[test]
-fn lint_module_keeps_a_single_traversal_core() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/providers/diagnostics/lints/unreachable_code.rs");
+fn analysis_module_keeps_a_single_traversal_core() -> Result<(), Box<dyn std::error::Error>> {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/analysis/unreachable_code.rs");
     let source = std::fs::read_to_string(path)?;
 
     for core in ["fn summarize_node(", "fn summarize_expression(", "fn summarize_statement_list("] {
@@ -732,8 +729,7 @@ fn recovered_syntax_preserves_fallthrough() -> Result<(), Box<dyn std::error::Er
     let mut parser = Parser::new("my $x = ; print \"live\";");
     let ast = parser.parse()?;
     assert!(!parser.errors().is_empty(), "fixture must exercise the recovery path");
-    let mut diags = Vec::new();
-    check_unreachable_code(&ast, &mut diags);
+    let diags = find_unreachable_statements(&ast);
     assert_eq!(
         count_pl406(&diags),
         0,
