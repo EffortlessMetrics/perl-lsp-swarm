@@ -116,7 +116,7 @@ DOCKER_ARGUMENT_LINES = r'''
 -v "$CARGO_TARGET_DIR:/target" \
 -v "$TMPDIR:/tmp/jobtmp" \
 -w /workspace \
-em-ci-rust:1.95 \
+em-ci-rust:1.100 \
 bash -eu -o pipefail -c '
 '''.strip().splitlines()
 

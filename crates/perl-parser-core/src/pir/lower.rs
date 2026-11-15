@@ -2327,6 +2327,72 @@ mod tests {
     }
 
     #[test]
+    fn nested_call_argument_precedes_enclosing_call_in_fallthrough() -> Result<(), String> {
+        let graph = lower("foo(bar());");
+        let call_count = graph
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.operation, PirOperation::Call { .. }))
+            .count();
+        if call_count != 2 {
+            return Err(format!("expected exactly two Call nodes, got {call_count}"));
+        }
+        let fallthrough_count =
+            graph.edges.iter().filter(|edge| edge.kind == PirEdgeKind::Fallthrough).count();
+        if fallthrough_count != 1 {
+            return Err(format!(
+                "expected exactly one Fallthrough edge for foo(bar()), got {fallthrough_count}"
+            ));
+        }
+        let outer_id = must_some(
+            graph
+                .nodes
+                .iter()
+                .find(|node| {
+                    matches!(
+                        &node.operation,
+                        PirOperation::Call {
+                            callee: PirCallee::Named { name, .. },
+                            arg_count: 1
+                        } if name == "foo"
+                    )
+                })
+                .map(|node| node.id),
+        );
+        let inner_id = must_some(
+            graph
+                .nodes
+                .iter()
+                .find(|node| {
+                    matches!(
+                        &node.operation,
+                        PirOperation::Call {
+                            callee: PirCallee::Named { name, .. },
+                            arg_count: 0
+                        } if name == "bar"
+                    )
+                })
+                .map(|node| node.id),
+        );
+        let bar_before_foo = graph.edges.iter().any(|edge| {
+            edge.kind == PirEdgeKind::Fallthrough
+                && edge.from == inner_id
+                && edge.to == Some(outer_id)
+        });
+        if !bar_before_foo {
+            return Err("expected bar() fallthrough into foo(), not HIR pre-order".to_string());
+        }
+        if graph.edges.iter().any(|edge| {
+            edge.kind == PirEdgeKind::Fallthrough
+                && edge.from == outer_id
+                && edge.to == Some(inner_id)
+        }) {
+            return Err("found reversed foo() -> bar() fallthrough".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn unqualified_call_has_no_package() -> Result<(), String> {
         let graph = lower("foo(1, 2, 3);");
         let call = must_some(

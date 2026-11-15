@@ -948,6 +948,26 @@ SEND_EVENT_CALL_RE = re.compile(r"\bself\.send_event\s*\(")
 SEND_EVENT_LITERAL_RE = re.compile(r'\s*"([A-Za-z][A-Za-z0-9]*)"')
 DEFINITION_REF_PREFIX = "#/definitions/"
 
+
+def parse_production_event_names(source: str, *, context: str) -> set[str]:
+    """Collect literal `self.send_event` wire names from Rust source.
+
+    Uses the same comment/string/raw/char masking as request-table extraction
+    so decoy spellings in non-code lexical contexts cannot enter the inventory.
+    """
+    text, masked = scan_rust_source(source)
+    events: set[str] = set()
+    for call in SEND_EVENT_CALL_RE.finditer(masked):
+        literal = SEND_EVENT_LITERAL_RE.match(text, call.end())
+        if literal is None:
+            line = masked.count("\n", 0, call.start()) + 1
+            raise AuthorityError(
+                f"cannot derive self.send_event wire name at {context}:{line}; "
+                "use a literal or extend the typed inventory"
+            )
+        events.add(literal.group(1))
+    return events
+
 # Closed vocabularies for the versioned custom-family section (#10138).
 FAMILY_CLASSIFICATIONS = {"custom_dap_extension"}
 FAMILY_CAPABILITY_MODES = {"unadvertised-until-r04", "advertised-namespaced"}

@@ -1034,6 +1034,19 @@ impl ParseWorker {
         handles.iter().any(|h| !h.is_finished())
     }
 
+    /// Whether a pool worker thread is still running on this thread.
+    ///
+    /// Parse-worker `Drop` already skips self-join; settlement must not wait
+    /// for `is_operational` to flip false while this thread is still inside a
+    /// callback that triggered server drop (#8088).
+    pub(crate) fn runs_on_worker_thread(&self) -> bool {
+        let self_id = thread::current().id();
+        self.handles
+            .lock()
+            .iter()
+            .any(|handle| !handle.is_finished() && handle.thread().id() == self_id)
+    }
+
     /// Ask every worker thread to stop, without joining.
     ///
     /// Stopping means "stop once the ready queue is drained", NOT "stop after

@@ -249,6 +249,11 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
                 }
                 if mapped is None:
                     row["reason"] = "not modeled in protocol.rs (Rust owner mapping pending)"
+                elif row_class == "required-nullable" and mapped[1].get("skips_when_none"):
+                    errors.append(
+                        f"{def_name}.{wire_name}: required-nullable field must not use "
+                        "skip_serializing_if (would omit a required wire property)"
+                    )
                 elif row_class == "required-non-null" and mapped[1].get("optional"):
                     contradiction = (
                         f"schema requires non-null but the Rust owner is Option<> "
@@ -372,6 +377,11 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
                 "rust_type": meta["rust_type"],
                 "serde_skips_when_none": meta["skips_when_none"],
             }
+            if row_class == "required-nullable" and meta["skips_when_none"]:
+                errors.append(
+                    f"{def_name}.{wire_name}: required-nullable field must not use "
+                    "skip_serializing_if (would omit a required wire property)"
+                )
             if contradiction:
                 row["contradiction"] = contradiction
                 if (def_name, wire_name) not in KNOWN_CONTRADICTIONS:

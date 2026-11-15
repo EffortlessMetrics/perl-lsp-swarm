@@ -80,7 +80,7 @@ class CanonicalOwner:
             {'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'}}
         # Match the existing imported-receipt verifier's pinned toolchain and
         # no-auto-install policy. This CLI runs no product command/build.
-        environment.update(RUSTUP_TOOLCHAIN='1.95.0', RUSTUP_AUTO_INSTALL='0')
+        environment.update(RUSTUP_TOOLCHAIN='1.100.0', RUSTUP_AUTO_INSTALL='0')
         try:
             process = subprocess.run([str(self.verifier), '--worktree-root', str(self.workspace), 'rust-small-proof', '--verify-receipt', str(receipt_path)],
                 cwd=self.workspace, env=environment, capture_output=True, timeout=60, check=False)

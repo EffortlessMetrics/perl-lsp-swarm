@@ -80,17 +80,17 @@ fi
 
 expect_eq "parse stable release" "1.75.0" \
   "$(cargo_guard_parse_version 'cargo 1.75.0 (d6df253b1 2023-11-01)')"
-expect_eq "parse pinned release" "1.95.0" \
-  "$(cargo_guard_parse_version 'cargo 1.95.0 (f2d3ce0bd 2026-03-21)')"
-expect_eq "parse nightly strips prerelease" "1.96.0" \
-  "$(cargo_guard_parse_version 'cargo 1.96.0-nightly (0abc123 2026-04-01)')"
+expect_eq "parse pinned release" "1.100.0" \
+  "$(cargo_guard_parse_version 'cargo 1.100.0 (f2d3ce0bd 2026-03-21)')"
+expect_eq "parse nightly strips prerelease" "1.101.0" \
+  "$(cargo_guard_parse_version 'cargo 1.101.0-nightly (0abc123 2026-04-01)')"
 expect_eq "parse beta strips prerelease" "1.85.0" \
   "$(cargo_guard_parse_version 'cargo 1.85.0-beta.1 (hash 2024-12-01)')"
-expect_eq "parse two-component version" "1.95" \
-  "$(cargo_guard_parse_version 'cargo 1.95')"
-expect_eq "parse skips rustup sync progress lines" "1.95.0" \
-  "$(cargo_guard_parse_version 'info: syncing channel updates for 1.95.0-x86_64-unknown-linux-gnu
-cargo 1.95.0 (f2d3ce0bd 2026-03-21)')"
+expect_eq "parse two-component version" "1.100" \
+  "$(cargo_guard_parse_version 'cargo 1.100')"
+expect_eq "parse skips rustup sync progress lines" "1.100.0" \
+  "$(cargo_guard_parse_version 'info: syncing channel updates for 1.100.0-x86_64-unknown-linux-gnu
+cargo 1.100.0 (f2d3ce0bd 2026-03-21)')"
 expect_eq "parse garbage yields empty" "" \
   "$(cargo_guard_parse_version 'this is not cargo output')"
 expect_eq "parse empty yields empty" "" \
@@ -98,18 +98,22 @@ expect_eq "parse empty yields empty" "" \
 
 # ── version comparison ────────────────────────────────────────────────────────
 
-expect_true  "1.95.0 >= 1.95"      cargo_guard_version_ge 1.95.0 1.95
-expect_true  "1.96.1 >= 1.95"      cargo_guard_version_ge 1.96.1 1.95
-expect_true  "2.0.0 >= 1.95"       cargo_guard_version_ge 2.0.0 1.95
-expect_true  "1.95.1 >= 1.95.0"    cargo_guard_version_ge 1.95.1 1.95.0
-expect_true  "1.95 >= 1.95.0"      cargo_guard_version_ge 1.95 1.95.0
-expect_false "1.94.9 < 1.95"       cargo_guard_version_ge 1.94.9 1.95
-expect_false "1.75.0 < 1.95"       cargo_guard_version_ge 1.75.0 1.95
-expect_false "1.95.0 < 1.95.1"     cargo_guard_version_ge 1.95.0 1.95.1
-expect_false "1.9.0 < 1.95 (minor is numeric, not decimal)" \
-  cargo_guard_version_ge 1.9.0 1.95
+expect_true  "1.100.0 >= 1.100"      cargo_guard_version_ge 1.100.0 1.100
+expect_true  "1.101.1 >= 1.100"      cargo_guard_version_ge 1.101.1 1.100
+expect_true  "2.0.0 >= 1.100"       cargo_guard_version_ge 2.0.0 1.100
+expect_true  "1.100.1 >= 1.100.0"    cargo_guard_version_ge 1.100.1 1.100.0
+expect_true  "1.100 >= 1.100.0"      cargo_guard_version_ge 1.100 1.100.0
+expect_false "1.99.9 < 1.100"       cargo_guard_version_ge 1.99.9 1.100
+expect_false "1.75.0 < 1.100"       cargo_guard_version_ge 1.75.0 1.100
+expect_false "1.100.0 < 1.100.1"     cargo_guard_version_ge 1.100.0 1.100.1
+expect_false "1.9.0 < 1.100 (minor is numeric, not decimal)" \
+  cargo_guard_version_ge 1.9.0 1.100
 expect_false "named channel is not a numeric version" \
-  cargo_guard_version_ge stable 1.95
+  cargo_guard_version_ge stable 1.100
+
+expect_false "old product floor 1.95.0 < 1.100" cargo_guard_version_ge 1.95.0 1.100
+expect_false "1.99.9 < 1.100.0 (three-digit minor)" cargo_guard_version_ge 1.99.9 1.100.0
+expect_true "1.100.0 > 1.99.9 (numeric, not lexical)" cargo_guard_version_ge 1.100.0 1.99.9
 
 # ── rustup shim-path detection ────────────────────────────────────────────────
 
@@ -120,7 +124,7 @@ expect_true  "shim: windows-mounted home" \
 expect_true  "shim: windows separators normalize" \
   cargo_guard_is_rustup_shim 'C:\fixture\profile\.cargo\bin\cargo.exe'
 expect_true  "shim: rustup toolchain binary" \
-  cargo_guard_is_rustup_shim "/fixture/profile/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo"
+  cargo_guard_is_rustup_shim "/fixture/profile/.rustup/toolchains/1.100.0-x86_64-unknown-linux-gnu/bin/cargo"
 expect_false "not shim: /usr/bin/cargo (WSL apt cargo)" \
   cargo_guard_is_rustup_shim "/usr/bin/cargo"
 expect_false "not shim: /usr/local/bin/cargo" \
@@ -134,9 +138,9 @@ TMPDIR_BASE="$(mktemp -d)"
 FAKE_REPO="${TMPDIR_BASE}/fake-repo"
 mkdir -p "$FAKE_REPO"
 
-expect_eq "required: workspace Cargo.toml rust-version wins" "1.95" \
+expect_eq "required: workspace Cargo.toml rust-version wins" "1.100" \
   "$(cargo_guard_required_version "$REPO_ROOT")"
-expect_eq "pin: rust-toolchain.toml channel" "1.95.0" \
+expect_eq "pin: rust-toolchain.toml channel" "1.100.0" \
   "$(cargo_guard_pin_version "$REPO_ROOT")"
 
 printf '%s\n' 'rust-version = "1.42"' > "${FAKE_REPO}/Cargo.toml"
@@ -160,16 +164,16 @@ fi
 # ── refusal message contents (pure builder) ───────────────────────────────────
 
 REFUSAL="${TMPDIR_BASE}/refusal.msg"
-cargo_guard_print_refusal "/usr/bin/cargo" "1.75.0" "1.95" "1.95.0" 1 "WSL_DISTRO_NAME=Ubuntu" 2> "$REFUSAL"
+cargo_guard_print_refusal "/usr/bin/cargo" "1.75.0" "1.100" "1.100.0" 1 "WSL_DISTRO_NAME=Ubuntu" 2> "$REFUSAL"
 
 assert_contains "refusal: typed REFUSED banner" \
   "cargo-toolchain-guard: REFUSED" "$REFUSAL"
 assert_contains "refusal: names resolved cargo path" \
   "resolved cargo : /usr/bin/cargo (cargo 1.75.0)" "$REFUSAL"
 assert_contains "refusal: names workspace rust-version" \
-  "workspace needs: rust-version 1.95 (Cargo.toml)" "$REFUSAL"
+  "workspace needs: rust-version 1.100 (Cargo.toml)" "$REFUSAL"
 assert_contains "refusal: names rust-toolchain.toml pin" \
-  "rust-toolchain.toml pins 1.95.0, which only rustup shims honor" "$REFUSAL"
+  "rust-toolchain.toml pins 1.100.0, which only rustup shims honor" "$REFUSAL"
 assert_contains "refusal: explains edition-2024 confusion" \
   "feature 'edition2024' is required" "$REFUSAL"
 assert_contains "refusal: forbids the manifest downgrade" \
@@ -184,11 +188,11 @@ assert_contains "refusal: remediation names PATH ordering" \
   "~/.cargo/bin precedes /usr/bin in PATH" "$REFUSAL"
 
 REFUSAL_NOWSL="${TMPDIR_BASE}/refusal-nowsl.msg"
-cargo_guard_print_refusal "/opt/cargo/bin/cargo" "1.84.0" "1.95" "1.95.0" 0 "" 2> "$REFUSAL_NOWSL"
+cargo_guard_print_refusal "/opt/cargo/bin/cargo" "1.84.0" "1.100" "1.100.0" 0 "" 2> "$REFUSAL_NOWSL"
 assert_contains "refusal (non-WSL): typed REFUSED banner" \
   "cargo-toolchain-guard: REFUSED" "$REFUSAL_NOWSL"
 assert_contains "refusal (non-WSL): generic rustup remediation" \
-  "rustup install 1.95.0" "$REFUSAL_NOWSL"
+  "rustup install 1.100.0" "$REFUSAL_NOWSL"
 if grep -Fq "WSL detected" "$REFUSAL_NOWSL"; then
   fail "refusal (non-WSL): must not claim WSL context"
 else
@@ -198,7 +202,7 @@ fi
 # A cargo between 1.85 and the workspace pin can parse edition-2024; the
 # refusal must name the workspace policy, not a nonexistent parse limitation.
 REFUSAL_MID="${TMPDIR_BASE}/refusal-mid.msg"
-cargo_guard_print_refusal "/usr/bin/cargo" "1.90.0" "1.95" "1.95.0" 0 "" 2> "$REFUSAL_MID"
+cargo_guard_print_refusal "/usr/bin/cargo" "1.90.0" "1.100" "1.100.0" 0 "" 2> "$REFUSAL_MID"
 assert_contains "refusal (1.90): names workspace toolchain policy" \
   "the refusal is workspace toolchain policy, not a manifest defect" "$REFUSAL_MID"
 if grep -Fq "cannot parse edition-2024" "$REFUSAL_MID"; then
@@ -219,8 +223,8 @@ if [ "\${1:-}" = "--version" ]; then
   printf 'cargo %s (stub 2023-11-01)\n' "$version"
   exit 0
 fi
-printf 'stale-cargo-stub-ran\n'
-exit 0
+printf 'unexpected cargo invocation: %s\n' "\$*" >&2
+exit 97
 STUB
   chmod +x "${bin_dir}/cargo"
 }
@@ -264,6 +268,45 @@ fi
 assert_contains "guard: missing cargo message names the requirement" \
   "no cargo found on PATH" "${TMPDIR_BASE}/missing.err"
 
+# A configured but off-PATH Cargo must be reported without running it or
+# silently changing which executable the calling entrypoint uses.
+HIDDEN_HOME="${TMPDIR_BASE}/hidden cargo"
+mkdir -p "${HIDDEN_HOME}/bin"
+printf '#!/bin/sh\n: > "$HIDDEN_MARKER"\n' > "${HIDDEN_HOME}/bin/cargo"
+chmod +x "${HIDDEN_HOME}/bin/cargo"
+# Prove the sentinel works in the same empty PATH environment.
+env -i PATH="${TMPDIR_BASE}/empty-path" HIDDEN_MARKER="${TMPDIR_BASE}/hidden-ran" "${HIDDEN_HOME}/bin/cargo"
+if [[ -f "${TMPDIR_BASE}/hidden-ran" ]]; then
+  pass "guard: off-PATH sentinel creates marker with empty PATH"
+else
+  fail "guard: off-PATH sentinel failed to create marker"
+fi
+rm -f "${TMPDIR_BASE}/hidden-ran"
+code=0
+env -i PATH="${TMPDIR_BASE}/empty-path" CARGO_HOME="$HIDDEN_HOME" HIDDEN_MARKER="${TMPDIR_BASE}/hidden-ran" "$(command -v bash)" \
+  -c ". \"$LIB\"; cargo_toolchain_guard" 2> "${TMPDIR_BASE}/hidden.err" || code=$?
+if [[ "$code" -eq 78 && ! -e "${TMPDIR_BASE}/hidden-ran" ]]; then
+  pass "guard: off-PATH Cargo is reported without execution or implicit selection"
+else
+  fail "guard: off-PATH Cargo changed refusal or was executed"
+fi
+assert_contains "guard: reports configured off-PATH Cargo" \
+  "${HIDDEN_HOME}/bin/cargo, outside PATH (not probed)" "${TMPDIR_BASE}/hidden.err"
+assert_contains "guard: install is conditional" \
+  "install rustup only if no suitable installation exists" "${TMPDIR_BASE}/hidden.err"
+
+# A searchable directory named cargo is not an executable Cargo file.
+DIR_HOME="${TMPDIR_BASE}/directory cargo"
+mkdir -p "${DIR_HOME}/bin/cargo"
+code=0
+env -i PATH="${TMPDIR_BASE}/empty-path" CARGO_HOME="$DIR_HOME" "$(command -v bash)" \
+  -c ". \"$LIB\"; cargo_toolchain_guard" 2> "${TMPDIR_BASE}/directory.err" || code=$?
+if [[ "$code" -eq 78 ]] && ! grep -Fq 'found an executable Cargo' "${TMPDIR_BASE}/directory.err"; then
+  pass "guard: directory named cargo is not reported as an executable"
+else
+  fail "guard: directory named cargo was falsely reported as an executable"
+fi
+
 # ── full guard with unparseable --version output ──────────────────────────────
 
 BROKEN_BIN="${TMPDIR_BASE}/broken-bin"
@@ -283,7 +326,7 @@ fi
 # ── full guard with a satisfying non-shim cargo: note, not refusal ────────────
 
 NEW_BIN="${TMPDIR_BASE}/new-bin"
-write_stale_cargo "$NEW_BIN" "1.96.1"
+write_stale_cargo "$NEW_BIN" "1.101.1"
 
 code=0
 PATH="${NEW_BIN}:$PATH" \
@@ -294,7 +337,7 @@ else
   fail "guard: satisfying non-shim cargo must pass, got exit ${code}"
 fi
 assert_contains "guard: non-shim note reports the ignored pin" \
-  "is not a rustup shim, so the rust-toolchain.toml pin (1.95.0) is not in effect" \
+  "is not a rustup shim, so the rust-toolchain.toml pin (1.100.0) is not in effect" \
   "${TMPDIR_BASE}/new.err"
 
 # ── old rustup proxies must refuse before any install-capable probe ────────
@@ -309,7 +352,7 @@ if [[ "${0##*/}" == rustup && "$*" == --help ]]; then
 fi
 # Both cargo --version and rustup --version are unsafe on old rustup.
 printf '%s\n' "${RUSTUP_AUTO_INSTALL-unset}" >> "$PROXY_CARGO_ENV"
-printf 'cargo 1.95.0 (proxy fixture)\n'
+printf 'cargo 1.100.0 (proxy fixture)\n'
 STUB
 chmod +x "${PROXY_BIN}/rustup"
 ln "${PROXY_BIN}/rustup" "${PROXY_BIN}/cargo"
@@ -371,7 +414,7 @@ expect_false 'proxy: unrelated manager was never executed' \
 code=0
 PATH="${PROXY_BIN}:$PATH" bash -c '
   cd "$2"
-  cargo() { printf "cargo 1.95.0 (function fixture)\n"; }
+  cargo() { printf "cargo 1.100.0 (function fixture)\n"; }
   . "$1"
   cargo_toolchain_guard
 ' guard-test "$LIB" "$PROXY_BIN" 2> "${TMPDIR_BASE}/function.err" || code=$?
@@ -387,7 +430,7 @@ cat > "${PROBE_BIN}/cargo" <<'STUB'
 #!/usr/bin/env bash
 [[ "$*" == "--version" ]] || exit 91
 printf '%s\n' "${RUSTUP_AUTO_INSTALL-unset}" > "$PROBE_ENV_LOG"
-printf 'cargo 1.95.0 (installed fixture)\n'
+printf 'cargo 1.100.0 (installed fixture)\n'
 STUB
 chmod +x "${PROBE_BIN}/cargo"
 
@@ -423,7 +466,7 @@ if [ "\${1:-}" = "--version" ]; then
   if [ -f "./caller-project-marker" ]; then
     printf 'cargo 1.70.0 (caller-pinned stub)\n'
   else
-    printf 'cargo 1.96.1 (repo-pinned stub)\n'
+    printf 'cargo 1.101.1 (repo-pinned stub)\n'
   fi
   exit 0
 fi
@@ -456,27 +499,99 @@ if [[ "${OSTYPE:-}" != msys* && "${OSTYPE:-}" != cygwin* && "${OS:-}" != "Window
   mkdir -p "$STANDALONE_DIR"
   cp "${REPO_ROOT}/scripts/install.sh" "${STANDALONE_DIR}/install.sh"
 
+  # No inherited Cargo, Rustup, installation, or temp paths. Every external
+  # network/install entrypoint used by this installer is intercepted.
+  SENTINEL_BIN="${TMPDIR_BASE}/installer-sentinels"
+  mkdir -p "$SENTINEL_BIN" "${TMPDIR_BASE}/installer-home" \
+    "${TMPDIR_BASE}/installer-dest" "${TMPDIR_BASE}/installer-tmp"
+  for cmd in curl wget git rustup; do
+    cat > "${SENTINEL_BIN}/${cmd}" <<'STUB'
+#!/bin/sh
+printf '%s\n' "${0##*/}" >> "$SENTINEL_LOG"
+exit 97
+STUB
+    chmod +x "${SENTINEL_BIN}/${cmd}"
+  done
+  cat > "${SENTINEL_BIN}/cargo" <<'STUB'
+#!/bin/sh
+if [ "${1:-}" = --version ]; then
+  printf 'cargo %s (fixture)\n' "$FIXTURE_CARGO_VERSION"
+  exit 0
+fi
+printf 'cargo %s\n' "${1:-}" >> "$SENTINEL_LOG"
+exit 97
+STUB
+  chmod +x "${SENTINEL_BIN}/cargo"
+
+  run_installer_fixture() {
+    local script="$1" version="$2" log="$3" output="$4"
+    : > "$log"
+    ( cd "$STANDALONE_DIR"
+      env -i PATH="${SENTINEL_BIN}:/usr/bin:/bin" HOME="${TMPDIR_BASE}/installer-home" \
+        CARGO_HOME="${TMPDIR_BASE}/installer-home/cargo" \
+        RUSTUP_HOME="${TMPDIR_BASE}/installer-home/rustup" \
+        TMPDIR="${TMPDIR_BASE}/installer-tmp" INSTALL_DIR="${TMPDIR_BASE}/installer-dest" \
+        VERSION=latest BUILD_FROM_SOURCE=1 FIXTURE_CARGO_VERSION="$version" \
+        SENTINEL_LOG="$log" bash "$script"
+    ) > "${output}.out" 2> "${output}.err"
+  }
+
   code=0
-  (
-    cd "$STANDALONE_DIR"
-    PATH="${STALE_BIN}:$PATH" BUILD_FROM_SOURCE=1 bash ./install.sh
-  ) > "${TMPDIR_BASE}/standalone.out" 2> "${TMPDIR_BASE}/standalone.err" || code=$?
-  if [[ "$code" -ne 0 ]] && grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone.err"; then
-    pass "install.sh standalone: stale cargo refused without the guard library"
+  run_installer_fixture ./install.sh 1.75.0 "${TMPDIR_BASE}/stale-sentinel.log" \
+    "${TMPDIR_BASE}/standalone" || code=$?
+  if [[ "$code" -ne 0 ]] && grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone.err" &&
+    [[ ! -s "${TMPDIR_BASE}/stale-sentinel.log" ]]; then
+    pass "install.sh standalone: stale cargo refused before network or install"
   else
-    fail "install.sh standalone: expected typed refusal with stale cargo, got exit ${code}"
+    fail "install.sh standalone: stale cargo must refuse before network or install"
   fi
 
   code=0
-  (
-    cd "$STANDALONE_DIR"
-    PATH="${NEW_BIN}:$PATH" BUILD_FROM_SOURCE=1 bash ./install.sh
-  ) > "${TMPDIR_BASE}/standalone-new.out" 2> "${TMPDIR_BASE}/standalone-new.err" || code=$?
-  if grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone-new.err"; then
-    fail "install.sh standalone: satisfying cargo must not hit the guard refusal"
+  run_installer_fixture ./install.sh 1.95.0 "${TMPDIR_BASE}/old-minimum-sentinel.log" \
+    "${TMPDIR_BASE}/standalone-old-minimum" || code=$?
+  if [[ "$code" -ne 0 ]] && grep -Fq "needs >= 1.100" "${TMPDIR_BASE}/standalone-old-minimum.err" &&
+    [[ ! -s "${TMPDIR_BASE}/old-minimum-sentinel.log" ]]; then
+    pass "install.sh standalone: pre-1.100 cargo refused before network or install"
   else
-    pass "install.sh standalone: satisfying cargo proceeds past the guard"
+    fail "install.sh standalone: cargo 1.95 must not reach the unsupported source build"
   fi
+
+  code=0
+  run_installer_fixture ./install.sh 1.100.0 "${TMPDIR_BASE}/new-sentinel.log" \
+    "${TMPDIR_BASE}/standalone-new" || code=$?
+  if [[ "$code" -ne 0 ]] && ! grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone-new.err" &&
+    [[ "$(cat "${TMPDIR_BASE}/new-sentinel.log")" == 'cargo install' ]] &&
+    [[ -z "$(ls -A "${TMPDIR_BASE}/installer-dest")" ]]; then
+    pass "install.sh standalone: satisfying cargo reaches blocked install without network or destination writes"
+  else
+    fail "install.sh standalone: expected only the blocked cargo install boundary"
+  fi
+
+  # Inject a network call into a disposable copy. The same sentinel-log
+  # predicate used above must reject it even if installer output is otherwise
+  # indistinguishable from the stale-cargo case.
+  sed 's/^    main "\$@"$/    curl https:\/\/example.invalid; main "\$@"/' \
+    "${STANDALONE_DIR}/install.sh" > "${STANDALONE_DIR}/injected.sh"
+  code=0
+  run_installer_fixture ./injected.sh 1.75.0 "${TMPDIR_BASE}/injected-sentinel.log" \
+    "${TMPDIR_BASE}/standalone-injected" || code=$?
+  if [[ "$code" -ne 0 && "$(cat "${TMPDIR_BASE}/injected-sentinel.log")" == curl ]]; then
+    pass "install.sh standalone: injected network attempt is blocked and detected"
+  else
+    fail "install.sh standalone: injected network attempt escaped detection"
+  fi
+
+  sed 's/^    main "\$@"$/    cargo install unexpected; main "\$@"/' \
+    "${STANDALONE_DIR}/install.sh" > "${STANDALONE_DIR}/injected-install.sh"
+  code=0
+  run_installer_fixture ./injected-install.sh 1.75.0 "${TMPDIR_BASE}/injected-install.log" \
+    "${TMPDIR_BASE}/standalone-injected-install" || code=$?
+  if [[ "$code" -ne 0 && "$(cat "${TMPDIR_BASE}/injected-install.log")" == 'cargo install' ]]; then
+    pass "install.sh standalone: injected install attempt is blocked and detected"
+  else
+    fail "install.sh standalone: injected install attempt escaped detection"
+  fi
+
 else
   pass "install.sh standalone: skipped on Windows (installer supports Linux/macOS only)"
 fi
@@ -486,34 +601,92 @@ fi
 # still runs Cargo in SKIP_INSTALL mode, and the other reaches Cargo only after
 # exhausting its prebuilt xtask ladder.
 
+# Run both entrypoints from a disposable fixture root. Do not consult a real
+# target tree, git repository, Python validators, or caller-owned smoke paths.
+ENTRY_ROOT="${TMPDIR_BASE}/entry-root"
+ENTRY_BIN="${TMPDIR_BASE}/entry-bin"
+mkdir -p "$ENTRY_ROOT/scripts/lib" "$ENTRY_ROOT/target/debug" "$ENTRY_BIN" \
+  "$ENTRY_ROOT/home" "$ENTRY_ROOT/tmp" "$ENTRY_ROOT/smoke-install" "$ENTRY_ROOT/smoke-work" \
+  "${TMPDIR_BASE}/hostile-target/debug"
+cp "${REPO_ROOT}/scripts/post-publish-smoke.sh" "${REPO_ROOT}/scripts/check_release_history.sh" "$ENTRY_ROOT/scripts/"
+cp "$LIB" "$ENTRY_ROOT/scripts/lib/"
+cp "${REPO_ROOT}/Cargo.toml" "${REPO_ROOT}/rust-toolchain.toml" "$ENTRY_ROOT/"
+: > "$ENTRY_ROOT/RELEASE_HISTORY.md"
+cp "${STALE_BIN}/cargo" "$ENTRY_BIN/cargo"
+for cmd in curl wget rustup; do
+  cat > "$ENTRY_BIN/$cmd" <<'STUB'
+#!/bin/sh
+printf '%s\n' "${0##*/}" >> "$ENTRY_SENTINEL_LOG"
+exit 97
+STUB
+  chmod +x "$ENTRY_BIN/$cmd"
+done
+# Fixed empty fixture input: no real Git metadata or Python validators execute.
+for cmd in git python3; do
+  cat > "$ENTRY_BIN/$cmd" <<'STUB'
+#!/bin/sh
+printf '%s\n' "${0##*/}" >> "$ENTRY_INPUT_LOG"
+exit 0
+STUB
+  chmod +x "$ENTRY_BIN/$cmd"
+done
+cat > "${TMPDIR_BASE}/hostile-target/debug/xtask" <<'STUB'
+#!/bin/sh
+: > "$HOSTILE_EXEC_MARKER"
+exit 0
+STUB
+chmod +x "${TMPDIR_BASE}/hostile-target/debug/xtask"
+# A non-executable fixture sentinel proves the fallback skips fixture prebuilts.
+cp "${TMPDIR_BASE}/hostile-target/debug/xtask" "$ENTRY_ROOT/target/debug/xtask"
+chmod -x "$ENTRY_ROOT/target/debug/xtask"
+: > "${TMPDIR_BASE}/entry-sentinel.log"
+: > "${TMPDIR_BASE}/entry-input.log"
+run_entry_fixture() {
+  local entry="$1"; shift
+  ( cd "$ENTRY_ROOT"
+    env -i PATH="${ENTRY_BIN}:/usr/bin:/bin" HOME="$ENTRY_ROOT/home" \
+      TMPDIR="$ENTRY_ROOT/tmp" CARGO_HOME="$ENTRY_ROOT/home/cargo" \
+      RUSTUP_HOME="$ENTRY_ROOT/home/rustup" \
+      SMOKE_INSTALL_ROOT="$ENTRY_ROOT/smoke-install" SMOKE_WORK_DIR="$ENTRY_ROOT/smoke-work" \
+      ENTRY_SENTINEL_LOG="${TMPDIR_BASE}/entry-sentinel.log" \
+      ENTRY_INPUT_LOG="${TMPDIR_BASE}/entry-input.log" \
+      HOSTILE_EXEC_MARKER="${TMPDIR_BASE}/hostile-executed" \
+      SKIP_INSTALL=1 WSL_DISTRO_NAME=Ubuntu bash "scripts/$entry" "$@"
+  )
+}
+# Simulate hostile caller overrides. env -i inside the runner must remove them.
+export CARGO_TARGET_DIR="${TMPDIR_BASE}/hostile-target"
+export SMOKE_INSTALL_ROOT="${TMPDIR_BASE}/hostile-install"
+export SMOKE_WORK_DIR="${TMPDIR_BASE}/hostile-work"
 code=0
-(
-  cd "$REPO_ROOT"
-  PATH="${STALE_BIN}:$PATH" WSL_DISTRO_NAME=Ubuntu \
-    SKIP_INSTALL=1 bash scripts/post-publish-smoke.sh 0.0.0
-) > "${TMPDIR_BASE}/post-publish-stale.out" \
+run_entry_fixture post-publish-smoke.sh 0.0.0 > "${TMPDIR_BASE}/post-publish-stale.out" \
   2> "${TMPDIR_BASE}/post-publish-stale.err" || code=$?
-if [[ "$code" -eq 78 ]]; then
-  pass "post-publish smoke: SKIP_INSTALL still guards Cargo with exit 78"
+if [[ "$code" -eq 78 ]] && grep -Fq 'cargo-toolchain-guard: REFUSED' "${TMPDIR_BASE}/post-publish-stale.err" &&
+  [[ -d "$ENTRY_ROOT/smoke-install/bin" && -d "$ENTRY_ROOT/smoke-work/cargo-home" &&
+     ! -e "$SMOKE_INSTALL_ROOT" && ! -e "$SMOKE_WORK_DIR" && ! -s "${TMPDIR_BASE}/entry-sentinel.log" ]]; then
+  pass "post-publish smoke: clean fixture refuses stale Cargo and ignores inherited directories"
 else
-  fail "post-publish smoke: stale Cargo must refuse before SKIP_INSTALL work, got ${code}"
+  fail "post-publish smoke: fixture escaped its roots or failed guard"
 fi
-assert_contains "post-publish smoke: refusal banner" \
-  "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/post-publish-stale.err"
-
 code=0
-(
-  cd "$REPO_ROOT"
-  PATH="${STALE_BIN}:$PATH" bash scripts/check_release_history.sh
-) > "${TMPDIR_BASE}/release-history-stale.out" \
+run_entry_fixture check_release_history.sh > "${TMPDIR_BASE}/release-history-stale.out" \
   2> "${TMPDIR_BASE}/release-history-stale.err" || code=$?
-if [[ "$code" -eq 78 ]]; then
-  pass "release history: Cargo fallback refuses stale toolchain with exit 78"
+if [[ "$code" -eq 78 ]] && grep -Fq 'cargo-toolchain-guard: REFUSED' "${TMPDIR_BASE}/release-history-stale.err" &&
+  [[ ! -e "${TMPDIR_BASE}/hostile-executed" && ! -s "${TMPDIR_BASE}/entry-sentinel.log" ]] &&
+  grep -qx git "${TMPDIR_BASE}/entry-input.log" && grep -qx python3 "${TMPDIR_BASE}/entry-input.log"; then
+  pass "release history: clean fixture refuses stale Cargo and ignores inherited prebuilt xtask"
 else
-  fail "release history: stale Cargo must refuse before fallback work, got ${code}"
+  fail "release history: fixture executed a prebuilt or failed guard"
 fi
-assert_contains "release history: refusal banner" \
-  "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/release-history-stale.err"
+# Prove the hostile prebuilt is executable and would create its marker if selected.
+HOSTILE_EXEC_MARKER="${TMPDIR_BASE}/hostile-control" \
+  "${TMPDIR_BASE}/hostile-target/debug/xtask"
+if [[ -f "${TMPDIR_BASE}/hostile-control" ]]; then
+  pass "release history: hostile prebuilt control can create its marker"
+else
+  fail "release history: hostile prebuilt control is inert"
+fi
+unset CARGO_TARGET_DIR SMOKE_INSTALL_ROOT SMOKE_WORK_DIR
 
 # ── entrypoint coverage consistency ───────────────────────────────────────────
 # Every repo bash entrypoint that invokes cargo as a command must source the

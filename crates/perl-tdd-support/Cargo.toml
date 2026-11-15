@@ -30,6 +30,7 @@ perl-position-tracking = { workspace = true }
 # Canonical content-digest identity for reference source subjects.
 perl-source-identity = { workspace = true }
 perl-test-must = { workspace = true }
+perl-test-facts = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 serde_json.workspace = true

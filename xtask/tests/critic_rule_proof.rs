@@ -53,7 +53,7 @@ fn rule_mut<'a>(manifest: &'a mut Value, rule_id: &str) -> Option<&'a mut Value>
 fn committed_manifest_and_live_critic_proof_pass() -> TestResult {
     let manifest = proof::check(&repo_root()).map_err(|error| error.to_string())?;
     assert_eq!(manifest.rules.len(), 16);
-    assert_eq!(manifest.cases.len(), 80);
+    assert_eq!(manifest.cases.len(), 89);
     assert!(
         manifest
             .cases
@@ -576,6 +576,25 @@ fn omitted_fix_title_does_not_match_live_fix() -> TestResult {
     )
     .to_string();
     assert!(error.contains("missing expected finding"), "unexpected error: {error}");
+    Ok(())
+}
+
+#[test]
+fn issue_6979_data_payload_mask_range_is_load_bearing() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    must_some_with(case_mut(&mut manifest, "CRP-POD-POS-002"), "pod payload")["expected_findings"]
+        [0]["start_byte"] = json!(0);
+    let typed =
+        validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
+    let error = must_err_with(
+        proof::execute_manifest(&repo_root(), &typed),
+        "wrong POD payload range must fail live critic",
+    )
+    .to_string();
+    assert!(
+        error.contains("missing expected finding") || error.contains("unexpected extra finding"),
+        "unexpected error: {error}"
+    );
     Ok(())
 }
 

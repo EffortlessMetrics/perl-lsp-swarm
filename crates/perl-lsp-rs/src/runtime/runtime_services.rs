@@ -52,6 +52,10 @@ use super::diagnostic_debounce::DiagnosticDebouncer;
 use super::file_watcher_debounce::{FileWatcherDebouncer, WatcherAdmission};
 use super::parse_worker::ParseWorker;
 
+/// Bounded wait for application-worker settlement when the owning `LspServer`
+/// is dropped. Matches the outbound writer's exit settlement budget.
+const SERVER_DROP_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// One class of application background work whose execution lifetime
 /// `RuntimeServices` owns.
 ///
@@ -87,9 +91,9 @@ impl ApplicationTaskClass {
 
 /// Why an application shutdown was requested.
 ///
-/// Not yet constructed from production code: the shutdown-request wiring
-/// that will select a reason is #9508's job, out of scope for this
-/// ownership-only PR. Exercised by this module's own falsifiers.
+/// Not yet constructed from production lifecycle hook wiring (#9508) for
+/// client shutdown. [`ShutdownReason::ServerDrop`] is also used at
+/// `LspServer` drop (#8088).
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShutdownReason {
@@ -108,8 +112,8 @@ pub(crate) enum ShutdownReason {
 /// running server today, via the three `install_*` methods that
 /// `Scheduler::new` calls. The rest are constructed only by
 /// [`RuntimeServices::begin_application_shutdown`] and by this module's own
-/// falsifiers; nothing in real server operation invokes that path until the
-/// #9508 shutdown-request wiring lands.
+/// falsifiers. Production reaches [`RuntimeServices::settle_and_report_on_server_drop`]
+/// at `LspServer` drop (#8088); explicit client-shutdown wiring is #9508.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TaskTerminal {
@@ -148,6 +152,34 @@ impl TaskTerminal {
                 | TaskTerminal::TimedOut
                 | TaskTerminal::InstrumentFailed { .. }
         )
+    }
+
+    /// Bounded settlement evidence for fault terminals (#8088). Accepted
+    /// terminals stay silent so normal shutdown is not reported as failure.
+    fn report_settlement_evidence(&self, class: ApplicationTaskClass) {
+        match self {
+            TaskTerminal::Completed | TaskTerminal::Cancelled { .. } => {}
+            TaskTerminal::Failed { reason } => {
+                tracing::error!(
+                    component = class.label(),
+                    reason = reason.as_str(),
+                    "application background component settled with product/work failure"
+                );
+            }
+            TaskTerminal::TimedOut => {
+                tracing::error!(
+                    component = class.label(),
+                    "application background component settlement timed out before terminal evidence"
+                );
+            }
+            TaskTerminal::InstrumentFailed { reason } => {
+                tracing::error!(
+                    component = class.label(),
+                    reason = reason.as_str(),
+                    "application background component never became operational"
+                );
+            }
+        }
     }
 }
 
@@ -369,11 +401,17 @@ impl RuntimeServices {
         match class {
             ApplicationTaskClass::ParseWorker => {
                 let worker = self.parse_worker_handle.lock().clone()?;
+                if worker.runs_on_worker_thread() {
+                    return Some(cancelled());
+                }
                 (!worker.is_operational()).then(cancelled)
             }
             ApplicationTaskClass::DiagnosticDebounce => {
                 let guard = self.diagnostic_debouncer.lock();
                 let debouncer = guard.as_ref()?;
+                if debouncer.runs_on_worker_thread() {
+                    return Some(cancelled());
+                }
                 if !debouncer.has_exited() {
                     return None;
                 }
@@ -387,6 +425,9 @@ impl RuntimeServices {
             }
             ApplicationTaskClass::FileWatcherDebounce => {
                 let debouncer = self.file_watcher_debouncer.lock().clone()?;
+                if debouncer.runs_on_worker_thread() {
+                    return Some(cancelled());
+                }
                 if !debouncer.has_exited() {
                     return None;
                 }
@@ -445,7 +486,6 @@ impl RuntimeServices {
     }
 
     /// Point-in-time settlement view over every registered class.
-    #[allow(dead_code)] // Called once the #9508 shutdown-request wiring lands.
     pub(crate) fn settlement_snapshot(&self) -> SettlementSnapshot {
         let tasks = self.tasks.lock();
         let mut snapshot = SettlementSnapshot::default();
@@ -460,6 +500,27 @@ impl RuntimeServices {
         snapshot.settled.sort_by_key(|(class, _)| *class);
         snapshot.pending.sort_unstable();
         snapshot
+    }
+
+    /// Bounded application-worker settlement at `LspServer` drop (#8088).
+    ///
+    /// Uses the same first-cause retention as [`Self::begin_application_shutdown`]
+    /// but does not replace the explicit lifecycle hook owned by #9508.
+    pub(crate) fn settle_and_report_on_server_drop(&self) {
+        let deadline = Instant::now() + SERVER_DROP_SETTLEMENT_TIMEOUT;
+        let outcome = self.begin_application_shutdown(ShutdownReason::ServerDrop, deadline);
+        for (class, terminal) in self.settlement_snapshot().settled {
+            terminal.report_settlement_evidence(class);
+        }
+        match outcome {
+            ApplicationShutdown::Complete => {
+                tracing::debug!("application runtime services settled cleanly on server drop")
+            }
+            other => tracing::error!(
+                ?other,
+                "application runtime services settlement on server drop was not clean"
+            ),
+        }
     }
 
     /// Ask every registered class to stop for `reason`, then decide the
@@ -484,7 +545,7 @@ impl RuntimeServices {
     /// iteration because `observed_exit` never blocks. `TimedOut` is still
     /// returned, and persisted, for anything genuinely pending when the
     /// clock is read past the bound.
-    #[allow(dead_code)] // Called once the #9508 shutdown-request wiring lands.
+    #[allow(dead_code)] // Client shutdown path lands with #9508.
     pub(crate) fn begin_application_shutdown(
         &self,
         reason: ShutdownReason,

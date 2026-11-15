@@ -1097,8 +1097,8 @@ pub struct DataBreakpointInfoArguments {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataBreakpointInfoResponseBody {
-    /// Identifier for the data (null/None means not available)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Identifier for the data (`None` serializes as JSON `null`; the field is
+    /// required on the wire per the pinned upstream schema — see #6737/#7362).
     pub data_id: Option<String>,
     /// Description of the data
     pub description: String,

@@ -1108,6 +1108,21 @@ fn test_data_breakpoint_info_round_trip() -> Result<()> {
 }
 
 #[test]
+fn data_breakpoint_info_required_nullable_data_id_serializes_explicit_null() -> Result<()> {
+    let body = DataBreakpointInfoResponseBody {
+        data_id: None,
+        description: "unsupported".to_string(),
+        access_types: None,
+    };
+    let value: serde_json::Value = serde_json::to_value(&body)?;
+    assert!(
+        value.get("dataId").is_some_and(serde_json::Value::is_null),
+        "required-nullable dataId must be present as null, not omitted: {value}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_set_data_breakpoints_round_trip() -> Result<()> {
     let args = SetDataBreakpointsArguments {
         breakpoints: vec![DataBreakpoint {

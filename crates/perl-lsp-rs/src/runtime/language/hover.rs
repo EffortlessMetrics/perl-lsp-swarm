@@ -2138,7 +2138,15 @@ impl LspServer {
         // it in sequence. Mirrors `resolve_inherited_method_hover_ordered`.
         let build_exact_hover = |package_name: &str| -> Option<Value> {
             let members = workspace_index.get_package_members(package_name);
-            if members.iter().any(|symbol| symbol.name == method_name) {
+            if members.iter().any(|symbol| {
+                indexed_member_matches_qualified_callable(
+                    package_name,
+                    method_name,
+                    &symbol.name,
+                    symbol.container_name.as_deref(),
+                    symbol.qualified_name.as_deref(),
+                )
+            }) {
                 let detail = if package_name == receiver_pkg {
                     format!("Defined in `{package_name}`")
                 } else {
@@ -2159,7 +2167,15 @@ impl LspServer {
 
         let build_autoload_hover = |package_name: &str| -> Option<Value> {
             let members = workspace_index.get_package_members(package_name);
-            if members.iter().any(|symbol| symbol.name == "AUTOLOAD") {
+            if members.iter().any(|symbol| {
+                indexed_member_matches_qualified_callable(
+                    package_name,
+                    "AUTOLOAD",
+                    &symbol.name,
+                    symbol.container_name.as_deref(),
+                    symbol.qualified_name.as_deref(),
+                )
+            }) {
                 let detail = if package_name == receiver_pkg {
                     format!("Resolved via `AUTOLOAD` in `{package_name}`")
                 } else {

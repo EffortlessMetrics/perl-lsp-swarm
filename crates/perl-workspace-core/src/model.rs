@@ -159,10 +159,7 @@ impl ProjectModel {
     ///
     /// Compares against every parsed [`crate::dist::DistMetadataSource`] except
     /// `cpanfile`, pairing authoring and metadata files that share a parent
-    /// directory so nested distributions do not cross-compare. That includes
-    /// `META.json` today and will include `META.yml` once #8458 / PR #14424
-    /// lands that source — this crate does not add `MetaYml` itself. Authoring
-    /// and metadata remain separate vectors.
+    /// directory so nested distributions do not cross-compare.
     #[must_use]
     pub fn compare_authoring_with_metadata(
         &self,
@@ -186,6 +183,43 @@ impl ProjectModel {
                 out.extend(compare_authoring_with_meta(authoring, metadata));
             }
         }
+        out
+    }
+
+    /// Compare staged `META.json` and `META.yml` facts in the same distribution
+    /// directory without choosing one over the other (#7176).
+    #[must_use]
+    pub fn compare_meta_json_with_meta_yml(&self) -> Vec<crate::dist::DistMetadataComparison> {
+        use crate::dist::{DistMetadataSource, compare_dist_metadata};
+        use std::collections::BTreeMap;
+
+        let mut by_dir: BTreeMap<String, Vec<&crate::dist::DistMetadataFacts>> = BTreeMap::new();
+        for metadata in &self.dist_metadata {
+            if !matches!(
+                metadata.source,
+                DistMetadataSource::MetaJson | DistMetadataSource::MetaYml
+            ) {
+                continue;
+            }
+            let Some(dir) = distribution_dir(self, &metadata.file_id).map(str::to_string) else {
+                continue;
+            };
+            by_dir.entry(dir).or_default().push(metadata);
+        }
+
+        let mut out = Vec::new();
+        for group in by_dir.into_values() {
+            let json =
+                group.iter().find(|item| item.source == DistMetadataSource::MetaJson).copied();
+            let yml = group.iter().find(|item| item.source == DistMetadataSource::MetaYml).copied();
+            if let (Some(left), Some(right)) = (json, yml) {
+                out.extend(compare_dist_metadata(left, right));
+            }
+        }
+        out.sort_by(|a, b| {
+            (a.left_file_id.as_str(), a.field.as_str())
+                .cmp(&(b.left_file_id.as_str(), b.field.as_str()))
+        });
         out
     }
 

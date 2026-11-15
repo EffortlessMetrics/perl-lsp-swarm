@@ -24,7 +24,8 @@ except ModuleNotFoundError:
         tomllib = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parents[2]
-LEDGER = ROOT / ".spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml"
+LEDGER_RELATIVE = ".spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml"
+LEDGER = ROOT / LEDGER_RELATIVE
 
 
 def normalized_source(path: Path) -> str:
@@ -62,6 +63,82 @@ def declared_apis(ledger: dict[str, object]) -> tuple[set[str], set[str], re.Pat
     api_names = sorted(canonical_surface | compatibility_set, key=lambda api: (-len(api), api))
     call_re = re.compile(r"\.(?P<method>" + "|".join(map(re.escape, api_names)) + r")\(")
     return canonical, compatibility_set, call_re
+
+
+def owner_row_for_path(
+    path: str, owners: object
+) -> dict[str, object] | None:
+    if not isinstance(owners, list):
+        return None
+    matches = [
+        row
+        for row in owners
+        if isinstance(row, dict)
+        and isinstance(row.get("prefix"), str)
+        and (path == row["prefix"] or path.startswith(str(row["prefix"]) + "/"))
+    ]
+    if not matches:
+        return None
+    longest = max(len(str(row["prefix"])) for row in matches)
+    owners_at_anchor = [row for row in matches if len(str(row["prefix"])) == longest]
+    if len(owners_at_anchor) != 1:
+        return None
+    return owners_at_anchor[0]
+
+
+def compatibility_baseline_mismatch_message(
+    *,
+    ledger_path: str,
+    ledger_baseline: int,
+    compatibility: list[tuple[str, str]],
+    owners: object,
+) -> str:
+    """Name the drifted ledger field and per-file counts; do not recount source.
+
+    The caller already collected ``compatibility`` while scanning tracked
+    files. This formats that existing list so a post-merge red names the
+    ledger file/value and the files that currently contribute to the count,
+    plus each owner row's ``removal_condition`` (prefer burn-down).
+    """
+    per_file: dict[str, int] = {}
+    for path, _method in compatibility:
+        per_file[path] = per_file.get(path, 0) + 1
+    lines = [
+        (
+            f"compatibility baseline changed: ledger={ledger_baseline}, "
+            f"source={len(compatibility)}"
+        ),
+        f"ledger file: {ledger_path}",
+        f"ledger field: compatibility_baseline={ledger_baseline}",
+        "per-file compatibility calls:",
+    ]
+    for path in sorted(per_file):
+        lines.append(f"- {path}: {per_file[path]}")
+    conditions: list[str] = []
+    seen_prefixes: set[str] = set()
+    for path in sorted(per_file):
+        row = owner_row_for_path(path, owners)
+        if row is None:
+            continue
+        prefix = str(row.get("prefix", ""))
+        condition = row.get("removal_condition")
+        if not prefix or not isinstance(condition, str) or not condition:
+            continue
+        if prefix in seen_prefixes:
+            continue
+        seen_prefixes.add(prefix)
+        conditions.append(f"- {prefix}: {condition}")
+    if conditions:
+        lines.append(
+            "owner removal_condition (prefer burn-down over raising "
+            "compatibility_baseline):"
+        )
+        lines.extend(conditions)
+    lines.append(
+        "update the ledger only with explicit proof; prefer the owner row's "
+        "removal_condition over raising compatibility_baseline"
+    )
+    return "\n".join(lines)
 
 
 def main() -> int:
@@ -135,8 +212,12 @@ def main() -> int:
 
     if len(compatibility) != compatibility_baseline:
         raise SystemExit(
-            f"compatibility baseline changed: ledger={compatibility_baseline}, "
-            f"source={len(compatibility)}; update the ledger only with explicit proof"
+            compatibility_baseline_mismatch_message(
+                ledger_path=LEDGER_RELATIVE,
+                ledger_baseline=compatibility_baseline,
+                compatibility=compatibility,
+                owners=owners,
+            )
         )
 
     print(

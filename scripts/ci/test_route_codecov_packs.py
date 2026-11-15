@@ -74,15 +74,26 @@ class RouteCodecovPacksTests(unittest.TestCase):
         run_lines = workflow[start:end].splitlines()
         run_start = next(i for i, line in enumerate(run_lines) if line.strip() == "run: |") + 1
         script = "\n".join(line[10:] for line in run_lines[run_start:] if line.strip())
-        for classification, decision in [("routing_bug", "routing_bug"), ("routing_skip", "skipped-by-policy")]:
+        for classification, decision, expect_fail in [
+            ("routing_bug", "routing_bug", True),
+            ("routing_skip", "skipped-by-policy", False),
+        ]:
             with self.subTest(classification=classification), tempfile.TemporaryDirectory() as directory:
                 receipts = Path(directory) / "target/receipts/quality"
                 receipts.mkdir(parents=True)
                 (receipts / "ci-route.json").write_text(json.dumps({
                     "coverage_proof_packs": [], "routing_classification": classification,
                 }))
-                subprocess.run(["bash", "-eu", "-c", script], cwd=directory, check=True,
-                               env={**os.environ, "GITHUB_OUTPUT": str(Path(directory) / "output")})
+                completed = subprocess.run(
+                    ["bash", "-eu", "-c", script],
+                    cwd=directory,
+                    check=False,
+                    env={**os.environ, "GITHUB_OUTPUT": str(Path(directory) / "output")},
+                )
+                if expect_fail:
+                    self.assertNotEqual(0, completed.returncode)
+                else:
+                    self.assertEqual(0, completed.returncode)
                 receipt = json.loads((receipts / "quality-gate-coverage.json").read_text())
                 self.assertEqual(decision, receipt["decision"])
                 self.assertIn(decision, (receipts / "quality-gate-coverage.md").read_text())

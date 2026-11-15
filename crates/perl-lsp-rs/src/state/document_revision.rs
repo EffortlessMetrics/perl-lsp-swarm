@@ -63,7 +63,7 @@ impl InstanceAllocator {
     fn allocate(&self) -> Result<OpenDocumentInstanceId, RevisionError> {
         let previous = self
             .last
-            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |last| {
+            .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |last| {
                 last.checked_add(1)
             })
             .map_err(|_| RevisionError::InstanceExhausted)?;

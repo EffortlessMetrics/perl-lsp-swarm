@@ -279,6 +279,58 @@ def validate_subject_binding(
     return commit, tree
 
 
+def cell_owner_registry(
+    inputs: dict, violations: Violations
+) -> tuple[dict[str, str], set[str]]:
+    """Pin one family owner per catalog cell id (NC6/NC7).
+
+    The profile's per-family `cell_ids` lists are the registry. A cell claimed
+    by two families is disputed and cannot fill either; a cell owned by save
+    cannot be bound by freshness even when `fills` repeats the iterated family.
+    """
+    owners: dict[str, str] = {}
+    disputed: set[str] = set()
+    for family in ALL_FAMILIES:
+        for cell_id in inputs[family].get("cell_ids") or []:
+            if not isinstance(cell_id, str):
+                continue
+            previous = owners.get(cell_id)
+            if previous is None:
+                owners[cell_id] = family
+                continue
+            if previous != family:
+                violations.add(
+                    f"inputs: journey cell {cell_id!r} is claimed by both {previous} and "
+                    f"{family}; each catalog cell has one family owner"
+                )
+                disputed.add(cell_id)
+    return owners, disputed
+
+
+def journey_cells_by_id(receipt: dict) -> tuple[dict[str, dict], list[str]]:
+    """Index journey rows by id; collect duplicate ids in first-seen order.
+
+    Last-wins dict comprehension would let `fail` then `pass` for the same id
+    bind the pass. Duplicates are refused before any cell is bound.
+    """
+    index: dict[str, dict] = {}
+    duplicates: list[str] = []
+    seen_duplicate: set[str] = set()
+    for cell in receipt.get("journey") or []:
+        if not isinstance(cell, dict):
+            continue
+        cell_id = cell.get("id")
+        if not isinstance(cell_id, str):
+            continue
+        if cell_id in index:
+            if cell_id not in seen_duplicate:
+                duplicates.append(cell_id)
+                seen_duplicate.add(cell_id)
+            continue
+        index[cell_id] = cell
+    return index, duplicates
+
+
 def validate_receipt_reference(
     repo_root: Path,
     family: str,
@@ -288,6 +340,8 @@ def validate_receipt_reference(
     bound_cells: dict[str, str],
     denominator: set[str],
     subject: dict[str, object],
+    cell_owners: dict[str, str],
+    disputed_ids: set[str],
 ) -> tuple[list[tuple[str, str, bool]], bool]:
     """Validate one registered receipt reference.
 
@@ -383,11 +437,13 @@ def validate_receipt_reference(
             f"routes cannot fill the {family} family (NC6)"
         )
 
-    journey_index = {
-        cell.get("id"): cell
-        for cell in receipt.get("journey") or []
-        if isinstance(cell, dict) and isinstance(cell.get("id"), str)
-    }
+    journey_index, duplicate_ids = journey_cells_by_id(receipt)
+    if duplicate_ids:
+        violations.add(
+            f"{label}: receipt journey repeats cell id(s) {duplicate_ids}; "
+            "duplicate observations cannot be last-wins bound"
+        )
+        return empty
     bound_ids = reference.get("journey_cell_ids")
     if not isinstance(bound_ids, list) or not bound_ids:
         violations.add(f"{label}: reference binds no journey cell ids")
@@ -398,6 +454,17 @@ def validate_receipt_reference(
         cell = journey_index.get(cell_id)
         if cell is None:
             violations.add(f"{label}: binds journey cell id {cell_id!r} absent from the receipt")
+            usable = False
+            continue
+        if cell_id in disputed_ids:
+            usable = False
+            continue
+        owner_family = cell_owners.get(cell_id)
+        if owner_family is not None and owner_family != family:
+            violations.add(
+                f"{label}: journey cell {cell_id!r} is owned by {owner_family}; "
+                "a foreign family cannot bind it (NC6/NC7)"
+            )
             usable = False
             continue
         owner = bound_cells.setdefault(cell_id, family)
@@ -412,6 +479,12 @@ def validate_receipt_reference(
             violations.add(
                 f"{label}: journey cell {cell_id!r} is outside the family's registered catalog "
                 "denominator; unregistered cells cannot earn a disposition (NC8)"
+            )
+            usable = False
+            continue
+        if "result" not in cell:
+            violations.add(
+                f"{label}: journey cell {cell_id!r} is missing a result at the receipt boundary"
             )
             usable = False
             continue
@@ -480,7 +553,10 @@ def receipt_owned_identity(receipt: dict) -> dict[str, str]:
 
 
 def worst(results: list[str]) -> str:
-    return max(results, key=lambda value: RESULT_RANK.get(value, RESULT_RANK["not_proven"]))
+    # Unknown values are rejected at the receipt boundary before they reach
+    # this lattice. Do not map them to not_proven here: that was the fail-open
+    # that let a malformed cell compose as an observed not_proven family.
+    return max(results, key=lambda value: RESULT_RANK[value])
 
 
 def recompose(
@@ -497,6 +573,7 @@ def recompose(
     }
     bound_cells: dict[str, str] = {}
     subject = profile["receipt_subject"]
+    cell_owners, disputed_ids = cell_owner_registry(inputs, violations)
 
     expected_cells: dict[str, dict] = {}
     for family in ALL_FAMILIES:
@@ -536,6 +613,8 @@ def recompose(
                 bound_cells,
                 denominator,
                 subject,
+                cell_owners,
+                disputed_ids,
             )
             if not usable:
                 continue

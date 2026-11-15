@@ -248,18 +248,18 @@ beforeAll(() => {
   );
   trackHealthWidgetFactories();
   const originalHealthWidgetStart = HealthWidgetDataSource.prototype.start;
-  jest
-    .spyOn(HealthWidgetDataSource.prototype, 'start')
-    .mockImplementation(function (this: HealthWidgetDataSource) {
-      startedHealthWidgetDataSource = this;
-      const previousOwner = activeDisposableOwner;
-      activeDisposableOwner = 'health-widget-data-source';
-      try {
-        return originalHealthWidgetStart.call(this);
-      } finally {
-        activeDisposableOwner = previousOwner;
-      }
-    });
+  jest.spyOn(HealthWidgetDataSource.prototype, 'start').mockImplementation(function (
+    this: HealthWidgetDataSource,
+  ) {
+    startedHealthWidgetDataSource = this;
+    const previousOwner = activeDisposableOwner;
+    activeDisposableOwner = 'health-widget-data-source';
+    try {
+      return originalHealthWidgetStart.call(this);
+    } finally {
+      activeDisposableOwner = previousOwner;
+    }
+  });
 });
 
 function makeContext(extensionPath: string): vscode.ExtensionContext {
@@ -500,7 +500,8 @@ describe('transactional production activation (#7854)', () => {
     await activate(makeContext(extensionRoot));
 
     const registrations = (vscode.workspace.onDidCreateFiles as jest.Mock).mock.calls;
-    expect(registrations).toHaveLength(1);
+    // Health widget file-count invalidation and the retained #14621 listener (#14451 no-op).
+    expect(registrations).toHaveLength(2);
     const createdFileEvent = { files: [vscode.Uri.file('/ws/lib/Wired.pm')] };
     for (const registration of registrations) {
       const onDidCreateFiles = registration[0] as (

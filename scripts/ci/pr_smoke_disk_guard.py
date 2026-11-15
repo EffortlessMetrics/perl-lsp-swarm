@@ -40,18 +40,27 @@ Measured basis (2026-08-24 receipt artifacts, runs 32697324730 and
 cold-cache branch while the hosted runner offers ~83-84 GiB free at start on a
 145 GiB root volume, so unbounded builds fill the disk mid-link. Run
 37195503421 (2026-10-04) measured 85 GiB after the debuginfo trim (#17231).
-The preflight floor is derived from that declared footprint bound plus a
-reserve, so a runner that cannot hold the tier is rejected before any build
-instead of being accepted into a mid-link ENOSPC; the bound is declared in
-the workflow beside the trim that produces it (``PR_SMOKE_FOOTPRINT_GIB``).
+EXPIRED-UNVERIFIABLE (#19067): that originating run's artifacts are expired
+(artifacts API ``total_count=0``), so the 85 GiB value cannot be re-verified
+from it; it is retained conservatively and recorded in the committed
+baseline ``.ci/pr-smoke-footprint-baseline.json``, which this guard reads
+as its single source when present (the in-code constants below are only
+the fallback when that file is absent or malformed). The preflight floor
+is derived from that declared footprint bound plus a reserve, so a runner
+that cannot hold the tier is rejected before any build instead of being
+accepted into a mid-link ENOSPC; the bound is declared in the committed
+baseline the workflow materializes beside the trim that produces it.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import shutil
 import sys
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable
 
@@ -60,14 +69,86 @@ GIB = 1024**3
 # Declared footprint bound for the PR Smoke tier (#17231): the single
 # CARGO_TARGET_DIR measured 85 GiB in run 37195503421 (2026-10-04 receipt,
 # pr-fast-disk-pressure.log), after the line-tables-only debuginfo trim.
+# EXPIRED-UNVERIFIABLE (#19067): run 37195503421's artifacts are expired
+# (artifacts API total_count=0), so this 85 GiB value cannot be re-verified
+# from the originating run. It is retained conservatively; do not lower it
+# (or the derived 90 GiB floor) on the basis of the expired receipt.
 # The preflight floor is DERIVED from this bound (footprint + reserve), so
 # the two cannot drift apart the way the former fixed 32 GiB floor did:
 # that floor's rejection band was empty and it accepted runners the lane
 # then filled to 100% (ENOSPC -> ld SIGBUS). Update the bound only with a
-# fresh measured receipt; the workflow declares the same number beside the
-# trim that bounds it (PR_SMOKE_FOOTPRINT_GIB in ci.yml).
-MEASURED_FOOTPRINT_BYTES = 85 * GIB
-RESERVE_BYTES = 5 * GIB
+# fresh measured receipt; the committed baseline declares the same number
+# beside the trim that bounds it, and the workflow materializes that record.
+#
+# Single source (#19067): the committed baseline JSON below is authoritative
+# when present and well-formed. The in-code values are only the fallback for
+# a missing or malformed baseline (e.g. this helper copied standalone by
+# the workflow-pairing seam), so a broken baseline can never silently lower
+# the floor below the fallback bound.
+_FALLBACK_FOOTPRINT_BYTES = 85 * GIB
+_FALLBACK_RESERVE_BYTES = 5 * GIB
+try:
+    BASELINE_PATH: Path | None = (
+        Path(__file__).resolve().parents[2] / ".ci" / "pr-smoke-footprint-baseline.json"
+    )
+except IndexError:
+    # Copied standalone with fewer than three parent levels (the workflow
+    # materializes this helper into RUNNER_TEMP): there is no repo root to
+    # locate, so import must still succeed and the loader falls back. The
+    # workflow passes the materialized baseline explicitly in that case
+    # (--baseline-path), so the committed record still governs.
+    BASELINE_PATH = None
+
+
+def _baseline_gib(value: object, *, allow_zero: bool = False) -> int | None:
+    """Return an integral GiB count, or None when not usable."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    gib = int(value)
+    return gib if gib > 0 or (allow_zero and gib == 0) else None
+
+
+def load_footprint_baseline(
+    baseline_path: Path | None = None,
+) -> tuple[int, int]:
+    """Return ``(footprint_bytes, reserve_bytes)`` from the baseline JSON.
+
+    Reads ``.ci/pr-smoke-footprint-baseline.json`` (single source) when it
+    is present and carries a positive integral ``footprint_gib`` and a
+    non-negative integral ``reserve_gib``; otherwise falls back to the
+    in-code constants.
+    A malformed baseline therefore never lowers the floor, and neither
+    does a well-formed one below the in-code fallback (see the clamp in
+    the body): the file may only raise the floor on its own.
+    """
+    path = BASELINE_PATH if baseline_path is None else baseline_path
+    if path is None:
+        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
+    if not isinstance(data, dict):
+        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
+    footprint_gib = _baseline_gib(data.get("footprint_gib"))
+    reserve_gib = _baseline_gib(data.get("reserve_gib"), allow_zero=True)
+    if footprint_gib is None or reserve_gib is None:
+        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
+    # The baseline may raise either field on its own, but it may never
+    # lower one: a lower footprint is legitimate only with a fresh
+    # equivalent measurement (#17623/#17655), and that change must
+    # lower the in-code fallback in the same reviewed commit so the
+    # two cannot drift apart silently. Clamp each field independently
+    # so a raise to one is not discarded because the other is lower.
+    return (
+        max(footprint_gib * GIB, _FALLBACK_FOOTPRINT_BYTES),
+        max(reserve_gib * GIB, _FALLBACK_RESERVE_BYTES),
+    )
+
+
+MEASURED_FOOTPRINT_BYTES, RESERVE_BYTES = load_footprint_baseline()
 
 
 def effective_min_free_bytes(
@@ -94,6 +175,11 @@ def effective_min_free_bytes(
     return max(requested, floor)
 
 PRESSURE_LOG_NAME = "pr-fast-disk-pressure.log"
+# Written by the preparation step into the shared receipt-log directory before
+# the full pr-fast tier runs; it must not satisfy full-tier gate-evidence
+# binding when receipt.json is absent (#17915 review).
+PREPARATION_GATE_LOG = "unit_routed_full_build.log"
+NAVIGATION_LOG_PREFIX = "navigation-"
 
 # Signatures taken verbatim from the confirmed exhaustion receipts (runs
 # 32697324730 / 32697144932): collect2 SIGBUS during linking, cargo/rustc
@@ -162,16 +248,48 @@ def parse_min_free_bytes(raw: str) -> int:
     if text.lower().endswith("gib"):
         number = text[: -len("gib")].strip()
         try:
-            value = float(number)
-        except ValueError as error:
+            value = Decimal(number)
+        except InvalidOperation as error:
             raise argparse.ArgumentTypeError(
                 f"invalid GiB value: {raw!r}"
             ) from error
+        if not value.is_finite():
+            raise argparse.ArgumentTypeError(
+                f"GiB value must be finite: {raw!r}"
+            )
         if value < 0:
             raise argparse.ArgumentTypeError(
                 f"min-free value must be non-negative: {raw!r}"
             )
-        return int(value * GIB)
+        # Decimal arithmetic preserves every input digit, so large integral
+        # GiB values keep all requested bytes (#19157); truncate only
+        # fractional bytes, as before. Bound the magnitude first: an extreme
+        # decimal exponent (e.g. 1e999999999GiB) would otherwise materialize
+        # a billion-digit integer in as_integer_ratio. Values at or above
+        # 1e300 GiB always overflow binary64 as bytes (1e300 * GIB > 1e309),
+        # so rejecting them here is exact; values below 1e-10 GiB always
+        # truncate to zero bytes.
+        # short-circuit: zero is zero regardless of its decimal exponent
+        # (e.g. 0e500GiB), and adjusted() reflects the exponent, not the value.
+        if value.is_zero():
+            return 0
+        if value.adjusted() >= 300:
+            raise argparse.ArgumentTypeError(
+                f"GiB value and its byte conversion must be finite: {raw!r}"
+            )
+        if value.adjusted() <= -11:
+            return 0
+        numerator, denominator = value.as_integer_ratio()
+        byte_value = numerator * GIB // denominator
+        try:
+            conversion_finite = math.isfinite(float(byte_value))
+        except OverflowError:
+            conversion_finite = False
+        if not conversion_finite:
+            raise argparse.ArgumentTypeError(
+                f"GiB value and its byte conversion must be finite: {raw!r}"
+            )
+        return byte_value
     try:
         value = int(text)
     except ValueError as error:
@@ -255,6 +373,10 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
     if not logs_dir.is_dir():
         return findings
     for log_path in sorted(logs_dir.glob("*.log")):
+        if log_path.name == PRESSURE_LOG_NAME:
+            continue
+        if log_path.is_symlink():
+            continue
         try:
             text = log_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -270,6 +392,41 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
                 )
                 break
     return findings
+
+
+def gate_log_paths(logs_dir: Path) -> list[Path]:
+    """Return gate log files excluding the advisory pressure transcript."""
+    if not logs_dir.is_dir():
+        return []
+    return sorted(
+        path
+        for path in logs_dir.glob("*.log")
+        if path.name != PRESSURE_LOG_NAME and path.is_file() and not path.is_symlink()
+    )
+
+
+def _log_is_preparation_or_navigation(name: str) -> bool:
+    return name == PREPARATION_GATE_LOG or name.startswith(NAVIGATION_LOG_PREFIX)
+
+
+def has_full_tier_gate_evidence(
+    logs_dir: Path,
+    gate_logs: list[Path],
+    receipt_path: Path | None = None,
+) -> bool:
+    """True when pr-fast produced gate logs beyond preparation-only residue.
+
+    Preparation copies ``unit_routed_full_build.log`` into the shared log
+    directory before the tier receipt exists. A planning failure on the full
+    ``xtask gates`` invocation must not treat that log as tier evidence.
+    """
+    if not gate_logs:
+        return False
+    if receipt_path is None:
+        receipt_path = logs_dir.parent / "receipt.json"
+    if receipt_path.is_file():
+        return True
+    return any(not _log_is_preparation_or_navigation(path.name) for path in gate_logs)
 
 
 def _emit(message: str) -> None:
@@ -319,11 +476,20 @@ def run_preflight(args: argparse.Namespace) -> int:
     paths = {"workspace": args.workspace_path}
     target_dir = args.target_dir or str(Path(args.workspace_path) / "target")
     paths["cargo-target-dir"] = target_dir
+    baseline_path = getattr(args, "baseline_path", None)
+    if baseline_path:
+        # The workflow materializes the committed baseline beside the
+        # workflow-bound helper and passes its exact path: that record,
+        # not a duplicated workflow literal, declares the footprint.
+        footprint_bytes, reserve_bytes = load_footprint_baseline(Path(baseline_path))
+    else:
+        footprint_bytes = getattr(args, "footprint_bytes", MEASURED_FOOTPRINT_BYTES)
+        reserve_bytes = getattr(args, "reserve_bytes", RESERVE_BYTES)
     try:
         min_free_bytes = effective_min_free_bytes(
             args.min_free_bytes,
-            footprint_bytes=getattr(args, "footprint_bytes", MEASURED_FOOTPRINT_BYTES),
-            reserve_bytes=getattr(args, "reserve_bytes", RESERVE_BYTES),
+            footprint_bytes=footprint_bytes,
+            reserve_bytes=reserve_bytes,
         )
     except ValueError as error:
         _emit(f"::error::PR Smoke pre-flight disk guard misconfigured: {error}")
@@ -358,7 +524,9 @@ def run_preflight(args: argparse.Namespace) -> int:
 
 
 def run_classify(args: argparse.Namespace) -> int:
-    findings = scan_logs(Path(args.logs_dir))
+    logs_dir = Path(args.logs_dir)
+    gate_logs = gate_log_paths(logs_dir)
+    findings = scan_logs(logs_dir)
     strong = [
         finding
         for finding in findings
@@ -371,7 +539,16 @@ def run_classify(args: argparse.Namespace) -> int:
     ]
     target_dir = args.target_dir or "target"
     body_lines = [render_snapshot({"cargo-target-dir": target_dir})]
-    if strong:
+    if not gate_logs or not has_full_tier_gate_evidence(logs_dir, gate_logs):
+        body_lines.append(
+            "VERDICT: NOT_PROVEN: no gate logs available for exhaustion "
+            "classification (the pr-fast tier did not produce gate evidence)."
+        )
+        _emit(
+            "PR-fast disk-exhaustion classification: NOT_PROVEN "
+            f"(no gate logs under {args.logs_dir})"
+        )
+    elif strong:
         body_lines.append(
             "VERDICT: resource-exhaustion detected in gate logs "
             "(ENOSPC / os-error-28 class); matched logs: "
@@ -451,6 +628,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=MEASURED_FOOTPRINT_BYTES,
         help="declared tier footprint bound, bytes or GiB suffix "
         "(default: measured 85GiB, issue #17231)",
+    )
+    preflight.add_argument(
+        "--baseline-path",
+        default="",
+        help="path to the committed footprint baseline JSON materialized "
+        "by the workflow; when given it declares footprint and reserve "
+        "instead of --footprint-bytes (issue #19067)",
     )
     preflight.set_defaults(handler=run_preflight)
 

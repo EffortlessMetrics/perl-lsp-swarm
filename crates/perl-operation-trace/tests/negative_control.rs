@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+
 //! Negative control: ephemeral identity must not contaminate domain content.
 //!
 //! `OperationId` exists purely for correlation. If a future change ever

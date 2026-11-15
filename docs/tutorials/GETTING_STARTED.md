@@ -25,7 +25,7 @@ A **language server** is a program that runs alongside your editor and gives it 
 
 ## Prerequisites
 
-- **Rust 1.95+** (for building from source)
+- **Rust 1.100+** (for building from source)
 - **A supported editor**: VS Code, Amazon Kiro, Neovim, Emacs, Helix, or Sublime Text
 
 ## Installation

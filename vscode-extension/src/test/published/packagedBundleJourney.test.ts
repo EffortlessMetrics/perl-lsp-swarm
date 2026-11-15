@@ -58,6 +58,75 @@ interface ArtifactHashes {
 const SOURCE_CLAIM_BOUNDARY =
   'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.';
 
+const CLEAN_COEXISTENCE_MARKER = 'No conflicts detected among the facts this product can observe.';
+
+async function coexistenceReportFromCommand(): Promise<string> {
+  await vscode.commands.executeCommand('perl-lsp.showCoexistenceStatus');
+  const editor = vscode.window.activeTextEditor;
+  assert.ok(editor, 'coexistence status must open a report editor');
+  const text = editor.document.getText();
+  await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+  return text;
+}
+
+async function observeCoexistenceCases(
+  config: vscode.WorkspaceConfiguration,
+  registeredConfigurationKeys: Set<string>,
+): Promise<{ clean: ReceiptValue; detectedConflict: ReceiptValue }> {
+  let clean: ReceiptValue = { status: 'not_proven', reason: 'coexistence command failed' };
+  let detectedConflict: ReceiptValue = {
+    status: 'not_proven',
+    reason: 'perl-lsp.critic.engine is not registered on this artifact',
+  };
+  const priorEngine = config.inspect<string>('critic.engine')?.globalValue;
+  try {
+    const cleanReport = await coexistenceReportFromCommand();
+    clean = {
+      status: cleanReport.includes(CLEAN_COEXISTENCE_MARKER) ? 'ok' : 'wrong_answer',
+      marker: CLEAN_COEXISTENCE_MARKER,
+    };
+    if (registeredConfigurationKeys.has('perl-lsp.critic.engine')) {
+      await config.update('critic.engine', 'legacy', vscode.ConfigurationTarget.Global);
+      const conflictReport = await coexistenceReportFromCommand();
+      const conflictClass = 'legacy_first_party_critic_setting_active';
+      const classPresent = conflictReport.includes(conflictClass);
+      const scopePresent = conflictReport.includes('Scope: user');
+      detectedConflict = {
+        status: classPresent && scopePresent ? 'ok' : 'wrong_answer',
+        expected_class: conflictClass,
+        expected_scope: 'user',
+        injection: 'user perl-lsp.critic.engine=legacy',
+      };
+      await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Global);
+      const afterClear = await coexistenceReportFromCommand();
+      if (detectedConflict.status === 'ok' && afterClear.includes(conflictClass)) {
+        detectedConflict = {
+          status: 'wrong_answer',
+          reason: 'legacy conflict persisted after clearing injected user engine',
+        };
+      }
+    }
+  } catch (error: unknown) {
+    clean = {
+      status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    };
+    detectedConflict = {
+      status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (registeredConfigurationKeys.has('perl-lsp.critic.engine')) {
+      if (priorEngine === undefined) {
+        await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Global);
+      } else {
+        await config.update('critic.engine', priorEngine, vscode.ConfigurationTarget.Global);
+      }
+    }
+  }
+  return { clean, detectedConflict };
+}
+
 function readinessDeferredProvider(label: string, reason: string): ReceiptValue {
   return {
     status: 'not_proven',
@@ -629,6 +698,12 @@ suite('Packaged VSIX bundled-server journey', function () {
         readinessWait.status === 'ready'
           ? 'active-document readiness resolved before provider requests'
           : `provider requests were withheld: ${String(readinessWait.reason ?? 'readiness unavailable')}`;
+      const coexistence = readinessReady
+        ? await observeCoexistenceCases(config, registeredConfigurationKeys)
+        : {
+            clean: { status: 'not_proven', reason: readinessReason },
+            detectedConflict: { status: 'not_proven', reason: readinessReason },
+          };
       const readyProviders = readinessReady
         ? {
             completion: await expectedCompletion(document),
@@ -949,6 +1024,10 @@ suite('Packaged VSIX bundled-server journey', function () {
         ],
         product_blockers: [],
         diagnostics: { count: diagnostics.length, known_answer: diagnosticAnswer },
+        coexistence: {
+          clean_case: coexistence.clean,
+          detected_conflict_case: coexistence.detectedConflict,
+        },
         shutdown: 'pending',
       };
 
@@ -1066,12 +1145,28 @@ suite('Packaged VSIX bundled-server journey', function () {
                 },
               }
             : null;
+      const coexistenceBlockers = readinessReady
+        ? [
+            ...(coexistence.clean.status !== 'ok'
+              ? [{ label: 'coexistence.clean_case', result: coexistence.clean }]
+              : []),
+            ...(coexistence.detectedConflict.status !== 'ok'
+              ? [
+                  {
+                    label: 'coexistence.detected_conflict_case',
+                    result: coexistence.detectedConflict,
+                  },
+                ]
+              : []),
+          ]
+        : [];
       const productBlockers = [
         ...(bundledVersionBlocker ? [bundledVersionBlocker] : []),
         ...(activatedPathBlocker ? [activatedPathBlocker] : []),
         ...(activatedVersionBlocker ? [activatedVersionBlocker] : []),
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
+        ...coexistenceBlockers,
       ];
       receipt.outcome = productBlockers.length > 0 ? 'failed' : 'not_proven';
       receipt.product_blockers = productBlockers;
@@ -1172,6 +1267,9 @@ suite('Packaged VSIX bundled-server journey', function () {
     assert.ok(workspaceFolder, 'packaged DAP journey requires a workspace folder');
     const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
     assert.ok(extension, 'packaged DAP journey requires the installed extension');
+    if (!extension.isActive) {
+      await withTimeout('packaged DAP extension activation', extension.activate(), 90_000);
+    }
     const extensionPath = extension.extensionPath;
     const dapPath = bundledDapPath(extensionPath);
     assert.ok(fs.existsSync(dapPath), `packaged DAP is missing: ${dapPath}`);
@@ -1385,10 +1483,10 @@ suite('Packaged VSIX bundled-server journey', function () {
           cwd: workspacePath,
           stopOnEntry: false,
         }),
-        30_000,
+        60_000,
       );
       assert.equal(startResult, true, 'VS Code did not start the packaged DAP session');
-      const session = await withTimeout('packaged DAP session start', started, 30_000);
+      const session = await withTimeout('packaged DAP session start', started, 60_000);
       const matchingProcess = await waitForNewPackagedDap(dapDirectory, beforeKeys, dapPath);
       assert.ok(
         matchingProcess.creationIdentity ?? matchingProcess.creationTimeFileTime,

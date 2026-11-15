@@ -62,8 +62,10 @@ caller's own source, which is what that type documents (see `src/error.rs` modul
 the in-rewrite boundary). Vocabulary construction keeps its own `OutcomeError` and is not
 folded into `ParseError`. The
 success side of `parse()` is unaffected: it still returns `AstNode`, and `ParseOutcome`,
-`ParseAttempt`, and `ParseCompleteness` remain substrate — not wired into `parse()`, and
-still no `parse_strict`. Do not turn this error-path integration into a claim about
+`ParseAttempt`, and `ParseCompleteness` remain substrate on the legacy success path.
+[`PureRustPerlParser::parse_strict`] parses the caller's original bytes without
+normalization or recovery and returns a typed [`ParseAttempt`]. Do not turn this
+error-path integration into a claim about
 success-side source accounting, Tree-sitter compatibility, or production-parser status.
 
 The heredoc contract is the one integrated consumer of that vocabulary. A

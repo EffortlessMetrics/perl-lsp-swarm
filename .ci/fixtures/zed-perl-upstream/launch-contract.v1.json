@@ -46,6 +46,7 @@
     "--ripr-head",
     "--ripr-fact-classes",
     "--ripr-out",
+    "--ripr-diff",
     "--version",
     "--help"
   ],

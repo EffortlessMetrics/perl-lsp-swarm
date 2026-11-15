@@ -48,14 +48,11 @@ pub fn check_printf_format(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
 fn check_format_args(name: &str, args: &[Node], node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     let Some(fmt_node) = args.first() else { return };
 
-    // Only validate static string literals — skip variable/expression formats
-    let raw_value = match &fmt_node.kind {
-        NodeKind::String { value, .. } => value.as_str(),
-        _ => return,
+    // Only validate provably static format literals — skip variables, expressions,
+    // and command quotes (`qx`, backticks) that the parser maps to `String` nodes.
+    let Some(fmt_content) = static_printf_format_content(fmt_node) else {
+        return;
     };
-
-    // Strip enclosing quotes (value stores raw token text including delimiters)
-    let fmt_content = unquote_string(raw_value);
 
     // Skip if positional specifiers present (%1$s etc.) — arg counting breaks
     if fmt_content.contains('$') {
@@ -104,6 +101,21 @@ fn check_format_args(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
 /// Count only values whose cardinality is known in Perl list context.
 /// Arrays, slices, calls, and other expressions may produce zero or many values;
 /// treating one AST argument as one value would fabricate an arity mismatch.
+/// Return unquoted format text only when the first argument is a static literal.
+///
+/// Command output (`qx`, backticks) is represented as `String` nodes whose raw token
+/// text starts with `qx` or `` ` ``; reject those at the format position (see also
+/// [`known_scalar_argument_count`] for value arguments).
+pub(crate) fn static_printf_format_content(fmt_node: &Node) -> Option<&str> {
+    let NodeKind::String { value, .. } = &fmt_node.kind else {
+        return None;
+    };
+    if value.starts_with("qx") || value.starts_with('`') {
+        return None;
+    }
+    Some(unquote_string(value))
+}
+
 pub(crate) fn known_scalar_argument_count(args: &[Node]) -> Option<usize> {
     args.iter()
         .all(|arg| match &arg.kind {
@@ -294,5 +306,61 @@ mod tests {
     #[test]
     fn unquote_no_quotes_unchanged() {
         assert_eq!(unquote_string("bare"), "bare");
+    }
+
+    #[test]
+    fn static_format_rejects_command_and_interpolated_strings() {
+        use perl_parser_core::ast::{Node, SourceLocation};
+
+        let command_qx = Node::new(
+            NodeKind::String { value: "qx{cmd}".to_string(), interpolated: true },
+            SourceLocation { start: 0, end: 7 },
+        );
+        assert_eq!(static_printf_format_content(&command_qx), None);
+
+        let command_bt = Node::new(
+            NodeKind::String { value: "`cmd`".to_string(), interpolated: true },
+            SourceLocation { start: 0, end: 5 },
+        );
+        assert_eq!(static_printf_format_content(&command_bt), None);
+
+        let literal = Node::new(
+            NodeKind::String { value: "'%d'".to_string(), interpolated: false },
+            SourceLocation { start: 0, end: 4 },
+        );
+        assert_eq!(static_printf_format_content(&literal), Some("%d"));
+    }
+
+    #[test]
+    fn pl405_skips_command_format_and_flags_literal_mismatch() {
+        use perl_diagnostics::codes::DiagnosticCode;
+        use perl_parser::Parser;
+
+        fn pl405_messages(source: &str) -> Vec<String> {
+            let output = Parser::new(source).parse_with_recovery();
+            let mut diagnostics = Vec::new();
+            check_printf_format(&output.ast, &mut diagnostics);
+            diagnostics
+                .into_iter()
+                .filter(|diag| {
+                    diag.code.as_deref() == Some(DiagnosticCode::PrintfFormatMismatch.as_str())
+                })
+                .map(|diag| diag.message)
+                .collect()
+        }
+
+        for source in
+            ["printf qx{cmd}, $x;", "printf `cmd`, $x;", "printf qx{printf '%%s'}, $value;"]
+        {
+            assert!(
+                pl405_messages(source).is_empty(),
+                "command output must not be treated as a static format: {source}"
+            );
+        }
+
+        assert!(
+            !pl405_messages("printf '%d %d', 1;").is_empty(),
+            "literal static formats must still be checked"
+        );
     }
 }

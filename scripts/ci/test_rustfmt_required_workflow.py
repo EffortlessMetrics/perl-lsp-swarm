@@ -220,8 +220,8 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
 
     install = named_step(job, "Install pinned formatter toolchain")
     install_with = install.get("with", {})
-    if install_with.get("toolchain") != "1.95.0" or install_with.get("components") != "rustfmt":
-        raise AssertionError("formatter must remain pinned to Rust 1.95.0 rustfmt")
+    if install_with.get("toolchain") != "1.100.0" or install_with.get("components") != "rustfmt":
+        raise AssertionError("formatter must remain pinned to Rust 1.100.0 rustfmt")
 
     run_step = named_step(job, RUN_STEP)
     if run_step.get("continue-on-error") == "true":
@@ -231,8 +231,8 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
         "scripts/ci/rustfmt_check.py",
         '--candidate-sha "$SUBJECT_SHA"',
         '--candidate-tree-sha "$SUBJECT_TREE_SHA"',
-        "rustup which --toolchain 1.95.0 rustfmt",
-        "rustup which --toolchain 1.95.0 rustc",
+        "rustup which --toolchain 1.100.0 rustfmt",
+        "rustup which --toolchain 1.100.0 rustc",
         '--rustc "$rustc_bin"',
     ):
         if required_fragment not in run:

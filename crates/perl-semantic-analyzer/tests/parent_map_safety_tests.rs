@@ -229,7 +229,7 @@ fn parent_map_no_cycles_simple() {
 
     let max_depth = map.len() + 2; // More than enough for an acyclic tree
 
-    for (&start, _) in map.iter() {
+    for &start in map.keys() {
         let mut current = start;
         let mut depth = 0usize;
         loop {
@@ -273,7 +273,7 @@ fn parent_map_deep_nesting_four_levels() {
 
     // Verify no cycles
     let max_depth = map.len() + 2;
-    for (&start, _) in map.iter() {
+    for &start in map.keys() {
         let mut current = start;
         let mut depth = 0usize;
         loop {
@@ -355,7 +355,7 @@ fn parent_map_built_from_real_parsed_code() {
 
     // No cycles.
     let max_depth = map.len() + 2;
-    for (&start, _) in map.iter() {
+    for &start in map.keys() {
         let mut current = start;
         let mut depth = 0usize;
         loop {

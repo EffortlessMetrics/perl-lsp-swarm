@@ -419,6 +419,12 @@ perllsp --info
 perllsp --check path/to/file.pl
 ```
 
+## Competing Perl tooling
+
+Emacs does not run the VS Code coexistence detector. Use `perllsp --health`, your
+client configuration, and [Competing Perl tooling (coexistence)](COEXISTENCE.md) for
+honest overlap guidance without inventing automatic conflict detection.
+
 For server-side behavior and configuration details, see:
 
 - [Configuration Reference](../reference/CONFIG.md)

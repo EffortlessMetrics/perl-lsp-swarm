@@ -147,10 +147,10 @@ fn build_artifact() -> Artifact {
             "imported_func",
             Some(vec!["t/foo.t:6:9"]),
             Some(vec!["t/foo.t:6:9"]),
-            "references shadow proof: compiler-ranked imported symbol occurrence is traced through ImportSpec/ExportSet; no live navigation behavior change",
+            "references shadow proof: AST/workspace-index imported symbol occurrence is traced through ImportSpec/ExportSet; no live navigation behavior change",
             vec![trace(
                 ProviderSurface::References,
-                ProviderFactSourceKind::CompilerFact,
+                ProviderFactSourceKind::SemanticFact,
                 Provenance::ImportExportInference,
                 Confidence::High,
                 ProviderFactFreshness::Fresh,
@@ -1265,7 +1265,7 @@ mod tests {
         assert!(markdown.contains(
             "| release-readiness | FindDefinition | `navigation_definition_real_workspace_quality` | improved | 1 | 2 |"
         ));
-        assert!(markdown.contains("| release-readiness | FindReferences | References | CompilerFact | ImportExportInference | High | Fresh | Shadow |"));
+        assert!(markdown.contains("| release-readiness | FindReferences | References | SemanticFact | ImportExportInference | High | Fresh | Shadow |"));
         assert!(markdown.contains("| release-readiness | FindReferences | References | FrameworkAdapter | FrameworkSynthesis | Medium | Fresh | Shadow |"));
         assert!(markdown.contains("| release-readiness | FindReferences | References | DynamicBoundary | DynamicBoundary | High | Fresh | Blocked |"));
         assert!(markdown.contains("| release-readiness | FindReferences | References | CompilerFact | SemanticAnalyzer | Low | Stale | Blocked |"));
@@ -1273,6 +1273,30 @@ mod tests {
         assert!(markdown.contains(
             "| release-readiness | FindReferences | `navigation_references_real_workspace_quality` | improved | 1 | 2 |"
         ));
+    }
+
+    #[test]
+    fn find_references_imported_func_fixture_uses_semantic_fact_trace() {
+        let artifact = build_artifact();
+        let receipt = artifact
+            .receipts
+            .iter()
+            .find(|receipt| {
+                receipt.query == ShadowQueryName::FindReferences
+                    && receipt.input.symbol == "imported_func"
+                    && receipt.notes.iter().any(|note| note.contains("ImportSpec/ExportSet"))
+            })
+            .expect("release-readiness imported_func references receipt");
+        assert_eq!(receipt.fact_source_traces.len(), 1);
+        let trace = &receipt.fact_source_traces[0];
+        assert_eq!(trace.surface, ProviderSurface::References);
+        assert_eq!(trace.source, ProviderFactSourceKind::SemanticFact);
+        assert_eq!(trace.provenance, Provenance::ImportExportInference);
+        assert!(
+            receipt.notes[0].contains("AST/workspace-index"),
+            "note should describe AST/workspace-index provenance, got {:?}",
+            receipt.notes
+        );
     }
 
     #[test]

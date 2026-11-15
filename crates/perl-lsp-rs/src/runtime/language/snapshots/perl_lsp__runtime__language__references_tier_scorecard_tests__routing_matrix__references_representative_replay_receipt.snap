@@ -1,5 +1,6 @@
 ---
 source: crates/perl-lsp-rs/src/runtime/language/references_tier_scorecard_tests.rs
+assertion_line: 2805
 expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
 ---
 {
@@ -168,7 +169,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "method_call",
-      "result_count": 9,
+      "result_count": 6,
       "scenario_rationale": "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -234,7 +235,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "function_call",
-      "result_count": 7,
+      "result_count": 4,
       "scenario_rationale": "carp_croak_declared_outside_the_fixture_project",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -243,7 +244,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 0,
       "source_backed_outcome": "declined",
       "source_backed_symbol_at_found": true,
-      "text_result_count": 6,
+      "text_result_count": 4,
       "uri": "file:///real_projects/mojolicious_skeleton/lib/Mojolicious.pm"
     },
     {
@@ -564,7 +565,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_text_fallback",
       "request_shape": "function_call",
-      "result_count": 6,
+      "result_count": 4,
       "scenario_rationale": "carp_croak_declared_outside_the_fixture_project",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -573,7 +574,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 0,
       "source_backed_outcome": "declined",
       "source_backed_symbol_at_found": true,
-      "text_result_count": 6,
+      "text_result_count": 4,
       "uri": "file:///real_projects/catalyst_skeleton/lib/Catalyst/Dispatcher.pm"
     },
     {

@@ -1,8 +1,8 @@
 //! Test facade pattern coverage for Wave F crate absorption.
 //!
 //! Verifies that the absorbed feature and capability-map crates are properly
-//! reorganized into perl-lsp-rs-core modules and are accessible via:
-//! - Direct module paths (perl_lsp_rs_core::features::*, perl_lsp_rs_core::capability_map::*)
+//! reorganized into perl-lsp-rs-core modules and are accessible via direct
+//! module paths (`perl_lsp_rs_core::features::*`, `perl_lsp_rs_core::capability_map::*`).
 //! Facade re-export checks live in perl-lsp-rs/tests/core_facade_contract.rs (#8401).
 //!
 //! The 8 absorbed crates are:

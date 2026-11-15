@@ -132,6 +132,31 @@ def collect_pages(get, repository: str, sha: str, kind: str, *, filter="latest")
     raise NotProven(f"{kind} pagination exceeded its bounded page limit")
 
 
+def selected_run_consistent(run, observed, sha):
+    if run is None:
+        return True
+    peers = [row for row in observed if row["id"] == run["id"]]
+    if not peers:
+        return True
+    if len(peers) > 1:
+        return False
+    peer = peers[0]
+    if run.get("head_sha") != peer.get("head_sha"):
+        return True
+    if run.get("head_sha") != sha:
+        return True
+    if run.get("status") != peer.get("status"):
+        pending = {"queued", "in_progress", "waiting", "pending", "requested"}
+        if run.get("status") in pending or peer.get("status") in pending:
+            # filter=all is collected before filter=latest; a run can finish between
+            # those reads without contradictory GitHub state.
+            return True
+        return False
+    if run.get("status") == "completed" and run.get("conclusion") != peer.get("conclusion"):
+        return False
+    return True
+
+
 def check_result(run, sha):
     if run.get("head_sha") != sha:
         return "STALE"
@@ -179,7 +204,10 @@ def evaluate_required(union, runs, all_runs, statuses, sha):
                 if row.get("head_sha") != sha or row.get("status") != "completed":
                     values.append(check_result(row, sha))
             if run is not None:
-                values.append(check_result(run, sha))
+                if not selected_run_consistent(run, observed, sha):
+                    values.append("NOT_PROVEN")
+                else:
+                    values.append(check_result(run, sha))
                 if not any(row["id"] == run["id"] for row in observed):
                     values.append("PENDING")  # population moved between reads
             if status is not None:

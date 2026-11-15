@@ -14,7 +14,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type * as vscode from 'vscode';
-import { WhatsNewManager, extractVersionSection, markdownToHtml } from '../whatsNew';
+import {
+  WhatsNewManager,
+  extractVersionSection,
+  hasSectionBody,
+  markdownToHtml,
+  resolveVersionSection,
+} from '../whatsNew';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -214,6 +220,103 @@ describe('extractVersionSection', () => {
     const section = extractVersionSection(changelog, '1.0.0');
     expect(section).toContain('Something');
     expect(section).not.toContain('Older');
+  });
+});
+
+describe('resolveVersionSection', () => {
+  const UNRELEASED_CHANGELOG = `# Change Log
+
+## [Unreleased]
+
+### Added
+- Unreleased feature
+
+## [0.17.0] - 2026-01-01
+
+### Fixed
+- Old fix
+`;
+
+  test('falls back to ## [Unreleased] when the exact version header is missing', () => {
+    const section = resolveVersionSection(UNRELEASED_CHANGELOG, '0.18.0');
+    expect(section).toContain('[Unreleased]');
+    expect(section).toContain('Unreleased feature');
+    expect(section).not.toContain('Old fix');
+  });
+
+  test('falls back from a pre-release tag to the release core version', () => {
+    const changelog = `${SAMPLE_CHANGELOG}`;
+    const section = resolveVersionSection(changelog, '0.13.0-rc.1');
+    expect(section).toContain('New feature A');
+  });
+
+  test('skips heading-only sections and returns empty when nothing has content', () => {
+    const changelog = `# Change Log
+
+## [Unreleased]
+
+## [0.18.0] - 2026-11-03
+
+## [0.17.0] - 2026-01-01
+
+### Fixed
+- Old fix
+`;
+    expect(resolveVersionSection(changelog, '0.18.0')).toBe('');
+    expect(resolveVersionSection(changelog, '0.18.0-rc.1')).toBe('');
+  });
+
+  test('resolves non-empty notes for 0.18.0 and its pre-releases from the shipped CHANGELOG', () => {
+    const shipped = fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8');
+    for (const version of ['0.18.0', '0.18.0-rc.1']) {
+      const section = resolveVersionSection(shipped, version);
+      expect(section.startsWith('## [0.18.0]')).toBe(true);
+      expect(hasSectionBody(section)).toBe(true);
+    }
+  });
+
+  test('prefers an exact version match over Unreleased', () => {
+    const section = resolveVersionSection(UNRELEASED_CHANGELOG, '0.17.0');
+    expect(section).toContain('0.17.0');
+    expect(section).toContain('Old fix');
+    expect(section).not.toContain('Unreleased feature');
+  });
+});
+
+describe('WhatsNewManager.hasReleaseNotesContent', () => {
+  const shippedChangelog = (): string =>
+    fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8');
+
+  function packagedExtension(version: string, changelog: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wn-installed-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version }));
+    fs.writeFileSync(path.join(dir, 'changelog.md'), changelog);
+    return dir;
+  }
+
+  test.each(['0.18.0', '0.18.0-rc.1'])(
+    'installed %s with the shipped changelog has release notes to auto-open',
+    (version) => {
+      const dir = packagedExtension(version, shippedChangelog());
+      try {
+        const mgr = new WhatsNewManager(makeContext({ extensionPath: dir }), makeOutputChannel());
+        expect(mgr.currentVersion()).toBe(version);
+        expect(mgr.hasReleaseNotesContent()).toBe(true);
+        expect(mgr.extractChangelogSection(version).startsWith('## [0.18.0]')).toBe(true);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('installed version with only heading-only sections does not auto-open', () => {
+    const dir = packagedExtension('0.19.0', '# Change Log\n\n## [Unreleased]\n\n## [0.19.0]\n');
+    try {
+      const mgr = new WhatsNewManager(makeContext({ extensionPath: dir }), makeOutputChannel());
+      expect(mgr.hasReleaseNotesContent()).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

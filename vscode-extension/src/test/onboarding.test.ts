@@ -103,6 +103,26 @@ describe('OnboardingManager.shouldShowWelcome', () => {
   });
 });
 
+describe('OnboardingManager.shouldOfferWelcomeNotification', () => {
+  test('offers welcome on first run when the language server is not running', () => {
+    const ctx = makeContext();
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+    expect(mgr.shouldOfferWelcomeNotification(false)).toBe(true);
+  });
+
+  test('skips welcome on first run when the language server is already running', () => {
+    const ctx = makeContext();
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+    expect(mgr.shouldOfferWelcomeNotification(true)).toBe(false);
+  });
+
+  test('skips welcome after the welcomed flag is set even when the server is not running', () => {
+    const ctx = makeContext({ welcomed: true });
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+    expect(mgr.shouldOfferWelcomeNotification(false)).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // markWelcomed
 // ---------------------------------------------------------------------------
@@ -168,6 +188,39 @@ describe('OnboardingManager.checkPerltidyInstalled', () => {
     const result = await mgr.checkPerltidyInstalled();
     expect(result.ok).toBe(false);
     expect(result.status).toBe(HealthCheckStatus.Warning);
+  });
+});
+
+describe('perltidy probe failure guidance', () => {
+  test.each([
+    ['missing command', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }), true],
+    ['permission denied', Object.assign(new Error('spawn EACCES'), { code: 'EACCES' }), false],
+    ['nonzero exit', Object.assign(new Error('invalid profile'), { code: 2 }), false],
+    [
+      'terminated probe',
+      Object.assign(new Error('terminated'), { killed: true, signal: 'SIGTERM' }),
+      false,
+    ],
+    ['unknown failure', new Error('probe unavailable'), false],
+  ])('%s stays a warning with actionable, bounded guidance', async (_name, error, missing) => {
+    const output = makeOutputChannel();
+    const mgr = new OnboardingManager(makeContext(), output);
+    mockExecCheck(mgr, () => Promise.reject(error));
+    const result = await mgr.checkPerltidyInstalled();
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(HealthCheckStatus.Warning);
+    expect(result.detail).not.toContain('perltidy not found');
+    expect(result.detail).toContain(
+      missing ? 'required command was not found' : 'perltidy check failed',
+    );
+    expect(result.detail).toContain('perltidy --version');
+    expect(result.detail).toContain('Output');
+    expect(result.detail).toContain('Native formatting');
+    expect(result.detail).toContain('If perltidy is not installed');
+    expect(result.detail).toContain('cpanm Perl::Tidy');
+    expect(output.appendLine).toHaveBeenCalledWith(
+      `[onboarding] perltidy check failed: ${error.message}`,
+    );
   });
 });
 
@@ -474,6 +527,59 @@ describe('OnboardingManager.runSetupHealthCheck', () => {
     expect(results.length).toBeGreaterThanOrEqual(3);
   });
 
+  test('failed perltidy probe reaches the registered health command as an actionable warning', async () => {
+    const binPath = path.join(tmpDir, 'perl-lsp');
+    fs.writeFileSync(binPath, 'server fixture');
+    const output = makeOutputChannel() as vscode.LogOutputChannel;
+    const mgr = new OnboardingManager(makeContext(), output);
+    mockExecCheck(mgr, (cmd) =>
+      cmd === 'perltidy'
+        ? Promise.reject(Object.assign(new Error('invalid profile'), { code: 2 }))
+        : Promise.resolve({ stdout: '5.036000', stderr: '' }),
+    );
+    const unexpected = () => {
+      throw new Error('unexpected lifecycle operation');
+    };
+    const disposables = registerServerCommandGroup({
+      outputChannel: output,
+      currentServerPath: () => binPath,
+      resolveServerPath: async () => binPath,
+      reinstallServerBinary: unexpected,
+      restartServer: unexpected,
+      runHealthCheck: (serverPath) => mgr.runSetupHealthCheck(serverPath),
+      runtimeHealthCheck: unexpected,
+      currentRuntimeSnapshot: unexpected,
+    });
+    const showWarning = jest.spyOn(vscode.window, 'showWarningMessage');
+    try {
+      const result = await vscode.commands.executeCommand('perl-lsp.runHealthCheck', binPath);
+      expect(result).toEqual({
+        ok: true,
+        checks: expect.arrayContaining([
+          {
+            label: 'perltidy',
+            status: 'warning',
+            detail: expect.stringContaining('perltidy check failed'),
+          },
+        ]),
+      });
+      expect(output.appendLine).toHaveBeenCalledWith(
+        expect.stringContaining('[WARN] perltidy: The perltidy check failed'),
+      );
+      expect(output.appendLine).toHaveBeenCalledWith(
+        expect.stringContaining('   perltidy: The perltidy check failed'),
+      );
+      expect(output.appendLine).toHaveBeenCalledWith(expect.stringContaining('perltidy --version'));
+      expect(showWarning).toHaveBeenCalledWith(
+        expect.stringContaining('Health check passed with warnings: The perltidy check failed.'),
+        'Show Output',
+      );
+    } finally {
+      showWarning.mockRestore();
+      disposables.forEach((disposable) => disposable.dispose());
+    }
+  });
+
   test('directory rejection reaches the registered health command summary', async () => {
     const output = makeOutputChannel() as vscode.LogOutputChannel;
     const mgr = new OnboardingManager(makeContext(), output);
@@ -733,7 +839,7 @@ describe('OnboardingManager.showWelcomeNotification', () => {
     jest.clearAllMocks();
   });
 
-  test('markWelcomed is NOT called before the notification resolves', async () => {
+  test('markWelcomed is called before the notification resolves', async () => {
     const ctx = makeContext();
     const mgr = new OnboardingManager(ctx, makeOutputChannel());
     const updateSpy = ctx.globalState.update as jest.Mock;
@@ -748,7 +854,7 @@ describe('OnboardingManager.showWelcomeNotification', () => {
 
     await mgr.showWelcomeNotification(null);
 
-    expect(welcomedDuringNotification).toBe(false);
+    expect(welcomedDuringNotification).toBe(true);
     expect(updateSpy).toHaveBeenCalledWith('perl-lsp.welcomed', true);
   });
 
