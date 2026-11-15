@@ -342,6 +342,7 @@ mod tests {
         // the per-family cap: at cap 2 the third distinct identity emits
         // without retaining, while the default cap (32) would retain it.
         let mut state = FamilyState::with_cap(2);
+        assert_eq!(state.cap, 2, "the returned state must carry the configured cap");
         assert_eq!(state.note(identity("strict")), SessionWarningDecision::EmitFirst);
         assert_eq!(state.note(identity("warnings")), SessionWarningDecision::EmitFirst);
         assert_eq!(
@@ -361,6 +362,11 @@ mod tests {
         // repeat would suppress, so this discriminates the configured
         // cap from the default.
         let store = FamilyStore::with_cap(2);
+        assert_eq!(
+            store.state.lock().cap,
+            2,
+            "the returned store must wrap a state carrying the configured cap"
+        );
         assert_eq!(store.note(identity("strict")), SessionWarningDecision::EmitFirst);
         assert_eq!(store.note(identity("warnings")), SessionWarningDecision::EmitFirst);
         assert_eq!(
