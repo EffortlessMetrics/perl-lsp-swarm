@@ -1001,6 +1001,48 @@ impl CriticRule for TooManyParamsRule {
     }
 }
 
+/// Default maximum number of branch points allowed for one named
+/// subroutine before [`TooManyBranchesRule`] reports it.
+///
+/// No per-rule threshold exists under `[critic.rules.*]` in
+/// [`CriticConfig`](super::CriticConfig) today, so this named constant is
+/// the single source for the limit until such plumbing exists.
+pub const DEFAULT_MAX_BRANCHES: usize = 10;
+
+/// Native rule that reports named subroutines with too many branch points.
+///
+/// One branch point is counted for each `if`/`unless`, each `elsif`,
+/// `while`/`until`, C-style `for`, `foreach`, ternary, `when`, and
+/// statement modifier (`if`, `unless`, `while`, `until`, `for`,
+/// `foreach`). `else` and `default` carry no condition and add nothing,
+/// and short-circuit `&&`/`||`/`and`/`or` are not counted. A nested
+/// named subroutine is measured on its own: its branches never inflate
+/// the enclosing subroutine. Anonymous subroutines and top-level code
+/// have no subroutine header to report against and are skipped. A
+/// subroutine whose body contains a parse-error node is skipped because
+/// its branch count cannot be trusted. A subroutine with exactly
+/// [`DEFAULT_MAX_BRANCHES`] branch points passes; only a count above it
+/// fires, once, at the sub header span.
+pub struct TooManyBranchesRule;
+
+impl CriticRule for TooManyBranchesRule {
+    fn id(&self) -> &'static str {
+        "native.maintainability.too_many_branches"
+    }
+
+    fn category(&self) -> CriticCategory {
+        CriticCategory::Maintainability
+    }
+
+    fn default_severity(&self) -> Severity {
+        Severity::Stern
+    }
+
+    fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
+        collect_too_many_branches_findings(self, ctx.source, ctx.ast, out);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MissingPodSection {
     name: &'static str,
@@ -2762,6 +2804,92 @@ fn collect_too_many_params_findings(
     for child in node.children() {
         collect_too_many_params_findings(rule, source, child, out);
     }
+}
+
+fn collect_too_many_branches_findings(
+    rule: &TooManyBranchesRule,
+    source: &str,
+    node: &Node,
+    out: &mut Vec<CriticFinding>,
+) {
+    if let NodeKind::Subroutine { name: Some(name), name_span, body, .. } = &node.kind
+        && !subtree_has_parse_error(body)
+    {
+        let branch_count = count_branch_points(body);
+        if branch_count > DEFAULT_MAX_BRANCHES {
+            let header_end = name_span.map_or(body.location.start, |span| span.end);
+            let range = range_for_byte_span(source, node.location.start, header_end);
+            out.push(CriticFinding {
+                rule_id: rule.id().to_string(),
+                category: rule.category(),
+                severity: rule.default_severity(),
+                range,
+                message: format!(
+                    "Subroutine '{name}' has too many branches ({branch_count} branches, maximum is {DEFAULT_MAX_BRANCHES})"
+                ),
+                explanation: format!(
+                    "Subroutine '{name}' contains {branch_count} branch points, which exceeds the maximum of {DEFAULT_MAX_BRANCHES}. Split it into smaller subroutines."
+                ),
+                suppression_key: rule.id().to_string(),
+                observed_shape: CriticFindingShape::General,
+                related: Vec::new(),
+                fix: None,
+            });
+        }
+    }
+
+    for child in node.children() {
+        collect_too_many_branches_findings(rule, source, child, out);
+    }
+}
+
+/// Count branch points at or below `node`, stopping at nested
+/// subroutine/method boundaries so an inner unit's branches never
+/// inflate the enclosing subroutine's count.
+fn count_branch_points(node: &Node) -> usize {
+    if matches!(node.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. }) {
+        return 0;
+    }
+    let own = match &node.kind {
+        NodeKind::If { elsif_branches, .. } => 1 + elsif_branches.len(),
+        NodeKind::While { .. }
+        | NodeKind::For { .. }
+        | NodeKind::Foreach { .. }
+        | NodeKind::Ternary { .. }
+        | NodeKind::When { .. } => 1,
+        NodeKind::StatementModifier { modifier, .. }
+            if matches!(
+                modifier.as_str(),
+                "if" | "unless" | "while" | "until" | "for" | "foreach" | "when"
+            ) =>
+        {
+            1
+        }
+        _ => 0,
+    };
+    own + node.children().iter().map(|child| count_branch_points(child)).sum::<usize>()
+}
+
+/// Whether `node`'s own subtree (excluding nested subroutine/method
+/// units, which are judged separately) contains a parse-error node.
+fn subtree_has_parse_error(node: &Node) -> bool {
+    if matches!(
+        node.kind,
+        NodeKind::Error { .. }
+            | NodeKind::MissingExpression
+            | NodeKind::MissingStatement
+            | NodeKind::MissingIdentifier
+            | NodeKind::MissingBlock
+            | NodeKind::UnknownRest
+    ) {
+        return true;
+    }
+    node.children()
+        .iter()
+        .filter(|child| {
+            !matches!(child.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. })
+        })
+        .any(|child| subtree_has_parse_error(child))
 }
 
 /// Deepest control-structure nesting at or below `node`, where entering
@@ -6344,7 +6472,7 @@ if ($x = 1) { print $x; }
 
         assert!(!recommended.rule_ids().contains(&"native.maintainability.sub_too_long"));
         assert!(strict.rule_ids().contains(&"native.maintainability.sub_too_long"));
-        assert_eq!(strict.len(), 31);
+        assert_eq!(strict.len(), 32);
         assert_eq!(recommended.len(), 16);
     }
 
@@ -6612,6 +6740,253 @@ if ($x = 1) { print $x; }
 
         assert!(!recommended.rule_ids().contains(&"native.maintainability.too_many_params"));
         assert!(strict.rule_ids().contains(&"native.maintainability.too_many_params"));
+    }
+
+    fn branchy_sub_source(name: &str, branches: usize) -> String {
+        let mut source = format!("use strict;\nuse warnings;\nsub {name} {{\n    my $x = shift;\n");
+        for index in 0..branches {
+            source.push_str(&format!("    if ($x == {index}) {{ print {index}; }}\n"));
+        }
+        source.push_str("}\n");
+        source
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_reports_sub_over_the_limit() {
+        let source = branchy_sub_source("branchy", DEFAULT_MAX_BRANCHES + 1);
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(finding.rule_id, "native.maintainability.too_many_branches");
+        assert_eq!(finding.category, CriticCategory::Maintainability);
+        assert_eq!(finding.severity, Severity::Stern);
+        assert_eq!(finding.suppression_key, "native.maintainability.too_many_branches");
+        assert_eq!(
+            &source[finding.range.start.byte..finding.range.end.byte],
+            "sub branchy",
+            "finding must anchor at the sub header span"
+        );
+        assert!(
+            finding.message.contains("branchy") && finding.message.contains("11"),
+            "message should name the sub and its branch count: {}",
+            finding.message
+        );
+        assert!(finding.fix.is_none());
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_accepts_sub_at_the_limit() {
+        let source = branchy_sub_source("at_limit", DEFAULT_MAX_BRANCHES);
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "a sub at exactly the limit must pass");
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_counts_mixed_branch_kinds() {
+        // 1 if + 1 elsif (else adds none) + 1 unless + 1 while + 1 until
+        // + 1 C-style for + 1 foreach + 1 ternary + 2 statement modifiers
+        // + 1 if = 11 branch points.
+        let source = "use strict;\nuse warnings;\nsub mixed {\n    my $x = shift;\n    if ($x == 1) { print 1; } elsif ($x == 2) { print 2; } else { print 3; }\n    unless ($x) { print 4; }\n    while ($x > 10) { $x--; }\n    until ($x > 10) { $x++; }\n    for (my $i = 0; $i < 3; $i++) { print $i; }\n    foreach my $item (1, 2, 3) { print $item; }\n    my $label = $x ? 'yes' : 'no';\n    print $label if $x;\n    print $label while $x > 100;\n    if ($x == 99) { print 99; }\n    return $x;\n}\n";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1, "mixed branch kinds should fire once: {findings:?}");
+        assert!(
+            findings[0].message.contains("11 branches"),
+            "message should report 11 branches: {}",
+            findings[0].message
+        );
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_counts_when_but_not_default() {
+        let mut body = String::new();
+        for index in 0..=DEFAULT_MAX_BRANCHES {
+            body.push_str(&format!("        when ({index}) {{ print {index}; }}\n"));
+        }
+        let source = format!(
+            "use strict;\nuse warnings;\nsub switchy {{\n    my $x = shift;\n    given ($x) {{\n{body}        default {{ print 99; }}\n    }}\n}}\n"
+        );
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1, "eleven whens (default adds none) should fire: {findings:?}");
+        assert!(findings[0].message.contains("11 branches"), "got: {}", findings[0].message);
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_counts_postfix_when_modifiers() {
+        // The parser treats `when` as a statement-modifier kind, so eleven
+        // postfix `when` statements are eleven branch points.
+        let mut source = String::from("use strict;\nuse warnings;\nsub postfix_when {\n");
+        for index in 0..=DEFAULT_MAX_BRANCHES {
+            source.push_str(&format!("    print {index} when $flag{index};\n"));
+        }
+        source.push_str("}\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1, "eleven postfix whens should fire: {findings:?}");
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_excludes_else_and_short_circuit() {
+        // Ten if/else pairs plus &&/||/and/or expressions: exactly 10.
+        let mut source =
+            String::from("use strict;\nuse warnings;\nsub calm {\n    my $x = shift;\n");
+        for index in 0..DEFAULT_MAX_BRANCHES {
+            source.push_str(&format!(
+                "    if ($x == {index} && $x > 0 || $x < 0) {{ print {index}; }} else {{ print 0; }}\n"
+            ));
+        }
+        source.push_str("    my $y = $x and $x or $x;\n    return $y;\n}\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "else and short-circuit operators must not count");
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_counts_nested_subs_separately() {
+        // Inner exceeds the limit; outer has only two of its own.
+        let mut inner = String::from("    sub inner {\n        my $y = shift;\n");
+        for index in 0..=DEFAULT_MAX_BRANCHES {
+            inner.push_str(&format!("        if ($y == {index}) {{ print {index}; }}\n"));
+        }
+        inner.push_str("    }\n");
+        let source = format!(
+            "use strict;\nuse warnings;\nsub outer {{\n    my $x = shift;\n    if ($x) {{ print 1; }}\n    if ($x == 2) {{ print 2; }}\n{inner}    return $x;\n}}\n"
+        );
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1, "only the inner sub should fire: {findings:?}");
+        assert!(findings[0].message.contains("inner"), "{}", findings[0].message);
+
+        // Outer at 9 own branches plus a nested sub with 5 must stay silent.
+        let mut source =
+            String::from("use strict;\nuse warnings;\nsub outer {\n    my $x = shift;\n");
+        for index in 0..DEFAULT_MAX_BRANCHES - 1 {
+            source.push_str(&format!("    if ($x == {index}) {{ print {index}; }}\n"));
+        }
+        source.push_str("    sub inner {\n        my $y = shift;\n");
+        for index in 0..5 {
+            source.push_str(&format!("        if ($y == {index}) {{ print {index}; }}\n"));
+        }
+        source.push_str("    }\n}\n");
+        let ast = parse_source(&source);
+        let ctx = CriticContext::new(&source, &ast, &config);
+        assert!(registry.check(&ctx).is_empty(), "inner branches must not inflate the outer sub");
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_skips_anonymous_and_top_level() {
+        let mut source = String::from("use strict;\nuse warnings;\nmy $x = 1;\n");
+        for index in 0..=DEFAULT_MAX_BRANCHES {
+            source.push_str(&format!("if ($x == {index}) {{ print {index}; }}\n"));
+        }
+        source.push_str("my $handler = sub {\n    my $y = shift;\n");
+        for index in 0..=DEFAULT_MAX_BRANCHES {
+            source.push_str(&format!("    if ($y == {index}) {{ print {index}; }}\n"));
+        }
+        source.push_str("};\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "anonymous and top-level branches are skipped");
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_skips_parse_error_bodies() {
+        let mut source = branchy_sub_source("broken", DEFAULT_MAX_BRANCHES + 1);
+        // Insert a malformed statement before the closing brace.
+        let close = source.rfind('}').unwrap_or(source.len());
+        source.insert_str(close, "    my $y = ;\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "a parse-error body must be skipped");
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_ignores_parse_errors_inside_nested_subs() {
+        let mut source =
+            String::from("use strict;\nuse warnings;\nsub outer {\n    my $x = shift;\n");
+        for index in 0..=DEFAULT_MAX_BRANCHES {
+            source.push_str(&format!("    if ($x == {index}) {{ print {index}; }}\n"));
+        }
+        source.push_str("    sub inner { my $y = ; }\n}\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1, "outer must still fire: {findings:?}");
+        assert!(findings[0].message.contains("outer"), "{}", findings[0].message);
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_composes_with_config_and_suppressions() {
+        let source = branchy_sub_source("branchy", DEFAULT_MAX_BRANCHES + 1);
+        let ast = parse_source(&source);
+        let excluded_config = CriticConfig {
+            exclude: vec!["native.maintainability.too_many_branches".to_string()],
+            ..Default::default()
+        };
+        let excluded_ctx = CriticContext::new(&source, &ast, &excluded_config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        assert!(registry.check(&excluded_ctx).is_empty());
+
+        let suppressed_source = format!(
+            "## no critic native.maintainability.too_many_branches -- legacy fixture\n{}",
+            branchy_sub_source("branchy", DEFAULT_MAX_BRANCHES + 1)
+        );
+        let suppressed_ast = parse_source(&suppressed_source);
+        let config = CriticConfig::default();
+        let suppressed_ctx = CriticContext::new(&suppressed_source, &suppressed_ast, &config);
+
+        assert!(registry.check(&suppressed_ctx).is_empty());
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_is_strict_only() {
+        let recommended = NativeCriticRegistry::for_profile(NativeCriticProfile::Recommended);
+        let strict = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict);
+
+        assert!(!recommended.rule_ids().contains(&"native.maintainability.too_many_branches"));
+        assert!(strict.rule_ids().contains(&"native.maintainability.too_many_branches"));
+        assert_eq!(strict.len(), 32);
+        assert_eq!(recommended.len(), 16);
     }
 
     #[test]
