@@ -1910,15 +1910,10 @@ pub perl_semantic_analyzer::Test2Pragmas::warnings: bool
 pub fn perl_semantic_analyzer::Test2Pragmas::clone(&self) -> perl_semantic_analyzer::Test2Pragmas
 pub fn perl_semantic_analyzer::Test2Pragmas::eq(&self, other: &perl_semantic_analyzer::Test2Pragmas) -> bool
 pub fn perl_semantic_analyzer::Test2Pragmas::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_semantic_analyzer::UnreachableStatement
-pub perl_semantic_analyzer::UnreachableStatement::range: perl_position_tracking::span::SourceLocation
-pub fn perl_semantic_analyzer::UnreachableStatement::clone(&self) -> perl_semantic_analyzer::UnreachableStatement
-pub fn perl_semantic_analyzer::UnreachableStatement::eq(&self, other: &perl_semantic_analyzer::UnreachableStatement) -> bool
-pub fn perl_semantic_analyzer::UnreachableStatement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_semantic_analyzer::PL406_DISPOSITIONS: &[perl_semantic_analyzer::Pl406Disposition]
 pub const perl_semantic_analyzer::PL406_DISPOSITION_SCHEMA_VERSION: u32
 pub const fn perl_semantic_analyzer::all_pl406_dispositions() -> &'static [perl_semantic_analyzer::Pl406Disposition]
-pub fn perl_semantic_analyzer::find_unreachable_statements(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_semantic_analyzer::UnreachableStatement>
+pub fn perl_semantic_analyzer::collect_unreachable_spans(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_position_tracking::span::SourceLocation>
 pub fn perl_semantic_analyzer::is_test2_bundle(module: &str) -> bool
 pub fn perl_semantic_analyzer::is_test2_module(module: &str) -> bool
 pub fn perl_semantic_analyzer::known_scalar_argument_count(args: &[perl_ast::ast::Node]) -> core::option::Option<usize>

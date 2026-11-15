@@ -16,13 +16,18 @@ It must never depend — directly or transitively — on:
 
 ```
 perl-lsp-rs · perl-lsp-rs-core · perllsp · perl-dap
+perl-mcp · perl-code-intelligence · effortless-lsp
 lsp-types · tokio · tower-lsp
 perl-workspace   (transitively pulls lsp-types via perl-position-tracking lsp-compat)
 ```
 
-Allowed dependencies: `perl-parser-core`, `perl-symbol`, `serde` (and
-`serde_json` for receipts in tests). The contract is enforced by
-`tests/dependency_contract.rs`.
+The current direct production dependencies are `perl-parser-core`, `perl-symbol`,
+`perl-pragma`, `perl-pod`, `serde`, and `serde_json`. The contract is enforced by
+`tests/dependency_contract.rs` over normal and build edges, all targets, and all
+features of this package. Cargo launch/resolution failures and missing or malformed
+graphs fail the test rather than skip it. Development edges and independent
+unpacked-package consumers remain separate proof; this check does not claim complete
+package isolation.
 
 ## Model at a glance
 

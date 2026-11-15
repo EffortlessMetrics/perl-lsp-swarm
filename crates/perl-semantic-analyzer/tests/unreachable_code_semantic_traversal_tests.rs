@@ -15,16 +15,17 @@
 
 use perl_ast::{AstNodeClassification, NodeKind, ast_node_policy, node_kind_fixtures};
 use perl_parser_core::Parser;
+use perl_parser_core::SourceLocation;
+use perl_semantic_analyzer::collect_unreachable_spans;
 use perl_semantic_analyzer::{
     PL406_DISPOSITION_SCHEMA_VERSION, Pl406ProofCeiling, Pl406SemanticClass,
     all_pl406_dispositions, pl406_disposition_of,
 };
-use perl_semantic_analyzer::{UnreachableStatement, find_unreachable_statements};
-use perl_test_must::must_some_with;
+use perl_tdd_support::must_some_with;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn diagnostics(source: &str) -> Result<Vec<UnreachableStatement>, Box<dyn std::error::Error>> {
+fn unreachable_spans(source: &str) -> Result<Vec<SourceLocation>, Box<dyn std::error::Error>> {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     assert!(
@@ -33,10 +34,10 @@ fn diagnostics(source: &str) -> Result<Vec<UnreachableStatement>, Box<dyn std::e
          would make presence assertions unreliable: {:?}",
         parser.errors()
     );
-    Ok(find_unreachable_statements(&ast))
+    Ok(collect_unreachable_spans(&ast))
 }
 
-fn count_pl406(diagnostics: &[UnreachableStatement]) -> usize {
+fn count_pl406(diagnostics: &[SourceLocation]) -> usize {
     diagnostics.len()
 }
 
@@ -45,7 +46,7 @@ fn assert_pl406_count(
     expected: usize,
     context: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let diagnostics = diagnostics(source)?;
+    let diagnostics = unreachable_spans(source)?;
     assert_eq!(count_pl406(&diagnostics), expected, "{context}: {diagnostics:?}");
     Ok(())
 }
@@ -729,7 +730,7 @@ fn recovered_syntax_preserves_fallthrough() -> Result<(), Box<dyn std::error::Er
     let mut parser = Parser::new("my $x = ; print \"live\";");
     let ast = parser.parse()?;
     assert!(!parser.errors().is_empty(), "fixture must exercise the recovery path");
-    let diags = find_unreachable_statements(&ast);
+    let diags = collect_unreachable_spans(&ast);
     assert_eq!(
         count_pl406(&diags),
         0,

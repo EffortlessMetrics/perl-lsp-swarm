@@ -81,7 +81,7 @@ pub use analysis::test2::{
     ResolvedImport, Test2Facts, Test2FactsAnalysis, Test2Pragmas, is_test2_bundle, is_test2_module,
     module_default_exports, resolve_import,
 };
-pub use analysis::unreachable_code::{UnreachableStatement, find_unreachable_statements};
+pub use analysis::unreachable_code::collect_unreachable_spans;
 pub use analysis::unreachable_code_disposition::{
     PL406_DISPOSITION_SCHEMA_VERSION, PL406_DISPOSITIONS, Pl406ConditionalRule, Pl406Disposition,
     Pl406ProofCeiling, Pl406Scope, Pl406SemanticClass, all_pl406_dispositions, pl406_disposition,

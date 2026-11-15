@@ -1,6 +1,6 @@
 //! PL406 semantic traversal disposition registry (issue #10844).
 //!
-//! For every primary [`perl_ast::NodeKind`] variant this registry records how
+//! For every primary [`perl_parser_core::ast::NodeKind`] variant this registry records how
 //! PL406's local flow summarizer treats that variant: which children execute,
 //! in what order, which child summaries may close parent fallthrough, which
 //! scope applies, which conditional rules hold, and what the construct's
@@ -10,10 +10,10 @@
 //! Authority boundaries:
 //!
 //! - Structural children remain #7298's authority
-//!   ([`perl_ast::Node::try_for_each_child_with_field`]). This registry adds
+//!   ([`perl_parser_core::ast::Node::try_for_each_child_with_field`]). This registry adds
 //!   semantic dispositions on top; it is never a second structural walker.
 //! - Structural classification remains #7015's authority
-//!   ([`perl_ast::AST_NODE_POLICIES`]). A variant whose structural policy
+//!   (`perl_ast::AST_NODE_POLICIES`). A variant whose structural policy
 //!   permits children may only be disposed as [`Pl406SemanticClass::Leaf`]
 //!   with an explicit `leaf_reason`.
 //! - The registry drives or validates the local summarizer in
@@ -22,7 +22,7 @@
 //!
 //! Reconciliation is machine-checked in
 //! `tests/unreachable_code_semantic_traversal_tests.rs`: registry completeness
-//! against [`perl_ast::NodeKind::ALL_KIND_NAMES`], declared child fields
+//! against [`perl_parser_core::ast::NodeKind::ALL_KIND_NAMES`], declared child fields
 //! against the canonical traversal over fully populated fixture samples, and
 //! leaf dispositions against the #7015 classification.
 //!
@@ -30,7 +30,7 @@
 //! must name an owning successor issue and must preserve conservative
 //! parent fallthrough rather than fabricate exact non-fallthrough.
 
-use perl_ast::NodeKind;
+use perl_parser_core::NodeKind;
 
 /// Version of the PL406 disposition contract.
 pub const PL406_DISPOSITION_SCHEMA_VERSION: u32 = 1;
@@ -103,12 +103,12 @@ pub enum Pl406ProofCeiling {
 /// One PL406 semantic traversal disposition for a stable `NodeKind` identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pl406Disposition {
-    /// Stable [`perl_ast::NodeKind::kind_name`] token.
+    /// Stable [`perl_parser_core::ast::NodeKind::kind_name`] token.
     pub kind_name: &'static str,
     /// Semantic class under PL406 local flow analysis.
     pub class: Pl406SemanticClass,
     /// Executable child fields in evaluation order, named by their canonical
-    /// [`perl_ast::FieldId`] tokens. Empty for leaves. For `Assignment` this
+    /// `perl_ast::FieldId` tokens. Empty for leaves. For `Assignment` this
     /// order encodes Perl's rhs-before-lhs evaluation.
     pub executable_children: &'static [&'static str],
     /// Child fields analyzed for nested diagnostics whose summaries never
@@ -153,7 +153,7 @@ macro_rules! disposition {
     };
 }
 
-/// One disposition row for every member of [`perl_ast::NodeKind::ALL_KIND_NAMES`].
+/// One disposition row for every member of [`perl_parser_core::ast::NodeKind::ALL_KIND_NAMES`].
 ///
 /// Rows follow enum declaration order. The table is intentionally one row per
 /// line so a reviewer can diff a single variant's disposition against its

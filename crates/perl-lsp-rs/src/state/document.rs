@@ -270,12 +270,9 @@ impl ParsedSnapshot {
     /// This is the *only* way to construct a `ParsedSnapshot` -- it derives
     /// every dependent field from `source`/`ast`/`parse_errors` so the
     /// result is internally consistent by construction:
-    /// - `content_hash` is `hash_source_content(source)` (the same
-    ///   `DefaultHasher`-over-text scheme the semantic-analyzer /
-    ///   type-inference caches already use --
-    ///   `perl_parser_core::syntax::source_context::hash_source_content`, reused
-    ///   here rather than a second hashing scheme). Callers must pass the
-    ///   exact source text `ast` was parsed from.
+    /// - `content_hash` uses parser-core's `hash_source_content`, the same
+    ///   process-local `DefaultHasher`-over-text scheme as the source-region
+    ///   index. Callers must pass the exact source text `ast` was parsed from.
     /// - `parent_map` is built from `ast` via
     ///   `DeclarationProvider::build_parent_map`, so it can never be paired
     ///   with an AST from a different parse.
@@ -1479,6 +1476,21 @@ mod tests {
             1,
             "type_environment's construction closure must run exactly once across repeated calls"
         );
+    }
+
+    #[test]
+    fn source_hash_snapshot_matches_independent_source_region_identity() {
+        use perl_parser_core::syntax::source_context::SourceRegionIndex;
+
+        let source = "my $x = 1;\n";
+        let edited_source = "my $x = 1;\r\n";
+        let original = snapshot_for(source, 0);
+        let edited = snapshot_for(edited_source, 1);
+        assert!(original.ast().is_some() && original.parse_errors().is_empty());
+        assert!(edited.ast().is_some() && edited.parse_errors().is_empty());
+        assert_eq!(original.content_hash(), SourceRegionIndex::build(source).content_hash());
+        assert_eq!(edited.content_hash(), SourceRegionIndex::build(edited_source).content_hash());
+        assert_ne!(original.content_hash(), edited.content_hash());
     }
 
     #[test]

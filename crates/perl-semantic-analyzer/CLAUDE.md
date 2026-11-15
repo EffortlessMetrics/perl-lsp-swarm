@@ -38,7 +38,7 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
-| `unreachable_code`, `unreachable_code_disposition` | `UnreachableStatement`, `Pl406Disposition` | One local-flow walk and disposition registry; neutral byte-span evidence for PL406 and native critic |
+| `unreachable_code`, `unreachable_code_disposition` | `collect_unreachable_spans`, `Pl406Disposition` | One local-flow walk and disposition registry; neutral byte-span evidence for PL406 and native critic |
 | `argument_cardinality` | `known_scalar_argument_count` | Conservative list-context argument counts shared by diagnostics, native critic and action admission |
 | `document_analysis` | `DocumentDiagnosticAnalysis` | Generation-owned lazy pragma, scope, symbol, type and lexer facts; exact AST/source matching |
 | `semantic` | `SemanticAnalyzer`, `SemanticToken`, `SemanticTokenType`, `SemanticTokenModifier`, `HoverInfo` | Semantic token classification and hover info for LSP |

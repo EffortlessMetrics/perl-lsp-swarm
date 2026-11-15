@@ -1,6 +1,6 @@
-//! Local unreachable-statement analysis shared by diagnostics and native critic.
+//! Protocol-neutral local unreachable-code analysis.
 //!
-//! This local control-flow analysis proves whether control can
+//! The shared local control-flow analysis proves whether control can
 //! reach the next sibling statement inside one execution unit; it does not
 //! make workspace-wide symbol-liveness claims.
 //!
@@ -19,16 +19,6 @@
 
 use perl_parser_core::SourceLocation;
 use perl_parser_core::ast::{GotoTargetForm, Node, NodeKind};
-
-/// A statement proven unreachable from its preceding local siblings.
-///
-/// This evidence carries a source byte range only. Diagnostic codes, severity,
-/// messages, policy identity and remediation belong to each consumer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnreachableStatement {
-    /// Byte range of the unreachable statement in the analyzed AST.
-    pub range: SourceLocation,
-}
 
 /// One exact local transfer observed by the PL406 flow summarizer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,40 +110,43 @@ impl FlowSummary {
     }
 }
 
-/// Find statements unreachable from preceding siblings in their local list.
+/// Collect byte spans for statements that cannot be reached from the preceding
+/// sibling in the same local statement list.
 ///
-/// Results preserve traversal order. Transfers in nested callable or evaluation
-/// scopes do not close fallthrough in their containing execution unit.
+/// The spans retain traversal order and the parsed subject's source offsets.
+/// Diagnostic and critic identities, severity, messages and fixes belong to the
+/// consumers projecting these facts. Recovered syntax preserves the existing
+/// conservative fallthrough rules.
 #[must_use]
-pub fn find_unreachable_statements(root: &Node) -> Vec<UnreachableStatement> {
-    let mut findings = Vec::new();
-    let _ = summarize_node(root, &mut findings);
-    findings
+pub fn collect_unreachable_spans(root: &Node) -> Vec<SourceLocation> {
+    let mut spans = Vec::new();
+    let _ = summarize_node(root, &mut spans);
+    spans
 }
 
-fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> FlowSummary {
+fn summarize_node(node: &Node, spans: &mut Vec<SourceLocation>) -> FlowSummary {
     match &node.kind {
         NodeKind::Program { statements } | NodeKind::Block { statements } => {
-            summarize_statement_list(statements, findings)
+            summarize_statement_list(statements, spans)
         }
 
         // Callable declarations introduce a fresh execution unit. Analyze the
         // body, but the declaration itself falls through in its parent list.
         NodeKind::Subroutine { body, .. } | NodeKind::Method { body, .. } => {
-            let _ = summarize_node(body, findings);
+            let _ = summarize_node(body, spans);
             FlowSummary::falls_through()
         }
 
         NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-            summarize_if(condition, then_branch, elsif_branches, else_branch.as_deref(), findings)
+            summarize_if(condition, then_branch, elsif_branches, else_branch.as_deref(), spans)
         }
 
         // Loops are independent local scopes. Transfers inside their body or
         // continue block do not make the statement after the loop unreachable.
         NodeKind::While { condition, body, continue_block, .. } => {
-            let _ = summarize_expression(condition, findings);
-            let _ = summarize_node(body, findings);
-            summarize_loop_continue(continue_block, findings);
+            let _ = summarize_expression(condition, spans);
+            let _ = summarize_node(body, spans);
+            summarize_loop_continue(continue_block, spans);
             FlowSummary::falls_through()
         }
         NodeKind::For { init, condition, update, body, continue_block, .. } => {
@@ -166,7 +159,7 @@ fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> Flow
             // transfer becomes this statement's summary.
             let mut entry_gate = None;
             if let Some(init) = init {
-                let summary = summarize_expression(init, findings);
+                let summary = summarize_expression(init, spans);
                 if !summary.can_fall_through {
                     entry_gate = Some(summary);
                 }
@@ -174,63 +167,63 @@ fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> Flow
             if entry_gate.is_none()
                 && let Some(condition) = condition
             {
-                let summary = summarize_expression(condition, findings);
+                let summary = summarize_expression(condition, spans);
                 if !summary.can_fall_through {
                     entry_gate = Some(summary);
                 }
             }
-            let _ = summarize_node(body, findings);
-            summarize_loop_continue(continue_block, findings);
+            let _ = summarize_node(body, spans);
+            summarize_loop_continue(continue_block, spans);
             if let Some(update) = update {
-                let _ = summarize_expression(update, findings);
+                let _ = summarize_expression(update, spans);
             }
             entry_gate.unwrap_or_else(FlowSummary::falls_through)
         }
         NodeKind::Foreach { variable, list, body, continue_block } => {
             // The loop variable is a binding alias (analyzed locally, never
             // propagated); the list executes before each body iteration.
-            let _ = summarize_expression(variable, findings);
-            let _ = summarize_expression(list, findings);
-            let _ = summarize_node(body, findings);
-            summarize_loop_continue(continue_block, findings);
+            let _ = summarize_expression(variable, spans);
+            let _ = summarize_expression(list, spans);
+            let _ = summarize_node(body, spans);
+            summarize_loop_continue(continue_block, spans);
             FlowSummary::falls_through()
         }
 
         // These constructs are analyzed locally, but their transfer summaries
         // are deliberately not promoted into the containing execution unit.
         NodeKind::Given { expr, body } => {
-            let _ = summarize_expression(expr, findings);
-            let _ = summarize_node(body, findings);
+            let _ = summarize_expression(expr, spans);
+            let _ = summarize_node(body, spans);
             FlowSummary::falls_through()
         }
         NodeKind::When { condition, body } => {
-            let _ = summarize_expression(condition, findings);
-            let _ = summarize_node(body, findings);
+            let _ = summarize_expression(condition, spans);
+            let _ = summarize_node(body, spans);
             FlowSummary::falls_through()
         }
         NodeKind::Default { body }
         | NodeKind::PhaseBlock { block: body, .. }
         | NodeKind::Class { body, .. } => {
-            let _ = summarize_node(body, findings);
+            let _ = summarize_node(body, spans);
             FlowSummary::falls_through()
         }
         NodeKind::Package { block, .. } => {
             if let Some(block) = block {
-                let _ = summarize_node(block, findings);
+                let _ = summarize_node(block, spans);
             }
             FlowSummary::falls_through()
         }
         NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
-            let _ = summarize_node(block, findings);
+            let _ = summarize_node(block, spans);
             FlowSummary::falls_through()
         }
         NodeKind::Try { body, catch_blocks, finally_block } => {
-            let _ = summarize_node(body, findings);
+            let _ = summarize_node(body, spans);
             for (_, catch_body) in catch_blocks {
-                let _ = summarize_node(catch_body, findings);
+                let _ = summarize_node(catch_body, spans);
             }
             if let Some(finally_block) = finally_block {
-                let _ = summarize_node(finally_block, findings);
+                let _ = summarize_node(finally_block, spans);
             }
             FlowSummary::falls_through()
         }
@@ -238,11 +231,11 @@ fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> Flow
         NodeKind::StatementModifier { statement, condition, .. } => {
             // Perl evaluates the modifier condition before the controlled
             // statement; visit in that registered order (issue #10844).
-            let condition_summary = summarize_expression(condition, findings);
-            let statement_summary = summarize_node(statement, findings);
+            let condition_summary = summarize_expression(condition, spans);
+            let statement_summary = summarize_node(statement, spans);
             // A terminal condition never reaches the controlled statement and
             // control exits before the next sibling, so the condition's
-            // summary is the whole statement's summary (nested findings in
+            // summary is the whole statement's summary (nested spans in
             // the controlled statement were still emitted above).
             if !condition_summary.can_fall_through {
                 return condition_summary;
@@ -255,7 +248,7 @@ fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> Flow
             FlowSummary { can_fall_through: true, transfers: statement_summary.transfers }
         }
         NodeKind::LabeledStatement { label, statement } => {
-            let summary = summarize_node(statement, findings);
+            let summary = summarize_node(statement, spans);
             // A labeled bare block is still a one-shot loop, so `last LABEL`
             // targets the block itself rather than the enclosing loop.
             if matches!(&statement.kind, NodeKind::Block { .. }) {
@@ -267,7 +260,7 @@ fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> Flow
 
         NodeKind::Return { value } => {
             if let Some(value) = value {
-                let _ = summarize_expression(value, findings);
+                let _ = summarize_expression(value, spans);
             }
             FlowSummary::transfer(ControlTransfer::Return)
         }
@@ -279,7 +272,7 @@ fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> Flow
             // local PL406 analysis as any other evaluated expression. Only
             // the plain-label form is a bare name with nothing to execute.
             if !matches!(form, GotoTargetForm::Label) {
-                let _ = summarize_expression(target, findings);
+                let _ = summarize_expression(target, spans);
             }
             summarize_goto(target, form)
         }
@@ -289,7 +282,7 @@ fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> Flow
             FlowSummary::transfer(ControlTransfer::DynamicGoto)
         }
 
-        NodeKind::ExpressionStatement { expression } => summarize_expression(expression, findings),
+        NodeKind::ExpressionStatement { expression } => summarize_expression(expression, spans),
         NodeKind::VariableDeclaration { initializer, .. }
         | NodeKind::VariableListDeclaration { initializer, .. } => {
             // The initializer is the declaration's executable child: an
@@ -298,7 +291,7 @@ fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> Flow
             // determines parent fallthrough exactly like an assignment's rhs.
             match initializer {
                 Some(initializer) => {
-                    let init_summary = summarize_expression(initializer, findings);
+                    let init_summary = summarize_expression(initializer, spans);
                     if init_summary.can_fall_through {
                         FlowSummary::falls_through()
                     } else {
@@ -309,28 +302,28 @@ fn summarize_node(node: &Node, findings: &mut Vec<UnreachableStatement>) -> Flow
             }
         }
 
-        // Recovered syntax is useful for nested findings but cannot provide
+        // Recovered syntax is useful for nested spans but cannot provide
         // exact parent non-fallthrough authority.
         NodeKind::Error { partial, .. } => {
             if let Some(partial) = partial {
-                let _ = summarize_node(partial, findings);
+                let _ = summarize_node(partial, spans);
             }
             FlowSummary::falls_through()
         }
 
-        NodeKind::FunctionCall { name, args } => summarize_function_call(name, args, findings),
+        NodeKind::FunctionCall { name, args } => summarize_function_call(name, args, spans),
         NodeKind::AmperCall { args, .. } => {
-            analyze_expression_list(args, findings);
+            analyze_expression_list(args, spans);
             FlowSummary::falls_through()
         }
         NodeKind::MethodCall { object, args, .. } | NodeKind::IndirectCall { object, args, .. } => {
-            let _ = summarize_expression(object, findings);
-            analyze_expression_list(args, findings);
+            let _ = summarize_expression(object, spans);
+            analyze_expression_list(args, spans);
             // Method/function spelling alone is not non-returning authority.
             FlowSummary::falls_through()
         }
 
-        _ => summarize_expression(node, findings),
+        _ => summarize_expression(node, spans),
     }
 }
 
@@ -339,28 +332,25 @@ fn summarize_if(
     then_branch: &Node,
     elsif_branches: &[(Box<Node>, Box<Node>)],
     else_branch: Option<&Node>,
-    findings: &mut Vec<UnreachableStatement>,
+    spans: &mut Vec<SourceLocation>,
 ) -> FlowSummary {
-    let _ = summarize_expression(condition, findings);
+    let _ = summarize_expression(condition, spans);
 
-    let mut branches = vec![summarize_node(then_branch, findings)];
+    let mut branches = vec![summarize_node(then_branch, spans)];
     for (elsif_condition, elsif_body) in elsif_branches {
-        let _ = summarize_expression(elsif_condition, findings);
-        branches.push(summarize_node(elsif_body, findings));
+        let _ = summarize_expression(elsif_condition, spans);
+        branches.push(summarize_node(elsif_body, spans));
     }
 
     let exhaustive = else_branch.is_some();
     if let Some(else_branch) = else_branch {
-        branches.push(summarize_node(else_branch, findings));
+        branches.push(summarize_node(else_branch, spans));
     }
 
     FlowSummary::alternatives(branches, exhaustive)
 }
 
-fn summarize_statement_list(
-    stmts: &[Node],
-    findings: &mut Vec<UnreachableStatement>,
-) -> FlowSummary {
+fn summarize_statement_list(stmts: &[Node], spans: &mut Vec<SourceLocation>) -> FlowSummary {
     let mut can_fall_through = true;
     let mut terminal_summary = FlowSummary::falls_through();
     let mut pending_goto_labels: Vec<String> = Vec::new();
@@ -380,15 +370,15 @@ fn summarize_statement_list(
                     pending_goto_labels.retain(|target| target != consumed);
                 }
             } else {
-                emit_unreachable(stmt, findings);
+                emit_unreachable(stmt, spans);
                 // Nested callables and blocks still deserve their own local
                 // analysis even when the containing statement is unreachable.
-                let _ = summarize_node(stmt, findings);
+                let _ = summarize_node(stmt, spans);
                 continue;
             }
         }
 
-        let summary = summarize_node(stmt, findings);
+        let summary = summarize_node(stmt, spans);
         // A bare BLOCK statement is a one-shot loop (perlsyn): loop-control
         // transfers target the block itself and must not close fallthrough in
         // this list. Branch/body blocks of `if`, loops, and callables are not
@@ -421,61 +411,61 @@ fn summarize_statement_list(
     if can_fall_through { FlowSummary::falls_through() } else { terminal_summary }
 }
 
-fn summarize_expression(node: &Node, findings: &mut Vec<UnreachableStatement>) -> FlowSummary {
+fn summarize_expression(node: &Node, spans: &mut Vec<SourceLocation>) -> FlowSummary {
     match &node.kind {
-        NodeKind::FunctionCall { name, args } => summarize_function_call(name, args, findings),
+        NodeKind::FunctionCall { name, args } => summarize_function_call(name, args, spans),
         NodeKind::AmperCall { args, .. } => {
-            analyze_expression_list(args, findings);
+            analyze_expression_list(args, spans);
             FlowSummary::falls_through()
         }
         NodeKind::MethodCall { object, args, .. } | NodeKind::IndirectCall { object, args, .. } => {
-            let _ = summarize_expression(object, findings);
-            analyze_expression_list(args, findings);
+            let _ = summarize_expression(object, spans);
+            analyze_expression_list(args, spans);
             FlowSummary::falls_through()
         }
         NodeKind::Subroutine { body, .. } | NodeKind::Method { body, .. } => {
-            let _ = summarize_node(body, findings);
+            let _ = summarize_node(body, spans);
             FlowSummary::falls_through()
         }
         NodeKind::Ternary { condition, then_expr, else_expr } => {
-            let _ = summarize_expression(condition, findings);
+            let _ = summarize_expression(condition, spans);
             FlowSummary::alternatives(
                 vec![
-                    summarize_expression(then_expr, findings),
-                    summarize_expression(else_expr, findings),
+                    summarize_expression(then_expr, spans),
+                    summarize_expression(else_expr, spans),
                 ],
                 true,
             )
         }
         NodeKind::Assignment { lhs, rhs, .. } => {
             // Perl evaluates the rhs before the lhs. Visit both sides so a
-            // transferring lhs cannot skip findings nested in the rhs,
+            // transferring lhs cannot skip spans nested in the rhs,
             // then select the terminal summary in evaluation order.
-            let rhs_summary = summarize_expression(rhs, findings);
-            let lhs_summary = summarize_expression(lhs, findings);
+            let rhs_summary = summarize_expression(rhs, spans);
+            let lhs_summary = summarize_expression(lhs, spans);
             if !rhs_summary.can_fall_through { rhs_summary } else { lhs_summary }
         }
-        NodeKind::Unary { operand, .. } => summarize_expression(operand, findings),
+        NodeKind::Unary { operand, .. } => summarize_expression(operand, spans),
         NodeKind::Binary { left, right, .. } => {
-            let _ = summarize_expression(left, findings);
-            let _ = summarize_expression(right, findings);
+            let _ = summarize_expression(left, spans);
+            let _ = summarize_expression(right, spans);
             // Perl's short-circuit and overloaded binary operators require
             // stronger semantic facts before a child transfer can be promoted.
             FlowSummary::falls_through()
         }
         NodeKind::ArrayLiteral { elements } => {
-            analyze_expression_list(elements, findings);
+            analyze_expression_list(elements, spans);
             FlowSummary::falls_through()
         }
         NodeKind::HashLiteral { pairs } => {
             for (key, value) in pairs {
-                let _ = summarize_expression(key, findings);
-                let _ = summarize_expression(value, findings);
+                let _ = summarize_expression(key, spans);
+                let _ = summarize_expression(value, spans);
             }
             FlowSummary::falls_through()
         }
         NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
-            let _ = summarize_node(block, findings);
+            let _ = summarize_node(block, spans);
             FlowSummary::falls_through()
         }
         // Expression-position blocks (for example map/grep/sort block
@@ -483,40 +473,40 @@ fn summarize_expression(node: &Node, findings: &mut Vec<UnreachableStatement>) -
         // local analysis, but their transfers never promote into the
         // containing execution unit (issue #10844).
         NodeKind::Block { statements } => {
-            let _ = summarize_statement_list(statements, findings);
+            let _ = summarize_statement_list(statements, spans);
             FlowSummary::falls_through()
         }
         // Remaining executable child fields declared by the disposition
-        // registry are visited for nested findings; each container
+        // registry are visited for nested spans; each container
         // conservatively falls through.
         NodeKind::ArraySlice { target, indices, .. } => {
-            let _ = summarize_expression(target, findings);
-            let _ = summarize_expression(indices, findings);
+            let _ = summarize_expression(target, spans);
+            let _ = summarize_expression(indices, spans);
             FlowSummary::falls_through()
         }
         NodeKind::HashSlice { target, keys, .. } | NodeKind::KeyValueSlice { target, keys, .. } => {
-            let _ = summarize_expression(target, findings);
-            let _ = summarize_expression(keys, findings);
+            let _ = summarize_expression(target, spans);
+            let _ = summarize_expression(keys, spans);
             FlowSummary::falls_through()
         }
         NodeKind::ChainedComparison { operands, .. } => {
-            analyze_expression_list(operands, findings);
+            analyze_expression_list(operands, spans);
             FlowSummary::falls_through()
         }
         NodeKind::Match { expr, .. }
         | NodeKind::Substitution { expr, .. }
         | NodeKind::Transliteration { expr, .. } => {
-            let _ = summarize_expression(expr, findings);
+            let _ = summarize_expression(expr, spans);
             FlowSummary::falls_through()
         }
         NodeKind::Tie { variable, package, args, .. } => {
-            let _ = summarize_expression(variable, findings);
-            let _ = summarize_expression(package, findings);
-            analyze_expression_list(args, findings);
+            let _ = summarize_expression(variable, spans);
+            let _ = summarize_expression(package, spans);
+            analyze_expression_list(args, spans);
             FlowSummary::falls_through()
         }
         NodeKind::Untie { variable, .. } => {
-            let _ = summarize_expression(variable, findings);
+            let _ = summarize_expression(variable, spans);
             FlowSummary::falls_through()
         }
         _ => FlowSummary::falls_through(),
@@ -526,9 +516,9 @@ fn summarize_expression(node: &Node, findings: &mut Vec<UnreachableStatement>) -
 fn summarize_function_call(
     name: &str,
     args: &[Node],
-    findings: &mut Vec<UnreachableStatement>,
+    spans: &mut Vec<SourceLocation>,
 ) -> FlowSummary {
-    analyze_expression_list(args, findings);
+    analyze_expression_list(args, spans);
     match name {
         "die" | "CORE::die" => FlowSummary::transfer(ControlTransfer::Raise),
         "exit" | "CORE::exit" | "exec" | "CORE::exec" => {
@@ -546,18 +536,15 @@ fn summarize_function_call(
     }
 }
 
-fn analyze_expression_list(nodes: &[Node], findings: &mut Vec<UnreachableStatement>) {
+fn analyze_expression_list(nodes: &[Node], spans: &mut Vec<SourceLocation>) {
     for node in nodes {
-        let _ = summarize_expression(node, findings);
+        let _ = summarize_expression(node, spans);
     }
 }
 
-fn summarize_loop_continue(
-    continue_block: &Option<Box<Node>>,
-    findings: &mut Vec<UnreachableStatement>,
-) {
+fn summarize_loop_continue(continue_block: &Option<Box<Node>>, spans: &mut Vec<SourceLocation>) {
     if let Some(continue_block) = continue_block {
-        let _ = summarize_node(continue_block, findings);
+        let _ = summarize_node(continue_block, spans);
     }
 }
 
@@ -594,8 +581,8 @@ fn labeled_statement_name(node: &Node) -> Option<&str> {
     Some(label.as_str())
 }
 
-fn emit_unreachable(stmt: &Node, findings: &mut Vec<UnreachableStatement>) {
-    findings.push(UnreachableStatement { range: stmt.location });
+fn emit_unreachable(stmt: &Node, spans: &mut Vec<SourceLocation>) {
+    spans.push(stmt.location);
 }
 
 #[cfg(test)]
@@ -604,7 +591,7 @@ mod tests {
     use perl_parser_core::Parser;
     use perl_tdd_support::{must, must_some};
 
-    fn unreachable_diags(source: &str) -> Vec<UnreachableStatement> {
+    fn unreachable_spans(source: &str) -> Vec<SourceLocation> {
         let mut parser = Parser::new(source);
         let ast = must(parser.parse());
         assert!(
@@ -613,27 +600,27 @@ mod tests {
              would make absence assertions vacuous: {:?}",
             parser.errors()
         );
-        find_unreachable_statements(&ast)
+        collect_unreachable_spans(&ast)
     }
 
-    fn has_pl406(diags: &[UnreachableStatement]) -> bool {
+    fn has_unreachable(diags: &[SourceLocation]) -> bool {
         !diags.is_empty()
     }
 
-    fn count_pl406(diags: &[UnreachableStatement]) -> usize {
+    fn count_unreachable(diags: &[SourceLocation]) -> usize {
         diags.len()
     }
 
-    fn assert_pl406_at(source: &str, diags: &[UnreachableStatement], anchor: &str) {
+    fn assert_unreachable_at(source: &str, diags: &[SourceLocation], anchor: &str) {
         assert_eq!(
-            count_pl406(diags),
+            count_unreachable(diags),
             1,
             "the scenario should produce exactly one PL406: {diags:?}"
         );
         let start = must_some(source.find(anchor));
         let pl406 = must_some(diags.first());
         assert_eq!(
-            (pl406.range.start, pl406.range.end),
+            (pl406.start, pl406.end),
             (start, start + anchor.len()),
             "PL406 must identify the intended unreachable statement {anchor:?}: {diags:?}"
         );
@@ -642,13 +629,13 @@ mod tests {
     #[test]
     fn return_then_statement_is_flagged() {
         let source = "sub f { return 1; my $x = 2; }";
-        let diags = unreachable_diags(source);
-        assert!(has_pl406(&diags), "statement after return should be PL406: {diags:?}");
+        let diags = unreachable_spans(source);
+        assert!(has_unreachable(&diags), "statement after return should be PL406: {diags:?}");
         let anchor = "my $x = 2";
         let start = must_some(source.find(anchor));
         let pl406 = must_some(diags.first());
         assert_eq!(
-            (pl406.range.start, pl406.range.end),
+            (pl406.start, pl406.end),
             (start, start + anchor.len()),
             "PL406 must identify the unreachable statement itself, not just exist: {diags:?}"
         );
@@ -656,11 +643,11 @@ mod tests {
 
     #[test]
     fn elsif_body_fallthrough_keeps_following_sibling_reachable() {
-        let diags = unreachable_diags(
+        let diags = unreachable_spans(
             r#"sub f { if ($x) { return 1; } elsif ($y) { print "live"; } else { exit 0; } print "also live"; }"#,
         );
         assert!(
-            !has_pl406(&diags),
+            !has_unreachable(&diags),
             "a fallthrough elsif body must keep the parent reachable even when \
              then and else both transfer: {diags:?}"
         );
@@ -668,17 +655,20 @@ mod tests {
 
     #[test]
     fn conditional_return_keeps_fallthrough() {
-        let diags = unreachable_diags("sub f { return if $cond; my $x = 1; }");
-        assert!(!has_pl406(&diags), "conditional return must preserve fallthrough: {diags:?}");
+        let diags = unreachable_spans("sub f { return if $cond; my $x = 1; }");
+        assert!(
+            !has_unreachable(&diags),
+            "conditional return must preserve fallthrough: {diags:?}"
+        );
     }
 
     #[test]
     fn complete_if_else_transfers_make_following_sibling_unreachable() {
-        let diags = unreachable_diags(
+        let diags = unreachable_spans(
             r#"sub f { if ($x) { return 1; } else { die "stop"; } print "dead"; }"#,
         );
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             1,
             "complete transferring branches should close fallthrough: {diags:?}"
         );
@@ -686,56 +676,64 @@ mod tests {
 
     #[test]
     fn one_fallthrough_branch_keeps_following_sibling_reachable() {
-        let diags = unreachable_diags(
+        let diags = unreachable_spans(
             r#"sub f { if ($x) { return 1; } else { print "live"; } print "also live"; }"#,
         );
         assert!(
-            !has_pl406(&diags),
+            !has_unreachable(&diags),
             "one fallthrough branch must keep the parent reachable: {diags:?}"
         );
     }
 
     #[test]
     fn conditional_without_else_keeps_following_sibling_reachable() {
-        let diags = unreachable_diags("sub f { if ($x) { return 1; } print 'live'; }");
+        let diags = unreachable_spans("sub f { if ($x) { return 1; } print 'live'; }");
         assert!(
-            !has_pl406(&diags),
+            !has_unreachable(&diags),
             "a missing else leaves an uncovered fallthrough path: {diags:?}"
         );
     }
 
     #[test]
     fn complete_elsif_chain_transfers() {
-        let diags = unreachable_diags(
+        let diags = unreachable_spans(
             r#"sub f { if ($x) { return 1; } elsif ($y) { die "y"; } else { exit 2; } print "dead"; }"#,
         );
-        assert_eq!(count_pl406(&diags), 1, "all complete branches transfer: {diags:?}");
+        assert_eq!(count_unreachable(&diags), 1, "all complete branches transfer: {diags:?}");
     }
 
     #[test]
     fn nested_sub_transfer_does_not_poison_outer_scope() {
-        let diags = unreachable_diags("sub outer { my $f = sub { return 1; }; my $x = 2; }");
-        assert!(!has_pl406(&diags), "nested callable transfer must remain local: {diags:?}");
+        let diags = unreachable_spans("sub outer { my $f = sub { return 1; }; my $x = 2; }");
+        assert!(!has_unreachable(&diags), "nested callable transfer must remain local: {diags:?}");
     }
 
     #[test]
     fn nested_sub_still_reports_its_own_unreachable_sibling() {
-        let diags = unreachable_diags("sub outer { my $f = sub { return 1; my $dead = 99; }; }");
-        assert_eq!(count_pl406(&diags), 1, "nested callable should retain local PL406: {diags:?}");
+        let diags = unreachable_spans("sub outer { my $f = sub { return 1; my $dead = 99; }; }");
+        assert_eq!(
+            count_unreachable(&diags),
+            1,
+            "nested callable should retain local PL406: {diags:?}"
+        );
     }
 
     #[test]
     fn eval_reports_local_unreachable_but_outer_scope_falls_through() {
-        let diags = unreachable_diags(
+        let diags = unreachable_spans(
             r#"sub f { eval { die "inner"; print "dead"; }; print "outer live"; }"#,
         );
-        assert_eq!(count_pl406(&diags), 1, "only the inner eval sibling is unreachable: {diags:?}");
+        assert_eq!(
+            count_unreachable(&diags),
+            1,
+            "only the inner eval sibling is unreachable: {diags:?}"
+        );
     }
 
     #[test]
     fn die_then_statement_is_flagged() {
-        let diags = unreachable_diags(r#"sub f { die "error"; print "never"; }"#);
-        assert!(has_pl406(&diags), "statement after die should be PL406: {diags:?}");
+        let diags = unreachable_spans(r#"sub f { die "error"; print "never"; }"#);
+        assert!(has_unreachable(&diags), "statement after die should be PL406: {diags:?}");
     }
 
     #[test]
@@ -745,9 +743,9 @@ mod tests {
             r#"sub f { exec("perl", "-e", "1"); print "dead"; }"#,
             "sub f { CORE::exit(0); print 'dead'; }",
         ] {
-            let diags = unreachable_diags(source);
+            let diags = unreachable_spans(source);
             assert!(
-                has_pl406(&diags),
+                has_unreachable(&diags),
                 "exact process transfer should close fallthrough: {diags:?}"
             );
         }
@@ -762,9 +760,9 @@ mod tests {
             r#"sub f { confess "stop"; print "dead"; }"#,
             r#"sub f { Carp::confess "stop"; print "dead"; }"#,
         ] {
-            let diags = unreachable_diags(source);
+            let diags = unreachable_spans(source);
             assert!(
-                has_pl406(&diags),
+                has_unreachable(&diags),
                 "Carp's documented non-returning API must close fallthrough: {diags:?}"
             );
         }
@@ -776,9 +774,9 @@ mod tests {
             r#"sub f { fatal(); print "reachable"; }"#,
             r#"sub f { $object->throw(); print "reachable"; }"#,
         ] {
-            let diags = unreachable_diags(source);
+            let diags = unreachable_spans(source);
             assert!(
-                !has_pl406(&diags),
+                !has_unreachable(&diags),
                 "framework spelling without a semantic fact cannot prove non-return: {diags:?}"
             );
         }
@@ -793,9 +791,9 @@ mod tests {
             r#"{ next; } print "after";"#,
             r#"while ($c) { { last; } print "still-in-body"; last; }"#,
         ] {
-            let diags = unreachable_diags(source);
+            let diags = unreachable_spans(source);
             assert!(
-                !has_pl406(&diags),
+                !has_unreachable(&diags),
                 "loop control inside a bare block must not close parent fallthrough: {diags:?}"
             );
         }
@@ -803,18 +801,18 @@ mod tests {
 
     #[test]
     fn labeled_bare_block_last_exits_only_the_block() {
-        let diags = unreachable_diags("DONE: { do_it(); last DONE; } print 'after';");
+        let diags = unreachable_spans("DONE: { do_it(); last DONE; } print 'after';");
         assert!(
-            !has_pl406(&diags),
+            !has_unreachable(&diags),
             "last LABEL targeting a labeled bare block must keep the sibling reachable: {diags:?}"
         );
     }
 
     #[test]
     fn bare_block_raise_still_closes_fallthrough() {
-        let diags = unreachable_diags(r#"{ die "stop"; } print "dead";"#);
+        let diags = unreachable_spans(r#"{ die "stop"; } print "dead";"#);
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             1,
             "non-loop transfers still promote out of a bare block: {diags:?}"
         );
@@ -826,9 +824,9 @@ mod tests {
         // provably transfers must not skip rhs traversal: unreachable
         // statements nested in the rhs would otherwise go unreported.
         let diags =
-            unreachable_diags(r#"sub f { ($c ? exit : die) = do { die "x"; print "dead"; }; }"#);
+            unreachable_spans(r#"sub f { ($c ? exit : die) = do { die "x"; print "dead"; }; }"#);
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             1,
             "rhs do-block must still report its unreachable statement: {diags:?}"
         );
@@ -840,9 +838,9 @@ mod tests {
         // every complete branch exits the enclosing while, so the sibling
         // after the if inside the loop body is genuinely unreachable.
         let diags =
-            unreachable_diags("while (1) { if ($c) { last; } else { last; } print 'dead'; }");
+            unreachable_spans("while (1) { if ($c) { last; } else { last; } print 'dead'; }");
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             1,
             "complete if/else last branches must still close loop-body fallthrough: {diags:?}"
         );
@@ -850,9 +848,9 @@ mod tests {
 
     #[test]
     fn binary_short_circuit_does_not_promote_child_transfer() {
-        let diags = unreachable_diags(r#"exec("perl", "-e", "1") or die; my $x = 1;"#);
+        let diags = unreachable_spans(r#"exec("perl", "-e", "1") or die; my $x = 1;"#);
         assert!(
-            !has_pl406(&diags),
+            !has_unreachable(&diags),
             "binary expression keeps a conservative fallthrough path: {diags:?}"
         );
     }
@@ -864,9 +862,9 @@ mod tests {
             "for my $i (1..5) { last; print $i; }",
             "while ($ready) { redo; print $ready; }",
         ] {
-            let diags = unreachable_diags(source);
+            let diags = unreachable_spans(source);
             assert!(
-                has_pl406(&diags),
+                has_unreachable(&diags),
                 "unconditional loop control closes local fallthrough: {diags:?}"
             );
         }
@@ -879,9 +877,9 @@ mod tests {
             "while ($ready) { work(); } continue { last; print $ready; }",
             "while ($ready) { work(); } continue { redo; print $ready; }",
         ] {
-            let diags = unreachable_diags(source);
+            let diags = unreachable_spans(source);
             assert!(
-                has_pl406(&diags),
+                has_unreachable(&diags),
                 "continue-block loop control closes sibling fallthrough: {diags:?}"
             );
         }
@@ -894,8 +892,11 @@ mod tests {
             "while ($ready) { work(); } continue { last unless $ready; print $ready; }",
             "while ($ready) { work(); } continue { redo while $retry; print $ready; }",
         ] {
-            let diags = unreachable_diags(source);
-            assert!(!has_pl406(&diags), "conditional loop control retains fallthrough: {diags:?}");
+            let diags = unreachable_spans(source);
+            assert!(
+                !has_unreachable(&diags),
+                "conditional loop control retains fallthrough: {diags:?}"
+            );
         }
     }
 
@@ -906,9 +907,9 @@ mod tests {
             "while ($ready) { redo; } print 'after';",
             "while ($ready) { last; } print 'after';",
         ] {
-            let diags = unreachable_diags(source);
+            let diags = unreachable_spans(source);
             assert!(
-                !has_pl406(&diags),
+                !has_unreachable(&diags),
                 "loop transfer remains inside the loop statement: {diags:?}"
             );
         }
@@ -916,9 +917,9 @@ mod tests {
 
     #[test]
     fn goto_forward_label_restores_reachability() {
-        let diags = unreachable_diags("goto DONE; print 'dead'; DONE: print 'alive';");
+        let diags = unreachable_spans("goto DONE; print 'dead'; DONE: print 'alive';");
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             1,
             "only code before the target label is unreachable: {diags:?}"
         );
@@ -926,9 +927,9 @@ mod tests {
 
     #[test]
     fn dynamic_goto_does_not_fall_through() {
-        let diags = unreachable_diags("goto $target; print 'dead';");
+        let diags = unreachable_spans("goto $target; print 'dead';");
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             1,
             "dynamic goto transfers without sibling fallthrough: {diags:?}"
         );
@@ -936,9 +937,9 @@ mod tests {
 
     #[test]
     fn targetless_goto_does_not_fall_through() {
-        let diags = unreachable_diags("goto; print 'dead';");
+        let diags = unreachable_spans("goto; print 'dead';");
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             1,
             "targetless goto transfers without sibling fallthrough: {diags:?}"
         );
@@ -946,14 +947,14 @@ mod tests {
 
     #[test]
     fn multiple_statements_after_transfer_are_flagged() {
-        let diags = unreachable_diags("sub f { return; my $a = 1; my $b = 2; }");
-        assert_eq!(count_pl406(&diags), 2, "all later siblings should be PL406: {diags:?}");
+        let diags = unreachable_spans("sub f { return; my $a = 1; my $b = 2; }");
+        assert_eq!(count_unreachable(&diags), 2, "all later siblings should be PL406: {diags:?}");
     }
 
     #[test]
     fn clean_sub_has_no_pl406() {
-        let diags = unreachable_diags("sub f { my $x = 1; my $y = 2; return $x + $y; }");
-        assert!(!has_pl406(&diags), "ordinary reachable code should remain clean: {diags:?}");
+        let diags = unreachable_spans("sub f { my $x = 1; my $y = 2; return $x + $y; }");
+        assert!(!has_unreachable(&diags), "ordinary reachable code should remain clean: {diags:?}");
     }
 
     // ── label-aware demotion (issue #10804) ──────────────────────────────────
@@ -965,8 +966,8 @@ mod tests {
     fn last_outer_label_in_bare_block_closes_loop_body_fallthrough() {
         // last OUTER exits the while, so "dead" never executes.
         let source = "OUTER: while (1) { { last OUTER; } print \"dead\"; }";
-        let diags = unreachable_diags(source);
-        assert_pl406_at(source, &diags, "print \"dead\"");
+        let diags = unreachable_spans(source);
+        assert_unreachable_at(source, &diags, "print \"dead\"");
     }
 
     /// `redo LABEL` targeting a labeled bare block restarts the block from the
@@ -975,8 +976,8 @@ mod tests {
     #[test]
     fn redo_own_label_bare_block_closes_following_sibling() {
         let source = "R: { redo R; } print \"x\";";
-        let diags = unreachable_diags(source);
-        assert_pl406_at(source, &diags, "print \"x\"");
+        let diags = unreachable_spans(source);
+        assert_unreachable_at(source, &diags, "print \"x\"");
     }
 
     /// `redo` without a label in a bare block also creates an infinite loop
@@ -985,8 +986,8 @@ mod tests {
     #[test]
     fn redo_unlabeled_bare_block_closes_following_sibling() {
         let source = "{ redo; } print \"y\";";
-        let diags = unreachable_diags(source);
-        assert_pl406_at(source, &diags, "print \"y\"");
+        let diags = unreachable_spans(source);
+        assert_unreachable_at(source, &diags, "print \"y\"");
     }
 
     /// A conditional `last` can become true after `redo` restarts the bare
@@ -994,9 +995,9 @@ mod tests {
     #[test]
     fn conditional_last_before_redo_preserves_reachable_fallthrough() {
         let source = r#"my $i = 0; { ++$i; last if $i > 1; redo; } print "reachable";"#;
-        let diags = unreachable_diags(source);
+        let diags = unreachable_spans(source);
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             0,
             "a later conditional last can exit after redo; the sibling must remain reachable: {diags:?}"
         );
@@ -1007,8 +1008,8 @@ mod tests {
     #[test]
     fn unconditional_redo_after_prefix_still_closes_following_sibling() {
         let source = r#"my $i = 0; { ++$i; redo; } print "unreachable";"#;
-        let diags = unreachable_diags(source);
-        assert_pl406_at(source, &diags, "print \"unreachable\"");
+        let diags = unreachable_spans(source);
+        assert_unreachable_at(source, &diags, "print \"unreachable\"");
     }
 
     /// `next OUTER` inside a bare block targets the outer loop's next
@@ -1018,8 +1019,8 @@ mod tests {
     #[test]
     fn next_outer_label_in_bare_block_closes_loop_body_fallthrough() {
         let source = "OUTER: while (1) { { next OUTER; } print \"dead\"; }";
-        let diags = unreachable_diags(source);
-        assert_pl406_at(source, &diags, "print \"dead\"");
+        let diags = unreachable_spans(source);
+        assert_unreachable_at(source, &diags, "print \"dead\"");
     }
 
     /// `last DONE` inside a labeled bare block `DONE: { … }` exits the block
@@ -1028,9 +1029,9 @@ mod tests {
     #[test]
     fn last_matching_label_in_bare_block_keeps_parent_fallthrough() {
         let source = "DONE: { last DONE; } print \"after\";";
-        let diags = unreachable_diags(source);
+        let diags = unreachable_spans(source);
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             0,
             "last DONE exits the DONE block itself; no sibling should be PL406: {diags:?}"
         );
@@ -1042,9 +1043,9 @@ mod tests {
     #[test]
     fn next_matching_label_in_bare_block_keeps_parent_fallthrough() {
         let source = "DONE: { next DONE; } print \"after\";";
-        let diags = unreachable_diags(source);
+        let diags = unreachable_spans(source);
         assert_eq!(
-            count_pl406(&diags),
+            count_unreachable(&diags),
             0,
             "next DONE exits the DONE block itself; no sibling should be PL406: {diags:?}"
         );

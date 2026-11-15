@@ -13,7 +13,7 @@ use perl_parser_core::NodeKind;
 use perl_parser_core::position::{Position, Range};
 use perl_parser_core::syntax::source_context::{SourceRegionIndex, SourceRegionKind};
 use perl_pragma::PragmaTracker;
-use perl_semantic_analyzer::find_unreachable_statements;
+use perl_semantic_analyzer::collect_unreachable_spans;
 use perl_semantic_analyzer::known_scalar_argument_count;
 use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 
@@ -1909,9 +1909,11 @@ fn collect_unreachable_code_findings(
     node: &Node,
     out: &mut Vec<CriticFinding>,
 ) {
-    out.extend(find_unreachable_statements(node).into_iter().map(|statement| {
-        unreachable_code_finding(rule, source, statement.range.start, statement.range.end)
-    }));
+    out.extend(
+        collect_unreachable_spans(node)
+            .into_iter()
+            .map(|span| unreachable_code_finding(rule, source, span.start, span.end)),
+    );
 }
 
 fn collect_stale_dollar_at_in_statements(

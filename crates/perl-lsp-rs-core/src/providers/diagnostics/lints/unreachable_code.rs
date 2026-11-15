@@ -3,13 +3,13 @@
 use super::super::internal_types::{Diagnostic, DiagnosticTag};
 use perl_diagnostics::codes::{DiagnosticCode, DiagnosticSeverity};
 use perl_parser_core::ast::Node;
-use perl_semantic_analyzer::find_unreachable_statements;
+use perl_semantic_analyzer::collect_unreachable_spans;
 
 /// Walk the AST and emit PL406 diagnostics for statements that cannot be
 /// reached from the preceding sibling in the same local statement list.
 pub fn check_unreachable_code(root: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    diagnostics.extend(find_unreachable_statements(root).into_iter().map(|statement| Diagnostic {
-        range: (statement.range.start, statement.range.end),
+    diagnostics.extend(collect_unreachable_spans(root).into_iter().map(|span| Diagnostic {
+        range: (span.start, span.end),
         severity: DiagnosticSeverity::Hint,
         code: Some(DiagnosticCode::UnreachableCode.as_str().to_string()),
         message: "Unreachable code: this statement cannot be executed".to_string(),

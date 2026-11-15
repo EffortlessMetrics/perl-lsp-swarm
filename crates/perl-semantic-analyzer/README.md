@@ -46,3 +46,12 @@ or document caching, pair it with `perl-workspace`.
 ## Architecture notes
 
 - [Dependency boundary audit](docs/dependency-boundary-audit.md)
+
+## Local unreachable-code facts
+
+`collect_unreachable_spans(&Node)` returns ordered source spans from one local
+control-flow analysis. The semantic analyzer also owns the existing `Pl406*`
+per-variant disposition registry. These crate-root exports keep implementation
+modules private to the analysis layer. LSP PL406 diagnostics and native critic
+findings project the same facts into their own messages, severity and remediation.
+The lower analysis does not depend on either output representation.

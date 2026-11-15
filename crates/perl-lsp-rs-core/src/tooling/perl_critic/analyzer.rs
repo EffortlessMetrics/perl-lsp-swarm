@@ -257,6 +257,7 @@ impl CriticAnalyzer {
 ///
 /// Uses the standard library's `DefaultHasher` — suitable for within-process
 /// cache keys where stability across restarts is not required.
+/// This compatibility entrypoint delegates to the parser-core source hash.
 pub fn hash_content(content: &str) -> u64 {
     perl_parser_core::syntax::source_context::hash_source_content(content)
 }
@@ -702,5 +703,27 @@ mod tests {
         let h1 = hash_content("use strict;\n");
         let h2 = hash_content("use warnings;\n");
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn source_hash_compatibility_matches_exact_source_region_identity() {
+        use perl_parser_core::syntax::source_context::SourceRegionIndex;
+
+        for (original, edited) in [
+            ("", " "),
+            ("use strict;", "use strict;\n"),
+            ("my $x = 1;\n", "my $x = 1;\r\n"),
+            ("my $x = 'é';", "my $x = 'e\u{301}';"),
+            ("file:///lib/One.pm", "file:///lib/Two.pm"),
+        ] {
+            let original_hash = hash_content(original);
+            let edited_hash = hash_content(edited);
+            assert_eq!(original_hash, SourceRegionIndex::build(original).content_hash());
+            assert_eq!(edited_hash, SourceRegionIndex::build(edited).content_hash());
+            assert_ne!(
+                original_hash, edited_hash,
+                "cache fingerprints must preserve these exact-byte edits"
+            );
+        }
     }
 }
