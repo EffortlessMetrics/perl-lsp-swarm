@@ -13508,6 +13508,11 @@ paths = ["archive/["]
     #[cfg(not(windows))]
     #[test]
     fn non_utf8_pr_diff_is_lossy_utf8_and_preserves_ripr_findings() -> Result<()> {
+        // `ripr_binary()` reads the process-global override, so hold the
+        // override lock for the whole comparison: a concurrent override
+        // test must not swap the binary between iterations.
+        let _exclusive =
+            RIPR_BIN_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let clean = diff_repo_with_corpus(false)?;
         let lossy = diff_repo_with_corpus(true)?;
         let mut outputs = Vec::new();
