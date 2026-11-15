@@ -37,9 +37,11 @@ and `docs/reference/NATIVE_STACK_POLICY.md`.
 ## Does not own
 
 Must never depend on `perl-lsp-rs`, `perl-lsp-rs-core`, `perllsp`,
-`perl-dap`, `lsp-types`, `tokio`, `tower-lsp`, or `perl-workspace`
-(transitively pulls `lsp-types`) -- this is mechanically enforced by
-`tests/dependency_contract.rs`. Also does not own UTF-16 position
+`perl-dap`, `perl-mcp`, `perl-code-intelligence`, `effortless-lsp`,
+`lsp-types`, `tokio`, `tower-lsp`, or `perl-workspace` (transitively pulls
+`lsp-types`). `tests/dependency_contract.rs` fails closed over all-target,
+all-features normal/build dependency edges. Development edges and independent
+unpacked-package consumers are separate proof. Also does not own UTF-16 position
 conversion; that's a boundary concern for LSP-facing callers.
 
 ## Neighbors
