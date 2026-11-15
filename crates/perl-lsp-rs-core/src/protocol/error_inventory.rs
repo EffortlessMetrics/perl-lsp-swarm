@@ -73,8 +73,10 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
         ErrorInventoryEntry {
             type_name: "FramingError",
             crate_name: "perl-lsp-rs-core",
-            has_error_class: true,
-            classification_route: ClassificationRoute::TraitImpl,
+            has_error_class: false,
+            classification_route: ClassificationRoute::AppAdapter(
+                crate::protocol::framing_error_class::FRAMING_ERROR_ADAPTER,
+            ),
             sample_category: Some(ErrorCategory::Protocol),
             sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },

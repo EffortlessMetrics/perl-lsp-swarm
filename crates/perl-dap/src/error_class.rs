@@ -14,6 +14,7 @@ use crate::peer_protocol::PeerFrameError;
 use crate::security::SecurityError;
 use crate::stack::{FixedOriginStackParseError, StackParseError};
 use crate::variables::{FixedOriginVariableParseError, VariableParseError};
+use perl_lsp_rs_core::protocol::framing_error_category;
 use perl_parser_core::{ErrorCategory, ErrorClass};
 
 const fn assert_error_class<T: ErrorClass>() {}
@@ -58,7 +59,7 @@ impl ErrorClass for SecurityError {
 impl ErrorClass for PeerFrameError {
     fn error_class(&self) -> ErrorCategory {
         match self {
-            Self::Framing(error) => error.error_class(),
+            Self::Framing(error) => framing_error_category(error),
             Self::Json(_) => ErrorCategory::Protocol,
         }
     }

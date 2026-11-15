@@ -34,6 +34,8 @@ mod errors;
 /// (#9662, #8032 train stage S01).
 #[cfg(test)]
 pub(crate) mod final_surface_inventory;
+/// Perl-owned operational projection of neutral framing errors (#13996).
+pub mod framing_error_class;
 mod jsonrpc;
 pub mod methods;
 pub mod resolve_envelope;
@@ -50,6 +52,7 @@ pub use error_inventory::{
     unclassified_count, unclassified_types,
 };
 pub use errors::*;
+pub use framing_error_class::framing_error_category;
 pub use jsonrpc::*;
 
 /// Convenience function: create an LSP error (ServerErrorStart code).

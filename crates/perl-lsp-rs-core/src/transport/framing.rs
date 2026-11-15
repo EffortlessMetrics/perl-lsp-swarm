@@ -4,8 +4,8 @@
 //! (absorbed from `perl-content-length-framing` in Wave Final PR B, #4541)
 //! and the higher-level LSP message reader/writer utilities.
 
+pub use super::framing_error::FramingError;
 use crate::protocol::JsonRpcResponse;
-use std::fmt;
 use std::io::{self, Write};
 
 // ── Absorbed from perl-content-length-framing ─────────────────────────────────
@@ -25,54 +25,6 @@ const MAX_HEADER_BYTES: usize = 4 * 1024;
 
 /// Maximum allowed message body size in bytes.
 pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
-
-/// Framing errors for `Content-Length` transport parsing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FramingError {
-    /// Header bytes could not be interpreted as a valid frame header.
-    InvalidHeader,
-    /// Header bytes were not valid UTF-8.
-    InvalidHeaderUtf8,
-    /// `Content-Length` header was missing from a complete header block.
-    MissingContentLength,
-    /// `Content-Length` value was not a valid non-negative integer.
-    InvalidContentLength,
-    /// `Content-Length` exceeded [`MAX_FRAME_SIZE`].
-    FrameTooLarge {
-        /// The actual frame size that was too large.
-        len: usize,
-    },
-}
-
-impl fmt::Display for FramingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidHeader => write!(f, "invalid Content-Length header"),
-            Self::InvalidHeaderUtf8 => write!(f, "header contains invalid UTF-8"),
-            Self::MissingContentLength => write!(f, "missing Content-Length header"),
-            Self::InvalidContentLength => write!(f, "invalid Content-Length value"),
-            Self::FrameTooLarge { len } => write!(f, "frame too large: {len} bytes"),
-        }
-    }
-}
-
-impl std::error::Error for FramingError {}
-
-impl perl_parser_core::ErrorClass for FramingError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
-        match self {
-            // Protocol violations: the client sent a malformed frame that does
-            // not conform to the LSP base protocol (Content-Length) spec.
-            Self::InvalidHeader
-            | Self::InvalidHeaderUtf8
-            | Self::MissingContentLength
-            | Self::InvalidContentLength => perl_parser_core::ErrorCategory::Protocol,
-            // A configured safety limit was exceeded — the frame is larger than
-            // MAX_FRAME_SIZE, which is a resource-protection guard.
-            Self::FrameTooLarge { .. } => perl_parser_core::ErrorCategory::ResourceLimit,
-        }
-    }
-}
 
 /// Stateful extractor for `Content-Length` framed payloads.
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -330,25 +282,7 @@ mod tests {
     };
     use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse};
     use crate::transport::{ContentLengthMessageReader, IncomingMessageError, read_message};
-    use perl_parser_core::{ErrorCategory, ErrorClass};
     use std::io::{self, BufReader, Cursor};
-
-    #[test]
-    fn framing_errors_have_stable_operational_categories() {
-        for error in [
-            FramingError::InvalidHeader,
-            FramingError::InvalidHeaderUtf8,
-            FramingError::MissingContentLength,
-            FramingError::InvalidContentLength,
-        ] {
-            assert_eq!(error.error_class(), ErrorCategory::Protocol);
-        }
-
-        assert_eq!(
-            FramingError::FrameTooLarge { len: MAX_FRAME_SIZE + 1 }.error_class(),
-            ErrorCategory::ResourceLimit
-        );
-    }
 
     fn framed_request(id: u64, method: &str) -> Vec<u8> {
         let body = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{}}}}"#);

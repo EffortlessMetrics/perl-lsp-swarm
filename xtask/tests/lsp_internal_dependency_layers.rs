@@ -99,6 +99,18 @@ const GENERIC_CANDIDATES: &[GenericCandidate] = &[
         layer: Layer::RuntimeProtocol,
     },
     GenericCandidate {
+        path: "crates/perl-lsp-rs-core/src/transport/framing_error.rs",
+        layer: Layer::ModelTypes,
+    },
+    GenericCandidate {
+        path: "crates/perl-lsp-rs-core/src/transport/incoming.rs",
+        layer: Layer::RuntimeProtocol,
+    },
+    GenericCandidate {
+        path: "crates/perl-lsp-rs-core/src/transport/incoming_error.rs",
+        layer: Layer::ModelTypes,
+    },
+    GenericCandidate {
         path: "crates/perl-lsp-rs/src/runtime/outbound.rs",
         layer: Layer::RuntimeProtocol,
     },
@@ -136,12 +148,6 @@ struct TemporaryException {
 }
 
 const TEMPORARY_EXCEPTIONS: &[TemporaryException] = &[
-    TemporaryException {
-        path: "crates/perl-lsp-rs-core/src/transport/framing.rs",
-        token: "perl_parser_core",
-        owner_issue: "#7599",
-        removal_condition: "neutral FramingError no longer implements parser ErrorClass",
-    },
     TemporaryException {
         path: "crates/perl-lsp-rs/src/runtime/outbound.rs",
         token: "crate::runtime::types",
@@ -454,4 +460,21 @@ fn migrated_test_selection_guard_rejects_disabled_harness() {
     assert!(facade_contract_uses_libtest(&format!("{target}harness = true\n")));
     assert!(!facade_contract_uses_libtest(&format!("{target}harness = false\n")));
     assert!(facade_contract_uses_libtest("[[test]]\nname = 'unrelated'\nharness = false\n"));
+}
+
+#[test]
+fn transport_failure_facts_cannot_regain_taxonomy_exceptions() {
+    for path in [
+        "crates/perl-lsp-rs-core/src/transport/framing.rs",
+        "crates/perl-lsp-rs-core/src/transport/framing_error.rs",
+        "crates/perl-lsp-rs-core/src/transport/incoming.rs",
+        "crates/perl-lsp-rs-core/src/transport/incoming_error.rs",
+    ] {
+        assert!(GENERIC_CANDIDATES.iter().any(|candidate| candidate.path == path));
+        assert!(!registered_exception(path, "perl_parser_core"));
+        assert_eq!(
+            unregistered_forbidden_tokens(path, "use perl_parser_core::ErrorClass as Classify;"),
+            BTreeSet::from(["perl_parser_core".to_string()])
+        );
+    }
 }
