@@ -13530,12 +13530,11 @@ paths = ["archive/["]
             assert_eq!(receipt, resolve_committed_diff(repo.path(), "HEAD~1", "HEAD")?);
 
             let binary = ripr_binary()?;
-            let Ok(version) = Command::new(&binary).arg("--version").output() else {
-                eprintln!("ripr is unavailable; lossy writer proof passed, comparison not run");
-                continue;
-            };
-            assert!(version.status.success(), "ripr --version failed: {version:?}");
-            let output = Command::new(&binary)
+            // The production ripr CLI rejects `--version` (#19414), so probe by
+            // running the supported `check` invocation itself. A spawn failure
+            // means ripr is unavailable on this runner; a non-zero exit is real
+            // evidence and stays blocking in the assertion below.
+            let output = match Command::new(&binary)
                 .args([
                     "check",
                     "--root",
@@ -13547,7 +13546,14 @@ paths = ["archive/["]
                 ])
                 .current_dir(repo.path())
                 .env("RIPR_CACHE_DIR", repo.path().join("target/ripr-facts"))
-                .output()?;
+                .output()
+            {
+                Ok(output) => output,
+                Err(_) => {
+                    eprintln!("ripr is unavailable; lossy writer proof passed, comparison not run");
+                    continue;
+                }
+            };
             assert!(
                 output.status.success(),
                 "ripr check failed: {}",
