@@ -223,6 +223,14 @@ describe('extractVersionSection', () => {
   });
 });
 
+/**
+ * The heading What's New should resolve to for 0.18.x from the shipped CHANGELOG:
+ * the release section once it is cut, `## [Unreleased]` until then (#19381).
+ */
+function expected018Heading(changelog: string): string {
+  return /^## \[0\.18\.0\]/m.test(changelog) ? '## [0.18.0]' : '## [Unreleased]';
+}
+
 describe('resolveVersionSection', () => {
   const UNRELEASED_CHANGELOG = `# Change Log
 
@@ -270,7 +278,7 @@ describe('resolveVersionSection', () => {
     const shipped = fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8');
     for (const version of ['0.18.0', '0.18.0-rc.1']) {
       const section = resolveVersionSection(shipped, version);
-      expect(section.startsWith('## [0.18.0]')).toBe(true);
+      expect(section.startsWith(expected018Heading(shipped))).toBe(true);
       expect(hasSectionBody(section)).toBe(true);
     }
   });
@@ -302,7 +310,9 @@ describe('WhatsNewManager.hasReleaseNotesContent', () => {
         const mgr = new WhatsNewManager(makeContext({ extensionPath: dir }), makeOutputChannel());
         expect(mgr.currentVersion()).toBe(version);
         expect(mgr.hasReleaseNotesContent()).toBe(true);
-        expect(mgr.extractChangelogSection(version).startsWith('## [0.18.0]')).toBe(true);
+        expect(
+          mgr.extractChangelogSection(version).startsWith(expected018Heading(shippedChangelog())),
+        ).toBe(true);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
