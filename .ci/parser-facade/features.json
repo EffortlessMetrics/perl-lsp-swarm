@@ -157,7 +157,7 @@
       "disposition": "move",
       "owner": "#2477",
       "target_owner": "#7063",
-      "isolation": "taxonomy_only",
+      "isolation": "source_only",
       "default": false,
       "exit_condition": "Move LSP test-only API exposure to the LSP product crates."
     },
