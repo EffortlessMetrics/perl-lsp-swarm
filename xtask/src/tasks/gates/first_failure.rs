@@ -141,7 +141,12 @@ pub fn is_cargo_test_command(command: &str) -> bool {
             break;
         }
     }
-    let is_cargo = first == "cargo" || first.ends_with("/cargo") || first.contains("\\cargo");
+    // The native Windows launcher (#17482) spells shim paths in POSIX form
+    // (`"./cargo.cmd" test`), so recognition compares the unquoted file
+    // name rather than the raw token's spelling.
+    let unquoted = first.trim_matches(|ch| ch == '"' || ch == '\'').replace('\\', "/");
+    let file_name = unquoted.rsplit('/').next().unwrap_or("");
+    let is_cargo = matches!(file_name, "cargo" | "cargo.exe" | "cargo.cmd" | "cargo.bat");
     is_cargo && tokens.next().is_some_and(|t| t == "test")
 }
 
