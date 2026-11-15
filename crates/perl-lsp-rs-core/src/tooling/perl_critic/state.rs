@@ -5,14 +5,29 @@
 //! only the accepted Disabled/Native values and their observation fingerprint.
 
 use super::NativeCriticProfile;
-use crate::hashing::fnv1a64_hex;
 
-/// Separator used when serializing accepted-state content into its fingerprint
-/// input. Chosen so ordinary setting values cannot collide across fields.
+/// Historical separator for the observation fingerprint's fields and lists.
+///
+/// Preserve this framing for compatibility. It is not unambiguous: moving a
+/// selector across the include/exclude boundary can retain the same bytes.
+/// Currentness and reusable result identity must use their separate owners.
 const FINGERPRINT_FIELD_SEPARATOR: &str = "\u{1f}";
 
 /// Version tag binding the fingerprint recipe to this accepted-state shape.
 const FINGERPRINT_RECIPE_VERSION: &str = "critic-state-v1";
+
+/// Retained observation-only FNV recipe, private to critic policy (#7410).
+///
+/// Keep the offset, wrapping update, prefix and output width identical to the
+/// former core helper. This is not a new public hashing or identity authority.
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
 
 /// One accepted critic runtime state (#8253).
 ///
@@ -172,5 +187,39 @@ mod tests {
             assert_eq!(policy.exclude, ["rule.c"]);
             assert_eq!(policy.owning_root.as_deref(), Some("root"));
         }
+    }
+
+    #[test]
+    fn observation_fingerprint_preserves_known_byte_vectors() {
+        for (bytes, expected) in [
+            (b"".as_slice(), "fnv1a64:cbf29ce484222325"),
+            (b"hello".as_slice(), "fnv1a64:a430d84680aabd0b"),
+            (b"ch".as_slice(), "fnv1a64:08a25607b54a22ae"),
+            ([0, 127, 128, 255].as_slice(), "fnv1a64:29bdf07e674617ed"),
+        ] {
+            assert_eq!(fnv1a64_hex(bytes), expected);
+        }
+    }
+
+    #[test]
+    fn accepted_state_fingerprint_preserves_version_and_field_framing() {
+        assert_eq!(EffectiveCriticState::Disabled.fingerprint(), "fnv1a64:ba3def9e9270e641");
+        let recommended = EffectiveNativeCriticConfig::new(
+            NativeCriticProfile::Recommended,
+            3,
+            &[],
+            &[],
+            None,
+        );
+        assert_eq!(recommended.fingerprint(), "fnv1a64:e8a46b38363505a2");
+
+        let strict = EffectiveNativeCriticConfig::new(
+            NativeCriticProfile::Strict,
+            5,
+            &[" rule.b ".into(), "rule.a".into(), "rule.a".into()],
+            &["rule.c".into()],
+            Some("根/é"),
+        );
+        assert_eq!(strict.fingerprint(), "fnv1a64:5180b484d3b34cbd");
     }
 }
