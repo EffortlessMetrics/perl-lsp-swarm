@@ -856,11 +856,7 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
             e.canonical_name == package
                 || e.canonical_name.strip_prefix(&prefix).is_some_and(|rest| !rest.contains("::"))
         });
-        if known_in_shards {
-            return Some(true);
-        }
-
-        Some(false)
+        Some(known_in_shards)
     }
 
     fn transitive_role_methods(&self, role_package: &str) -> Vec<(String, String)> {

@@ -149,7 +149,7 @@ cargo build --release -p perllsp
 ```
 
 ### System Requirements
-- Rust 1.95 or later
+- Rust 1.100 or later
 - No runtime dependencies
 - Works on Linux, macOS, and Windows
 

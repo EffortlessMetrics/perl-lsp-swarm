@@ -64,6 +64,12 @@ fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn st
     {
         let name =
             check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+        let Some(events) = check.get("events").and_then(TomlValue::as_array) else {
+            continue;
+        };
+        if !events.iter().any(|event| event.as_str() == Some("workflow_dispatch")) {
+            continue;
+        }
         let workflow = check
             .get("workflow")
             .and_then(TomlValue::as_str)
@@ -189,8 +195,10 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-/// Every required-check workflow must be raised on the generated PR, plus
-/// the lane-history validator, and each must accept workflow_dispatch.
+/// Every required dispatch registration's workflow must be raised on the
+/// generated PR, plus the lane-history validator. Merge-group-only producers
+/// are outside this event's scope and must not acquire a manual trigger merely
+/// to satisfy this inventory.
 #[test]
 fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::Error>> {
     let step = dispatch_step()?;

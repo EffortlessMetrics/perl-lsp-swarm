@@ -14,9 +14,11 @@ from scripts.ci.test_staged_qualification_workflow_cutover import staged_tree
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = {
-    'post-merge-status.yml': ('automation/post-merge-status', ['pr-title-check.yml']),
+    'post-merge-status.yml': ('automation/post-merge-status',
+                              ['pr-title-check.yml', 'gate-enforcement-contract.yml']),
     'aggregate-ci-lane-history.yml': ('automation/ci-lane-history',
-                                      ['pr-title-check.yml', 'validate-ci-lane-history.yml']),
+                                      ['pr-title-check.yml', 'validate-ci-lane-history.yml',
+                                       'gate-enforcement-contract.yml']),
 }
 STUB = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -74,8 +76,7 @@ class GeneratedMetadataDispatchTests(unittest.TestCase):
                 self.assertEqual(run.returncode, 0, run.stderr)
                 dispatches = [call for call in calls if call[:2] == ['workflow', 'run']]
                 self.assertEqual([call[2] for call in dispatches],
-                                 ['ci.yml', 'em-ci-routed-rust.yml', 'ripr.yml', *metadata,
-                                  'gate-enforcement-contract.yml'])
+                                 ['ci.yml', 'em-ci-routed-rust.yml', 'ripr.yml', *metadata])
                 self.assertEqual(dispatches[0][-4:], ['-f', 'base_sha=' + 'a' * 40,
                                                     '-f', 'head_sha=' + 'b' * 40])
 

@@ -145,7 +145,7 @@ def execute_native(owners,event,central_capture,*,allocation_owner,log_path,
                 raise Refused('actual selected local command failed; Rust qualification did not run')
         identity=canonical.executable_identity()
         child={key:value for key,value in native.items() if key not in {'PYTHONPATH','PYTHONHOME'}}
-        child.update(RUSTUP_TOOLCHAIN='1.95.0',RUSTUP_AUTO_INSTALL='0')
+        child.update(RUSTUP_TOOLCHAIN='1.100.0',RUSTUP_AUTO_INSTALL='0')
         with log_path.open('xb') as log:
             result=subprocess.run([str(canonical.verifier),'--worktree-root',str(canonical.workspace),
                 'rust-small-proof'],cwd=canonical.workspace,env=child,stdout=log,

@@ -118,7 +118,7 @@ assert_not_contains "cargo-safe: stale cargo never executed work" \
 FRESH_BIN="${TMPDIR_BASE}/fresh-bin"
 FRESH_LOG="${TMPDIR_BASE}/fresh-args.log"
 : > "$FRESH_LOG"
-write_stub_cargo "$FRESH_BIN" "1.96.1" "$FRESH_LOG"
+write_stub_cargo "$FRESH_BIN" "1.101.1" "$FRESH_LOG"
 
 code=0
 (
@@ -130,7 +130,7 @@ if [[ "$code" -eq 0 ]]; then
 else
   fail "cargo-safe: satisfying cargo must pass, got exit ${code}"
 fi
-if grep -Fq "cargo 1.96.1" "${TMPDIR_BASE}/fresh.out"; then
+if grep -Fq "cargo 1.101.1" "${TMPDIR_BASE}/fresh.out"; then
   pass "cargo-safe: satisfying cargo still receives the delegation"
 else
   fail "cargo-safe: expected stub version on stdout, got: $(cat "${TMPDIR_BASE}/fresh.out")"
@@ -157,7 +157,7 @@ chmod +x "${FAILED_BIN}/cargo"
 for scenario in missing-pin unrelated-failure; do
   case "$scenario" in
     missing-pin)
-      probe_error="error: toolchain '1.95.0-x86_64-unknown-linux-gnu' is not installed"
+      probe_error="error: toolchain '1.100.0-x86_64-unknown-linux-gnu' is not installed"
       ;;
     unrelated-failure)
       # Even version-looking output must not override a failed probe status.
@@ -185,7 +185,7 @@ for scenario in missing-pin unrelated-failure; do
   assert_contains "$scenario: distinguishes stable from the repository pin" \
     'Installing stable alone does not install that pin' "${TMPDIR_BASE}/${scenario}.err"
   assert_contains "$scenario: makes pin installation conditional on the error" \
-    'if the error reports the pinned toolchain missing: rustup toolchain install 1.95.0' \
+    'if the error reports the pinned toolchain missing: rustup toolchain install 1.100.0' \
     "${TMPDIR_BASE}/${scenario}.err"
   assert_not_contains "$scenario: does not prescribe removing Cargo" \
     'repair or remove this cargo from PATH' "${TMPDIR_BASE}/${scenario}.err"
@@ -344,7 +344,7 @@ trap 'restore_local_config; cleanup' EXIT
 CONFIG_STUB_BIN="${TMPDIR_BASE}/config-stub-bin"
 CONFIG_STUB_LOG="${TMPDIR_BASE}/config-stub-args.log"
 : > "$CONFIG_STUB_LOG"
-write_stub_cargo "$CONFIG_STUB_BIN" "1.96.1" "$CONFIG_STUB_LOG"
+write_stub_cargo "$CONFIG_STUB_BIN" "1.101.1" "$CONFIG_STUB_LOG"
 echo '[env]
 CARGO_LOCAL_CONFIG_PROBE = "present"' > "$LOCAL_CONFIG"
 CREATED_LOCAL=1

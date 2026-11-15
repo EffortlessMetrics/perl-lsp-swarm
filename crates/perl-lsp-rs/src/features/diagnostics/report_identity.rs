@@ -383,8 +383,8 @@ const PULL_REPORT_IDENTITY_V3_TAG: &str = "perl-lsp:pull-report-identity:v3";
 ///
 /// Replaces a derivation that took `url::Url::path()` — the *host absolute*
 /// path — stripped its leading slash and called the result root-relative. That
-/// bound the host layout into the logical source (`/home/alice/proj/lib/App.pm`
-/// and `/home/bob/proj/lib/App.pm` became different logical sources for the same
+/// bound the host layout into the logical source (`/fixture/checkouts/alice/proj/lib/App.pm`
+/// and `/fixture/checkouts/bob/proj/lib/App.pm` became different logical sources for the same
 /// file) and, when URI parsing failed, passed the raw string through so `..`,
 /// absolute and empty forms reached the digest verbatim.
 ///
@@ -868,21 +868,27 @@ mod tests {
         // only the host location of the checkout differs.
         let alice = context_with_split_root(
             Some("shared-root-key"),
-            Some(&native_fixture("/home/alice/proj")),
+            Some(&native_fixture("/fixture/checkouts/alice/proj")),
         );
         let bob = context_with_split_root(
             Some("shared-root-key"),
-            Some(&native_fixture("/home/bob/proj")),
+            Some(&native_fixture("/fixture/checkouts/bob/proj")),
         );
 
-        let from_alice =
-            subject_for(&alice, &native_fixture("file:///home/alice/proj/lib/App.pm"), CONTENT)
-                .compose()
-                .ok();
-        let from_bob =
-            subject_for(&bob, &native_fixture("file:///home/bob/proj/lib/App.pm"), CONTENT)
-                .compose()
-                .ok();
+        let from_alice = subject_for(
+            &alice,
+            &native_fixture("file:///fixture/checkouts/alice/proj/lib/App.pm"),
+            CONTENT,
+        )
+        .compose()
+        .ok();
+        let from_bob = subject_for(
+            &bob,
+            &native_fixture("file:///fixture/checkouts/bob/proj/lib/App.pm"),
+            CONTENT,
+        )
+        .compose()
+        .ok();
 
         assert_eq!(
             from_alice, from_bob,
@@ -1179,7 +1185,7 @@ mod tests {
     /// material most likely to be a host path.
     #[test]
     fn refusal_text_does_not_leak_document_or_root_paths() {
-        let context = context_with(Some(&native_fixture("/home/alice/private-root")));
+        let context = context_with(Some(&native_fixture("/fixture/checkouts/alice/private-root")));
         // Relative material is refused, and the refusal must not echo it.
         let outcome = pull_report_subject("../alice-secrets/creds.pm", CONTENT, Some(1), &context);
         let error = outcome.expect_err("relative material must be refused");

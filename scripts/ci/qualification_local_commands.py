@@ -94,7 +94,7 @@ def produce(canonical, environment, *, acquire_plan, output, command_timeout_sec
     child_environment = {key: value for key, value in environment.items()
         if not key.startswith('GIT_') and key not in {'GH_TOKEN', 'GITHUB_TOKEN',
             'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'PYTHONPATH', 'PYTHONHOME'}}
-    child_environment.update(RUSTUP_TOOLCHAIN='1.95.0', RUSTUP_AUTO_INSTALL='0')
+    child_environment.update(RUSTUP_TOOLCHAIN='1.100.0', RUSTUP_AUTO_INSTALL='0')
     with partial.open('xb') as stdout, (output / 'owner-stderr.log').open('xb') as stderr:
         process = subprocess.run([str(canonical.verifier), '--worktree-root', str(workspace),
             'command-evidence', 'proof-set', '--spec', str(spec_path), '--json'], cwd=workspace,

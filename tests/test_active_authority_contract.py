@@ -388,8 +388,8 @@ class ActiveAuthorityContractTests(unittest.TestCase):
             "CONTRIBUTING.md prose",
             (
                 "agent contributing guide",
-                "Rust channel `1.95.0`",
-                "MSRV 1.95",
+                "Rust channel `1.100.0`",
+                "MSRV 1.100",
                 "There is no fixed two-model review ladder",
                 "Labels may help navigation. They are not proof or merge permission.",
                 "Behind-only movement requires no action.",

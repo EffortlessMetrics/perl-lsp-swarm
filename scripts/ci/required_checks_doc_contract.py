@@ -109,8 +109,10 @@ class DriftFinding:
 def extract_required_checks(
     toml_text: str,
 ) -> tuple[int, tuple[str, ...]]:
-    """Return ``(count, sorted_names)`` for ``[[checks]]`` rows with
-    ``required = true``.
+    """Return ``(count, sorted_names)`` for distinct required contexts.
+
+    Event-specific producers share one context name, so policy rows for disjoint
+    events count once rather than inflating the required-context denominator.
 
     The singular ``[[check]]`` blocks are workflow-trigger-lint input and are
     not authoritative for the rule we are validating: they describe whether a
@@ -121,11 +123,11 @@ def extract_required_checks(
     """
     data = tomllib.loads(toml_text)
     blocks = data.get("checks", [])
-    required = sorted(
+    required = sorted({
         block["name"]
         for block in blocks
         if isinstance(block, dict) and block.get("required") is True
-    )
+    })
     return len(required), tuple(required)
 
 

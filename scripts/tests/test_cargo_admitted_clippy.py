@@ -80,7 +80,7 @@ class ClippyAdmissionTests(unittest.TestCase):
         self.slot = self.root / "slot"
         self.paths = {name: self.root / name for name in ("target", "build", "cargo_home", "temp")}
         self.worktree = Path.cwd().resolve()
-        self.plan = {"pin": "1.95.0", "host": "fixture", "root": str(self.root),
+        self.plan = {"pin": "1.100.0", "host": "fixture", "root": str(self.root),
                      "subjects": {name: {"path": str(self.root / name)} for name in
                                   ("cargo", "rustc", "rustdoc", "cargo-clippy", "clippy-driver")}}
         self.env = {"MIN_FREE_GB": "0.001", "MAX_USED_PCT": "100"}
@@ -321,7 +321,7 @@ class ClippyAdmissionTests(unittest.TestCase):
 
     def test_only_finite_positive_work_shape_is_admitted(self):
         invalid = [["clippy"], ["clippy", "--version"], ["clippy", "--fix"],
-                   ["cargo-clippy", *REQUEST[1:]], ["+1.95.0", *REQUEST],
+                   ["cargo-clippy", *REQUEST[1:]], ["+1.100.0", *REQUEST],
                    REQUEST[:1] + ["--config=x"] + REQUEST[1:],
                    ["clippy", "-p", "*", *REQUEST[3:]],
                    ["clippy", "-p", "consumer@1.0", *REQUEST[3:]],
@@ -586,9 +586,9 @@ class ClippyIdentityTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.worktree = self.root / "worktree"
         self.worktree.mkdir()
-        (self.worktree / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.95.0"\n')
+        (self.worktree / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.100.0"\n')
         self.home = self.root / "rustup"
-        self.tools = self.home / "toolchains/1.95.0-x86_64-unknown-linux-gnu"
+        self.tools = self.home / "toolchains/1.100.0-x86_64-unknown-linux-gnu"
         (self.tools / "bin").mkdir(parents=True)
         (self.tools / "lib").mkdir()
         for name in ("cargo", "rustc", "rustdoc", "cargo-clippy", "clippy-driver"):
@@ -629,9 +629,9 @@ class ClippyIdentityTests(unittest.TestCase):
     def test_mismatched_driver_commit_is_setup_failure(self):
         plan = self.plan()
         commit = "a" * 40
-        outputs = [b"cargo 1.95.0 (fixture)",
-                   ("rustc 1.95.0\nrelease: 1.95.0\nhost: x86_64-unknown-linux-gnu\ncommit-hash: " + commit + "\n").encode(),
-                   b"clippy 0.1.95 (bbbbbbbbbb 2026-04-14)", b"clippy 0.1.95 (bbbbbbbbbb 2026-04-14)"]
+        outputs = [b"cargo 1.100.0 (fixture)",
+                   ("rustc 1.100.0\nrelease: 1.100.0\nhost: x86_64-unknown-linux-gnu\ncommit-hash: " + commit + "\n").encode(),
+                   b"clippy 0.1.100 (bbbbbbbbbb 2026-04-14)", b"clippy 0.1.100 (bbbbbbbbbb 2026-04-14)"]
         results = [subprocess.CompletedProcess([], 0, stdout=out, stderr=b"") for out in outputs]
         with patch.object(safe.subprocess, "run", side_effect=results), self.assertRaises(safe.Denied):
             safe.clippy_version_check(plan, {})

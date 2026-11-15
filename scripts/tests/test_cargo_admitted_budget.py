@@ -293,7 +293,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
             self.assertTrue(all("compatibility" in row.lower() for row in matching), recipe)
         clippy = next(row for row in rows if "Agent Clippy" in row)
         self.assertIn("#staged-native-clippy", clippy)
-        self.assertIn("1.95.0", clippy)
+        self.assertIn("1.100.0", clippy)
         self.assertIn("Linux", clippy)
 
     def test_legacy_recipe_help_does_not_promise_admission(self):

@@ -25,7 +25,7 @@
       "rule": "features-preview",
       "authority": "features.toml",
       "emits": "preview",
-      "considered": 129,
+      "considered": 130,
       "emitted": 2,
       "not_seeded_reason": "rows with maturity != \"preview\" are not preview surfaces"
     },
@@ -33,8 +33,8 @@
       "rule": "features-product",
       "authority": "features.toml",
       "emits": "product",
-      "considered": 129,
-      "emitted": 16,
+      "considered": 130,
+      "emitted": 18,
       "not_seeded_reason": "rows with maturity != \"proven\" or advertised != true are not product surfaces; earned-claim maturity stays owned by features.toml"
     },
     {
@@ -1545,6 +1545,40 @@
       }
     },
     {
+      "surface_id": "feature:lsp.critic.native",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.critic.native",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"executeCommandProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perllsp/tests/lsp_critic_native_only_process.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.critic.native",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
       "surface_id": "feature:lsp.declaration",
       "class": "product",
       "class_authority": {
@@ -2106,6 +2140,40 @@
         "authority": "features.toml"
       },
       "maturity_authority": "features.toml#lsp.semantic_tokens",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.text_document_sync",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.text_document_sync",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"textDocumentSync\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perllsp/tests/lsp_text_sync_diagnostics_process.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.text_document_sync",
       "owner": "crates/perl-lsp-rs",
       "promotion": {
         "state": "not_evaluated"

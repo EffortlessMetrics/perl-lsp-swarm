@@ -30,6 +30,12 @@ fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn st
     {
         let name =
             check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+        let Some(events) = check.get("events").and_then(TomlValue::as_array) else {
+            continue;
+        };
+        if !events.iter().any(|event| event.as_str() == Some("workflow_dispatch")) {
+            continue;
+        }
         let workflow = check
             .get("workflow")
             .and_then(TomlValue::as_str)
@@ -96,7 +102,7 @@ fn assert_dispatch_loop_behavior(
             "--ref".to_string(),
             branch.to_string(),
         ];
-        if workflow == "ci.yml" {
+        if (workflow == "ci.yml" || workflow == "ripr.yml") {
             argv.push("-f".into());
             argv.push(format!("base_sha={base_sha}"));
             argv.push("-f".into());
@@ -113,7 +119,7 @@ fn assert_dispatch_loop_behavior(
     let expected_calls = dispatch_order
         .iter()
         .map(|workflow| {
-            if workflow == "ci.yml" {
+            if (workflow == "ci.yml" || workflow == "ripr.yml") {
                 format!(
                     "workflow run {workflow} --ref {branch} -f base_sha={base_sha} -f head_sha={head_sha}"
                 )
@@ -359,19 +365,26 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
         .and_then(TomlValue::as_array)
         .ok_or("required-checks.toml must declare a checks array")?;
 
-    for check in checks
+    let required_names: BTreeSet<&str> = checks
         .iter()
         .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
-    {
-        let required_name =
-            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
-        let events = check
-            .get("events")
-            .and_then(TomlValue::as_array)
-            .ok_or_else(|| format!("`{required_name}` must declare events"))?;
+        .map(|check| {
+            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>")
+        })
+        .collect();
+    for required_name in required_names {
+        let has_dispatch_route = checks
+            .iter()
+            .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+            .filter(|check| check.get("name").and_then(TomlValue::as_str) == Some(required_name))
+            .any(|check| {
+                check.get("events").and_then(TomlValue::as_array).is_some_and(|events| {
+                    events.iter().any(|event| event.as_str() == Some("workflow_dispatch"))
+                })
+            });
         assert!(
-            events.iter().any(|event| event.as_str() == Some("workflow_dispatch")),
-            "`{required_name}` must record workflow_dispatch as a supported route"
+            has_dispatch_route,
+            "`{required_name}` must record workflow_dispatch on at least one event registration"
         );
     }
 
@@ -458,7 +471,7 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         "generated-PR dispatch step must continue after an individual failure and fail overall"
     );
 
-    // The ci.yml dispatch arm reads its subject identity from step env
+    // The ci.yml and ripr.yml dispatch arms read their subject identity from env
     // (#13355); both names must be declared so the simulated invocation is
     // the one the workflow really makes.
     let step_env = dispatch_step
@@ -471,6 +484,14 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
             "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
         );
     }
+
+    assert!(
+        dispatch_run
+            .contains("if [ \"$workflow\" = ci.yml ] || [ \"$workflow\" = ripr.yml ]; then")
+            && dispatch_run.contains("-f \"base_sha=$BASE_SHA\"")
+            && dispatch_run.contains("-f \"head_sha=$GENERATED_HEAD_SHA\""),
+        "ripr.yml must receive the generated PR's base and head SHAs instead of running bare"
+    );
 
     #[cfg(unix)]
     assert_dispatch_loop_behavior(
