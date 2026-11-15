@@ -163,6 +163,21 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # canonical index_initial_file before planning a rename and shrinking one
 # file. Owned by the existing crates/perl-parser row; no compatibility call,
 # no production caller. Baseline therefore stays 697.
+# Held at 697 by the main-red repair for #18720 (#1761 dynamic-construct
+# acceptance): crates/perl-workspace/tests/issue_1761_dynamic_construct_acceptance.rs
+# is a new caller identity that seeds temp on-disk fixtures through
+# index_initial_file in index_temp_source. Owned by the existing
+# crates/perl-workspace/tests row; no compatibility call, no production caller.
+# Held at 697 by #18828 (#18760 regex-flag / mid-word method completion):
+# crates/perl-lsp-rs-core/src/providers/completion/completion/request/context.rs
+# is a new caller identity; cross_file_mid_word_method_offers_class_method seeds
+# Inventory.pm through index_initial_file (canonical initial API). Owned by the
+# existing crates/perl-lsp-rs-core row; no compatibility call, no production
+# caller. Introducing commit 09df595b29d0cab767ae0c4f49fe496ba12ef3dc.
+# The same PR added one fixture-only index_file_str seed in
+# crates/perl-lsp-rs/src/runtime/language/completion.rs
+# (runtime_workspace_package_prefix_excludes_subsequence_numeric_hits); resolved
+# by burndown to index_initial_file_str so compatibility_baseline stays 697.
 compatibility_baseline = 697
 
 # Structural recurrence control (#11305): files under these prefixes must
@@ -181,6 +196,7 @@ compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/request/context.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/workspace.rs",
@@ -245,6 +261,7 @@ caller_paths = [
   "crates/perl-workspace/tests/folder_provenance_tests.rs",
   "crates/perl-workspace/tests/generated_member_facts.rs",
   "crates/perl-workspace/tests/interpolated_string_usage_tests.rs",
+  "crates/perl-workspace/tests/issue_1761_dynamic_construct_acceptance.rs",
   "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
   "crates/perl-workspace/tests/memory_leak_regression.rs",
   "crates/perl-workspace/tests/memory_profiling_test.rs",

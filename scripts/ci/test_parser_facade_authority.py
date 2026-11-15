@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -28,6 +29,18 @@ from parser_facade_inventory import (
 )
 
 FIXTURE_LEDGER = Path(__file__).resolve().parents[2] / ".ci/parser-facade"
+
+
+def fixture_feature_closure(features: dict[str, list[str]], root: str) -> set[str]:
+    seen: set[str] = set()
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        pending.extend(entry for entry in features.get(current, []) if entry in features)
+    return seen
 
 
 class ParserFacadeAuthorityTests(unittest.TestCase):
@@ -370,17 +383,34 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         return next(row for row in self.ledger["features"] if row["name"] == name)
 
     def independent_source_only_feature(self) -> dict:
-        """A `source_only` feature no default aggregate depends on.
+        """A production source-boundary feature no default bundle member enables.
 
         Mutating a feature inside the default closure would change `default`'s own
         class too, so these tests pick one outside it to keep the assertion pointed
-        at the feature under test.
+        at the feature under test. The fixture ledger no longer carries pure
+        `source_only` rows; `dependencies_and_source` features with the same src
+        gates satisfy the same proof obligation.
         """
-        return next(
-            row for row in self.ledger["features"]
-            if row["isolation"] == "source_only"
+        candidates = [
+            row
+            for row in self.ledger["features"]
+            if row["isolation"] in ("source_only", "dependencies_and_source")
             and row["name"] not in self.ledger["default_features"]
-        )
+            and row["name"] != "default"
+        ]
+        if not candidates:
+            self.fail(
+                "fixture ledger has no independent production source feature "
+                "(source_only or dependencies_and_source outside default_features)"
+            )
+        return sorted(candidates, key=lambda row: row["name"])[0]
+
+    def test_fixture_default_closure_excludes_transitive_and_cyclic_features(self) -> None:
+        features = {"default": ["outer"], "outer": ["inner"],
+                    "inner": ["outer", "dep:external"], "other": []}
+        self.assertEqual(fixture_feature_closure(features, "default"),
+                         {"default", "outer", "inner"})
+        self.assertNotIn("other", fixture_feature_closure(features, "default"))
 
     # --- dependency universe -------------------------------------------------
 
@@ -481,9 +511,13 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             check(self.root, self.ledger_path)
 
     def test_removing_a_feature_cfg_gate_invalidates_source_isolation(self) -> None:
-        target = self.independent_source_only_feature()["name"]
-        self.write_feature_gates([name for name in self.gated_features if name != target])
-        with self.assertRaisesRegex(ValueError, f"feature {target} claims isolation source_only"):
+        row = self.independent_source_only_feature()
+        self.write_feature_gates(
+            [name for name in self.gated_features if name != row["name"]]
+        )
+        with self.assertRaisesRegex(
+            ValueError, f'feature {row["name"]} claims isolation {row["isolation"]}'
+        ):
             check(self.root, self.ledger_path)
 
     def test_test_only_gate_cannot_claim_production_source_isolation(self) -> None:
@@ -502,7 +536,10 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             [name for name in self.gated_features if name != gated],
             self.test_gated_features + [gated],
         )
-        with self.assertRaisesRegex(ValueError, "but selects test_source_only"):
+        with self.assertRaisesRegex(
+            ValueError,
+            r"but selects (test_source_only|dependencies_only)",
+        ):
             check(self.root, self.ledger_path)
 
     def test_feature_isolation_value_must_be_supported(self) -> None:
@@ -913,7 +950,10 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             f'    #[cfg(feature = "{row["name"]}")]\n    #[test]\n    fn gated() {{}}\n'
             "}\n",
         )
-        with self.assertRaisesRegex(ValueError, f'feature {row["name"]} claims isolation source_only'):
+        with self.assertRaisesRegex(
+            ValueError,
+            f'feature {row["name"]} claims isolation {row["isolation"]}',
+        ):
             check(self.root, self.ledger_path)
 
     def test_production_gate_outside_a_test_module_still_counts(self) -> None:

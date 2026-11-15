@@ -304,7 +304,7 @@ The corpus covers the outcome classes #9188 requires:
 | stale | `cac-parity-stale-superseded-document-version` |
 | ambiguous | `cac-parity-extract-variable-requires-selection`, `cac-parity-duplicate-authority-collapsed` |
 | refactor families | `cac-parity-enhanced-rewrite-transform-publishes-an-edit` |
-| malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
+| malformed | `cac-parity-parse-error-recovery-keeps-ast-path`, `cac-parity-parse-error-single-unclosed-block-associated-quickfix` |
 | legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
 | identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
 | recorded gap (`NOT_PROVEN`) | the remaining `text_fallback` row, `refactor.extract.subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract.variable:basic_fallback` carry a `proof_gap` instead of a parity fixture — four rows |

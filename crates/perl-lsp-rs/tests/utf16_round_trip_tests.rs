@@ -9,6 +9,8 @@
 #[cfg(test)]
 #[cfg(feature = "utf16-complete")]
 mod utf16_round_trip_tests {
+    // LspHarness does not expose `position_to_offset` / `offset_to_position`; these
+    // tests intentionally exercise direct LspServer UTF-16 conversion internals.
     use perl_lsp::LspServer;
 
     fn test_round_trip(server: &LspServer, text: &str, line: u32, character: u32) -> bool {

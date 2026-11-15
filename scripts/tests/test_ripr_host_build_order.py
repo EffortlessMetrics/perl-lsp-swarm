@@ -13,12 +13,12 @@ ALWAYS = ['Adjudicate receipt cache exactness', 'Generate repo-wide RIPR+ baseli
           'Record exact RIPR badge producer', 'Generate review guidance',
           'Generate impacted evidence', 'Generate PR evidence summary',
           'Generate warning annotations', 'Audit suppression lifecycle',
-          'Validate PR evidence contracts', 'Enforce new RIPR gap quality gate',
+          'Validate PR evidence contracts', 'Validate advisory review guidance',
+          'Enforce new RIPR gap quality gate',
           'Append PR evidence summary', 'Record RIPR freshness handoff result']
 CHECKS = [
     ['xtask', 'ripr-pr', '--base', 'origin/main', '--head', 'HEAD', '--pr-head', 'fixed-pr-head', '--check'],
     ['xtask', 'ripr-plus', '--receipt', 'target/receipts/quality/ripr-plus.json', '--check'],
-    ['xtask', 'ripr-review-comments', '--base', 'origin/main', '--head', 'HEAD', '--pr-head', 'fixed-pr-head', '--check'],
     ['xtask', 'impacted-evidence', '--labels-csv', 'proof-label', '--check'],
     ['xtask', 'ripr-pr-summary', '--check'], ['xtask', 'ripr-annotations', '--check'],
 ]
@@ -106,14 +106,17 @@ class OrderProof(unittest.TestCase):
         mandatory = ['Build xtask', 'Run ripr doctor', 'Generate PR evidence',
                      'Restore memoized ripr-plus receipt'] + ALWAYS
         for name in mandatory:
-            if name != 'Audit suppression lifecycle':
+            if name not in {'Generate review guidance', 'Audit suppression lifecycle',
+                            'Validate advisory review guidance'}:
                 self.assertIn(field(self.parts[name], 'continue-on-error'), (None, 'false'), name)
         for name in ['Build xtask', 'Run ripr doctor', 'Generate PR evidence', 'Restore memoized ripr-plus receipt']:
             self.assertIsNone(field(self.parts[name], 'if'), name)
         self.assertEqual(field(self.parts['Run ripr doctor'], 'run'), 'ripr doctor')
         for name in ALWAYS:
             self.assertEqual(field(self.parts[name], 'if'), 'always()', name)
-        self.assertEqual(field(self.parts['Audit suppression lifecycle'], 'continue-on-error'), 'true')
+        for name in ['Generate review guidance', 'Audit suppression lifecycle',
+                     'Validate advisory review guidance']:
+            self.assertEqual(field(self.parts[name], 'continue-on-error'), 'true', name)
         self.assertEqual(field(self.parts['Upload ripr PR evidence'], 'if'),
                          "always() && steps.ripr-freshness-result.outputs.ready == 'true'")
         self.assertEqual(field(self.parts['Save memoized ripr-plus receipt'], 'if'),
@@ -169,7 +172,7 @@ class OrderProof(unittest.TestCase):
                 self.assertIn('invalidation did not complete', result.stderr)
 
     def test_nonzero_cargo_check_stops_later_checks(self):
-        for number in [1, 3, 6]:
+        for number in [1, 3, 5]:
             with self.subTest(number=number):
                 result, calls = self.validate('current-token', number)
                 self.assertEqual(result.returncode, 37)

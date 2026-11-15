@@ -16,7 +16,10 @@ use std::{
 use perl_ast::{Node, NodeKind, SourceLocation};
 use perl_pragma::CompileTimePragmaEnvironment;
 use perl_regex::{
-    analyzer::{CaptureDiagnosticCode, CaptureLanguageProfile, FeatureState, RegexLanguageProfile},
+    analyzer::{
+        CaptureDiagnosticCode, CaptureLanguageProfile, FeatureState,
+        PerlVersion as RegexPerlVersion, RegexLanguageProfile,
+    },
     validator::{RegexDiagnosticClass, RegexDiagnosticCode},
 };
 
@@ -408,7 +411,10 @@ fn profile_at(environment: &CompileTimePragmaEnvironment, offset: usize) -> Capt
     } else {
         FeatureState::Disabled
     };
-    CaptureLanguageProfile::new(RegexLanguageProfile::new(None, enhanced_xx), source_utf8)
+    let perl_version = state
+        .perl_version
+        .map(|version| RegexPerlVersion::new(version.major as u16, version.minor as u16));
+    CaptureLanguageProfile::new(RegexLanguageProfile::new(perl_version, enhanced_xx), source_utf8)
 }
 
 fn collect_ast_geometry(

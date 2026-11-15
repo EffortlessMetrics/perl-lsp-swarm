@@ -112,7 +112,22 @@
                         "1": {
                             "name": "keyword.other.perl"
                         }
-                    }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        },
+                        {
+                            "begin": "\\(",
+                            "end": "\\)",
+                            "patterns": [
+                                {
+                                    "include": "#q-quoted-paren-nested"
+                                }
+                            ]
+                        }
+                    ]
                 },
                 {
                     "name": "string.quoted.q.perl",
@@ -122,7 +137,22 @@
                         "1": {
                             "name": "keyword.other.perl"
                         }
-                    }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        },
+                        {
+                            "begin": "\\{",
+                            "end": "\\}",
+                            "patterns": [
+                                {
+                                    "include": "#q-quoted-brace-nested"
+                                }
+                            ]
+                        }
+                    ]
                 },
                 {
                     "name": "string.quoted.q.perl",
@@ -132,7 +162,22 @@
                         "1": {
                             "name": "keyword.other.perl"
                         }
-                    }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        },
+                        {
+                            "begin": "\\[",
+                            "end": "\\]",
+                            "patterns": [
+                                {
+                                    "include": "#q-quoted-bracket-nested"
+                                }
+                            ]
+                        }
+                    ]
                 },
                 {
                     "name": "string.quoted.q.perl",
@@ -142,7 +187,22 @@
                         "1": {
                             "name": "keyword.other.perl"
                         }
-                    }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        },
+                        {
+                            "begin": "<",
+                            "end": ">",
+                            "patterns": [
+                                {
+                                    "include": "#q-quoted-angle-nested"
+                                }
+                            ]
+                        }
+                    ]
                 },
                 {
                     "name": "string.quoted.q.perl",
@@ -152,7 +212,81 @@
                         "1": {
                             "name": "keyword.other.perl"
                         }
-                    }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                }
+            ]
+        },
+        "q-quoted-paren-nested": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
+                },
+                {
+                    "begin": "\\(",
+                    "end": "\\)",
+                    "patterns": [
+                        {
+                            "include": "#q-quoted-paren-nested"
+                        }
+                    ]
+                }
+            ]
+        },
+        "q-quoted-brace-nested": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
+                },
+                {
+                    "begin": "\\{",
+                    "end": "\\}",
+                    "patterns": [
+                        {
+                            "include": "#q-quoted-brace-nested"
+                        }
+                    ]
+                }
+            ]
+        },
+        "q-quoted-bracket-nested": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
+                },
+                {
+                    "begin": "\\[",
+                    "end": "\\]",
+                    "patterns": [
+                        {
+                            "include": "#q-quoted-bracket-nested"
+                        }
+                    ]
+                }
+            ]
+        },
+        "q-quoted-angle-nested": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
+                },
+                {
+                    "begin": "<",
+                    "end": ">",
+                    "patterns": [
+                        {
+                            "include": "#q-quoted-angle-nested"
+                        }
+                    ]
                 }
             ]
         },
@@ -166,6 +300,10 @@
         },
         "numbers": {
             "patterns": [
+                {
+                    "name": "constant.numeric.version.perl",
+                    "match": "(?:(?<!sub\\s+)(?<!::)(?<!->)\\bv\\d+(?:_\\d+)*(?:\\.\\d+(?:_\\d+)*)+\\b|(?<!sub\\s+)(?<!::)(?<!\\S\\{)(?<!\\S\\{[ \\t]*)(?<!->)\\bv\\d+(?:_\\d+)*\\b(?!\\.\\d)(?![ \\t]*=>))"
+                },
                 {
                     "name": "constant.numeric.hex.perl",
                     "match": "\\b0x[0-9a-fA-F_]+\\b"
@@ -501,8 +639,46 @@
                 },
                 {
                     "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*(\\()",
-                    "end": "\\)[cgimosxpodualner]*",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(\\()",
+                    "end": "\\)\\s*\\((?:[^()\\\\]|\\\\.)*\\)[cgimosxpodualner]*|\\)",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        },
+                        {
+                            "include": "#substitution-nested-parens"
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.replace.perl",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(\\{)",
+                    "end": "\\}\\s*\\{(?:[^{}\\\\]|\\\\.)*\\}[cgimosxpodualner]*|\\}",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        },
+                        {
+                            "include": "#substitution-nested-braces"
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.replace.perl",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(\\[)",
+                    "end": "\\]\\s*\\[(?:[^\\[\\]\\\\]|\\\\.)*\\][cgimosxpodualner]*|\\]",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -517,8 +693,8 @@
                 },
                 {
                     "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*(\\{)",
-                    "end": "\\}[cgimosxpodualner]*",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(<)",
+                    "end": ">\\s*<(?:[^<>\\\\]|\\\\.)*>[cgimosxpodualner]*|>",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -533,8 +709,8 @@
                 },
                 {
                     "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*(\\[)",
-                    "end": "\\][cgimosxpodualner]*",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*([^\\s\\w=}])",
+                    "end": "(?:\\\\.|[^\\\\])*?\\2\\s*(?:\\\\.|[^\\\\])*?\\2[cgimosxpodualner]*|(?:\\\\.|[^\\\\])*?\\2",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -546,38 +722,32 @@
                             "match": "\\\\."
                         }
                     ]
+                }
+            ]
+        },
+        "substitution-nested-braces": {
+            "begin": "\\{",
+            "end": "\\}",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
                 },
                 {
-                    "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*(<)",
-                    "end": ">[cgimosxpodualner]*",
-                    "captures": {
-                        "1": {
-                            "name": "keyword.other.perl"
-                        }
-                    },
-                    "patterns": [
-                        {
-                            "name": "constant.character.escape.perl",
-                            "match": "\\\\."
-                        }
-                    ]
+                    "include": "#substitution-nested-braces"
+                }
+            ]
+        },
+        "substitution-nested-parens": {
+            "begin": "\\(",
+            "end": "\\)",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
                 },
                 {
-                    "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*([^\\s\\w])",
-                    "end": "\\2[cgimosxpodualner]*",
-                    "captures": {
-                        "1": {
-                            "name": "keyword.other.perl"
-                        }
-                    },
-                    "patterns": [
-                        {
-                            "name": "constant.character.escape.perl",
-                            "match": "\\\\."
-                        }
-                    ]
+                    "include": "#substitution-nested-parens"
                 }
             ]
         },

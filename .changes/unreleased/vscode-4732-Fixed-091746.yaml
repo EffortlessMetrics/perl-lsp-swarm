@@ -1,9 +1,0 @@
-project: vscode
-component: Editor behavior
-kind: Fixed
-body: "A mid-session server crash is no longer silent: the extension now shows an error toast with a diagnosis hint, attempts up to 3 automatic restarts, and prompts the user to restart manually or run a Health Check once the retry budget is exhausted."
-time: 2026-07-23T09:17:46Z
-custom:
-  PR: "4732"
-  Slug: notify-restart-on-silent-crash
-  Breaking: "no"

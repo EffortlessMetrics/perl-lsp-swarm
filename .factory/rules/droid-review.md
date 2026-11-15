@@ -77,11 +77,17 @@ Validation signal:
 - **P2 (Medium):** Style, naming, documentation gaps
 - **P3 (Low):** Nice-to-haves, future improvements (rarely emitted)
 
-## Model & Depth
+## Runtime Boundary
 
-Droid reviews perl-lsp with:
-- **Model:** MiniMax-M2.7 (custom BYOK)
-- **Depth:** shallow (fast, focused findings)
-- **Security depth:** medium (balance coverage and noise)
+Automatic PR review is paused and is not part of the repository's merge argument.
+Automatic and secret-bearing security scanning is also paused while #6098 remains open.
+Neither paused lane supplies a finding, clean result, review verdict, or merge authority.
 
-Shallow review prioritizes correctness and safety. Deep review is triggered only on explicit request (not baseline).
+The only live Droid route is an explicit `@droid` request from an authorized human on
+an open same-repository pull request. `.github/workflows/droid.yml` owns its trigger,
+subject resolution, runtime identity, model selection, isolation, permissions, secret
+boundary, and publication behavior. #15840 owns that security boundary.
+
+Do not copy action SHAs, CLI versions, model names, depth settings, credentials, or
+permissions into this review-rules file. Read the current workflow and owning issue when
+those operational facts matter.

@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): census-clean on all targets; new findings move the crate back to non-C1.
 //! Comprehensive unit tests for perl-subprocess-runtime crate.
 
 use perl_subprocess_runtime::mock::{CommandInvocation, MockResponse, MockSubprocessRuntime};

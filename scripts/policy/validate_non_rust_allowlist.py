@@ -2,8 +2,8 @@
 """Compatibility shim for the Rust non-Rust policy schema validator.
 
 The schema validation logic lives in `cargo xtask non-rust validate-policy` so
-file-policy checks share the same Rust implementation. This wrapper preserves
-older automation that still invokes the historical Python script path.
+file-policy checks share the same Rust implementation. This historical entrypoint
+uses the existing Cargo admission owner; it does not select build storage itself.
 """
 
 from __future__ import annotations
@@ -13,6 +13,14 @@ import os
 import pathlib
 import subprocess
 import sys
+
+
+def caller_absolute(path: pathlib.Path) -> pathlib.Path:
+    # Python 3.11 Path.absolute() does not anchor a different drive's relative
+    # path. Resolve only the drive's cwd, never the symlink-sensitive tail.
+    if path.drive and not path.root:
+        return pathlib.Path(os.path.abspath(path.drive)).joinpath(*path.parts[1:])
+    return path.absolute()
 
 
 def main() -> int:
@@ -29,19 +37,27 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    # Freeze caller-relative and Windows drive-relative referents before changing
+    # cwd. Anchoring preserves symlink/.. components without normalization;
+    # resolve()/abspath() would rewrite their filesystem meaning.
     command = [
-        "cargo",
-        "xtask",
+        sys.executable,
+        "-B",
+        str(repo_root / "scripts" / "cargo_admitted.py"),
+        "run",
+        "-p", "xtask",
+        "--bin", "xtask",
+        "--locked",
+        "--",
         "non-rust",
         "validate-policy",
         "--allowlist",
-        str(args.allowlist),
+        str(caller_absolute(args.allowlist)),
         "--debt",
-        str(args.debt),
+        str(caller_absolute(args.debt)),
     ]
-    env = os.environ.copy()
-    env.setdefault("CARGO_TARGET_DIR", "/tmp/perl-lsp-target")
-    return subprocess.run(command, check=False, env=env).returncode
+    return subprocess.run(command, check=False, cwd=repo_root).returncode
 
 
 if __name__ == "__main__":

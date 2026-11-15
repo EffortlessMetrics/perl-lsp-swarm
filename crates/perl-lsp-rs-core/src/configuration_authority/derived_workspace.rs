@@ -966,6 +966,21 @@ mod tests {
             fan_out_group: None,
         };
         let violations = validate_derived_workspace(&[*field], &[evidence], &current_corpus());
+        // #16857 wired initialization to refresh_native_build_hints. The captured-read
+        // route instead calls apply_native_build_hint_reads, so omitting refresh_writer
+        // must still reject this live claim at the invalidation route.
+        assert!(
+            !violations.iter().any(|violation| matches!(
+                violation,
+                DerivedWorkspaceViolation::WriterUnreachable {
+                    id: "workspace.native_build_hints",
+                    writer: "refresh_native_build_hints",
+                    route: "refresh_workspace_metadata",
+                    source: WORKSPACE_FOLDER
+                }
+            )),
+            "initialization is wired: {violations:?}"
+        );
         assert!(
             violations.iter().any(|violation| matches!(
                 violation,

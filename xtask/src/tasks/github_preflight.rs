@@ -37,8 +37,10 @@ pub struct PreflightSnapshot {
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct CheckRunsPayload {
+    #[serde(default)]
+    total_count: u64,
     check_runs: Vec<CheckRun>,
 }
 
@@ -53,7 +55,7 @@ struct CommitStatus {
     state: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct CheckRun {
     id: u64,
     name: String,
@@ -64,9 +66,251 @@ struct CheckRun {
     app: Option<CheckRunApp>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct CheckRunApp {
     id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HeadRequiredCheck {
+    pub name: String,
+    pub result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdvisoryFailure {
+    pub name: String,
+    pub result: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HeadGateSnapshot {
+    pub schema_version: &'static str,
+    pub repository: String,
+    pub branch: Option<String>,
+    pub policy_base_ref: String,
+    pub head_sha: String,
+    pub policy_source: String,
+    pub check_run_total_count: u64,
+    pub check_run_pages_read: u32,
+    pub required_checks: Vec<HeadRequiredCheck>,
+    pub advisory_failures: Vec<AdvisoryFailure>,
+    pub overall: String,
+}
+
+const KNOWN_ADVISORY_CHECKS: &[&str] = &[
+    "CI Gate shard (policy)",
+    "CI Gate shard (meta)",
+    "Public API Surface (facade PR)",
+    "PR Smoke (Fast Feedback, advisory)",
+    "Trivy",
+    "UX Regression Tests",
+];
+
+const PR_SCOPED_REQUIRED_CONTEXTS: &[&str] = &["validate-title"];
+
+pub fn run_preflight_mode(
+    pr: Option<u64>,
+    sha: Option<String>,
+    branch: Option<String>,
+    json_only: bool,
+) -> Result<()> {
+    match (pr, sha, branch) {
+        (Some(pr), None, None) => run_preflight(pr, json_only),
+        (None, Some(sha), None) => run_head_gate(None, sha, "main", json_only),
+        (None, None, Some(branch)) => {
+            let repository = github::repository_name_with_owner()?;
+            let head_sha = github::resolve_git_ref_head_sha(&repository, &branch)?;
+            run_head_gate(Some(branch.clone()), head_sha, &branch, json_only)
+        }
+        _ => bail!("exactly one of --pr, --sha, or --branch is required"),
+    }
+}
+
+pub fn run_head_gate(
+    branch: Option<String>,
+    head_sha: String,
+    policy_base_ref: &str,
+    json_only: bool,
+) -> Result<()> {
+    let repository = github::repository_name_with_owner()?;
+    let required_contexts = github::required_contexts_for_base(&repository, policy_base_ref)
+        .with_context(|| {
+            format!("failed to discover required contexts for base ref {policy_base_ref}")
+        })?;
+    let policy_source = summarize_policy_source(&required_contexts);
+    let (all_check_runs, check_run_total_count, check_run_pages_read) =
+        paginate_check_runs(&repository, &head_sha)?;
+    let all_statuses = paginate_github_items(
+        &repository,
+        &head_sha,
+        "status",
+        "commit statuses",
+        |payload: CommitStatusPayload| payload.statuses,
+    )?;
+    let required_checks = required_contexts
+        .iter()
+        .map(|required| {
+            let fact = resolve_required_check(required, &all_check_runs, &all_statuses, &head_sha);
+            head_required_check_from_fact(&fact, true)
+        })
+        .collect::<Vec<_>>();
+    let required_names =
+        required_contexts.iter().map(|context| context.name.as_str()).collect::<BTreeSet<_>>();
+    let advisory_failures = collect_advisory_failures(&all_check_runs, &head_sha, &required_names);
+    let mut errors = Vec::new();
+    if let Some(ref branch_name) = branch {
+        let final_head = github::resolve_git_ref_head_sha(&repository, branch_name)?;
+        if final_head != head_sha {
+            errors.push(format!(
+                "branch {branch_name} advanced from {head_sha} to {final_head} during evaluation"
+            ));
+        }
+    }
+    let overall = derive_head_gate_overall(&required_checks, &errors);
+    let snapshot = HeadGateSnapshot {
+        schema_version: "github-head-gate.v1",
+        repository,
+        branch,
+        policy_base_ref: policy_base_ref.to_string(),
+        head_sha,
+        policy_source,
+        check_run_total_count,
+        check_run_pages_read,
+        required_checks,
+        advisory_failures,
+        overall: overall.clone(),
+    };
+    if !json_only {
+        print_head_gate_human(&snapshot);
+    }
+    println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    match overall.as_str() {
+        "PASS" => Ok(()),
+        "IN_PROGRESS" => bail!("main-head REQUIRED-ONLY gate is IN_PROGRESS"),
+        "FAIL" => bail!("main-head REQUIRED-ONLY gate is FAIL"),
+        _ => bail!("main-head REQUIRED-ONLY gate is NOT_PROVEN"),
+    }
+}
+
+fn summarize_policy_source(required_contexts: &[RequiredContext]) -> String {
+    required_contexts
+        .iter()
+        .map(|context| context.source.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+fn head_required_check_from_fact(fact: &RequiredCheckFact, branch_head: bool) -> HeadRequiredCheck {
+    let note = if branch_head
+        && fact.result == "MISSING"
+        && PR_SCOPED_REQUIRED_CONTEXTS.contains(&fact.name.as_str())
+    {
+        Some("PR-scoped; absent on push heads is expected".to_string())
+    } else {
+        None
+    };
+    HeadRequiredCheck { name: fact.name.clone(), result: fact.result.clone(), note }
+}
+
+fn collect_advisory_failures(
+    check_runs: &[CheckRun],
+    head_sha: &str,
+    required_names: &BTreeSet<&str>,
+) -> Vec<AdvisoryFailure> {
+    let mut failures = Vec::new();
+    for name in KNOWN_ADVISORY_CHECKS {
+        if required_names.contains(name) {
+            continue;
+        }
+        let required = RequiredContext {
+            name: (*name).to_string(),
+            source: "advisory".to_string(),
+            app_id: None,
+        };
+        let Some(run) = latest_check_run(check_runs, &required) else {
+            continue;
+        };
+        let result = classify_check(run, head_sha);
+        if matches!(result.as_str(), "FAILURE" | "CANCELLED" | "INSTRUMENT_FAILURE") {
+            failures.push(AdvisoryFailure { name: (*name).to_string(), result });
+        }
+    }
+    failures
+}
+
+fn derive_head_gate_overall(checks: &[HeadRequiredCheck], errors: &[String]) -> String {
+    if !errors.is_empty() {
+        return "NOT_PROVEN".to_string();
+    }
+    if checks.is_empty() {
+        return "NOT_PROVEN".to_string();
+    }
+    if checks.iter().any(|check| {
+        matches!(
+            check.result.as_str(),
+            "FAILURE" | "CANCELLED" | "SKIPPED" | "STALE" | "INSTRUMENT_FAILURE"
+        )
+    }) {
+        return "FAIL".to_string();
+    }
+    if checks.iter().any(|check| check.result == "PENDING") {
+        return "IN_PROGRESS".to_string();
+    }
+    if checks.iter().all(|check| check.result == "SUCCESS") {
+        "PASS".to_string()
+    } else if checks.iter().any(|check| check.result == "MISSING") {
+        "FAIL".to_string()
+    } else {
+        "NOT_PROVEN".to_string()
+    }
+}
+
+fn print_head_gate_human(snapshot: &HeadGateSnapshot) {
+    println!(
+        "main-head REQUIRED-ONLY gate: {} (head {}, check-runs total_count={}, pages={})",
+        snapshot.overall,
+        snapshot.head_sha,
+        snapshot.check_run_total_count,
+        snapshot.check_run_pages_read
+    );
+    println!("  policy: {} (base ref {})", snapshot.policy_source, snapshot.policy_base_ref);
+    println!("  required:");
+    for check in &snapshot.required_checks {
+        if let Some(note) = &check.note {
+            println!("    {}: {} ({note})", check.name, check.result);
+        } else {
+            println!("    {}: {}", check.name, check.result);
+        }
+    }
+    if snapshot.advisory_failures.is_empty() {
+        println!("  advisory (does-not-block): none");
+    } else {
+        println!("  advisory (does-not-block):");
+        for failure in &snapshot.advisory_failures {
+            println!("    {}: {}", failure.name, failure.result);
+        }
+    }
+}
+
+pub(crate) fn merge_check_run_pages(pages: &[CheckRunsPayload]) -> (Vec<CheckRun>, u64, u32) {
+    let check_run_total_count = pages.first().map(|page| page.total_count).unwrap_or(0);
+    let check_run_pages_read = u32::try_from(pages.len()).unwrap_or(u32::MAX);
+    let check_runs = pages.iter().flat_map(|page| page.check_runs.clone()).collect();
+    (check_runs, check_run_total_count, check_run_pages_read)
+}
+
+pub(crate) fn merge_check_run_json_pages(page_json: &[&str]) -> Result<(Vec<CheckRun>, u64, u32)> {
+    let pages = page_json
+        .iter()
+        .map(|raw| serde_json::from_str::<CheckRunsPayload>(raw))
+        .collect::<Result<Vec<_>, _>>()
+        .context("failed to parse recorded check-run fixture page")?;
+    paginate_check_runs_from_pages(&pages)
 }
 
 pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
@@ -259,13 +503,7 @@ fn not_proven_review(repository: &str, pr: u64, error: String) -> ReviewSnapshot
 }
 
 fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredCheckFact>> {
-    let all_check_runs = paginate_github_items(
-        &candidate.repository,
-        &candidate.head_sha,
-        "check-runs",
-        "check runs",
-        |payload: CheckRunsPayload| payload.check_runs,
-    )?;
+    let (all_check_runs, _, _) = paginate_check_runs(&candidate.repository, &candidate.head_sha)?;
     let all_statuses = paginate_github_items(
         &candidate.repository,
         &candidate.head_sha,
@@ -280,6 +518,72 @@ fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredChe
             resolve_required_check(required, &all_check_runs, &all_statuses, &candidate.head_sha)
         })
         .collect())
+}
+
+fn paginate_check_runs(repository: &str, head_sha: &str) -> Result<(Vec<CheckRun>, u64, u32)> {
+    let mut items = Vec::new();
+    let mut total_count = 0u64;
+    let mut page = 1u32;
+    loop {
+        let endpoint =
+            format!("repos/{repository}/commits/{head_sha}/check-runs?per_page=100&page={page}");
+        let raw = github::command_text("gh", &["api", &endpoint])?;
+        let payload: CheckRunsPayload = serde_json::from_str(&raw)
+            .context("failed to parse check runs for the captured head")?;
+        if page == 1 {
+            total_count = payload.total_count;
+        } else if payload.total_count != total_count {
+            bail!(
+                "check runs total_count changed across pages (page {page}: {}, expected {total_count})",
+                payload.total_count
+            );
+        }
+        let count = payload.check_runs.len();
+        items.extend(payload.check_runs);
+        if count < 100 {
+            if total_count > 0 && u64::try_from(items.len()).unwrap_or(u64::MAX) != total_count {
+                bail!(
+                    "check runs pagination collected {} runs but GitHub reported total_count={total_count}",
+                    items.len()
+                );
+            }
+            return Ok((items, total_count, page));
+        }
+        if page >= 100 {
+            bail!("check runs pagination exceeded the 100-page safety cap");
+        }
+        page += 1;
+    }
+}
+
+pub(crate) fn paginate_check_runs_from_pages(
+    pages: &[CheckRunsPayload],
+) -> Result<(Vec<CheckRun>, u64, u32)> {
+    let mut items = Vec::new();
+    let mut total_count = 0u64;
+    for (index, payload) in pages.iter().enumerate() {
+        let page_number = u32::try_from(index + 1).unwrap_or(u32::MAX);
+        if index == 0 {
+            total_count = payload.total_count;
+        } else if payload.total_count != total_count {
+            bail!(
+                "check runs total_count changed across pages (page {page_number}: {}, expected {total_count})",
+                payload.total_count
+            );
+        }
+        let count = payload.check_runs.len();
+        items.extend(payload.check_runs.clone());
+        if count < 100 {
+            if total_count > 0 && u64::try_from(items.len()).unwrap_or(u64::MAX) != total_count {
+                bail!(
+                    "check runs pagination collected {} runs but GitHub reported total_count={total_count}",
+                    items.len()
+                );
+            }
+            return Ok((items, total_count, page_number));
+        }
+    }
+    bail!("check runs pagination ended without a short terminal page");
 }
 
 fn paginate_github_items<T, P, F>(
@@ -688,5 +992,125 @@ mod tests {
         );
         assert_eq!(result, "NOT_PROVEN");
         assert!(findings.iter().any(|finding| finding.contains("NOT_PROVEN")));
+    }
+
+    fn sample_check_run(id: u64, name: &str, head: &str, conclusion: Option<&str>) -> CheckRun {
+        CheckRun {
+            id,
+            name: name.to_string(),
+            status: "COMPLETED".to_string(),
+            conclusion: conclusion.map(str::to_string),
+            head_sha: Some(head.to_string()),
+            started_at: Some(format!("2026-08-02T00:{id:02}:00Z")),
+            app: None,
+        }
+    }
+
+    #[test]
+    fn required_join_must_read_beyond_the_first_check_run_page() {
+        let head = "6823f7f69";
+        let required_name = "Perl LSP Rust Small Result";
+        let page1 = CheckRunsPayload {
+            total_count: 101,
+            check_runs: (0..100)
+                .map(|id| sample_check_run(id, &format!("filler-{id}"), head, Some("SUCCESS")))
+                .collect(),
+        };
+        let page2 = CheckRunsPayload {
+            total_count: 101,
+            check_runs: vec![sample_check_run(1000, required_name, head, Some("FAILURE"))],
+        };
+        let (page1_only, _, _) = merge_check_run_pages(std::slice::from_ref(&page1));
+        let (all_pages, total_count, pages_read) = merge_check_run_pages(&[page1, page2]);
+        assert_eq!(total_count, 101);
+        assert_eq!(pages_read, 2);
+        let required = RequiredContext {
+            name: required_name.to_string(),
+            source: "ruleset".to_string(),
+            app_id: None,
+        };
+        assert_eq!(
+            resolve_required_check(&required, &page1_only, &[], head).result,
+            "MISSING",
+            "first-page-only reads must not see failures past page 1"
+        );
+        assert_eq!(
+            resolve_required_check(&required, &all_pages, &[], head).result,
+            "FAILURE",
+            "pagination-safe reads must join all pages before classifying required contexts"
+        );
+    }
+
+    #[test]
+    fn recorded_fixture_pages_merge_with_declared_total_count() -> Result<()> {
+        let (runs, total_count, pages_read) = paginate_check_runs_from_pages(&[
+            serde_json::from_str(include_str!(
+                "../../tests/fixtures/github/check-runs-page1-17098.json"
+            ))?,
+            serde_json::from_str(include_str!(
+                "../../tests/fixtures/github/check-runs-page2-17098.json"
+            ))?,
+        ])?;
+        assert_eq!(total_count, 101);
+        assert_eq!(pages_read, 2);
+        assert_eq!(runs.len(), 101);
+        Ok(())
+    }
+
+    #[test]
+    fn truncated_check_run_pages_fail_closed_against_total_count() {
+        let head = "6823f7f69";
+        let page1 = CheckRunsPayload {
+            total_count: 101,
+            check_runs: (0..99)
+                .map(|id| sample_check_run(id, &format!("filler-{id}"), head, Some("SUCCESS")))
+                .collect(),
+        };
+        let err = paginate_check_runs_from_pages(&[page1]).unwrap_err();
+        assert!(
+            err.to_string().contains("total_count=101"),
+            "truncated pagination must refuse a false-complete observation"
+        );
+    }
+
+    #[test]
+    fn advisory_failures_use_latest_attempt_only() {
+        let head = "head";
+        let runs = vec![
+            sample_check_run(1, "Trivy", head, Some("FAILURE")),
+            sample_check_run(2, "Trivy", head, Some("SUCCESS")),
+        ];
+        let required_names = BTreeSet::new();
+        assert!(collect_advisory_failures(&runs, head, &required_names).is_empty());
+    }
+
+    #[test]
+    fn advisory_reds_do_not_flip_required_only_pass() {
+        let head = "head";
+        let required = HeadRequiredCheck {
+            name: "Perl LSP Rust Small Result".to_string(),
+            result: "SUCCESS".to_string(),
+            note: None,
+        };
+        let runs = vec![
+            sample_check_run(1, "Perl LSP Rust Small Result", head, Some("SUCCESS")),
+            sample_check_run(2, "CI Gate shard (policy)", head, Some("FAILURE")),
+        ];
+        let required_names = ["Perl LSP Rust Small Result"].into_iter().collect();
+        let advisory = collect_advisory_failures(&runs, head, &required_names);
+        assert_eq!(advisory.len(), 1);
+        assert_eq!(derive_head_gate_overall(&[required], &[]), "PASS");
+    }
+
+    #[test]
+    fn validate_title_missing_on_branch_heads_is_annotated() {
+        let fact = RequiredCheckFact {
+            name: "validate-title".to_string(),
+            result: "MISSING".to_string(),
+            evaluated_head_sha: None,
+        };
+        let annotated = head_required_check_from_fact(&fact, true);
+        assert_eq!(annotated.result, "MISSING");
+        assert!(annotated.note.as_deref().is_some_and(|note| note.contains("PR-scoped")));
     }
 }

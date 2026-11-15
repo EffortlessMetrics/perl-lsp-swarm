@@ -410,8 +410,12 @@ fn validate_status_production(triage: &str, verify: &str) -> Result<(), String> 
             "Rerun only a run whose workflow and reporting identity can publish the missing required context",
             "a transient failure of an advisory-only run falls through to action 3 or 5",
             "Request one bounded rerun, then re-read a new attempt",
+            "the currentness contract's narrow fresh-trigger exception applies",
+            "Authorize one verified-clean empty commit",
             "this skill does not mutate the branch directly",
+            "not a retry-to-green mechanism",
             "Return terminal `NOT_PROVEN`",
+            "If the fresh-trigger mechanic is unavailable or its new-subject relationship cannot be proven",
         ],
         "status-production order",
     )?;
@@ -748,6 +752,22 @@ fn provider_status_production_is_single_sourced_and_persistent() -> Result<(), D
 
         let minted = format!("{verify}\nFRESH_INTEGRATION_SUBJECT_REQUIRED\n");
         assert!(validate_status_production(&triage, &minted).is_err());
+
+        let stripped_trigger = verify.replacen(
+            "the currentness contract's narrow fresh-trigger exception applies",
+            "Return terminal `NOT_PROVEN` instead of a writer-owned fresh trigger",
+            1,
+        );
+        assert_ne!(stripped_trigger, verify);
+        assert!(validate_status_production(&triage, &stripped_trigger).is_err());
+
+        let retry_to_green = verify.replacen(
+            "retry-to-green mechanism and this skill does not mutate the branch directly.",
+            "retry-to-green path; push empty commits until the failed check is green.",
+            1,
+        );
+        assert_ne!(retry_to_green, verify);
+        assert!(validate_status_production(&triage, &retry_to_green).is_err());
     }
     Ok(())
 }

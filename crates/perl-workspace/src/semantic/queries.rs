@@ -206,13 +206,43 @@ pub trait SemanticQueries {
 
     /// Return method candidates for a receiver type and method name.
     ///
-    /// Stubbed to return empty results until package graph and value-shape
-    /// indexes are implemented.
+    /// Walks the package graph MRO for `receiver_package` (the package, the
+    /// roles it transitively composes, the ancestors, and the ancestors'
+    /// roles), then searches every fact shard for matching method-like
+    /// entities. When the package has no graph node, the shard search still
+    /// runs, so an empty result means "no indexed definition" — **not** "the
+    /// package is unknown". Callers that must distinguish those cases use
+    /// [`SemanticQueries::known_package`].
     fn method_candidates(
         &self,
         receiver_package: &str,
         method_name: &str,
     ) -> Vec<DefinitionCandidate>;
+
+    /// Whether the workspace index knows the package `package` at all.
+    ///
+    /// # Contract (empty ≠ absent)
+    ///
+    /// [`SemanticQueries::method_candidates`] returns an empty vec both for a
+    /// package with no such method and for a package the index has never
+    /// seen. Consumers that *warn* on an empty result (issue #18771's
+    /// undefined-method diagnostic) must consult this gate first, or every
+    /// unindexed file would look like a pile of missing methods.
+    ///
+    /// # Returns
+    ///
+    /// - `Some(true)` — the package graph has a node for `package`, or at
+    ///   least one fact shard carries an entity of that package.
+    /// - `Some(false)` — the index has data (a package graph) and `package`
+    ///   appears in neither the graph nor any shard.
+    /// - `None` — no answer: the workspace holds no package graph, so
+    ///   absence proves nothing.
+    ///
+    /// Defaults to `None` so no-op implementations (the null query) and
+    /// partial implementations degrade to "stay silent".
+    fn known_package(&self, _package: &str) -> Option<bool> {
+        None
+    }
 
     /// Return `(method_name, origin_role)` pairs for every method provided by
     /// `role_package`, including methods contributed by roles it transitively
@@ -802,6 +832,31 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         }
 
         candidates
+    }
+
+    fn known_package(&self, package: &str) -> Option<bool> {
+        // No package graph means the workspace holds no package-level data at
+        // all, so absence of `package` proves nothing — the caller must stay
+        // silent (issue #18771's empty-is-not-absent gate).
+        let graph = self.package_graph.as_ref()?;
+
+        if graph.get_node(package).is_some() {
+            return Some(true);
+        }
+
+        // `method_candidates` consults the fact shards even for packages with
+        // no graph node, so a shard entity of this package also counts as
+        // "known". Mirror the shard search's own name semantics
+        // (`find_method_entities` / `enumerate_package_methods`): the entity
+        // is either the package itself, or a *direct* member — a name under
+        // `{package}::` with no deeper qualification, since `Foo::Bar::baz`
+        // belongs to `Foo::Bar`, not to `Foo` (#19051 review).
+        let prefix = format!("{package}::");
+        let known_in_shards = self.fact_shards.values().flat_map(|s| s.entities.iter()).any(|e| {
+            e.canonical_name == package
+                || e.canonical_name.strip_prefix(&prefix).is_some_and(|rest| !rest.contains("::"))
+        });
+        Some(known_in_shards)
     }
 
     fn transitive_role_methods(&self, role_package: &str) -> Vec<(String, String)> {
@@ -2661,6 +2716,208 @@ mod tests {
         let candidates = queries.method_candidates("Foo", "new");
         assert!(candidates.is_empty(), "should return empty without package graph");
         Ok(())
+    }
+
+    // ── known_package tests (#18771: empty ≠ absent) ──
+
+    /// A package with a graph node is known.
+    #[test]
+    fn known_package_true_for_graph_node() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(1);
+        let mut shards = HashMap::new();
+        shards.insert(
+            "file:///lib/Dog.pm".to_string(),
+            make_shard("file:///lib/Dog.pm", file_id, vec![], vec![], vec![], vec![]),
+        );
+
+        let mut pkg_graph = PackageGraphIndex::new();
+        pkg_graph.add_edges(
+            "file:///lib/Dog.pm",
+            file_id,
+            vec![PackageEdge::new(
+                "Dog".to_string(),
+                "Animal".to_string(),
+                PackageEdgeKind::Inherits,
+                Some(AnchorId(1)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        assert_eq!(queries.known_package("Dog"), Some(true));
+        Ok(())
+    }
+
+    /// A package with shard entities but no graph node is still known — this
+    /// is the source `method_candidates`' shard-search fallback consults.
+    #[test]
+    fn known_package_true_for_shard_entity_without_graph_node()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(1);
+        let shard = make_shard(
+            "file:///lib/Orphan.pm",
+            file_id,
+            vec![AnchorFact {
+                id: AnchorId(30),
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: EntityId(300),
+                kind: EntityKind::Method,
+                canonical_name: "Orphan::ping".to_string(),
+                anchor_id: Some(AnchorId(30)),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+
+        let mut pkg_graph = PackageGraphIndex::new();
+        // A graph exists, but it carries only an unrelated package.
+        pkg_graph.add_edges(
+            "file:///lib/Other.pm",
+            FileId(2),
+            vec![PackageEdge::new(
+                "Other".to_string(),
+                "Base".to_string(),
+                PackageEdgeKind::Inherits,
+                Some(AnchorId(2)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        assert_eq!(queries.known_package("Orphan"), Some(true));
+        Ok(())
+    }
+
+    /// A deeper-qualified entity belongs to its own package, not to the
+    /// parent prefix: `Foo::Bar::baz` makes `Foo::Bar` known, not `Foo`
+    /// (#19051 review).
+    #[test]
+    fn known_package_false_for_parent_of_nested_entity() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(1);
+        let shard = make_shard(
+            "file:///lib/Nested.pm",
+            file_id,
+            vec![AnchorFact {
+                id: AnchorId(40),
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: EntityId(400),
+                kind: EntityKind::Method,
+                canonical_name: "Foo::Bar::baz".to_string(),
+                anchor_id: Some(AnchorId(40)),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+
+        let mut pkg_graph = PackageGraphIndex::new();
+        pkg_graph.add_edges(
+            "file:///lib/Other.pm",
+            FileId(2),
+            vec![PackageEdge::new(
+                "Other".to_string(),
+                "Base".to_string(),
+                PackageEdgeKind::Inherits,
+                Some(AnchorId(2)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        assert_eq!(queries.known_package("Foo"), Some(false), "Foo::Bar::baz is not a Foo member");
+        assert_eq!(queries.known_package("Foo::Bar"), Some(true));
+        Ok(())
+    }
+
+    /// With a package graph present but no trace of the package anywhere,
+    /// the answer is a definitive no.
+    #[test]
+    fn known_package_false_for_absent_package_with_graph() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let file_id = FileId(1);
+        let mut shards = HashMap::new();
+        shards.insert(
+            "file:///lib/Dog.pm".to_string(),
+            make_shard("file:///lib/Dog.pm", file_id, vec![], vec![], vec![], vec![]),
+        );
+
+        let mut pkg_graph = PackageGraphIndex::new();
+        pkg_graph.add_edges(
+            "file:///lib/Dog.pm",
+            file_id,
+            vec![PackageEdge::new(
+                "Dog".to_string(),
+                "Animal".to_string(),
+                PackageEdgeKind::Inherits,
+                Some(AnchorId(1)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        assert_eq!(queries.known_package("Never::Indexed"), Some(false));
+        Ok(())
+    }
+
+    /// Without a package graph the index cannot answer; `None` tells the
+    /// caller to stay silent.
+    #[test]
+    fn known_package_none_without_graph() {
+        let shards = HashMap::new();
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        assert_eq!(queries.known_package("Anything"), None);
     }
 
     #[test]

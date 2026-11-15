@@ -565,7 +565,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
                 modifiers: text(),
                 has_embedded_code: false,
             },
-            &["pattern", "replacement", "modifiers"],
+            &["pattern", "replacement", "modifiers", "form"],
             &["has_embedded_code"]
         ),
         fixture!(

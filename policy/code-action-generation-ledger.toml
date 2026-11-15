@@ -346,7 +346,7 @@ notes = "Answers the same diagnostic codes as the canonical generation, but is t
 retirement_blockers = ["canonical_route_omits_diagnostic_association"]
 parity_fixtures = [
   "cac-parity-v2-attaches-originating-diagnostic",
-  "cac-parity-parse-error-recovery-keeps-ast-path",
+  "cac-parity-parse-error-single-unclosed-block-associated-quickfix",
 ]
 
 [[route]]

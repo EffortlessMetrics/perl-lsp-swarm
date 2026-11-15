@@ -117,29 +117,30 @@ reset_stub() { : > "$GH_STUB_LOG"; rm -f "$STUB_DIR/posted_payload.json"; unset 
 # ── fixtures: a two-page reviewThreads connection ───────────────────────────
 thread_node() {
     # $1 id, $2 isResolved, $3 isOutdated, $4 path, $5 line (or "null"),
-    # $6 originalLine, $7 author, $8 body
+    # $6 originalLine, $7 author, $8 body, $9 optional Actor __typename (default User)
+    local typename="${9:-User}"
     jq -n --arg id "$1" --argjson resolved "$2" --argjson outdated "$3" \
         --arg path "$4" --argjson line "$5" --argjson orig "$6" \
-        --arg author "$7" --arg body "$8" '{
+        --arg author "$7" --arg body "$8" --arg typename "$typename" '{
             id: $id, isResolved: $resolved, isOutdated: $outdated,
             path: $path, line: $line, originalLine: $orig,
             startLine: null, originalStartLine: null, diffSide: "RIGHT",
-            comments: { nodes: [ { author: { login: $author }, body: $body,
+            comments: { nodes: [ { author: { __typename: $typename, login: $author }, body: $body,
                                    url: ("https://example.invalid/" + $id) } ] }
         }'
 }
 
 jq -n \
     --argjson a "$(thread_node PRRT_page1_active false false 'crates/a/src/lib.rs' 3 3 coderabbitai 'Consider bounding this loop.
-It can run forever on malformed input.')" \
-    --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.')" \
+It can run forever on malformed input.' Bot)" \
+    --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.' User)" \
     '{data:{repository:{pullRequest:{reviewThreads:{
         nodes: [$a, $b],
         pageInfo: {hasNextPage: true, endCursor: "CURSOR-PAGE-1"}}}}}}' \
     > "$STUB_DIR/threads_page1.json"
 
 jq -n \
-    --argjson c "$(thread_node PRRT_page2_outdated false true 'crates/c/src/x.rs' null 44 gemini 'This hunk moved.')" \
+    --argjson c "$(thread_node PRRT_page2_outdated false true 'crates/c/src/x.rs' null 44 gemini 'This hunk moved.' Bot)" \
     '{data:{repository:{pullRequest:{reviewThreads:{
         nodes: [$c],
         pageInfo: {hasNextPage: false, endCursor: null}}}}}}' \
@@ -217,11 +218,12 @@ test_threads_json_shape() {
     run_threads 9999 test-owner/test-repo --json
     if jq -e '(.threads[] | has("id") and has("isResolved") and has("isOutdated")
                             and has("path") and has("line") and has("author")
-                            and has("excerpt"))
+                            and has("author_typename") and has("excerpt"))
               and (.threads[] | select(.id == "PRRT_page2_outdated")
-                   | .isOutdated == true and .line == 44 and .line_is_original == true)
+                   | .isOutdated == true and .line == 44 and .line_is_original == true
+                   and .author_typename == "Bot")
               and (.threads[] | select(.id == "PRRT_page1_active")
-                   | .author == "coderabbitai"
+                   | .author == "coderabbitai" and .author_typename == "Bot"
                    and .excerpt == "Consider bounding this loop.")' \
              >/dev/null <<<"$RUN_OUT"; then
         pass "threads: --json carries id/state/path/line/author/excerpt; outdated thread falls back to originalLine"
@@ -270,6 +272,20 @@ test_threads_usage_error() {
     fi
 }
 
+test_threads_help_is_header_only() {
+    reset_stub
+    run_threads --help
+    if [[ "$RUN_EXIT" -eq 0 \
+        && "$RUN_OUT" == *author_typename* \
+        && "$RUN_OUT" != *die_usage* \
+        && "$RUN_OUT" != *'set -euo pipefail'* \
+        && ! -s "$GH_STUB_LOG" ]]; then
+        pass "threads --help prints the header comment only"
+    else
+        fail "threads help — exit=$RUN_EXIT out=$RUN_OUT log=$(cat "$GH_STUB_LOG")"
+    fi
+}
+
 # A crafted repo argument must fail closed before any gh call: OWNER/NAME are
 # interpolated into the GraphQL query, so quote-bearing values are rejected.
 test_threads_rejects_crafted_repo() {
@@ -311,8 +327,8 @@ test_threads_refuses_truncation() {
     if [[ "$RUN_EXIT" -eq 2 ]] && grep -qi 'truncated' <<<"$RUN_OUT"; then ok=1; fi
 
     jq -n \
-        --argjson a "$(thread_node PRRT_page1_active false false 'crates/a/src/lib.rs' 3 3 coderabbitai 'Consider bounding this loop.')" \
-        --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.')" \
+        --argjson a "$(thread_node PRRT_page1_active false false 'crates/a/src/lib.rs' 3 3 coderabbitai 'Consider bounding this loop.' Bot)" \
+        --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.' User)" \
         '{data:{repository:{pullRequest:{reviewThreads:{
             nodes: [$a, $b],
             pageInfo: {hasNextPage: true, endCursor: "CURSOR-PAGE-1"}}}}}}' \
@@ -359,8 +375,8 @@ test_threads_survives_large_payload() {
 
     # Restore the two-page fixtures for any later case.
     jq -n \
-        --argjson a "$(thread_node PRRT_page1_active false false 'crates/a/src/lib.rs' 3 3 coderabbitai 'Consider bounding this loop.')" \
-        --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.')" \
+        --argjson a "$(thread_node PRRT_page1_active false false 'crates/a/src/lib.rs' 3 3 coderabbitai 'Consider bounding this loop.' Bot)" \
+        --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.' User)" \
         '{data:{repository:{pullRequest:{reviewThreads:{
             nodes: [$a, $b],
             pageInfo: {hasNextPage: true, endCursor: "CURSOR-PAGE-1"}}}}}}' \
@@ -484,7 +500,8 @@ test_threads_nullable_metadata() {
     if [[ "$RUN_EXIT" -eq 0 ]] \
         && jq -e '.unresolved_count == 2 and .unresolved_outdated == 1
             and (.threads[] | select(.id == "PRRT_page2_outdated")
-                | .author == "unknown" and .line == 44 and .line_is_original)' >/dev/null <<<"$RUN_OUT"; then
+                | .author == "unknown" and .author_typename == null
+                   and .line == 44 and .line_is_original)' >/dev/null <<<"$RUN_OUT"; then
         pass 'threads: nullable author, outdated-line fallback, and empty errors remain supported'
     else
         fail "threads nullable metadata — exit=$RUN_EXIT out=$RUN_OUT"
@@ -808,6 +825,48 @@ test_inline_body_file_errors() {
     done
 }
 
+# Sweep mode enumerates through threads, selects only unresolved Bot+outdated
+# threads, and --dry-run must not mutate. Fixture GraphQL only; no live PR.
+test_sweep_bot_outdated_dry_run_via_threads() {
+    reset_stub
+    jq -n \
+        --argjson a "$(thread_node PRRT_page1_active false false 'crates/a/src/lib.rs' 3 3 coderabbitai 'Consider bounding this loop.
+It can run forever on malformed input.' Bot)" \
+        --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.' User)" \
+        '{data:{repository:{pullRequest:{reviewThreads:{
+            nodes: [$a, $b],
+            pageInfo: {hasNextPage: true, endCursor: "CURSOR-PAGE-1"}}}}}}' \
+        > "$STUB_DIR/threads_page1.json"
+    jq -n \
+        --argjson c "$(thread_node PRRT_page2_outdated false true 'crates/c/src/x.rs' null 44 gemini 'This hunk moved.' Bot)" \
+        --argjson d "$(thread_node PRRT_page2_human_outdated false true 'crates/d/src/y.rs' null 55 alice 'This hunk moved too.' User)" \
+        '{data:{repository:{pullRequest:{reviewThreads:{
+            nodes: [$c, $d],
+            pageInfo: {hasNextPage: false, endCursor: null}}}}}}' \
+        > "$STUB_DIR/threads_page2.json"
+    local d_exit=0 d_out summary
+    d_out="$(PATH="$STUB_BIN:$PATH" bash "$DISPOSITION" --sweep-bot-outdated --pr 9999 \
+        --repo test-owner/test-repo --dry-run \
+        --head feedfacedeadbeeffeedfacedeadbeeffeedface --by tester 2>&1)" || d_exit=$?
+    summary="$(printf '%s\n' "$d_out" | awk 'NR==1 {print; exit}')"
+    if [[ "$d_exit" -eq 0 ]] \
+        && jq -e '.mode == "sweep-bot-outdated"
+                  and .dry_run == true
+                  and .head == "feedfacedeadbeeffeedfacedeadbeeffeedface"
+                  and (.selected | map(.id) == ["PRRT_page2_outdated"])
+                  and (.skipped | map(select(.id == "PRRT_page1_active") | .reason) == ["not-outdated"])
+                  and (.skipped | map(select(.id == "PRRT_page2_human_outdated") | .reason) == ["not-bot"])' \
+             >/dev/null <<<"$summary" \
+        && grep -q 'disposition:v1' <<<"$d_out" \
+        && grep -q 'Disposition: superseded' <<<"$d_out" \
+        && grep -q 'feedfacedeadbeeffeedfacedeadbeeffeedface' <<<"$d_out" \
+        && ! grep -qE 'addPullRequestReviewThreadReply|resolveReviewThread' "$GH_STUB_LOG"; then
+        pass "disposition --sweep-bot-outdated --dry-run selects Bot+outdated via threads and mutates nothing"
+    else
+        fail "sweep-bot-outdated dry-run — exit=$d_exit log=$(cat "$GH_STUB_LOG") out=$d_out"
+    fi
+}
+
 # ═══ boundary: resolution stays in disposition ══════════════════════════════
 # Neither new script may carry the raw resolve mutation; scripts/reviews/
 # disposition is the only sanctioned resolve path (#3693 R1 FILE 3).
@@ -829,6 +888,7 @@ test_threads_json_shape
 test_threads_id_feeds_disposition
 test_threads_human_output_is_actionable
 test_threads_usage_error
+test_threads_help_is_header_only
 test_threads_rejects_crafted_repo
 test_threads_is_read_only
 test_threads_refuses_truncation
@@ -854,6 +914,7 @@ test_inline_surfaces_github_error
 test_inline_requires_body
 test_inline_clean_literal_body
 test_inline_body_file_errors
+test_sweep_bot_outdated_dry_run_via_threads
 test_no_raw_resolve_token
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
