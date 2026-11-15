@@ -1,0 +1,32 @@
+[package]
+name = "perl-tidy-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Standalone native Perl formatter"
+readme = "README.md"
+keywords = ["perl", "formatter", "formatting", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "perl-tidy"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+perl-tidy = { path = "../perl-tidy", version = "0.17.0" }
+perl-source-identity = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3.27.0"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
+xattr = "1.6.1"
+
+[lints]
+workspace = true
