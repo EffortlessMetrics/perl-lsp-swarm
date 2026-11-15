@@ -73,6 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `perl-tidy-cli`, the standalone `perl-tidy` command over the native library,
+  with source/stdout and stdin modes, read-only `--check`, JSON reporting, explicit
+  native configuration, `--config-effective`, and `--explain` (#9306). Source files
+  remain unchanged and `--write` is rejected; replacement remains under #9312.
+  Explicit JSON/flag configuration does not establish production profiles or
+  per-root configuration resolution (#9308). See the [CLI guide](crates/perl-tidy-cli/README.md)
+  for source installation; registry and release-archive availability are not claimed.
+
 - **`perl-source-identity`: the canonical root-relative logical-path invariant is
   now enforced, not just documented.** `LogicalSourceId::from_root_and_path` has
   always required a forward-slash, root-relative path with no leading separator

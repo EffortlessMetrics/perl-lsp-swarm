@@ -653,6 +653,17 @@ current_integration_mode = "workspace_path"
 metadata_authority = "workspace_inherited"
 
 [[packages]]
+name = "perl-tidy-cli"
+path = "crates/perl-tidy-cli"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#9306"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
 name = "perl-tidy-perltidy"
 path = "crates/perl-tidy-perltidy"
 current_owner = "swarm-product"
