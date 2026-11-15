@@ -27,6 +27,8 @@ By module (see `src/lib.rs` doc comments for the authoritative list):
 - `runtime` -- cancellation, resource limits, input validation, process
   launcher, text-editing utilities
 - `tooling` -- perlcritic/perltidy integration glue
+- `providers::diagnostics::document_analysis` is a compatibility re-export;
+  `perl-semantic-analyzer` owns the shared `DocumentDiagnosticAnalysis` implementation.
 - `transport` -- Content-Length message framing for stdio/socket
 - `uri` -- URI parsing/conversion for protocol-facing code
 

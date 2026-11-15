@@ -54,6 +54,8 @@
     clippy::uninlined_format_args
 )]
 
+pub use analysis::document_analysis;
+pub use analysis::document_analysis::DocumentDiagnosticAnalysis;
 pub use analysis::index as workspace_index;
 pub use perl_parser_core::{Node, NodeKind, SourceLocation};
 pub use perl_parser_core::{

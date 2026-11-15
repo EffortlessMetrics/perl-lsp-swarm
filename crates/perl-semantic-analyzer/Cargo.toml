@@ -25,6 +25,8 @@ doctest = false
 
 [dependencies]
 perl-parser-core = { workspace = true }
+perl-lexer = { workspace = true }
+perl-pragma = { workspace = true }
 perl-module = { workspace = true }
 perl-symbol = { workspace = true }
 perl-semantic-facts = { workspace = true }
@@ -33,7 +35,13 @@ regex.workspace = true
 rustc-hash = "2.1.2"
 tracing.workspace = true
 
+[features]
+# Proof-only observation of the shared document-analysis fact cells.
+# Core/LSP tests enable this across the dependency boundary; production does not.
+test-instrumentation = []
+
 [dev-dependencies]
+perl-test-must = { workspace = true }
 perl-tdd-support = { workspace = true }
 perl-test-generators = { path = "../perl-test-generators" }
 proptest = { workspace = true }

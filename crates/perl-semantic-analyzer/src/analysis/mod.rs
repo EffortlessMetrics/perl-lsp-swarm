@@ -22,6 +22,8 @@ pub mod dbix_class_result;
 /// Go-to-declaration support and parent map construction.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod declaration;
+/// Generation-owned, source/AST-derived document analysis shared by consumers.
+pub mod document_analysis;
 /// Export symbol extraction for Exporter-based Perl modules.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod export_analyzer;

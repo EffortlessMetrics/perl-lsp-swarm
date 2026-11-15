@@ -30,7 +30,7 @@ use super::{
     native_finding_candidates, normalize_with_native_policy,
 };
 use crate::config::EffectiveCriticState;
-use crate::providers::diagnostics::DocumentDiagnosticAnalysis;
+use perl_semantic_analyzer::DocumentDiagnosticAnalysis;
 use perl_source_identity::ContentDigest;
 
 /// Gate consulted at deterministic barrier points of one run.
@@ -544,6 +544,56 @@ mod tests {
             RunGate::open(),
             RunGate::open(),
         )
+    }
+
+    #[test]
+    fn shared_analysis_reuses_scope_only_for_the_exact_tree() {
+        use crate::tooling::perl_critic::{
+            native_critic_scope_rebuild_count, native_critic_scope_reuse_count,
+            reset_native_critic_scope_rebuild_count, reset_native_critic_scope_reuse_count,
+        };
+        use std::sync::Arc;
+
+        let source = "use strict;\nsub f { my $unused = 1; print $undeclared; }\n";
+        let ast = Arc::new(parse(source));
+        let shared = perl_semantic_analyzer::DocumentDiagnosticAnalysis::build(&ast, source);
+        let identity = critic_source_identity_for_uri("file:///shared-analysis.pm", 1);
+
+        reset_native_critic_scope_rebuild_count();
+        reset_native_critic_scope_reuse_count();
+        let reused = NativeCriticService::analyze(
+            subject("file:///shared-analysis.pm", &ast, source, native_state(None), identity)
+                .with_analysis(&shared),
+        );
+
+        assert_eq!(reused.completeness(), &NativeCriticRunCompleteness::Complete);
+        assert!(!reused.findings().is_empty(), "the fixture must reach native rule evaluation");
+        assert!(
+            shared.pragma_map_materialized() && shared.scope_issues_materialized(),
+            "the service must consume the lower-owned cells, not rebuild identical facts"
+        );
+        assert_eq!(native_critic_scope_rebuild_count(), 0);
+        assert_eq!(native_critic_scope_reuse_count(), 1);
+        assert!(!shared.symbol_table_materialized(), "critic does not consume symbols");
+        assert!(!shared.type_environment_materialized(), "critic does not consume inferred types");
+
+        // Same bytes, distinct tree: accepting source equality alone would warm
+        // these foreign cells and take the reuse branch incorrectly. The local
+        // fallback also proves the zero-rebuild instrument above is live.
+        let other_ast = Arc::new(parse(source));
+        assert!(!Arc::ptr_eq(&ast, &other_ast));
+        let foreign = perl_semantic_analyzer::DocumentDiagnosticAnalysis::build(&ast, source);
+        let rebuilt = NativeCriticService::analyze(
+            subject("file:///shared-analysis.pm", &other_ast, source, native_state(None), identity)
+                .with_analysis(&foreign),
+        );
+
+        assert!(!foreign.pragma_map_materialized(), "foreign pragma facts must remain cold");
+        assert!(!foreign.scope_issues_materialized(), "foreign scope facts must remain cold");
+        assert_eq!(native_critic_scope_rebuild_count(), 1);
+        assert_eq!(native_critic_scope_reuse_count(), 1);
+        assert_eq!(rebuilt.completeness(), &NativeCriticRunCompleteness::Complete);
+        assert_eq!(reused.findings(), rebuilt.findings());
     }
 
     #[test]

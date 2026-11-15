@@ -25,6 +25,8 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 | Crate | Role |
 |-------|------|
 | `perl-parser-core` | AST nodes (`Node`, `NodeKind`), `Parser`, source locations |
+| `perl-lexer` | Deferred source-only stray-cut facts for shared document analysis |
+| `perl-pragma` | Pragma timelines shared by scope analysis and native critic consumers |
 | `perl-workspace` | Cross-file workspace index, `SymKind`, `SymbolKey` |
 | `perl-symbol` | Shared `SymbolKind`, `VarKind` enums |
 | `regex` | Pattern matching in semantic classification |
@@ -35,6 +37,7 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
+| `document_analysis` | `DocumentDiagnosticAnalysis` | Generation-owned lazy pragma, scope, symbol, type and lexer facts; exact AST/source matching |
 | `semantic` | `SemanticAnalyzer`, `SemanticToken`, `SemanticTokenType`, `SemanticTokenModifier`, `HoverInfo` | Semantic token classification and hover info for LSP |
 | `symbol` | `SymbolExtractor`, `SymbolTable`, `Symbol`, `SymbolReference`, `Scope`, `ScopeKind`, `ScopeId` | Symbol extraction and symbol table construction from AST |
 | `scope_analyzer` | `ScopeAnalyzer`, `ScopeIssue`, `IssueKind` | Scope issue detection (unused/undeclared/shadowed variables) |
