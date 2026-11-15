@@ -13533,7 +13533,10 @@ paths = ["archive/["]
             // The production ripr CLI rejects `--version` (#19414), so probe by
             // running the supported `check` invocation itself. A spawn failure
             // means ripr is unavailable on this runner; a non-zero exit is real
-            // evidence and stays blocking in the assertion below.
+            // evidence and stays blocking in the assertion below. The
+            // unavailable path records a typed limitation marker beside the
+            // receipt so the evidence distinguishes "ripr absent" from
+            // "ripr agreed" instead of silently continuing (#19414).
             let output = match Command::new(&binary)
                 .args([
                     "check",
@@ -13549,7 +13552,21 @@ paths = ["archive/["]
                 .output()
             {
                 Ok(output) => output,
-                Err(_) => {
+                Err(error) => {
+                    let marker = repo.path().join("target/ripr/pr/ripr-comparison-limitation.json");
+                    if let Some(parent) = marker.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(
+                        &marker,
+                        serde_json::json!({
+                            "limitation": "ripr_unavailable",
+                            "binary": binary.display().to_string(),
+                            "spawn_error": error.to_string(),
+                            "comparison": "not_run",
+                        })
+                        .to_string(),
+                    )?;
                     eprintln!("ripr is unavailable; lossy writer proof passed, comparison not run");
                     continue;
                 }
