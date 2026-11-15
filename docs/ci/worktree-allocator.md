@@ -29,6 +29,11 @@ Allocator state is written to `.claude/worktrees/lease-state.json` with:
 
 Acquire also writes a receipt at `target/receipts/worktree-lease.json`.
 
+When `--path` is omitted, new worktrees are created under
+`<repo-parent>/<repo-name>-worktrees/agent-<worktree_id>/` (same external pool
+convention as `scripts/worktree-manager.py`), not under `.claude/worktrees/`
+(issue #2429).
+
 ## Safety rules
 
 - No writable branch can be leased twice.

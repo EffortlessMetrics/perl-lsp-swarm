@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Security
-body: "A project's .perl-lsp.toml can now only opt OUT of AI completion, not turn it on or choose its provider/model — those remain controlled solely by user/machine settings, closing a path where a cloned repository could silently activate AI completion."
-time: 2026-07-28T21:51:20Z
-custom:
-  PR: "5022"
-  Slug: project-config-ai-completion-activation
-  Breaking: "no"

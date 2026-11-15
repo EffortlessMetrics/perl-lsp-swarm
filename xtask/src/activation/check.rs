@@ -2,8 +2,9 @@
 //!
 //! Class-specific connection requirements, not a universal "wired" predicate
 //! and not Cargo dependency membership. `unwired-scan` remains topology
-//! evidence only. Downstream claims owned by #9207/#9208/#9210/#9211 are
-//! not decided here: no product-binary test-API scan, no feature/package
+//! evidence only. Gate rows additionally consume CI control-plane reachability
+//! (#9210). Downstream claims owned by #9207/#9208/#9211 are not decided
+//! here: no product-binary test-API scan, no feature/package
 //! reclassification, no live gate enforcement, no public status projection.
 
 use std::path::Path;
@@ -11,6 +12,7 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::gate_control::{self, GateControlSnapshot};
 use super::model::{
     ActivationClass, ActivationError, ActivationInventory, ActivationRow, INVENTORY_PATH,
     RegistrationState,
@@ -87,8 +89,12 @@ pub fn check(root: &Path) -> Result<CheckReport, ActivationError> {
 /// Evaluate an already-validated inventory. `root` is used only to fail
 /// closed on stale path-like proof references; it is not a Cargo graph.
 pub fn evaluate_inventory(root: &Path, inventory: &ActivationInventory) -> CheckReport {
-    let findings: Vec<RowFinding> =
-        inventory.rows.iter().map(|row| evaluate_row(row, Some(root))).collect();
+    let gate_control = GateControlSnapshot::load(root).ok();
+    let findings: Vec<RowFinding> = inventory
+        .rows
+        .iter()
+        .map(|row| evaluate_row_with_gate_control(row, Some(root), gate_control.as_ref()))
+        .collect();
     let failed = findings.iter().filter(|finding| finding.is_fail()).count();
     let passed = findings.len().saturating_sub(failed);
     CheckReport {
@@ -104,6 +110,18 @@ pub fn evaluate_inventory(root: &Path, inventory: &ActivationInventory) -> Check
 /// Evaluate one typed inventory row against its class contract.
 #[must_use]
 pub fn evaluate_row(row: &ActivationRow, root: Option<&Path>) -> RowFinding {
+    let gate_control = match (root, row.class) {
+        (Some(root), ActivationClass::Gate) => GateControlSnapshot::load(root).ok(),
+        _ => None,
+    };
+    evaluate_row_with_gate_control(row, root, gate_control.as_ref())
+}
+
+fn evaluate_row_with_gate_control(
+    row: &ActivationRow,
+    root: Option<&Path>,
+    gate_control: Option<&GateControlSnapshot>,
+) -> RowFinding {
     let mut reasons = Vec::new();
     match row.class {
         ActivationClass::Product => check_product(row, root, &mut reasons),
@@ -113,7 +131,7 @@ pub fn evaluate_row(row: &ActivationRow, root: Option<&Path>) -> RowFinding {
         }
         ActivationClass::CompatibilityShim => check_shim(row, &mut reasons),
         ActivationClass::TestApi => check_test_api(row, &mut reasons),
-        ActivationClass::Gate => check_gate(row, &mut reasons),
+        ActivationClass::Gate => check_gate(row, gate_control, &mut reasons),
     }
     if reasons.is_empty() {
         RowFinding::pass(&row.surface_id, row.class.as_str())
@@ -347,9 +365,13 @@ fn check_test_api(row: &ActivationRow, reasons: &mut Vec<String>) {
     }
 }
 
-/// Gate: declared policy identity and established registration. Live
-/// reachability/enforcement is #9210, not this checker.
-fn check_gate(row: &ActivationRow, reasons: &mut Vec<String>) {
+/// Gate: policy identity, registration, and reachable/enforced control state
+/// (#9210).
+fn check_gate(
+    row: &ActivationRow,
+    gate_control: Option<&GateControlSnapshot>,
+    reasons: &mut Vec<String>,
+) {
     if row.semantic_authority.trim().is_empty() {
         reasons.push("gate row requires a policy identity".to_string());
     }
@@ -359,6 +381,20 @@ fn check_gate(row: &ActivationRow, reasons: &mut Vec<String>) {
     if blank(row.registration.authority.as_deref()) {
         reasons.push("gate row requires a registration authority".to_string());
     }
+    if let Some(reason) = gate_control::merge_proof_live_enforcement_claim(
+        row.notes.as_deref(),
+        &row.proof_references.iter().map(|proof| proof.id.clone()).collect::<Vec<_>>(),
+    ) {
+        reasons.push(reason);
+    }
+    let Some(gate_id) = gate_control::gate_id_from_surface(&row.surface_id) else {
+        reasons.push(format!("gate row surface id `{}` is not a gate:* identity", row.surface_id));
+        return;
+    };
+    let Some(snapshot) = gate_control else {
+        return;
+    };
+    reasons.extend(snapshot.evaluate_gate_id(gate_id, row.registration.detail.as_deref()));
 }
 
 fn blank(value: Option<&str>) -> bool {

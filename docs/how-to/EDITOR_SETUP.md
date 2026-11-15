@@ -20,6 +20,11 @@ page; editor rows below state their narrower boundary where needed.
 If the server starts but the editor does not behave correctly, see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
+For competing Perl language servers, formatters, critic providers, or debuggers, see
+[Competing Perl tooling (coexistence)](../EDITORS/COEXISTENCE.md). Only the VS Code
+extension performs bounded automatic detection; other editors rely on doctor output and
+manual configuration review.
+
 ## What Every Editor Needs
 
 - an exact `perllsp` binary the integration can resolve or install through a proven route

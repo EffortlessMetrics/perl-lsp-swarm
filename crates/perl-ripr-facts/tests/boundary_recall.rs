@@ -33,6 +33,7 @@ const FIXTURES: &[(&str, &str)] = &[
     ("eval_spaced", "EvalSpaced.pm"),
     ("autoload", "Autoload.pm"),
     ("dynamic_require", "DynRequire.pm"),
+    ("module_runtime", "ModuleRuntimeLoader.pm"),
     ("string_dispatch", "StrDispatch.pm"),
     ("isa_manipulation", "IsaManip.pm"),
     ("symbol_table", "SymTable.pm"),

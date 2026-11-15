@@ -4,7 +4,7 @@
 
 Pilot issue #6973 (`pilot`). Missing evidence stays missing and is not inherited from aggregate native-critic transport coverage.
 
-This pilot owns the versioned rule-proof schema, typed model, generator/checker, and a sixteen-rule cohort (#6973 pilot, #17661 cohort 2, cohort 3). It does not migrate the remaining 12 native rules, absorb #6978 variable/scope proof, or change critic rule semantics.
+This pilot owns the versioned rule-proof schema, typed model, generator/checker, and a sixteen-rule cohort (#6973 pilot, #17661 cohort 2, cohort 3). Issue #6979 adds nine supplementary strict regex/POD/literal cases on top of the cohort-3 five-case rows without changing critic rule semantics. It does not migrate the remaining 12 native rules, absorb #6978 variable/scope proof, or change critic rule semantics.
 
 ## Pilot rules
 

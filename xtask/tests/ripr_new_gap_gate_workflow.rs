@@ -119,7 +119,8 @@ fn require_single_canonical_container_installer(script: &str) -> Result<(), Stri
         .map(str::trim)
         .filter(|line| line.starts_with("cargo install ripr"))
         .collect();
-    let expected = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    let expected =
+        r#"cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked"#;
     if installers.len() != 1 || installers.first().copied() != Some(expected) {
         return Err(format!(
             "normal hosted producer must have exactly one canonical container RIPR installer; \
@@ -132,7 +133,8 @@ fn require_single_canonical_container_installer(script: &str) -> Result<(), Stri
 #[test]
 fn container_installer_contract_rejects_extra_or_mismatched_installers()
 -> Result<(), Box<dyn std::error::Error>> {
-    let canonical = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    let canonical =
+        r#"cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked"#;
     require_single_canonical_container_installer(canonical)?;
 
     for extra in [r#"cargo install ripr --version "0.9.0" --locked"#, "cargo install ripr"] {
@@ -969,7 +971,7 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
         .replace("${{ needs.route-ripr.outputs.target }}", "selfhosted");
     let executable_steps = [
         "Require immutable RIPR subject",
-        "Toolchain (rust-toolchain.toml pins 1.95.0)",
+        "Toolchain (rust-toolchain.toml pins 1.100.0)",
         "Install ripr",
         "Run ripr doctor",
         "Generate PR evidence",
@@ -980,6 +982,7 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
         "Generate PR evidence summary",
         "Generate warning annotations",
         "Validate PR evidence contracts",
+        "Validate advisory review guidance",
         "Enforce new RIPR gap quality gate",
         "Append PR evidence summary",
     ];
@@ -994,6 +997,21 @@ rustc() {
 }
 ripr() {
   printf 'ripr %s\n' "$*" >> "$FAKE_CALLS"
+}
+sudo() {
+  # #18428: the fallback guidance step wraps its subject pass in
+  # `sudo -n systemd-run --scope ... -- cargo xtask ...`. The sandbox has no
+  # systemd manager and the wrapped command must still hit the cargo shim
+  # below, so unwrap exactly this shape and execute the wrapped command;
+  # any other sudo use fails closed.
+  [ "${1:-}" = "-n" ] || return 1
+  shift
+  [ "${1:-}" = "systemd-run" ] || return 1
+  shift
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
+  [ "$#" -gt 0 ] || return 1
+  shift
+  "$@"
 }
     cargo() {
       printf 'cargo %s\n' "$*" >> "$FAKE_CALLS"
@@ -1075,7 +1093,9 @@ ripr() {
         .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
         .env("PR_LABELS", "ci")
-        .env("RIPR_VERSION", "0.10.0")
+        .env("RIPR_VERSION", "0.11.0")
+        .env("RIPR_GIT_REPOSITORY", "https://github.com/EffortlessMetrics/ripr-swarm.git")
+        .env("RIPR_GIT_REV", "9b9143798615bbf1a14c2dbd23a2359a29942078")
         .env("GITHUB_STEP_SUMMARY", &summary)
         .env("RIPR_FRESHNESS_HANDOFF", &freshness_handoff)
         .env("RIPR_FRESHNESS_TOKEN", freshness_token)
@@ -1109,8 +1129,9 @@ ripr() {
     let checkout_text = fs::read_to_string(&checkout_marker)?;
     let calls_text = fs::read_to_string(&calls)?;
     let summary_text = fs::read_to_string(&summary)?;
-    let quality_summary_text =
-        fs::read_to_string(&quality_summary).context("reading fallback quality-gate summary")?;
+    let quality_summary_text = fs::read_to_string(&quality_summary).with_context(|| {
+        format!("reading fallback quality-gate summary; transcript:\n{combined}")
+    })?;
     let quality_receipt_text = match fs::read_to_string(&quality_receipt) {
         Ok(text) => Some(text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -1443,7 +1464,7 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "ripr.yml must produce and upload diff-scoped RIPR PR receipts"
     );
     if workflow_run_block("ripr-github", "Install ripr")?.trim()
-        != r#"cargo install ripr --version "$RIPR_VERSION" --locked"#
+        != r#"cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked"#
     {
         return Err(anyhow!(
             "normal hosted job must retain its pinned host-side ripr installer for downstream consumers"
@@ -1512,13 +1533,16 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     for check_command in [
         "cargo xtask ripr-pr --base",
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
-        "cargo xtask ripr-review-comments --base",
     ] {
         assert!(
             validate_step.contains(check_command) && validate_step.contains("--check"),
             "PR1 validate step must check `{check_command}`"
         );
     }
+    assert!(
+        !validate_step.contains("cargo xtask ripr-review-comments"),
+        "advisory guidance validation must not red the required validation step"
+    );
     let upload_step =
         workflow_step(&workflow, "Upload ripr PR evidence").ok_or("missing upload step")?;
     for artifact_path in [
@@ -1578,6 +1602,45 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "RIPR summary step must publish only current evidence after a successful handoff"
     );
 
+    Ok(())
+}
+
+#[test]
+fn guarded_ripr_pin_and_advisory_guidance_are_explicit() -> Result<()> {
+    for job in ["ripr-selfhosted", "ripr-github", "ripr-fallback", "seed-cache"] {
+        ensure!(
+            workflow_job_env_value(job, "RIPR_VERSION")? == "0.11.0",
+            "{job} must declare the guarded ripr release"
+        );
+        ensure!(
+            workflow_job_env_value(job, "RIPR_GIT_REV")?
+                == "9b9143798615bbf1a14c2dbd23a2359a29942078",
+            "{job} must pin the exact source commit carrying the guidance guard"
+        );
+    }
+
+    for lane in ["ripr-github", "ripr-fallback"] {
+        for step_name in ["Generate review guidance", "Validate advisory review guidance"] {
+            let step = workflow_step_value(lane, step_name)?;
+            ensure!(
+                step.get("continue-on-error").and_then(Value::as_bool) == Some(true),
+                "{lane} {step_name} must stay advisory"
+            );
+        }
+        let required_validation = workflow_run_block(lane, "Validate PR evidence contracts")?;
+        ensure!(
+            !required_validation.contains("ripr-review-comments"),
+            "{lane} required evidence validation must not depend on advisory guidance"
+        );
+    }
+
+    let self_hosted = workflow_run_block("ripr-selfhosted", "Run ripr evidence and gate (Docker)")?;
+    for line in self_hosted.lines().filter(|line| line.contains("ripr-review-comments")) {
+        ensure!(
+            line.trim_end().ends_with("|| true"),
+            "self-hosted guidance generation/check must stay advisory: {line}"
+        );
+    }
     Ok(())
 }
 
@@ -1800,15 +1863,35 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
             .lines()
             .filter(|line| !line.trim_start().starts_with('#'))
             .filter(|line| {
-                line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.95")
+                line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.100")
             })
             .count(),
-        1,
-        "the self-hosted rust-standard lane must check the required Docker image before running ripr"
+        2,
+        "the self-hosted rust-standard lane must check the required Docker image before cleanup and again before running ripr"
+    );
+    let cleanup = workflow
+        .split("- name: Fix workspace ownership (pre-checkout)")
+        .nth(1)
+        .and_then(|tail| tail.split("- name: Checkout").next())
+        .expect("self-hosted pre-checkout cleanup must be present");
+    let missing_image_guard = cleanup
+        .find("if ! docker image inspect em-ci-rust:1.100")
+        .expect("missing-image admission must precede Docker cleanup");
+    let recorded_refusal = cleanup
+        .find("preflight_ok=false")
+        .expect("missing-image admission must record the fallback refusal");
+    let docker_cleanup =
+        cleanup.find("docker run --rm").expect("available-image cleanup must remain present");
+    assert!(
+        missing_image_guard < recorded_refusal
+            && recorded_refusal < docker_cleanup
+            && cleanup.contains("exit 1"),
+        "missing-image admission must record preflight_ok=false, fail the primary lane, and skip the image-dependent cleanup"
     );
     assert!(
-        workflow
-            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner"),
+        workflow.contains(
+            "Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner"
+        ),
         "missing self-hosted Rust image must be reported as preflight failure"
     );
     assert!(
@@ -1818,6 +1901,115 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
       needs.ripr-selfhosted.outputs.preflight_ok == 'false'",
         ),
         "only a failed self-hosted preflight with preflight_ok=false must route the run to the GitHub-hosted fallback"
+    );
+
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let job_output = yaml
+        .get("jobs")
+        .and_then(|jobs| jobs.get("ripr-selfhosted"))
+        .and_then(|job| job.get("outputs"))
+        .and_then(|outputs| outputs.get("preflight_ok"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        job_output,
+        Some(
+            "${{ steps.admission.outputs.preflight_ok != 'false' && steps.preflight.outputs.preflight_ok != 'false' }}"
+        ),
+        "job output must preserve either preflight refusal"
+    );
+    let checkout = workflow_step_value("ripr-selfhosted", "Checkout")?;
+    assert_eq!(
+        checkout.get("if").and_then(Value::as_str),
+        Some("steps.admission.outputs.preflight_ok != 'false'"),
+        "an early missing-image refusal must skip checkout"
+    );
+
+    let sandbox = tempfile::tempdir()?;
+    let output_file = sandbox.path().join("admission-output");
+    let preflight_output = sandbox.path().join("preflight-output");
+    let docker_calls = sandbox.path().join("docker-calls");
+    let inspect_count = sandbox.path().join("inspect-count");
+    let scratch = sandbox.path().join("scratch");
+    let cache = sandbox.path().join("cache");
+    fs::create_dir_all(&scratch)?;
+    fs::create_dir_all(&cache)?;
+    let admission =
+        workflow_run_block("ripr-selfhosted", "Fix workspace ownership (pre-checkout)")?;
+    let preflight = workflow_run_block("ripr-selfhosted", "Preflight disk")?;
+    // The first image inspection refuses admission; every later inspection would
+    // succeed. GitHub's ordinary success() gate must keep that later availability
+    // from reviving the primary lane after the admission step fails.
+    let fake_docker = r#"
+docker() {
+  printf '%s\n' "$*" >> "$DOCKER_CALLS"
+  if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+    inspections=$(cat "$DOCKER_INSPECT_COUNT" 2>/dev/null || echo 0)
+    inspections=$((inspections + 1))
+    printf '%s\n' "$inspections" > "$DOCKER_INSPECT_COUNT"
+    [ "$inspections" -gt 1 ]
+    return
+  fi
+  return 0
+}
+ci-disk-guard() {
+  return 0
+}
+"#;
+    let script = format!(
+        "{fake_docker}\n(\n{admission}\n)\nadmission_status=$?\nprimary_result=$admission_status\nif [ \"$admission_status\" -eq 0 ]; then\n  export GITHUB_OUTPUT=\"$PREFLIGHT_OUTPUT\"\n  (\n{preflight}\n  )\n  primary_result=$?\nfi\nprintf 'primary_result=%s\\n' \"$primary_result\""
+    );
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_WORKSPACE", sandbox.path())
+        .env("GITHUB_OUTPUT", &output_file)
+        .env("PREFLIGHT_OUTPUT", &preflight_output)
+        .env("DOCKER_CALLS", &docker_calls)
+        .env("DOCKER_INSPECT_COUNT", &inspect_count)
+        .env("SCCACHE_DIR", cache.join("sccache"))
+        .env("TMPDIR", scratch.join("tmp"))
+        .env("CARGO_TARGET_DIR", scratch.join("target"))
+        .env("CARGO_HOME", cache.join("cargo-home"))
+        .env("RIPR_CACHE_DIR", cache.join("ripr"))
+        .env("GITHUB_STEP_SUMMARY", sandbox.path().join("summary.md"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("pre-checkout bash stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    ensure!(
+        output.status.success() && combined.contains("primary_result=1"),
+        "missing-image admission must leave a failed primary lane for the fallback: {combined}"
+    );
+    ensure!(
+        fs::read_to_string(&output_file)?.contains("preflight_ok=false"),
+        "the real early step must record preflight_ok=false"
+    );
+    ensure!(
+        !preflight_output.exists() && fs::read_to_string(&inspect_count)? == "1\n",
+        "later image availability must not execute or revive the refused primary preflight"
+    );
+    let calls = fs::read_to_string(&docker_calls)?;
+    ensure!(
+        calls.contains("image inspect em-ci-rust:1.100") && !calls.contains("run --rm"),
+        "missing-image admission must stop before image-dependent cleanup"
+    );
+    let (admission_fallback, admission_fallback_output) =
+        run_fallback_condition("selfhosted", "failure", "false")?;
+    ensure!(
+        admission_fallback.status.success()
+            && admission_fallback_output.contains("fallback_started=true"),
+        "the terminal admission refusal must select the hosted fallback: {admission_fallback_output}"
     );
 
     let (self_hosted_route, self_hosted_output) =
@@ -1870,7 +2062,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     let (missing_image, missing_image_output) = run_preflight_case(false, false)?;
     if missing_image.status.success()
         || !missing_image_output
-            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner")
+            .contains("Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner")
         || !missing_image_output.contains("preflight_ok=false")
     {
         bail!(
@@ -2085,7 +2277,11 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             && evaluate_step.contains("run_attempt=${GITHUB_RUN_ATTEMPT}")
             && evaluate_step.contains("lane_job_id=${lane_job_id:-unknown}")
             && evaluate_step.contains("write_gate_classification \"configured-timeout-no-proof\"")
-            && evaluate_step.contains("write_gate_classification \"cancelled-no-verdict\""),
+            && evaluate_step.contains("write_gate_classification \"cancelled-no-verdict\"")
+            && evaluate_step
+                .contains("preserve-lane-log-tail.sh \"$lane_log\" ripr-lane-log-tail.txt",)
+            && evaluate_step.contains("lane log tail for ${lane_name}")
+            && evaluate_step.contains("workflow artifact \\`ripr-lane-log-tail\\`"),
         "the ripr gate must emit every classified lane verdict as a data file for the retry workflow"
     );
     let upload_step = workflow_step(&gate, "Upload gate classification")
@@ -2095,6 +2291,15 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             && upload_step.contains("name: ripr-gate-classification")
             && upload_step.contains("if-no-files-found: ignore"),
         "the upload must keep tolerating the rare exits that precede any lane classification"
+    );
+    let lane_tail_upload = workflow_step(&gate, "Upload lane log tail")
+        .ok_or_else(|| anyhow!("missing lane log tail upload"))?;
+    assert!(
+        lane_tail_upload.contains("if: failure()")
+            && lane_tail_upload.contains("name: ripr-lane-log-tail")
+            && lane_tail_upload.contains("path: ripr-lane-log-tail.txt")
+            && lane_tail_upload.contains("if-no-files-found: ignore"),
+        "configured-timeout diagnosis must preserve the retrieved lane log tail (#17450)"
     );
 
     // The retry workflow fires on completed failing ripr runs only.

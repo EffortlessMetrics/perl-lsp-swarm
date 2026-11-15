@@ -4,8 +4,16 @@
 //! The `BuildFlags` shape is the single source of truth for runtime-constructed
 //! capability toggles, while `AdvertisedFeatures` is the runtime-facing projection
 //! used by server startup and protocol responses.
-#[allow(clippy::wildcard_imports)]
-use crate::features::ids::*;
+use crate::features::ids::{
+    LSP_CALL_HIERARCHY, LSP_CODE_ACTION, LSP_CODE_LENS, LSP_COMPLETION, LSP_DECLARATION,
+    LSP_DEFINITION, LSP_DOCUMENT_COLOR, LSP_DOCUMENT_HIGHLIGHT, LSP_DOCUMENT_LINK,
+    LSP_DOCUMENT_SYMBOL, LSP_EXECUTE_COMMAND, LSP_FOLDING_RANGE, LSP_FORMATTING, LSP_HOVER,
+    LSP_IMPLEMENTATION, LSP_INLAY_HINT, LSP_INLINE_COMPLETION, LSP_INLINE_VALUE,
+    LSP_LINKED_EDITING_RANGE, LSP_MONIKER, LSP_NOTEBOOK_CELL_EXECUTION, LSP_NOTEBOOK_DOCUMENT_SYNC,
+    LSP_ON_TYPE_FORMATTING, LSP_PULL_DIAGNOSTICS, LSP_RANGE_FORMATTING, LSP_RANGES_FORMATTING,
+    LSP_REFERENCES, LSP_RENAME, LSP_SELECTION_RANGE, LSP_SEMANTIC_TOKENS, LSP_SIGNATURE_HELP,
+    LSP_TYPE_DEFINITION, LSP_TYPE_HIERARCHY, LSP_WORKSPACE_SYMBOL,
+};
 
 /// LSP features advertised to clients for Perl script development
 ///

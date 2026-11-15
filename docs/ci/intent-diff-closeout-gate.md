@@ -22,6 +22,9 @@ cargo xtask intent-diff-gate --fixture <json>
    - test update,
    - behavior receipt,
    - explicit override.
+   Both "test update" and "expected target path touched" use whole path components
+   (directory segments `test`/`tests`/`t` or test-file name suffixes; directory
+   prefixes on `/` boundaries), not substring matching.
 3. Scaffold/partial PRs that use closing keywords are flagged.
 4. Docs-claimed PRs touching production code are flagged.
 5. VS Code activation fix claims map to expected paths:

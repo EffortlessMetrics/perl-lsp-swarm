@@ -468,9 +468,13 @@ fn check_policy_message(receipt: Option<Value>, expected_evidence: &str) -> Resu
         for (field, marker) in
             [("receipt_id", "caller-receipt-marker"), ("scenario", "caller-scenario-marker")]
         {
+            // #15547 originally required the markers in the evidence section.
+            // #2758 / #16580 keep receipt_id and scenario structured-only so
+            // installed popups stay self-contained; they must not appear in
+            // evidence or in the static policy summary.
             ensure!(
-                evidence.contains(marker) && !policy.contains(marker),
-                "caller context must remain outside static policy: {message}"
+                !evidence.contains(marker) && !policy.contains(marker),
+                "caller context must remain structured, not in evidence or policy: {message}"
             );
             ensure!(
                 result.get(field).and_then(Value::as_str) == Some(marker),

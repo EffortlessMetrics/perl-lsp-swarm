@@ -4,11 +4,16 @@
 //! cases are hermetic: no network and no `gh`. The dedicated local-ref route
 //! tests also execute its generated argv in a temporary Git repository.
 
-use std::collections::HashMap;
-
 use std::cell::RefCell;
 use std::process::Command;
 
+#[path = "support/external_command.rs"]
+mod external_command;
+
+use external_command::{
+    CommandResult, ExpectedExternalCommand, ExternalCommandFixture, ExternalCommandFixtureResult,
+    JsonFieldContract, ObservedExternalCommand,
+};
 use xtask::branch_deletion_admission::{
     DeletionAdmission, DeletionExecutor, ParentTerminality, ReadOnlyCommands, RecheckGate,
     RemoteIdentity, branch_deletion_command, collect_request, collect_request_for_local_alias,
@@ -18,39 +23,48 @@ use xtask::branch_deletion_admission::{
 
 const BRANCH: &str = "agent/vim-activation-root-7762";
 const HEAD_SHA: &str = "1111111111111111111111111111111111111111";
+const REPO: &str = "EffortlessMetrics/perl-lsp-swarm";
+const PARENT_JSON_FIELDS: &str = "number,state,headRefName,headRefOid,isCrossRepository";
+const CHILD_JSON_FIELDS: &str = "number,state,isDraft,headRefName,baseRefName,mergeable";
+const PARENT_JSON_SUPPORTED: [&str; 5] =
+    ["headRefName", "headRefOid", "isCrossRepository", "number", "state"];
 
-/// Canned command surface. Any command not explicitly stubbed fails, so a
-/// test cannot accidentally pass by reading something it never set up.
+/// Canned command surface. Matching is exact; unknown commands fail closed.
 #[derive(Default)]
 struct FakeCommands {
-    responses: HashMap<String, Result<String, String>>,
+    fixture: ExternalCommandFixture,
 }
 
 impl FakeCommands {
-    fn key(program: &str, args: &[&str]) -> String {
-        format!("{program} {}", args.join(" "))
+    fn expect(self, spec: ExpectedExternalCommand) -> Self {
+        Self { fixture: self.fixture.expect(spec) }
     }
 
-    /// Stub by the leading tokens of a command, so long `--json` field lists
-    /// do not have to be repeated in every test.
-    ///
-    /// A later registration supersedes any narrower stub it covers, so a test
-    /// can override `healthy()`'s `git ls-remote origin` with a broader
-    /// `git ls-remote` failure. Without this, longest-prefix resolution would
-    /// silently keep the healthy stub and the test would pass for the wrong
-    /// reason.
-    fn stub(mut self, prefix: &str, response: Result<String, String>) -> Self {
-        self.responses.retain(|existing, _| !existing.starts_with(prefix));
-        self.responses.insert(prefix.to_string(), response);
-        self
+    /// Override the result of an already-registered exact expectation whose
+    /// identity starts with `selector`, or insert `selector` as an exact
+    /// command. This does not restore prefix matching for observations.
+    fn on(self, selector: &str, output: &str) -> Self {
+        Self { fixture: self.fixture.on_selector(selector, CommandResult::stdout(output)) }
     }
 
-    fn on(self, prefix: &str, output: &str) -> Self {
-        self.stub(prefix, Ok(output.to_string()))
+    fn failing(self, selector: &str, error: &str) -> Self {
+        Self { fixture: self.fixture.on_selector(selector, CommandResult::error(error)) }
     }
 
-    fn failing(self, prefix: &str, error: &str) -> Self {
-        self.stub(prefix, Err(error.to_string()))
+    /// Insert an exact expectation whose argv may contain whitespace.
+    fn on_args(self, program: &str, args: &[&str], output: &str) -> Self {
+        let mut spec =
+            ExpectedExternalCommand::exact(program, strs(args)).reusable().stdout(output);
+        if args.contains(&"--json") {
+            spec = spec.json_fields_are_a_set();
+            if let Some(fields) = args.windows(2).find_map(|pair| match pair {
+                ["--json", fields] => Some(*fields),
+                _ => None,
+            }) {
+                spec = spec.json_contract(JsonFieldContract::exact_supported(fields));
+            }
+        }
+        self.expect(spec)
     }
 }
 
@@ -58,15 +72,13 @@ impl ReadOnlyCommands for FakeCommands {
     fn capture(&self, program: &str, args: &[&str]) -> color_eyre::eyre::Result<String> {
         if program == "gh" && args.starts_with(&["pr", "view"]) {
             // Independent CLI contract: https://cli.github.com/manual/gh_pr_view
-            // Prefix stubs must not conceal unsupported requested JSON fields.
             let fields = args.windows(2).find_map(|pair| match pair {
                 ["--json", fields] => Some(*fields),
                 _ => None,
             });
             let mut requested: Vec<_> = fields.unwrap_or_default().split(',').collect();
             requested.sort_unstable();
-            let expected = ["headRefName", "headRefOid", "isCrossRepository", "number", "state"];
-            if requested != expected {
+            if requested.as_slice() != PARENT_JSON_SUPPORTED {
                 return Err(color_eyre::eyre::eyre!(
                     "unsupported parent JSON field contract: {requested:?}"
                 ));
@@ -82,16 +94,20 @@ impl ReadOnlyCommands for FakeCommands {
             );
         }
 
-        let full = Self::key(program, args);
-        let matched = self
-            .responses
-            .iter()
-            .filter(|(prefix, _)| full.starts_with(prefix.as_str()))
-            .max_by_key(|(prefix, _)| prefix.len());
-        match matched {
-            Some((_, Ok(output))) => Ok(output.clone()),
-            Some((_, Err(error))) => Err(color_eyre::eyre::eyre!("{error}")),
-            None => Err(color_eyre::eyre::eyre!("unstubbed command: {full}")),
+        let observed = ObservedExternalCommand::new(
+            program,
+            args.iter().map(|argument| (*argument).to_string()).collect(),
+        );
+        match self.fixture.observe(observed) {
+            ExternalCommandFixtureResult::Matched(result) if result.exit_code == 0 => {
+                Ok(result.stdout)
+            }
+            ExternalCommandFixtureResult::Matched(result) => {
+                Err(color_eyre::eyre::eyre!("{}", result.stderr))
+            }
+            ExternalCommandFixtureResult::Mismatch(mismatch) => {
+                Err(color_eyre::eyre::eyre!("{mismatch}"))
+            }
         }
     }
 }
@@ -102,23 +118,67 @@ fn merged_parent_json() -> String {
     )
 }
 
+fn strs(args: &[&str]) -> Vec<String> {
+    args.iter().map(|argument| (*argument).to_string()).collect()
+}
+
+fn reusable_exact(program: &str, args: &[&str], stdout: &str) -> ExpectedExternalCommand {
+    ExpectedExternalCommand::exact(program, strs(args)).reusable().stdout(stdout)
+}
+
 /// Every read succeeds and reports an unencumbered subject.
 fn healthy() -> FakeCommands {
+    let origin_url = "https://github.com/EffortlessMetrics/perl-lsp-swarm.git\n";
     FakeCommands::default()
-        .on(
-            "git remote get-url origin",
-            "https://github.com/EffortlessMetrics/perl-lsp-swarm.git\n",
+        .expect(reusable_exact("git", &["remote", "get-url", "origin"], origin_url))
+        .expect(reusable_exact(
+            "git",
+            &["remote", "get-url", "--push", "--all", "origin"],
+            origin_url,
+        ))
+        .expect(
+            ExpectedExternalCommand::exact(
+                "gh",
+                strs(&["pr", "view", "7799", "--repo", REPO, "--json", PARENT_JSON_FIELDS]),
+            )
+            .reusable()
+            .json_fields_are_a_set()
+            .json_contract(JsonFieldContract::exact_supported(PARENT_JSON_FIELDS))
+            .stdout(merged_parent_json()),
         )
-        // The deletion travels over the PUSH endpoint, which git reports
-        // separately; collection reads both and requires them to agree.
-        .on(
-            "git remote get-url --push --all origin",
-            "https://github.com/EffortlessMetrics/perl-lsp-swarm.git\n",
+        .expect(
+            ExpectedExternalCommand::exact(
+                "gh",
+                strs(&[
+                    "pr",
+                    "list",
+                    "--repo",
+                    REPO,
+                    "--base",
+                    BRANCH,
+                    "--state",
+                    "open",
+                    "--limit",
+                    "100",
+                    "--json",
+                    CHILD_JSON_FIELDS,
+                ]),
+            )
+            .reusable()
+            .json_fields_are_a_set()
+            .json_contract(JsonFieldContract::exact_supported(CHILD_JSON_FIELDS))
+            .stdout("[]"),
         )
-        .on("gh pr view 7799", &merged_parent_json())
-        .on("gh pr list", "[]")
-        .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{BRANCH}\n"))
-        .on("git worktree list", "worktree /repo\nHEAD abc\nbranch refs/heads/main\n")
+        .expect(reusable_exact(
+            "git",
+            &["ls-remote", "origin", &format!("refs/heads/{BRANCH}")],
+            &format!("{HEAD_SHA}\trefs/heads/{BRANCH}\n"),
+        ))
+        .expect(reusable_exact(
+            "git",
+            &["worktree", "list", "--porcelain"],
+            "worktree /repo\nHEAD abc\nbranch refs/heads/main\n",
+        ))
 }
 
 /// Positive control. Without it every fail-closed case below could pass for
@@ -139,12 +199,12 @@ fn a_local_alias_is_collected_from_the_local_tip_and_never_remote_deleted()
 -> Result<(), Box<dyn std::error::Error>> {
     const ALIAS: &str = "codex/13178-dancer2-v1-integrated";
     let commands = healthy()
-        .on("git check-ref-format refs/heads", ALIAS)
+        .on(&format!("git check-ref-format refs/heads/{ALIAS}"), "")
         .on(
-            "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+            &format!("git for-each-ref --format=%(refname)%00%(symref) refs/heads/{ALIAS}"),
             &format!("refs/heads/{ALIAS}\0\n"),
         )
-        .on("git rev-parse --verify --quiet refs/heads", &format!("{HEAD_SHA}\n"))
+        .on(&format!("git rev-parse --verify --quiet refs/heads/{ALIAS}"), &format!("{HEAD_SHA}\n"))
         .on("git worktree list", "worktree /repo\nHEAD abc\nbranch refs/heads/main\n");
 
     let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
@@ -168,9 +228,9 @@ fn a_local_alias_is_collected_from_the_local_tip_and_never_remote_deleted()
 fn a_symbolic_local_alias_is_not_admitted() -> Result<(), Box<dyn std::error::Error>> {
     const ALIAS: &str = "codex/symbolic-alias";
     let commands = healthy()
-        .on("git check-ref-format refs/heads", ALIAS)
+        .on(&format!("git check-ref-format refs/heads/{ALIAS}"), "")
         .on(
-            "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+            &format!("git for-each-ref --format=%(refname)%00%(symref) refs/heads/{ALIAS}"),
             &format!("refs/heads/{ALIAS}\0refs/remotes/origin/other\n"),
         )
         .on("git worktree list", "worktree /repo\nHEAD abc\nbranch refs/heads/main\n");
@@ -191,12 +251,12 @@ fn a_local_alias_checked_out_in_a_worktree_is_not_admitted()
 -> Result<(), Box<dyn std::error::Error>> {
     const ALIAS: &str = "codex/checked-out-alias";
     let commands = healthy()
-        .on("git check-ref-format refs/heads", ALIAS)
+        .on(&format!("git check-ref-format refs/heads/{ALIAS}"), "")
         .on(
-            "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+            &format!("git for-each-ref --format=%(refname)%00%(symref) refs/heads/{ALIAS}"),
             &format!("refs/heads/{ALIAS}\0\n"),
         )
-        .on("git rev-parse --verify --quiet refs/heads", &format!("{HEAD_SHA}\n"))
+        .on(&format!("git rev-parse --verify --quiet refs/heads/{ALIAS}"), &format!("{HEAD_SHA}\n"))
         .on("git worktree list", &format!("worktree /repo\nHEAD abc\nbranch refs/heads/{ALIAS}\n"));
 
     let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
@@ -214,8 +274,8 @@ fn a_local_alias_checked_out_in_a_worktree_is_not_admitted()
 fn a_local_alias_metadata_read_error_is_not_treated_as_direct_ref()
 -> Result<(), Box<dyn std::error::Error>> {
     const ALIAS: &str = "codex/unreadable-alias";
-    let commands = healthy().on("git check-ref-format refs/heads", ALIAS).failing(
-        "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+    let commands = healthy().on(&format!("git check-ref-format refs/heads/{ALIAS}"), "").failing(
+        &format!("git for-each-ref --format=%(refname)%00%(symref) refs/heads/{ALIAS}"),
         "permission denied",
     );
 
@@ -521,7 +581,7 @@ fn remote_identity_is_verified_not_merely_named() {
         "a same-named repository on another host must be refused",
     );
 
-    let unreadable = FakeCommands::default().failing("git remote get-url", "no such remote");
+    let unreadable = FakeCommands::default().failing("git remote get-url origin", "no such remote");
     assert!(
         verify_remote_identity(&unreadable, "origin", &expected).is_err(),
         "an unreadable remote must be an error, never a pass",
@@ -781,7 +841,7 @@ fn a_non_terminal_parent_retains() -> Result<(), Box<dyn std::error::Error>> {
 /// subject, so there is nothing to evaluate.
 #[test]
 fn an_unreadable_subject_is_an_error_not_a_default() {
-    let no_remote = FakeCommands::default().failing("git remote get-url", "no such remote");
+    let no_remote = FakeCommands::default().failing("git remote get-url origin", "no such remote");
     assert!(collect_request(&no_remote, 7799, "origin").is_err());
 
     let no_parent = healthy().failing("gh pr view", "gh: pull request not found");
@@ -958,7 +1018,29 @@ fn a_branch_name_with_shell_metacharacters_stays_one_argument()
                 r#"{{"number":7799,"state":"MERGED","headRefName":"{hostile}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         )
-        .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"));
+        .on_args(
+            "gh",
+            &[
+                "pr",
+                "list",
+                "--repo",
+                REPO,
+                "--base",
+                hostile,
+                "--state",
+                "open",
+                "--limit",
+                "100",
+                "--json",
+                CHILD_JSON_FIELDS,
+            ],
+            "[]",
+        )
+        .on_args(
+            "git",
+            &["ls-remote", "origin", &format!("refs/heads/{hostile}")],
+            &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"),
+        );
 
     let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete, "{}", outcome.detail);

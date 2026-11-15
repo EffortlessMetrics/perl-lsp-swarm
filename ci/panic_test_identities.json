@@ -430,8 +430,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected RiprFacts action, got {other:?}\"),",
       "selector_identity": "invocation:2341f7ec4387f79e:occurrence:1",
-      "accepted_reason": "Intentional #17330/#17152 launcher action oracle: --ripr-facts with change.diff must select RiprFacts and preserve the explicit diff path.",
-      "state": "active"
+      "accepted_reason": "Intentional #17330/#17152 launcher action oracle: --ripr-facts with change.diff must select RiprFacts and preserve the explicit diff path. Retired during #17632 ledger reconcile: panic site no longer present in the complete test-source inventory.",
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
@@ -439,8 +439,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected RiprFacts action, got {other:?}\"),",
       "selector_identity": "invocation:2341f7ec4387f79e:occurrence:2",
-      "accepted_reason": "Intentional #17330/#17152 launcher action oracle: --ripr-facts without a path must select RiprFacts and preserve an absent diff path.",
-      "state": "active"
+      "accepted_reason": "Intentional #17330/#17152 launcher action oracle: --ripr-facts without a path must select RiprFacts and preserve an absent diff path. Retired during #17632 ledger reconcile: panic site no longer present in the complete test-source inventory.",
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/semantic_snapshot.rs",
@@ -736,8 +736,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"missing outgoing callee {}\", qualified_name));",
       "selector_identity": "invocation:9897144005f5b5c3:occurrence:1",
-      "accepted_reason": "Intentional #17379/#17368 outgoing-call oracle: each expected qualified bareword-class callee must exist before its call-range count is checked.",
-      "state": "active"
+      "accepted_reason": "Intentional #17379/#17368 outgoing-call oracle: each expected qualified bareword-class callee must exist before its call-range count is checked. Retired during #17632 ledger reconcile: panic site no longer present in the complete test-source inventory.",
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -4300,8 +4300,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "loaded.sources.get(file).unwrap_or_else(|| panic!(\"source cache misses {file}\"));",
       "selector_identity": "invocation:592f04dfca539aa8:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition. Retired during #17632 ledger reconcile: panic site no longer present in the complete test-source inventory.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/completion_candidates.rs",
@@ -5353,8 +5353,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "panic!(\"expected admission, got {reason}\")",
       "selector_identity": "invocation:163e1e1d6021849b:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result. Retired during #17632 ledger reconcile: panic site no longer present in the complete test-source inventory.",
+      "state": "retired"
     },
     {
       "path": "crates/perl-operation-trace/tests/dependency_contract.rs",
@@ -5642,6 +5642,258 @@
       "normalized_snippet": "Ok(_) => panic!(\"expected bundle refusal, got Ok\"),",
       "selector_identity": "invocation:0b18fed2ab2d7d97:occurrence:1",
       "accepted_reason": "Test-helper oracle extracting a refusal message; panics only if an invalid bundle is accepted.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/debug_adapter/process.rs",
+      "enclosing_test_or_function": "attach_refuses_string_stop_on_entry_before_connecting",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected failed attach response, got {other:?}\"),",
+      "selector_identity": "invocation:14d6ce5bcbca798f:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/variables/parser.rs",
+      "enclosing_test_or_function": "parse_hash_literal_keeps_fat_comma_inside_single_quoted_key",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unexpected parse result: {other:?}\"),",
+      "selector_identity": "invocation:ce1a0a859494415b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/variables/parser.rs",
+      "enclosing_test_or_function": "parse_hash_literal_keeps_fat_comma_inside_double_quoted_key",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unexpected parse result: {other:?}\"),",
+      "selector_identity": "invocation:ce1a0a859494415b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/variables/parser.rs",
+      "enclosing_test_or_function": "parse_hash_literal_handles_escaped_quote_in_key_before_fat_comma",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unexpected parse result: {other:?}\"),",
+      "selector_identity": "invocation:ce1a0a859494415b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/variables/parser.rs",
+      "enclosing_test_or_function": "parse_hash_literal_still_splits_on_the_real_separator_when_value_contains_fat_comma",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unexpected parse result: {other:?}\"),",
+      "selector_identity": "invocation:ce1a0a859494415b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/variables/parser.rs",
+      "enclosing_test_or_function": "parse_assignment_hash_with_fat_comma_inside_quoted_key",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unexpected parse result: {other:?}\"),",
+      "selector_identity": "invocation:ce1a0a859494415b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/src/taxonomy.rs",
+      "enclosing_test_or_function": "all_lists_every_variant_exactly_once_in_canonical_order",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"witness_variant_count() promised index {index}\"))",
+      "selector_identity": "invocation:2ca127a5b9c59d83:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/src/taxonomy.rs",
+      "enclosing_test_or_function": "exhaustiveness_witness_and_index_lookup_are_inverse",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"missing witness slot at index {index}\"));",
+      "selector_identity": "invocation:cb4173d0d5f7afeb:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/src/taxonomy.rs",
+      "enclosing_test_or_function": "evidence_class_all_lists_every_variant_exactly_once",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"witness_variant_count() promised index {index}\"))",
+      "selector_identity": "invocation:2ca127a5b9c59d83:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_18537_mechanism_a_stack_walk.rs",
+      "enclosing_test_or_function": "assert_ast_clean_iterative",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"unexpected AST error node: {}\", node.kind.kind_name());",
+      "selector_identity": "invocation:df6c7458543844f9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_catch_redeclare_13333.rs",
+      "enclosing_test_or_function": "must_some_try",
+      "macro_family": "panic!",
+      "normalized_snippet": "None => panic!(\"expected a Try node in {}\", ast.to_sexp()),",
+      "selector_identity": "invocation:2b517ef5452a48ed:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_prototype_validation_3355.rs",
+      "enclosing_test_or_function": "quote_like_spellings_survive_as_prototype_payload",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a program for `{source}`\");",
+      "selector_identity": "invocation:0aa8caf4a903cc40:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_prototype_validation_3355.rs",
+      "enclosing_test_or_function": "quote_like_spellings_survive_as_prototype_payload",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a subroutine for `{source}`, got {:?}\", statements[0].kind);",
+      "selector_identity": "invocation:a8b03a168103a8cf:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_prototype_validation_3355.rs",
+      "enclosing_test_or_function": "quote_like_spellings_survive_as_prototype_payload",
+      "macro_family": "panic!",
+      "normalized_snippet": "prototype.as_deref().unwrap_or_else(|| panic!(\"prototype lost for `{source}`\"));",
+      "selector_identity": "invocation:241d8576be6f0d63:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_prototype_validation_3355.rs",
+      "enclosing_test_or_function": "quote_like_spellings_survive_as_prototype_payload",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a prototype node for `{source}`, got {:?}\", prototype.kind);",
+      "selector_identity": "invocation:3ef1402e7e4c87a9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_prototype_validation_3355.rs",
+      "enclosing_test_or_function": "quote_like_signature_defaults_keep_their_quote_tokens",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a program for `{source}`\");",
+      "selector_identity": "invocation:0aa8caf4a903cc40:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_prototype_validation_3355.rs",
+      "enclosing_test_or_function": "quote_like_signature_defaults_keep_their_quote_tokens",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a subroutine for `{source}`, got {:?}\", statements[0].kind);",
+      "selector_identity": "invocation:a8b03a168103a8cf:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_prototype_validation_3355.rs",
+      "enclosing_test_or_function": "quote_like_after_prototype_still_lexes_as_operator",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a program\");",
+      "selector_identity": "invocation:43899a7803587918:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_signature_param_2730.rs",
+      "enclosing_test_or_function": "lectrotest_property_prototype_ast_shape",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected program\");",
+      "selector_identity": "invocation:17e71e2e614d41b5:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_signature_param_2730.rs",
+      "enclosing_test_or_function": "lectrotest_property_prototype_ast_shape",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected subroutine\");",
+      "selector_identity": "invocation:5208377194de81a5:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_signature_param_2730.rs",
+      "enclosing_test_or_function": "lectrotest_property_prototype_ast_shape",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected prototype node\");",
+      "selector_identity": "invocation:498b4676e3073ecd:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_three_dot_range_13906.rs",
+      "enclosing_test_or_function": "three_dot_range_stays_inside_ternary_condition_and_word_operators",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected ternary\");",
+      "selector_identity": "invocation:5d8e9c96cd490c54:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_dynamic_indirect_receiver_role.rs",
+      "enclosing_test_or_function": "dynamic_indirect_receivers_record_dynamic_role_at_exact_ranges",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{source:?} must record its written receiver {name:?}\"));",
+      "selector_identity": "invocation:ac0669a6a9bf1e75:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_dynamic_indirect_receiver_role.rs",
+      "enclosing_test_or_function": "static_indirect_receivers_keep_indirect_object_role",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{source:?} must record its static receiver {name:?}\"));",
+      "selector_identity": "invocation:55191b8c52026604:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_subscript_container_aggregate_binding_14682.rs",
+      "enclosing_test_or_function": "subscript_for_container",
+      "macro_family": "panic!",
+      "normalized_snippet": "found.unwrap_or_else(|| panic!(\"no subscript with container {container_name}\"))",
+      "selector_identity": "invocation:970a72639a50a396:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_subscript_container_aggregate_binding_14682.rs",
+      "enclosing_test_or_function": "dollar_reference_for_name",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"no `$`-sigil BindingReference for {name}\"))",
+      "selector_identity": "invocation:7956e6b763513fb2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_subscript_container_aggregate_binding_14682.rs",
+      "enclosing_test_or_function": "first_binding_for_name",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"no binding named {name}\"))",
+      "selector_identity": "invocation:6fa159d817b8b852:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "every_build_step_rejects_profile_drift_in_receipts",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"build step {index} must pin its profile\");",
+      "selector_identity": "invocation:fd4e4638b8f42574:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
       "state": "active"
     }
   ]

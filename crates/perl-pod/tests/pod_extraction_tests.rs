@@ -1,6 +1,8 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
-use perl_pod::{extract_pod, extract_pod_from_file};
-use perl_test_must::must_some;
+use perl_pod::{extract_pod, extract_pod_from_file, strip_pod_formatting};
+use perl_test_must::{must_some, must_some_with};
+
+include!("helpers/markdown_rendered_field_bound.rs");
 use std::io::Write as _;
 use std::path::Path;
 
@@ -615,6 +617,136 @@ fn link_target_with_unicode_module_name_is_percent_encoded() {
     assert!(
         description.contains("perldoc://%C3%9Cber::Module"),
         "expected non-ASCII bytes in target to be percent-encoded; got: {description}"
+    );
+}
+
+// ── #15251: renderer-derived markdown length bound ──────────────────────
+
+fn markdown_field_within_bound(rendered: &str, source_len: usize) -> bool {
+    rendered.len() <= markdown_rendered_field_bound(source_len)
+}
+
+/// Compact DESCRIPTION whose percent-encoded markdown is longer than the
+/// whole source, yet stays inside the derived ceiling.
+fn expanding_description_source() -> &'static str {
+    "=head1 DESCRIPTION\n\nSee L<日本語> L<café> L<foo bar> and L<[x]>.\n\n=cut\n"
+}
+
+#[test]
+fn description_markdown_expansion_exceeds_source_but_stays_within_derived_bound() {
+    let source = expanding_description_source();
+    let doc = extract_pod(source);
+    let desc = must_some_with(doc.description.as_deref(), "DESCRIPTION with expanding L<> links");
+
+    assert!(
+        desc.contains("[日本語](perldoc://") && desc.contains("%20") && desc.contains("\\[x\\]"),
+        "expected unicode, percent-encoded, and escaped-display markdown; got: {desc}"
+    );
+    assert!(
+        desc.len() > source.len(),
+        "fixture must expand past the whole source (old `<= len` oracle is false): desc={} source={}",
+        desc.len(),
+        source.len()
+    );
+    assert!(
+        markdown_field_within_bound(desc, source.len()),
+        "DESCRIPTION {}B exceeded derived bound {}B for {}B source: {desc}",
+        desc.len(),
+        markdown_rendered_field_bound(source.len()),
+        source.len()
+    );
+}
+
+#[test]
+fn duplicated_markdown_rendering_violates_derived_bound() {
+    let source = expanding_description_source();
+    let doc = extract_pod(source);
+    let desc =
+        must_some_with(doc.description.as_deref(), "DESCRIPTION for negative-control mutant");
+    let bound = markdown_rendered_field_bound(source.len());
+    assert!(
+        markdown_field_within_bound(desc, source.len()),
+        "control must first sit inside the bound"
+    );
+
+    let copies = bound / desc.len().max(1) + 1;
+    let runaway = desc.repeat(copies);
+    assert!(runaway.len() > bound, "mutant must exceed the bound: {} vs {bound}", runaway.len());
+    assert!(
+        !markdown_field_within_bound(&runaway, source.len()),
+        "duplicating a rendered DESCRIPTION must fail the replacement oracle"
+    );
+}
+
+#[test]
+fn method_body_with_links_keeps_display_text_source_cap() {
+    // #17984: method bodies are display text, not markdown. The same L<>
+    // payload that expands DESCRIPTION stays `<= source` here, so the
+    // method-body fuzz arm does not need the markdown ceiling.
+    let source = "=head2 method_a\n\nSee L<日本語> L<café> L<foo bar> and L<[x]>.\n\n=cut\n";
+    let doc = extract_pod(source);
+    let body = must_some_with(doc.methods.get("method_a").map(String::as_str), "method_a body");
+
+    assert_eq!(body, "See 日本語 café foo bar and [x].", "got: {body}");
+    assert!(
+        body.len() <= source.len(),
+        "display-text method body {}B must not exceed {}B source",
+        body.len(),
+        source.len()
+    );
+    assert!(!body.contains("perldoc://"), "method body must not render markdown: {body}");
+    assert!(
+        markdown_field_within_bound(body, source.len()),
+        "display-text output is also inside the looser markdown ceiling"
+    );
+}
+
+#[test]
+fn markdown_bound_uses_reached_renderer_outputs_as_conservative_7n() {
+    // Two-byte `L<` never enters the formatter (`i + 2 < len`); it is literal.
+    assert_eq!(strip_pod_formatting("L<"), "L<");
+    assert!(!strip_pod_formatting("L<").contains("perldoc://"));
+
+    // Reached empty wrap: matched `L<>` → `[](perldoc://)` (14B from 3B).
+    let empty = strip_pod_formatting("L<>");
+    assert_eq!(empty, MARKDOWN_LINK_WRAPPER);
+    assert!(markdown_field_within_bound(&empty, 3), "14B L<> must sit inside bound(3)=21");
+
+    // Reached unmatched escape/percent wrap stays inside 7n on 3 source bytes.
+    let unmatched = strip_pod_formatting("L<\\");
+    assert!(unmatched.contains("perldoc://"), "got: {unmatched}");
+    assert!(
+        markdown_field_within_bound(&unmatched, 3),
+        "unmatched L<\\ {}B exceeded bound(3)={}",
+        unmatched.len(),
+        markdown_rendered_field_bound(3)
+    );
+
+    assert_eq!(markdown_rendered_field_bound(0), 0);
+    assert_eq!(markdown_rendered_field_bound(3), 21);
+
+    // Duplicating a reached `L<>` render (28B) misses bound(3)=21 and would
+    // still fit an arbitrary 16n multiplier (48).
+    let duplicated = empty.repeat(2);
+    assert_eq!(duplicated.len(), 28);
+    assert!(
+        !markdown_field_within_bound(&duplicated, 3),
+        "7n must reject duplicated reached wrapper output; a looser multiplier would not"
+    );
+}
+
+#[test]
+fn fuzz_target_asserts_description_against_the_shared_bound() {
+    let fuzz = include_str!("../../../fuzz/fuzz_targets/pod_extraction.rs");
+    assert!(
+        fuzz.contains(
+            "include!(\"../../crates/perl-pod/tests/helpers/markdown_rendered_field_bound.rs\")"
+        ),
+        "fuzz target must include the shared bound helper"
+    );
+    assert!(
+        fuzz.contains("desc.len() <= markdown_rendered_field_bound(len)"),
+        "fuzz target must apply the shared helper to DESCRIPTION"
     );
 }
 

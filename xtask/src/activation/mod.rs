@@ -7,9 +7,11 @@
 
 mod check;
 mod derive;
+mod gate_control;
 mod model;
 mod overrides;
 mod render;
+mod test_api_product;
 mod validate;
 
 pub use check::{
@@ -26,6 +28,13 @@ pub use overrides::{
     OverrideRecord, OverridesFile, load as load_overrides, validate as validate_overrides,
 };
 pub use render::render_list;
+pub use test_api_product::{
+    CONTROLLING_ISSUE as TEST_API_PRODUCT_CONTROLLING_ISSUE,
+    CheckReport as TestApiProductCheckReport, INVENTORY_PATH as TEST_API_PROTOCOL_INVENTORY_PATH,
+    TEST_API_CFG_GATE, check as check_test_api_product, check_product_capability_snapshots,
+    check_routing_completeness, evaluate as evaluate_test_api_product,
+    load_inventory as load_test_api_protocol_inventory, production_routing_contains_method,
+};
 pub use validate::{validate, validate_inventory_value};
 
 use std::collections::BTreeMap;

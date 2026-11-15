@@ -250,6 +250,18 @@ impl SourceGeometryAttachment {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn instrument_failure(
+        subject: SourceGeometrySubject,
+        reason: SourceGeometryInstrumentFailureReason,
+    ) -> Self {
+        Self {
+            schema_version: SOURCE_GEOMETRY_ATTACHMENT_SCHEMA_VERSION,
+            subject,
+            state: SourceGeometryAttachmentState::InstrumentFailure { reason },
+        }
+    }
+
     /// Attachment schema version.
     #[must_use]
     pub const fn schema_version(&self) -> &'static str {

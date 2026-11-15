@@ -763,7 +763,7 @@ impl DebugAdapter {
     ) -> Result<(), EngineBreakpointAcknowledgeError> {
         let command = Self::engine_breakpoint_probe_command(source_path, line);
         let captured_generation = self.current_session_generation();
-        let (operation, begin, end, prior_state) = {
+        let (operation, begin, end, prior_state, prior_stop_epoch) = {
             let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
             let session = guard.as_mut().ok_or_else(|| {
                 EngineBreakpointAcknowledgeError::Rejected("no active debugger session".to_string())
@@ -778,6 +778,7 @@ impl DebugAdapter {
             // the query's context echo as a user step stop. configurationDone
             // will establish the real running mode afterward.
             let prior_state = session.state.clone();
+            let prior_stop_epoch = session.reader_stop_epoch;
             session.state = DebugState::Stopped;
             let timeout_ms = timeout.as_millis().try_into().unwrap_or(u64::MAX);
             let (operation, begin, end) =
@@ -792,7 +793,7 @@ impl DebugAdapter {
                         });
                     }
                 };
-            (operation, begin, end, prior_state)
+            (operation, begin, end, prior_state, prior_stop_epoch)
         };
         let result = match self.await_framed_debugger_output_for_operation(&operation, &begin, &end)
         {
@@ -822,7 +823,16 @@ impl DebugAdapter {
         if self.current_session_generation() == captured_generation {
             let mut guard = lock_or_recover(&self.session, "acknowledge_engine_breakpoint.restore");
             if let Some(session) = guard.as_mut() {
-                session.state = prior_state;
+                // Restore the masked state only when the reader published no
+                // suspension while the query was in flight (#18491). The
+                // entry-stop publication can land inside this echo window;
+                // blindly restoring the pre-query snapshot (e.g. `Running`)
+                // desynchronized the advertised stopped state from the
+                // debugger, and every subsequent stackTrace answered from the
+                // `Stopped`-gated snapshot path with an empty frame list.
+                if session.reader_stop_epoch == prior_stop_epoch {
+                    session.state = prior_state;
+                }
             }
         }
         result
@@ -1215,6 +1225,7 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Continue,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -1251,6 +1262,7 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -1366,6 +1378,7 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,

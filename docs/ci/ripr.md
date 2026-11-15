@@ -88,6 +88,11 @@ When reporting `ripr` findings, use ripr's own classifications:
 | `propagation_unknown` | could not classify propagation |
 | `static_unknown` | analysis bottomed out |
 
+Ledger suppressions may also list `weakly_gripped` in `classification`. That is a
+ripr 0.9.x `grip_class` label, not a separate bucket in `ripr.toml`
+`[severity.findings]`; `cargo xtask ripr-pr` / `ripr-plus` canonicalize it to
+`reachable_unrevealed` when matching suppressions to findings.
+
 Do **not** translate these into `killed` / `survived`. They mean something different.
 
 ---
@@ -157,11 +162,16 @@ never infer success from emptiness.
   classifier's `--api-evidence` mode applies the same positive-marker boundary;
   unreadable or marker-free evidence still fails closed. Every classified lane
   failure leaves a `ripr-gate-classification` artifact carrying its class and
-  reason. When the artifact is absent, the gate's classification step did not
-  produce a file — which points at a gate-side failure, though it is not by
-  itself proof of any single cause: paths that exit before classification and
-  upload-step skip conditions also leave no artifact (the upload step ignores
-  missing files). The authoritative signal is the classification content when
+  reason. When the gate retrieved a lane log before classifying a configured
+  hosted timeout (`configured-timeout-no-proof`, #16980), it also uploads a
+  `ripr-lane-log-tail` artifact with the last four mebibytes of that log so
+  timeout events stay diagnosable when the hosted UI truncates to an early
+  build prefix (#17450); that tail artifact is best-effort and its absence does
+  not replace the classification verdict. When `ripr-gate-classification` is
+  absent, the gate's classification step did not produce a file — which points
+  at a gate-side failure, though it is not by itself proof of any single cause:
+  paths that exit before classification and upload-step skip conditions also
+  leave no classification artifact (the upload step ignores missing files). The authoritative signal is the classification content when
   the artifact exists; consumers such as ripr-infra-retry treat absence as
   no-arm and surface NOT_PROVEN rather than guessing a class.
 - Produces diff-scoped PR evidence under `target/ripr/pr/`.
@@ -217,14 +227,19 @@ never infer success from emptiness.
   sorting and truncation, so excluded seams cannot crowd out a production seam
   from the named-evidence list. Findings with no resolvable path are never
   classified non-production (fail closed).
-- In CI, review guidance has an explicit timeout. When the guidance pass does
-  not finish, the harness emits an `incomplete` receipt that names the
-  gate-actionable seams (`reachable_unrevealed` / `no_static_path`) from the
-  completed diff-scoped raw check, so the quality gate blocks on named
-  file/line/seam evidence instead of an unnameable count (#10054). The
-  suggested-proof text on these fallback names is generic, not
-  analyzer-derived, and the receipt warning says so. Only when the raw check
-  is also unavailable does the gate report the missing repair packet.
+- In CI, the completed diff-scoped raw check owns the required new-gap verdict;
+  review guidance is advisory. Timeout, absence, or an oversized guidance pass
+  leaves an `incomplete` advisory receipt but adds no independent blocker.
+  Actionable raw gaps still block on named file/line/seam evidence when fallback
+  guidance can supply it. Missing, stale, malformed, or required-scope partial
+  analysis remains `NOT_PROVEN` and blocks, including every limitation that names
+  a Rust path. A bounded `language_scope_unsupported` limitation confined to a
+  non-Rust file, or RIPR 0.11.0's `language_adapter_unavailable` limitation for
+  the named Python-preview absence, does not add a blocker when the required raw
+  gap count is zero; its reason remains visible rather than being relabelled as
+  clean. Other adapter-unavailable limitations still block. Fallback
+  suggested-proof text is generic, not analyzer-derived, and the advisory receipt
+  warning says so.
 - Emits non-blocking warning annotations from `comments[]` only.
 - Produces mutation-routing evidence under
   `target/xtask/impacted-evidence/`.
@@ -247,14 +262,20 @@ than one PR.
 ## Suppressions
 
 Suppressions live in [`policy/ripr-suppressions.toml`](../../policy/ripr-suppressions.toml).
-Each suppression requires:
+Each suppression entry should carry:
 
 - `id` — stable identifier
 - `kind` — e.g. `generated_or_non_production_surface`
 - `paths` and/or `classification` — what to suppress
 - `owner` — accountable person/team
 - `reason` — why this is suppressed
-- `created`, `review_after`, `expires` — dates
+- `created`, `review_after`, `expires` — lifecycle dates committed with the entry
+
+Lifecycle dates are **advisory**. No quality gate reads them, and a suppression
+does not stop applying when `expires` passes; retiring one remains the owner's
+call. `cargo xtask ripr-suppression-audit` writes
+`target/ripr/suppressions/lifecycle-audit.json` (and `.md`) for owner review
+only; that artifact is not an input to any gate verdict.
 
 The suppression file is read by `ripr.toml`'s `[suppressions] path` setting.
 The `cargo xtask ripr-pr` and `cargo xtask ripr-plus` wrappers also apply the
@@ -286,15 +307,17 @@ burn-down closes.
 
 ## Toolchain
 
-`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.10.0` as
-the current advisory version for this lane.
+`rust-toolchain.toml` pins `1.100.0`. The workflow installs `ripr` `0.11.0` as
+the current advisory version for this lane, built from
+`https://github.com/EffortlessMetrics/ripr-swarm.git` at revision
+`9b9143798615bbf1a14c2dbd23a2359a29942078`.
 
 ---
 
 ## Running locally
 
 ```bash
-cargo install ripr --version 0.10.0 --locked
+cargo install ripr --git https://github.com/EffortlessMetrics/ripr-swarm.git --rev 9b9143798615bbf1a14c2dbd23a2359a29942078 --locked
 ripr doctor
 cargo xtask ripr-pr --base origin/HEAD --head HEAD --pr-head "$PR_HEAD_SHA"
 cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json

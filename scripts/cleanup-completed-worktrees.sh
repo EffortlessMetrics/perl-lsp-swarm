@@ -76,9 +76,26 @@ git_read() {
     git --no-optional-locks "$@"
 }
 
-REPO_ROOT="$(git_read rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
-MAIN_WT="$(git_read -C "$REPO_ROOT" rev-parse --show-toplevel)"
-CURRENT_WT="$(git_read rev-parse --show-toplevel)"
+COMMON_DIR="$(git_read rev-parse --path-format=absolute --git-common-dir)"
+if [[ "$(git_read -C "$COMMON_DIR" rev-parse --is-bare-repository)" == "true" ]]; then
+    REPO_ROOT="$COMMON_DIR"
+else
+    REPO_ROOT="${COMMON_DIR%/.git}"
+fi
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_WT="$(git_read -C "$SCRIPT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+# Git's first porcelain record identifies the primary entry, including bare
+# repositories named .git whose reported worktree path is the parent directory.
+MAIN_WT="$(git_read -C "$REPO_ROOT" worktree list --porcelain | sed -n '1s/^worktree //p')"
+[[ -n "$MAIN_WT" ]] || { echo "cannot identify primary worktree" >&2; exit 2; }
+if CURRENT_WT="$(git_read rev-parse --show-toplevel 2>/dev/null)"; then
+    TOOL_ROOT="$CURRENT_WT"
+else
+    # Direct invocation from the bare repository has no current checkout.
+    # Locate executable helpers beside this script, not in the common Git dir.
+    CURRENT_WT="$MAIN_WT"
+    TOOL_ROOT="$SCRIPT_ROOT"
+fi
 STATE_FILE="$REPO_ROOT/.ops-perl-lsp/worktree-manager/state.json"
 
 # When emitting JSON, git stdout/stderr must not pollute the stream.
@@ -187,7 +204,7 @@ branch_deletion_admitted() {
         --json number --jq '.[0].number' 2>/dev/null)" || return 1
     [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
 
-    admission="$(cd "$REPO_ROOT" && pwd)/scripts/branch-deletion-admission"
+    admission="$TOOL_ROOT/scripts/branch-deletion-admission"
     [[ -f "$admission" ]] || return 1
     bash "$admission" plan --pr "$pr_number" --remote origin >/dev/null 2>&1 || return 1
 
@@ -303,6 +320,9 @@ process_worktree() {
     fi
     if [[ "$path" == "$CURRENT_WT" ]]; then
         emit "$name" "${branch:-(detached)}" "current" "SKIP"; SKIPPED=$((SKIPPED + 1)); return 0
+    fi
+    if [[ "$path" == "$SCRIPT_WT" ]]; then
+        emit "$name" "${branch:-(detached)}" "tooling" "SKIP"; SKIPPED=$((SKIPPED + 1)); return 0
     fi
     if [[ "$locked" == "true" ]]; then
         emit "$name" "${branch:-(detached)}" "locked" "KEEP"; KEPT=$((KEPT + 1)); return 0

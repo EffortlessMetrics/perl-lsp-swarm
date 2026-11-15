@@ -5,30 +5,21 @@
 
 #![cfg(test)]
 
-use perl_lsp::{JsonRpcRequest, LspServer};
+mod support;
+
 use serde_json::json;
+use support::lsp_harness::LspHarness;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Test that formatting is properly advertised in server capabilities
 #[test]
-fn test_formatting_capability_advertised() -> Result<(), Box<dyn std::error::Error>> {
-    let srv = LspServer::new();
+fn test_formatting_capability_advertised() -> TestResult {
+    let mut harness = LspHarness::new();
+    let init = harness.initialize_with_root("file:///test", Some(json!({})))?;
 
-    let init_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "capabilities": {},
-            "rootUri": "file:///test"
-        })),
-    };
-
-    let response =
-        srv.handle_request(init_req).ok_or("Failed to get response from initialize request")?;
-
-    let result = response.result.ok_or("Expected result in initialize response")?;
     let capabilities =
-        result.get("capabilities").ok_or("Expected capabilities in initialize result")?;
+        init.get("capabilities").ok_or("Expected capabilities in initialize result")?;
 
     // Verify formatting is advertised
     if let Some(formatting_provider) = capabilities.get("documentFormattingProvider") {
@@ -59,29 +50,9 @@ fn test_formatting_capability_advertised() -> Result<(), Box<dyn std::error::Err
 /// and #10696 lands the proven cutover, no filtered request may return a
 /// `source.organizeImports` action and none may carry an edit.
 #[test]
-fn test_organize_imports_code_action_withdrawn() -> Result<(), Box<dyn std::error::Error>> {
-    let srv = LspServer::new();
-
-    // Initialize server
-    let init_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "capabilities": {},
-            "rootUri": "file:///test"
-        })),
-    };
-    let _ = srv.handle_request(init_req);
-
-    // Send initialized notification
-    let initialized = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "initialized".to_string(),
-        params: Some(json!({})),
-    };
-    let _ = srv.handle_request(initialized);
+fn test_organize_imports_code_action_withdrawn() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root("file:///test", Some(json!({})))?;
 
     // Open a document with multiple imports
     let uri = "file:///test_imports.pl";
@@ -94,27 +65,11 @@ my $data = {key => 'value'};
 print Dumper($data);
 "#;
 
-    let open_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "textDocument/didOpen".to_string(),
-        params: Some(json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "perl",
-                "version": 1,
-                "text": text
-            }
-        })),
-    };
-    let _ = srv.handle_request(open_req);
+    harness.open(uri, text)?;
 
-    // Request code actions
-    let actions_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
-        method: "textDocument/codeAction".to_string(),
-        params: Some(json!({
+    let result = harness.request(
+        "textDocument/codeAction",
+        json!({
             "textDocument": {"uri": uri},
             "range": {
                 "start": {"line": 0, "character": 0},
@@ -124,13 +79,8 @@ print Dumper($data);
                 "diagnostics": [],
                 "only": ["source.organizeImports"]
             }
-        })),
-    };
-
-    let response =
-        srv.handle_request(actions_req).ok_or("Failed to get response from code action request")?;
-
-    let result = response.result.ok_or("Expected result in code action response")?;
+        }),
+    )?;
 
     let actions = result.as_array().ok_or("Expected array result for code actions")?;
     assert!(
@@ -147,25 +97,12 @@ print Dumper($data);
 
 /// Test that execute commands include perlcritic integration
 #[test]
-fn test_perlcritic_execute_command_available() -> Result<(), Box<dyn std::error::Error>> {
-    let srv = LspServer::new();
+fn test_perlcritic_execute_command_available() -> TestResult {
+    let mut harness = LspHarness::new();
+    let init = harness.initialize_with_root("file:///test", Some(json!({})))?;
 
-    let init_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "capabilities": {},
-            "rootUri": "file:///test"
-        })),
-    };
-
-    let response =
-        srv.handle_request(init_req).ok_or("Failed to get response from initialize request")?;
-
-    let result = response.result.ok_or("Expected result in initialize response")?;
     let capabilities =
-        result.get("capabilities").ok_or("Expected capabilities in initialize result")?;
+        init.get("capabilities").ok_or("Expected capabilities in initialize result")?;
 
     // Verify execute command provider is present
     let execute_command_provider = capabilities.get("executeCommandProvider");
@@ -188,62 +125,22 @@ fn test_perlcritic_execute_command_available() -> Result<(), Box<dyn std::error:
 
 /// Test that basic diagnostics work without external tools
 #[test]
-fn test_builtin_diagnostics_work() -> Result<(), Box<dyn std::error::Error>> {
-    let srv = LspServer::new();
-
-    // Initialize
-    let init_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "capabilities": {},
-            "rootUri": "file:///test"
-        })),
-    };
-    let _ = srv.handle_request(init_req);
-
-    let initialized = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "initialized".to_string(),
-        params: Some(json!({})),
-    };
-    let _ = srv.handle_request(initialized);
+fn test_builtin_diagnostics_work() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root("file:///test", Some(json!({})))?;
 
     // Open a document with syntax errors
     let uri = "file:///test_diagnostics.pl";
     let text = "sub foo { my \n"; // Incomplete syntax
 
-    let open_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "textDocument/didOpen".to_string(),
-        params: Some(json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "perl",
-                "version": 1,
-                "text": text
-            }
-        })),
-    };
-    let _ = srv.handle_request(open_req);
+    harness.open(uri, text)?;
 
-    // Request pull diagnostics
-    let diag_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
-        method: "textDocument/diagnostic".to_string(),
-        params: Some(json!({
+    let result = harness.request(
+        "textDocument/diagnostic",
+        json!({
             "textDocument": {"uri": uri}
-        })),
-    };
-
-    let response =
-        srv.handle_request(diag_req).ok_or("Failed to get response from diagnostic request")?;
-
-    let result = response.result.ok_or("Expected result in diagnostic response")?;
+        }),
+    )?;
 
     // Verify we got some diagnostic information
     // The exact structure may vary, but it should be present
@@ -254,37 +151,22 @@ fn test_builtin_diagnostics_work() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Test that good defaults are in place for configuration
 #[test]
-fn test_default_configuration_sensible() -> Result<(), Box<dyn std::error::Error>> {
-    let srv = LspServer::new();
-
+fn test_default_configuration_sensible() -> TestResult {
     // Verify that server can be created without explicit configuration
     // This tests that good defaults are in place
-    drop(srv);
+    let _harness = LspHarness::new();
 
     Ok(())
 }
 
 /// Test that the server provides helpful capabilities information
 #[test]
-fn test_server_capabilities_complete() -> Result<(), Box<dyn std::error::Error>> {
-    let srv = LspServer::new();
+fn test_server_capabilities_complete() -> TestResult {
+    let mut harness = LspHarness::new();
+    let init = harness.initialize_with_root("file:///test", Some(json!({})))?;
 
-    let init_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "capabilities": {},
-            "rootUri": "file:///test"
-        })),
-    };
-
-    let response =
-        srv.handle_request(init_req).ok_or("Failed to get response from initialize request")?;
-
-    let result = response.result.ok_or("Expected result in initialize response")?;
     let capabilities =
-        result.get("capabilities").ok_or("Expected capabilities in initialize result")?;
+        init.get("capabilities").ok_or("Expected capabilities in initialize result")?;
 
     // Verify core LSP capabilities are present
     let expected_capabilities = [
@@ -307,66 +189,27 @@ fn test_server_capabilities_complete() -> Result<(), Box<dyn std::error::Error>>
 
 /// Test that native default formatting works without external perltidy.
 #[test]
-fn test_native_default_formatting_returns_edits_without_perltidy()
--> Result<(), Box<dyn std::error::Error>> {
-    let srv = LspServer::new();
-
-    // Initialize
-    let init_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "capabilities": {},
-            "rootUri": "file:///test"
-        })),
-    };
-    let _ = srv.handle_request(init_req);
-
-    let initialized = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "initialized".to_string(),
-        params: Some(json!({})),
-    };
-    let _ = srv.handle_request(initialized);
+fn test_native_default_formatting_returns_edits_without_perltidy() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root("file:///test", Some(json!({})))?;
 
     // Open a simple Perl document
     let uri = "file:///test_format.pl";
     let text = "sub foo{my$x=1;return$x;}\n";
 
-    let open_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "textDocument/didOpen".to_string(),
-        params: Some(json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "perl",
-                "version": 1,
-                "text": text
-            }
-        })),
-    };
-    let _ = srv.handle_request(open_req);
+    harness.open(uri, text)?;
 
-    let format_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
-        method: "textDocument/formatting".to_string(),
-        params: Some(json!({
+    let result = harness.request(
+        "textDocument/formatting",
+        json!({
             "textDocument": {"uri": uri},
             "options": {
                 "tabSize": 4,
                 "insertSpaces": true
             }
-        })),
-    };
+        }),
+    )?;
 
-    let response = srv.handle_request(format_req);
-
-    let response = response.ok_or("Formatting should return a response")?;
-    let result = response.result.ok_or("Formatting response should include a result")?;
     let edits = result.as_array().ok_or("Formatting result should be an edit array")?;
     assert!(!edits.is_empty(), "Native default formatting should return edits");
 

@@ -24,7 +24,7 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
         for path, content in {
             "Cargo.toml": "[workspace]\nmembers=[]\n",
             "Cargo.lock": "# lock\n",
-            "rust-toolchain.toml": '[toolchain]\nchannel="1.95.0"\n',
+            "rust-toolchain.toml": '[toolchain]\nchannel="1.100.0"\n',
             "rustfmt.toml": "max_width = 100\n",
             "scripts/ci/rustfmt_check.py": "# producer\n",
             "pkg/Cargo.toml": '[package]\nname="pkg"\nversion="0.1.0"\n',
@@ -44,7 +44,7 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
         self._write_metadata(self._metadata_payload())
         self.cargo = self._cargo_tool()
         self.rustfmt = self._tool("rustfmt", "rustfmt 1.8.0-stable (fixture)")
-        self.rustc_output = "rustc 1.95.0 (fixture 2026-08-01)\nbinary: rustc\ncommit-hash: 0123456789abcdef0123456789abcdef01234567\ncommit-date: 2026-08-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 20.1.0"
+        self.rustc_output = "rustc 1.100.0 (fixture 2026-08-01)\nbinary: rustc\ncommit-hash: 0123456789abcdef0123456789abcdef01234567\ncommit-date: 2026-08-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0\nLLVM version: 20.1.0"
         self.rustc = self._tool("rustc", self.rustc_output)
         self.receipt = Path(self.temp.name, "receipt.json")
         self.payload = self._valid_payload()
@@ -106,7 +106,7 @@ import sys
 
 args = sys.argv[1:]
 if args == ["--version"]:
-    print("cargo 1.95.0 (fixture)")
+    print("cargo 1.100.0 (fixture)")
 elif args == ["metadata", "--no-deps", "--locked", "--format-version", "1"]:
     print(pathlib.Path(%r).read_text(encoding="utf-8"))
 else:
@@ -137,7 +137,7 @@ else:
                 "rust_toolchain_sha256": self._digest("rust-toolchain.toml"),
                 "rustfmt_toml_sha256": self._digest("rustfmt.toml"),
                 "producer_sha256": self._digest("scripts/ci/rustfmt_check.py"),
-                "cargo_version": "cargo 1.95.0 (fixture)",
+                "cargo_version": "cargo 1.100.0 (fixture)",
                 "rustfmt_version": "rustfmt 1.8.0-stable (fixture)",
                 "rustc_version_verbose": self.rustc_output,
             },
@@ -222,6 +222,15 @@ else:
         with self.assertRaisesRegex(verifier.VerificationError, "selected rustc"):
             verifier.verify(self._args(rustc=wrong))
         self.payload["inputs"]["rustc_version_verbose"] = "rustc 1.94.0 (fixture)\nrelease: 1.94.0"
+        self._resign(self.payload)
+        self._write(self.payload)
+        with self.assertRaisesRegex(verifier.VerificationError, "pinned release"):
+            verifier.verify(self._args(rustc=wrong))
+
+    def test_matching_old_195_compiler_and_receipt_are_rejected(self) -> None:
+        stale = "rustc 1.95.0 (fixture)\nrelease: 1.95.0"
+        wrong = self._tool("rustc-old-195", stale)
+        self.payload["inputs"]["rustc_version_verbose"] = stale
         self._resign(self.payload)
         self._write(self.payload)
         with self.assertRaisesRegex(verifier.VerificationError, "pinned release"):

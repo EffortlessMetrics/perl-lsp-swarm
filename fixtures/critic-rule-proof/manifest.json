@@ -5,7 +5,7 @@
   "owner": "native-critic",
   "status": "pilot",
   "updated": "2026-08-26",
-  "claim_boundary": "This pilot owns the versioned rule-proof schema, typed model, generator/checker, and a sixteen-rule cohort (#6973 pilot, #17661 cohort 2, cohort 3). It does not migrate the remaining 12 native rules, absorb #6978 variable/scope proof, or change critic rule semantics.",
+  "claim_boundary": "This pilot owns the versioned rule-proof schema, typed model, generator/checker, and a sixteen-rule cohort (#6973 pilot, #17661 cohort 2, cohort 3). Issue #6979 adds nine supplementary strict regex/POD/literal cases on top of the cohort-3 five-case rows without changing critic rule semantics. It does not migrate the remaining 12 native rules, absorb #6978 variable/scope proof, or change critic rule semantics.",
   "evidence_classes": [
     "positive_finding",
     "near_miss_negative",
@@ -62,6 +62,15 @@
     },
     "capture_without_match/suppression.pl": {
       "digest": "sha256:dfd3c5a1632fcd01c4cec92ac80aa96e56ddf11842dfa79670a288536df6e527"
+    },
+    "capture_without_match/before_match.pl": {
+      "digest": "sha256:45b14b4cab65a939cb03fcdc93c118162133727130cae78f9ab40f9fdf782e9d"
+    },
+    "capture_without_match/string_interpolation.pl": {
+      "digest": "sha256:e262636b3bf48c47fd51c9fbe3cc7e7054b03fa96009062b0c72043a6e7270cc"
+    },
+    "capture_without_match/nested_after_match.pl": {
+      "digest": "sha256:923b1a118ab1025ff2ec0b6a1450956e8327c6b1413c4299d91c5e5034850211"
     },
     "deprecated_defined/boundary.pl": {
       "digest": "sha256:20bdd1353974196fb14d54c859be356123d79f19e3ebaed9276d9fea874984dc"
@@ -123,6 +132,15 @@
     "prohibit_leading_zeros/suppression.pl": {
       "digest": "sha256:6c7361f5b2194412d18f73a0fc2f6b84746e9d5e16cef41677680759cb11af8d"
     },
+    "prohibit_leading_zeros/string_literal.pl": {
+      "digest": "sha256:cdf887646376b375d1117b7d9f574872d09311544810367c009d26eea9a49c76"
+    },
+    "prohibit_leading_zeros/comment_text.pl": {
+      "digest": "sha256:867c68f3701cec96f320f9b8cb94fcd9eee2b2266640fd534fa953125b9ea0b7"
+    },
+    "prohibit_leading_zeros/file_mode.pl": {
+      "digest": "sha256:02e2888b781a69d7fd2098d1f136739c75b400a77b0941f219ccce704cab1984"
+    },
     "require_pod_sections/boundary.pl": {
       "digest": "sha256:ec2704aa000085d93ce97b4879dfd03cd4b0f67264bb0e2d4b95ae5567f5256e"
     },
@@ -137,6 +155,15 @@
     },
     "require_pod_sections/suppression.pl": {
       "digest": "sha256:68612aebdf177ad47f01eddcf1f18cb8641c30b996966af1a5414c0a295b7a96"
+    },
+    "require_pod_sections/heredoc_payload.pl": {
+      "digest": "sha256:fd359685b08bd6ad15fa8e5952d8b0c0f48fd618dfa351d204f62531960cc463"
+    },
+    "require_pod_sections/data_payload_mask.pl": {
+      "digest": "sha256:2d472008eea0216b6a8e9b9fe4b3b92c7521739c89c5ec9d60145a1a5581a749"
+    },
+    "require_pod_sections/script_shaped.t": {
+      "digest": "sha256:ae6a7680cb1af6d5f9bc8a81446d9219436a820a4446e1e3a55c6f3991aa4023"
     },
     "require_use_strict/boundary.pl": {
       "digest": "sha256:8ae06a040c689acdeb6b7d104b7b0b9124872a696ff4d131ee329986fb25cb3a"
@@ -1227,6 +1254,56 @@
       "proposition": "A single-quoted '$1' is not a capture-variable use; string text does not inherit a positive."
     },
     {
+      "case_id": "CRP-CAP-POS-002",
+      "rule_id": "native.regex.capture_without_match",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "capture_without_match/before_match.pl",
+      "profile": "strict",
+      "include": ["native.regex.capture_without_match"],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.regex.capture_without_match",
+          "start_byte": 57,
+          "end_byte": 59,
+          "excerpt": "$1",
+          "severity": "stern",
+          "remediation_eligibility": "none"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "A capture read before the first proven regex match in the same scope is a diagnostic-only finding at the capture span."
+    },
+    {
+      "case_id": "CRP-CAP-NEAR-002",
+      "rule_id": "native.regex.capture_without_match",
+      "evidence_classes": ["near_miss_negative"],
+      "fixture": "capture_without_match/nested_after_match.pl",
+      "profile": "strict",
+      "include": ["native.regex.capture_without_match"],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": ["native.regex.capture_without_match"],
+      "proposition": "A nested block inherits regex-match context from an outer scope and is not a capture-without-match finding."
+    },
+    {
+      "case_id": "CRP-CAP-BOUND-002",
+      "rule_id": "native.regex.capture_without_match",
+      "evidence_classes": ["boundary"],
+      "fixture": "capture_without_match/string_interpolation.pl",
+      "profile": "strict",
+      "include": ["native.regex.capture_without_match"],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": ["native.regex.capture_without_match"],
+      "proposition": "Interpolated capture text inside a double-quoted string is not visited as a capture-variable use at the current rule boundary."
+    },
+    {
       "case_id": "CRP-STALE-POS-001",
       "rule_id": "native.common.stale_dollar_at",
       "evidence_classes": [
@@ -1689,6 +1766,65 @@
       "proposition": "A file with no POD at all is outside this rule, which only checks existing POD, and is not a finding."
     },
     {
+      "case_id": "CRP-POD-BOUND-002",
+      "rule_id": "native.documentation.require_pod_sections",
+      "evidence_classes": ["boundary"],
+      "fixture": "require_pod_sections/heredoc_payload.pl",
+      "profile": "strict",
+      "include": ["native.documentation.require_pod_sections"],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": ["native.documentation.require_pod_sections"],
+      "proposition": "=head1 lines inside a heredoc payload are data, not documentation, and must not mark the file as having POD."
+    },
+    {
+      "case_id": "CRP-POD-POS-002",
+      "rule_id": "native.documentation.require_pod_sections",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "require_pod_sections/data_payload_mask.pl",
+      "profile": "strict",
+      "include": ["native.documentation.require_pod_sections"],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.documentation.require_pod_sections",
+          "start_byte": 26,
+          "end_byte": 44,
+          "excerpt": "=head1 DESCRIPTION",
+          "severity": "harsh",
+          "remediation_eligibility": "none"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "Payload =head1 sections in __DATA__ do not satisfy missing real POD; the finding stays on the first real POD span."
+    },
+    {
+      "case_id": "CRP-POD-POS-003",
+      "rule_id": "native.documentation.require_pod_sections",
+      "evidence_classes": ["positive_finding", "source_range_and_severity"],
+      "fixture": "require_pod_sections/script_shaped.t",
+      "profile": "strict",
+      "include": ["native.documentation.require_pod_sections"],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.documentation.require_pod_sections",
+          "start_byte": 42,
+          "end_byte": 53,
+          "excerpt": "=head1 NAME",
+          "severity": "harsh",
+          "remediation_eligibility": "none"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "A Test2-shaped script with real POD still reports a missing required section at the first POD span for #6981 pre-cutover parity."
+    },
+    {
       "case_id": "CRP-OCTAL-POS-001",
       "rule_id": "native.syntax.prohibit_leading_zeros",
       "evidence_classes": [
@@ -1762,6 +1898,56 @@
       "expected_findings": [],
       "expected_non_findings": ["native.syntax.prohibit_leading_zeros"],
       "proposition": "Plain zero and explicit hex literals are exempt and are not leading-zero findings."
+    },
+    {
+      "case_id": "CRP-OCTAL-POS-002",
+      "rule_id": "native.syntax.prohibit_leading_zeros",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "prohibit_leading_zeros/file_mode.pl",
+      "profile": "strict",
+      "include": ["native.syntax.prohibit_leading_zeros"],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.syntax.prohibit_leading_zeros",
+          "start_byte": 55,
+          "end_byte": 59,
+          "excerpt": "0755",
+          "severity": "stern",
+          "remediation_eligibility": "none"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "An intentional chmod-style octal literal is still a governed leading-zero finding at the numeric token span."
+    },
+    {
+      "case_id": "CRP-OCTAL-BOUND-002",
+      "rule_id": "native.syntax.prohibit_leading_zeros",
+      "evidence_classes": ["boundary"],
+      "fixture": "prohibit_leading_zeros/string_literal.pl",
+      "profile": "strict",
+      "include": ["native.syntax.prohibit_leading_zeros"],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": ["native.syntax.prohibit_leading_zeros"],
+      "proposition": "A quoted string such as \"0123\" is not an integer literal and is not a leading-zero finding."
+    },
+    {
+      "case_id": "CRP-OCTAL-BOUND-003",
+      "rule_id": "native.syntax.prohibit_leading_zeros",
+      "evidence_classes": ["boundary"],
+      "fixture": "prohibit_leading_zeros/comment_text.pl",
+      "profile": "strict",
+      "include": ["native.syntax.prohibit_leading_zeros"],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": ["native.syntax.prohibit_leading_zeros"],
+      "proposition": "Octal-looking text inside a comment does not inherit a numeric literal finding."
     },
     {
       "case_id": "CRP-BAREWORD-POS-001",

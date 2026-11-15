@@ -673,7 +673,8 @@ fn rejects_a_packet_with_an_untyped_outcome() -> TestResult {
         Ok(_) => "packet unexpectedly admitted".to_string(),
         Err(error) => error.to_string(),
     };
-    assert!(error.contains("outside the typed domain"), "got: {error}");
+    assert_input_schema_rejection(&error, "process_startup");
+    assert!(error.contains("probably_fine"), "got: {error}");
     Ok(())
 }
 
@@ -694,7 +695,7 @@ fn rejects_a_packet_from_another_contract() -> TestResult {
         Ok(_) => "packet unexpectedly admitted".to_string(),
         Err(error) => error.to_string(),
     };
-    assert!(error.contains("schema_version must be"), "got: {error}");
+    assert_input_schema_rejection(&error, "schema_version");
     Ok(())
 }
 
@@ -715,7 +716,7 @@ fn a_missing_reason_field_is_an_admission_failure() -> TestResult {
         Ok(_) => "packet unexpectedly admitted".to_string(),
         Err(error) => error.to_string(),
     };
-    assert!(error.contains("missing `bounded_reason`"), "got: {error}");
+    assert_input_schema_rejection(&error, "bounded_reason");
     assert_eq!(error.matches("bounded_reason").count(), 1, "got: {error}");
     Ok(())
 }
@@ -799,6 +800,31 @@ fn rejects_a_widened_input_contract_the_registry_does_not_cover() -> TestResult 
 }
 
 #[test]
+fn rejects_a_widened_route_mode_the_projection_does_not_render() -> TestResult {
+    // `read_packet` admits whatever the input schema's `route_mode` enum
+    // allows. `project_combination` still rejects anything outside
+    // `ROUTE_MODES`. If the schema widens first, admission succeeds and
+    // projection then fails — unless this agreement check fails the
+    // manifest gate first.
+    let root = staged_root("widened-route-mode")?;
+    let schema_path = root.join(diagnostics::INPUT_SCHEMA_PATH);
+    let mut schema: Value = serde_json::from_slice(&std::fs::read(&schema_path)?)?;
+    schema["properties"]["route_mode"]["enum"]
+        .as_array_mut()
+        .ok_or("route_mode enum missing")?
+        .push(json!("first_party_cmd"));
+    std::fs::write(&schema_path, format!("{}\n", serde_json::to_string_pretty(&schema)?))?;
+
+    let error = validation_error(diagnostics::validate_manifest_file(&root));
+    std::fs::remove_dir_all(&root).ok();
+    assert!(
+        error.contains("`route_mode` domain drifted"),
+        "a widened route_mode contract must fail the registry, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn rejects_a_non_canonical_registry_file() -> TestResult {
     let root = staged_root("noncanonical")?;
     let manifest_path = root.join(MANIFEST_PATH);
@@ -865,6 +891,19 @@ fn admission_error(subject: &Value) -> String {
     }
 }
 
+fn assert_input_schema_rejection(error: &str, token: &str) {
+    assert!(
+        error.contains("input schema violation"),
+        "expected a schema-derived admission failure, got: {error}"
+    );
+    assert!(error.contains(token), "expected the schema failure to name `{token}`, got: {error}");
+}
+
+fn load_input_schema() -> TestResult<Value> {
+    let bytes = std::fs::read(repo_root().join(diagnostics::INPUT_SCHEMA_PATH))?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 fn valid_packet() -> Value {
     packet(
         "selection_committed",
@@ -883,8 +922,7 @@ fn rejects_a_packet_with_an_arbitrary_route_mode() -> TestResult {
     let mut subject = valid_packet();
     subject["route_mode"] = json!("../../etc/passwd or any unbounded operator text");
     let error = admission_error(&subject);
-    assert!(error.contains("`route_mode` value"), "got: {error}");
-    assert!(error.contains("may not carry arbitrary text"), "got: {error}");
+    assert_input_schema_rejection(&error, "route_mode");
     Ok(())
 }
 
@@ -896,7 +934,7 @@ fn rejects_a_packet_with_an_unknown_field() -> TestResult {
         .ok_or("packet is not an object")?
         .insert("severity".to_string(), json!("critical"));
     let error = admission_error(&subject);
-    assert!(error.contains("unknown field `severity`"), "got: {error}");
+    assert_input_schema_rejection(&error, "severity");
     Ok(())
 }
 
@@ -906,7 +944,7 @@ fn rejects_a_packet_missing_required_transaction_identity() -> TestResult {
         let mut subject = valid_packet();
         subject.as_object_mut().ok_or("packet is not an object")?.remove(key);
         let error = admission_error(&subject);
-        assert!(error.contains(&format!("missing `{key}`")), "for {key}, got: {error}");
+        assert_input_schema_rejection(&error, key);
         assert_eq!(error.matches(key).count(), 1, "for {key}, got: {error}");
     }
     Ok(())
@@ -917,7 +955,7 @@ fn rejects_a_packet_whose_route_mode_is_not_a_string() -> TestResult {
     let mut subject = valid_packet();
     subject["route_mode"] = json!(7);
     let error = admission_error(&subject);
-    assert!(error.contains("`route_mode` value"), "got: {error}");
+    assert_input_schema_rejection(&error, "route_mode");
     Ok(())
 }
 
@@ -926,7 +964,49 @@ fn rejects_a_packet_with_a_malformed_candidate_digest() -> TestResult {
     let mut subject = valid_packet();
     subject["candidate_id"] = json!("not-a-sha256");
     let error = admission_error(&subject);
-    assert!(error.contains("must be a sha256 digest or null"), "got: {error}");
+    assert_input_schema_rejection(&error, "candidate_id");
+    Ok(())
+}
+
+#[test]
+fn schema_rejects_an_overlong_bounded_id() -> TestResult {
+    let mut subject = valid_packet();
+    subject["transaction_id"] = json!("a".repeat(129));
+    let error = admission_error(&subject);
+    assert_input_schema_rejection(&error, "transaction_id");
+
+    subject["transaction_id"] = json!("a".repeat(128));
+    diagnostics::read_packet(&subject)?;
+    Ok(())
+}
+
+#[test]
+fn admission_follows_a_mutated_input_schema_required_field() -> TestResult {
+    // Discriminator for "admission consults the schema document, not a
+    // hand-mirrored key set": a future required field the committed packet
+    // lacks must fail, and a future optional field the hand-mirror would
+    // treat as unknown must be admitted once the schema declares it.
+    let mut schema = load_input_schema()?;
+    schema["required"]
+        .as_array_mut()
+        .ok_or("input schema has no required array")?
+        .push(json!("future_field"));
+    schema["properties"]
+        .as_object_mut()
+        .ok_or("input schema has no properties object")?
+        .insert("future_field".to_string(), json!({"type": "string", "minLength": 1}));
+
+    let missing = match diagnostics::read_packet_against_schema(&schema, &valid_packet()) {
+        Ok(_) => "packet unexpectedly admitted".to_string(),
+        Err(error) => error.to_string(),
+    };
+    assert_input_schema_rejection(&missing, "future_field");
+
+    let mut with_future = valid_packet();
+    with_future["future_field"] = json!("present");
+    diagnostics::read_packet_against_schema(&schema, &with_future)?;
+
+    diagnostics::read_packet(&valid_packet())?;
     Ok(())
 }
 
@@ -1109,10 +1189,7 @@ fn rejects_a_packet_with_an_unknown_outcome_dimension() -> TestResult {
     let mut subject = valid_packet();
     subject["outcome_dimensions"]["disk_pressure"] = json!("high");
     let error = admission_error(&subject);
-    assert!(
-        error.contains("`outcome_dimensions` has unknown field `disk_pressure`"),
-        "got: {error}"
-    );
+    assert_input_schema_rejection(&error, "disk_pressure");
     Ok(())
 }
 
@@ -1172,7 +1249,7 @@ fn a_multibyte_reason_within_the_character_limit_is_admitted() -> TestResult {
         &overlong,
     );
     let error = admission_error(&subject);
-    assert!(error.contains("1 to 512 characters"), "got: {error}");
+    assert_input_schema_rejection(&error, "bounded_reason");
     Ok(())
 }
 
@@ -1610,10 +1687,7 @@ fn a_present_but_non_string_typed_field_is_not_reported_as_missing() -> TestResu
     let mut subject = valid_packet();
     subject["outcome_dimensions"]["cleanup"] = json!(7);
     let error = admission_error(&subject);
-    assert!(
-        error.contains("`cleanup` must be a string in the typed domain"),
-        "expected an ill-shaped-value diagnostic, got:\n{error}"
-    );
+    assert_input_schema_rejection(&error, "cleanup");
     assert!(
         !error.contains("missing `cleanup`"),
         "a present field must not be reported as missing, got:\n{error}"
@@ -1626,10 +1700,7 @@ fn a_top_level_non_string_typed_field_is_not_reported_as_missing() -> TestResult
     let mut subject = valid_packet();
     subject["operation"] = json!(7);
     let error = admission_error(&subject);
-    assert!(
-        error.contains("`operation` must be a string in the typed domain"),
-        "expected an ill-shaped-value diagnostic, got:\n{error}"
-    );
+    assert_input_schema_rejection(&error, "operation");
     assert!(
         !error.contains("missing `operation`"),
         "a present field must not be reported as missing, got:\n{error}"
@@ -1638,9 +1709,9 @@ fn a_top_level_non_string_typed_field_is_not_reported_as_missing() -> TestResult
 }
 
 #[test]
-fn an_absent_typed_field_is_still_reported_as_missing() -> TestResult {
-    // Negative control: the missing-key message must survive for genuinely
-    // absent keys, which is the case the ill-shaped arm could have swallowed.
+fn an_absent_typed_field_is_rejected_by_the_input_schema() -> TestResult {
+    // Negative control: a genuinely absent required key still fails admission.
+    // The schema-derived message names the field; it need not say "missing".
     let mut subject = valid_packet();
     subject
         .as_object_mut()
@@ -1648,10 +1719,7 @@ fn an_absent_typed_field_is_still_reported_as_missing() -> TestResult {
         .remove("operation")
         .ok_or("packet must carry operation")?;
     let error = admission_error(&subject);
-    assert!(
-        error.contains("transition packet is missing `operation`"),
-        "expected a missing-key diagnostic, got:\n{error}"
-    );
+    assert_input_schema_rejection(&error, "operation");
     Ok(())
 }
 
@@ -1823,8 +1891,9 @@ fn a_present_but_non_object_outcome_dimensions_is_not_reported_as_missing() -> T
     let mut subject = valid_packet();
     subject["outcome_dimensions"] = json!(null);
     let error = admission_error(&subject);
+    assert_input_schema_rejection(&error, "outcome_dimensions");
     assert!(
-        error.contains("`outcome_dimensions` must be an object"),
+        error.contains("not of type"),
         "expected an ill-shaped-container diagnostic, got:\n{error}"
     );
     assert!(
@@ -1835,7 +1904,7 @@ fn a_present_but_non_object_outcome_dimensions_is_not_reported_as_missing() -> T
 }
 
 #[test]
-fn an_absent_outcome_dimensions_is_still_reported_as_missing() -> TestResult {
+fn an_absent_outcome_dimensions_is_rejected_by_the_input_schema() -> TestResult {
     let mut subject = valid_packet();
     subject
         .as_object_mut()
@@ -1843,10 +1912,7 @@ fn an_absent_outcome_dimensions_is_still_reported_as_missing() -> TestResult {
         .remove("outcome_dimensions")
         .ok_or("packet must carry outcome_dimensions")?;
     let error = admission_error(&subject);
-    assert!(
-        error.contains("transition packet is missing `outcome_dimensions`"),
-        "expected a missing-key diagnostic, got:\n{error}"
-    );
+    assert_input_schema_rejection(&error, "outcome_dimensions");
     Ok(())
 }
 

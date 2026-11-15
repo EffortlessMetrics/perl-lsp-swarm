@@ -143,7 +143,7 @@ For managed tools:
 1. Select the intended tool release and read its release notes.
 2. Update the package version in `aqua.yaml`.
 3. Update the immutable Aqua registry commit if the old snapshot does not describe that release.
-4. Run `bash scripts/tools/install-aqua.sh --dest "$HOME/.local/bin"` if Aqua is not already on `PATH`, then `bash scripts/tools/aqua-doctor.sh` outside Nix.
+4. If Aqua is not installed, run `bash scripts/tools/install-aqua.sh --dest "$HOME/.local/bin"` and `export PATH="$HOME/.local/bin:$PATH"`. If it is installed under `$HOME/.local/bin` but not on `PATH`, run the export. Then run `bash scripts/tools/aqua-doctor.sh` outside Nix.
 5. Run the existing repository-native checker that owns the tool's policy.
 6. Record runtime, unsupported platforms, and rollback instructions in the PR.
 

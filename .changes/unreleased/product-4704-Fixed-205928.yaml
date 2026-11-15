@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "&foo(...) calls are now represented by a distinct AmperCall AST node instead of being indistinguishable from foo(...), letting the security diagnostics, semantic highlighting, and reference-tracking that were extended in this change treat the two calling conventions correctly."
-time: 2026-07-24T20:59:28Z
-custom:
-  PR: "4704"
-  Slug: ampercall-distinct-ast-node
-  Breaking: "no"

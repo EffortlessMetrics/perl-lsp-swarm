@@ -30,22 +30,18 @@
 //!
 //! # Relationship to the rest of this crate
 //!
-//! [`crate::LineStartsCache`], [`crate::LineIndex`], and [`crate::PositionMapper`]
-//! predate this contract and split into two distinct legacy row models, not one:
+//! [`LineStartsCache::new`], [`LineStartsCache::new_rope`], and [`LineIndex`]
+//! were migrated to the same LF-only row rules as this table by the #4973
+//! constructor convergence (#13820). Bare CR, VT, FF, NEL, LS, and PS are
+//! ordinary content for all three; only LF (and CRLF as one two-byte separator)
+//! starts a new row.
 //!
-//! ```text
-//! Ropey model (LF, CRLF, CR, VT, FF, NEL, LS, PS)
-//!   LineStartsCache::new_rope, PositionMapper   — Rope line APIs
+//! [`PositionMapper`] is the one remaining legacy row model in this crate. It
+//! uses Ropey line APIs, so LF, CRLF, bare CR, VT, FF, NEL, LS, and PS can all
+//! break a row there. Reconciliation is owned by #8687 (ADR-0048 / #4973
+//! follow-up). New exact-source consumers should build on this table instead.
 //!
-//! CR-aware model (LF, CRLF, CR)
-//!   LineStartsCache::new, LineIndex             — local scan
-//! ```
-//!
-//! So bare CR breaks a row on all of them, but VT/FF/NEL/LS/PS break a row only
-//! on the Rope-backed queries. They are legacy surfaces; new exact-source
-//! consumers should build on this table instead. The exact divergence is pinned
-//! in `tests/source_line_policy_authority.rs`. Reconciling these constructors is
-//! explicitly out of scope here (ADR-0048 / #4973 follow-up, owned by #8687).
+//! The executable divergence map is pinned in `tests/source_line_policy_authority.rs`.
 
 use crate::span::ByteSpan;
 use std::fmt;

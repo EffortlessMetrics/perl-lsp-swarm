@@ -494,18 +494,23 @@ fn equality_for(commit: &str) -> serde_json::Value {
 
 const PROBE_ARTIFACT: &str = ".ci/editor-clients/vim-fanin-probe.v1.json";
 
-/// The freshness family's registered denominator, read from the committed
+/// One family's registered catalog denominator, read from the committed
 /// profile (which the registry test above pins to the compiled catalog).
-fn freshness_cell_ids(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+fn family_cell_ids(root: &Path, family: &str) -> Result<Vec<String>, Box<dyn Error>> {
     let profile = load_profile(root)?;
     Ok(profile
-        .pointer("/inputs/freshness/cell_ids")
+        .pointer(&format!("/inputs/{family}/cell_ids"))
         .and_then(serde_json::Value::as_array)
-        .ok_or("freshness cell_ids missing")?
+        .ok_or_else(|| format!("{family} cell_ids missing"))?
         .iter()
         .filter_map(serde_json::Value::as_str)
         .map(str::to_owned)
         .collect())
+}
+
+/// The freshness family's registered denominator.
+fn freshness_cell_ids(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    family_cell_ids(root, "freshness")
 }
 
 /// Write a receipt into the copy and return its content digest. The receipt
@@ -517,6 +522,16 @@ fn write_receipt(
 ) -> Result<String, Box<dyn Error>> {
     let typed: EditorClientCompatReceipt = serde_json::from_value(receipt.clone())?;
     typed.validate().map_err(|error| format!("probe receipt is not dialect-valid: {error:#}"))?;
+    write_raw_receipt(copy, receipt)
+}
+
+/// Write a probe receipt without the canonical dialect check. Used for
+/// fail-closed seams that must catch dialect-invalid JSON at the fan-in
+/// itself (duplicate journey ids, unknown/missing cell results).
+fn write_raw_receipt(
+    copy: &ValidatorCopy,
+    receipt: &serde_json::Value,
+) -> Result<String, Box<dyn Error>> {
     let path = copy.root.join(PROBE_ARTIFACT);
     fs::write(&path, serde_json::to_vec_pretty(receipt)?)?;
     Ok(sha256_hex(&fs::read(&path)?))
@@ -666,9 +681,10 @@ fn unsupported_cells_compose_to_an_unobserved_family() -> Result<(), Box<dyn Err
 
 /// One probe fires two independent negative controls: NC3 — the receipt's
 /// declared vim-lsp commit diverges from the #11369 pin, so one Vim build
-/// cannot combine with another; and NC7 — the same journey cell id is bound
-/// by a second family, so families cannot cross-fill each other's
-/// observations. Deterministic and offline: temp-copy files only.
+/// cannot combine with another; and NC6/NC7 — save cannot bind freshness
+/// catalog cells, because the per-family owner registry rejects a foreign
+/// fill even before a second bind is recorded. Deterministic and offline:
+/// temp-copy files only.
 #[test]
 fn synthetic_registered_receipt_fires_subject_and_cross_fill_controls() -> Result<(), Box<dyn Error>>
 {
@@ -692,10 +708,8 @@ fn synthetic_registered_receipt_fires_subject_and_cross_fill_controls() -> Resul
         output.contains("one Vim build cannot combine with another"),
         "NC3 did not fire: {output}"
     );
-    assert!(
-        output.contains("cannot cross-fill each other's observations"),
-        "NC7 did not fire: {output}"
-    );
+    assert!(output.contains("foreign family cannot bind it"), "NC7 did not fire: {output}");
+    assert!(output.contains("owned by freshness"), "{output}");
     Ok(())
 }
 
@@ -746,9 +760,7 @@ fn unobserved_pass_cell_fails_closed() -> Result<(), Box<dyn Error>> {
     receipt["journey"][0]["observed"] = false.into();
     // Deliberately dialect-invalid (pass without observation), so it bypasses
     // the canonical check and must be caught at the fan-in seam itself.
-    let path = copy.root.join(PROBE_ARTIFACT);
-    fs::write(&path, serde_json::to_vec_pretty(&receipt)?)?;
-    let digest = sha256_hex(&fs::read(&path)?);
+    let digest = write_raw_receipt(&copy, &receipt)?;
     register_freshness(&copy, pinned(&digest, &cells))?;
     let (ok, output) = copy.validate()?;
     assert!(!ok, "an unobserved pass must fail closed");
@@ -814,5 +826,169 @@ fn optional_family_absence_stays_visible_without_blocking() -> Result<(), Box<dy
         !output.contains("aggregate_disposition stored"),
         "optional absence must not move the aggregate: {output}"
     );
+    Ok(())
+}
+
+/// Binding a save-family catalog cell under freshness is a foreign fill even
+/// when `fills` repeats the iterated family and the cell has not been bound
+/// elsewhere (the original NC6/NC7 hole).
+#[test]
+fn foreign_family_cell_cannot_fill_another_family() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    let mut cells = freshness_cell_ids(&copy.root)?;
+    let save_id =
+        family_cell_ids(&copy.root, "save")?.into_iter().next().ok_or("save catalog is empty")?;
+    cells.push(save_id.clone());
+    let digest = write_receipt(&copy, &synthetic_receipt(&cells))?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "a foreign-family cell must fail closed");
+    assert!(output.contains("owned by save"), "{output}");
+    assert!(output.contains(&save_id), "{output}");
+    assert!(output.contains("foreign family cannot bind it"), "{output}");
+    Ok(())
+}
+
+/// Two families cannot claim the same catalog cell, even while both producers
+/// stay open and no receipt is bound.
+#[test]
+fn duplicate_catalog_cell_owner_fails_closed() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    let save_id =
+        family_cell_ids(&copy.root, "save")?.into_iter().next().ok_or("save catalog is empty")?;
+    copy.edit_profile(|profile| {
+        if let Some(cell_ids) = profile
+            .pointer_mut("/inputs/freshness/cell_ids")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            cell_ids.push(save_id.clone().into());
+        }
+    })?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "a cell claimed by two families must fail closed");
+    assert!(output.contains("claimed by both freshness and save"), "{output}");
+    assert!(output.contains(&save_id), "{output}");
+    Ok(())
+}
+
+/// A receipt that repeats a journey id as `fail` then `pass` cannot last-wins
+/// bind the pass. Written raw because the canonical dialect already forbids
+/// duplicate ids; the fan-in must refuse them itself.
+#[test]
+fn duplicate_journey_id_cannot_last_wins_bind_a_pass() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    let cells = freshness_cell_ids(&copy.root)?;
+    let mut receipt = synthetic_receipt(&cells);
+    let mut fail_cell = receipt["journey"][0].clone();
+    fail_cell["result"] = "fail".into();
+    receipt["journey"].as_array_mut().ok_or("journey")?.insert(0, fail_cell);
+    let digest = write_raw_receipt(&copy, &receipt)?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "duplicate journey ids must fail closed rather than last-wins bind a pass");
+    assert!(output.contains("repeats cell id"), "{output}");
+    assert!(output.contains("cannot be last-wins bound"), "{output}");
+    assert!(
+        !output.contains("vim/vim-lsp first-class fan-in validation PASSED"),
+        "last-wins must not compose a passing family: {output}"
+    );
+    Ok(())
+}
+
+/// Unknown cell results are rejected at the receipt boundary; `worst()` must
+/// not silently fold them into `not_proven`.
+#[test]
+fn unknown_cell_result_fails_closed() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    let cells = freshness_cell_ids(&copy.root)?;
+    let mut receipt = synthetic_receipt(&cells);
+    receipt["journey"][0]["result"] = "observed_ok".into();
+    let digest = write_raw_receipt(&copy, &receipt)?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "an unknown cell result must fail closed");
+    assert!(output.contains("outside the receipt dialect vocabulary"), "{output}");
+    assert!(output.contains("observed_ok"), "{output}");
+    Ok(())
+}
+
+/// A missing cell result is not `str(None)`-coerced into the vocabulary.
+#[test]
+fn missing_cell_result_fails_closed() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    let cells = freshness_cell_ids(&copy.root)?;
+    let mut receipt = synthetic_receipt(&cells);
+    receipt["journey"][0].as_object_mut().ok_or("journey cell")?.remove("result");
+    let digest = write_raw_receipt(&copy, &receipt)?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "a missing cell result must fail closed");
+    assert!(output.contains("missing a result at the receipt boundary"), "{output}");
+    Ok(())
+}
+
+/// Register dialect-valid passing receipts for every required family from one
+/// shared probe artifact so the optional-policy tests can pin the
+/// all-required-pass floor.
+fn register_required_families_passing(copy: &ValidatorCopy) -> Result<(), Box<dyn Error>> {
+    let mut all_cells = Vec::new();
+    let mut per_family: Vec<(&str, Vec<String>)> = Vec::new();
+    for family in REQUIRED_FAMILIES {
+        let cells = family_cell_ids(&copy.root, family)?;
+        all_cells.extend(cells.iter().cloned());
+        per_family.push((family, cells));
+    }
+    let digest = write_receipt(copy, &synthetic_receipt(&all_cells))?;
+    for (family, cells) in per_family {
+        let family_ref = reference(&digest, family, &cells, equality_for(PINNED_VIM_LSP_COMMIT));
+        copy.edit_profile(|profile| {
+            profile["inputs"][family]["state"] = "receipt_registered".into();
+            profile["inputs"][family]["receipt_references"] =
+                serde_json::json!([family_ref.clone()]);
+            profile["cells"][family] = serde_json::json!({
+                "result": "pass",
+                "observed": true,
+                "limitation": "",
+                "receipt_references": [family_ref]
+            });
+        })?;
+    }
+    copy.edit_profile(|profile| {
+        profile["aggregate_disposition"] = "pass".into();
+    })?;
+    Ok(())
+}
+
+/// All-required-pass + optional not_proven cannot hide the optional family
+/// behind a clean aggregate; the optional dimension also cannot move that
+/// pass floor.
+#[test]
+fn all_required_pass_still_requires_visible_optional_limitation() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    register_required_families_passing(&copy)?;
+    copy.edit_profile(|profile| {
+        profile["aggregate_limitations"] = serde_json::json!([]);
+    })?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "hiding optional absence behind a required-only pass must fail closed");
+    assert!(output.contains("optional family workspace_folders"), "{output}");
+    assert!(
+        !output.contains("aggregate_disposition stored"),
+        "optional absence must not move the required-only pass floor: {output}"
+    );
+
+    copy.edit_profile(|profile| {
+        profile["aggregate_limitations"] = serde_json::json!([
+            "Optional workspace-folder evidence (#10960, catalog #11405) is absent."
+        ]);
+    })?;
+    let (ok, output) = copy.validate()?;
+    assert!(ok, "a required-only pass with the optional limitation visible must compose: {output}");
     Ok(())
 }

@@ -100,7 +100,7 @@ Receipts: `51`
 | release-readiness | FindDefinition | Definition | FrameworkAdapter | FrameworkSynthesis | Medium | Fresh | Shadow |
 | release-readiness | FindDefinition | Definition | DynamicBoundary | DynamicBoundary | High | Fresh | Blocked |
 | release-readiness | FindDefinition | Definition | Fallback | NameHeuristic | Low | Fresh | Fallback |
-| release-readiness | FindReferences | References | CompilerFact | ImportExportInference | High | Fresh | Shadow |
+| release-readiness | FindReferences | References | SemanticFact | ImportExportInference | High | Fresh | Shadow |
 | release-readiness | FindReferences | References | FrameworkAdapter | FrameworkSynthesis | Medium | Fresh | Shadow |
 | release-readiness | FindReferences | References | DynamicBoundary | DynamicBoundary | High | Fresh | Blocked |
 | release-readiness | FindReferences | References | Fallback | NameHeuristic | Low | Fresh | Fallback |

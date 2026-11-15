@@ -290,6 +290,12 @@ LSP: Restart Server
 LSP: Toggle Inlay Hints
 ```
 
+## Competing Perl tooling
+
+Sublime Text does not run the VS Code coexistence detector. Use `perllsp --health`,
+your LSP package configuration, and [Competing Perl tooling (coexistence)](COEXISTENCE.md)
+for honest overlap guidance without inventing automatic conflict detection.
+
 ## Troubleshooting
 
 ### Sublime cannot find `perllsp`

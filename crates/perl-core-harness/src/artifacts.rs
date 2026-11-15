@@ -1774,7 +1774,7 @@ fn decode_hex(value: &str) -> Result<Vec<u8>> {
     }
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let high = hex_nibble(pair[0])?;
         let low = hex_nibble(pair[1])?;
         decoded.push((high << 4) | low);
@@ -1837,6 +1837,18 @@ mod tests {
     use std::io::Cursor;
 
     type TestResult = Result<()>;
+
+    #[cfg(unix)]
+    fn raw_exit(status: i32) -> i32 {
+        status
+    }
+
+    #[cfg(unix)]
+    fn mock_status(status: i32) -> ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+
+        ExitStatus::from_raw(raw_exit(status))
+    }
 
     #[test]
     fn records_cover_parse_and_compile_without_overwrite() -> TestResult {
@@ -2371,10 +2383,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn signal_identity_does_not_collapse_distinct_terminations() -> TestResult {
-        use std::os::unix::process::ExitStatusExt;
-
-        let sigterm = outcome_from_status(ExitStatus::from_raw(15));
-        let sigkill = outcome_from_status(ExitStatus::from_raw(9));
+        let sigterm = outcome_from_status(mock_status(15));
+        let sigkill = outcome_from_status(mock_status(9));
         let DiscoveryProcessOutcome::Signaled { signal: 15, core_dumped: false, .. } = &sigterm
         else {
             bail!("SIGTERM termination lost its signal identity: {sigterm:?}");
@@ -2393,10 +2403,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn core_dump_identity_is_retained_separately_from_the_signal() -> TestResult {
-        use std::os::unix::process::ExitStatusExt;
-
-        let dumped = outcome_from_status(ExitStatus::from_raw(6 | 0x80));
-        let undumped = outcome_from_status(ExitStatus::from_raw(6));
+        let dumped = outcome_from_status(mock_status(6 | 0x80));
+        let undumped = outcome_from_status(mock_status(6));
         let DiscoveryProcessOutcome::Signaled { signal: 6, core_dumped: true, signal_name } =
             &dumped
         else {

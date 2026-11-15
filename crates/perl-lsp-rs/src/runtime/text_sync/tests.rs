@@ -344,6 +344,46 @@ fn test_did_change_ranged_edit_ignored_for_unopened_document()
 }
 
 #[test]
+fn test_full_did_change_without_version_does_not_open_unopened_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #10254: a full didChange must not implicitly open a document. The
+    // version field is deliberately omitted: with an explicit version the
+    // fabricated empty state has the same version and the stale gate masks
+    // the phantom; without one the handler synthesizes a version and
+    // commits the change as if the document had been opened.
+    let server = LspServer::new();
+    let uri = "file:///never-opened-full.pl";
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri },
+        "contentChanges": [{ "text": "sub phantom_symbol { 1 }\n" }]
+    })))?;
+
+    {
+        let docs = server.documents.lock();
+        assert!(docs.get(uri).is_none(), "full didChange must not create a document");
+    }
+    assert!(
+        server.symbol_index.lock().search_prefix("phantom_").is_empty(),
+        "phantom didChange must not publish symbols"
+    );
+
+    // Control: a legitimate didOpen of the same URI still works.
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub real_symbol { 1 }\n"
+        }
+    }))?;
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("didOpen must store the document")?;
+    assert_eq!(doc.text, "sub real_symbol { 1 }\n");
+    Ok(())
+}
+
+#[test]
 fn test_did_change_ranged_edit_does_not_mutate_open_document()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
@@ -3121,8 +3161,8 @@ fn handle_did_change_without_version_uses_next_version() -> Result<(), Box<dyn s
 #[test]
 fn did_open_normalizes_legacy_windows_file_uri_form() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
-    let legacy_uri = r"file://C:\Users\dev\example.pl";
-    let canonical_uri = "file:///c:/Users/dev/example.pl";
+    let legacy_uri = r"file://C:\dev-home\example.pl";
+    let canonical_uri = "file:///c:/dev-home/example.pl";
 
     server.did_open(json!({
         "textDocument": {
@@ -3147,8 +3187,8 @@ fn did_open_normalizes_legacy_windows_file_uri_form() -> Result<(), Box<dyn std:
 #[test]
 fn did_open_normalizes_plain_windows_path_uri() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
-    let plain_path = r"C:\Users\dev\plain_path.pl";
-    let canonical_uri = "file:///c:/Users/dev/plain_path.pl";
+    let plain_path = r"C:\dev-home\plain_path.pl";
+    let canonical_uri = "file:///c:/dev-home/plain_path.pl";
 
     server.did_open(json!({
         "textDocument": {
@@ -3680,6 +3720,153 @@ fn open_save_source_generation_held_side_effects_publish_only_accepted_dispositi
         index.file_symbols(uri).iter().any(|s| s.name == "effects_v2"),
         "released save's accepted facts must land from the exact saved buffer"
     );
+
+    Ok(())
+}
+
+/// #7071 acceptance fixture: one deterministic ordering proof across parse
+/// publication, pull diagnostics, workspace index contribution, and a
+/// representative provider path — using the existing pre-publish and
+/// side-effect worker barriers (no sleeps).
+#[cfg(feature = "workspace")]
+#[test]
+fn document_task_barrier_ordering_fixture_parse_diagnostics_index_and_provider()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = StdArc::new(LspServer::new());
+    server.test_handle_initialize_dispatch(Some(json!({
+        "capabilities": {},
+        "rootUri": null,
+        "workspaceFolders": null
+    })))?;
+    server.install_default_parse_worker();
+    let uri = "file:///document_task_barrier_ordering.pl";
+    let normalized_uri = server.normalize_uri_key(uri);
+
+    let v1 = "package Ordering;\nsub alpha_v1 { 1 }\nmy $x =;\n1;\n";
+    let v2 = "package Ordering;\nsub beta_v2 { 2 }\nmy $x = 1;\n1;\n";
+
+    server.test_apply_did_open(uri, v1, 1)?;
+    assert!(
+        must_some(server.parse_worker())
+            .wait_until_settled(&normalized_uri, Duration::from_secs(5)),
+        "initial open must settle"
+    );
+
+    let index = must_some(server.coordinator()).index();
+    assert_eq!(index.indexed_generation(uri), Some(1));
+    assert!(index.file_symbols(uri).iter().any(|s| s.name == "alpha_v1"));
+
+    let baseline_diag = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri }
+    })))?;
+    let baseline_items = baseline_diag
+        .and_then(|v| v.get("items").and_then(|i| i.as_array()).cloned())
+        .ok_or("baseline pull must carry items")?;
+    assert!(
+        baseline_items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
+        "baseline must report the syntax error; got {baseline_items:?}"
+    );
+
+    server.test_parse_worker_arm_barrier(uri, 2);
+    server.test_parse_worker_arm_side_effect_barrier(uri, 2);
+    server.test_apply_did_change(uri, v2, 2)?;
+    server.test_parse_worker_wait_until_paused();
+
+    assert_eq!(server.test_document_generation(uri), Some(2));
+
+    {
+        let docs = server.documents.lock();
+        let doc = must_some(docs.get(&normalized_uri));
+        assert!(
+            doc.current_parsed().is_none(),
+            "pre-publish barrier must leave current_parsed unset"
+        );
+    }
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(1),
+        "index must not advance while parse is held before publish"
+    );
+
+    let refs_pre_publish = server.test_handle_references(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 4 },
+        "context": { "includeDeclaration": true }
+    })))?;
+    assert!(
+        refs_pre_publish.as_ref().and_then(Value::as_array).is_none_or(|a| a.is_empty()),
+        "provider path must not answer from an unpublished snapshot; got {refs_pre_publish:?}"
+    );
+
+    let diag_pre_publish = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri }
+    })))?;
+    let diag_pre_items = diag_pre_publish
+        .and_then(|v| v.get("items").and_then(|i| i.as_array()).cloned())
+        .ok_or("pull diagnostics must carry items pre-publish")?;
+    assert!(
+        !diag_pre_items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
+        "pull diagnostics must reflect fixed live text during the parse hold; got {diag_pre_items:?}"
+    );
+
+    server.test_parse_worker_release_barrier();
+    server.test_parse_worker_wait_until_side_effects_paused();
+
+    {
+        let docs = server.documents.lock();
+        let doc = must_some(docs.get(&normalized_uri));
+        assert_eq!(must_some(doc.current_parsed()).generation(), 2);
+    }
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(1),
+        "side-effect barrier must hold workspace index before commit"
+    );
+    assert!(
+        !index.file_symbols(uri).iter().any(|s| s.name == "beta_v2"),
+        "index symbols must not include beta_v2 while side effects are paused"
+    );
+
+    let refs_published_held = server.test_handle_references(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 4 },
+        "context": { "includeDeclaration": true }
+    })))?;
+    assert!(
+        refs_published_held.as_ref().and_then(Value::as_array).is_some_and(|a| !a.is_empty()),
+        "after publish, provider path may use the generation-2 snapshot; got {refs_published_held:?}"
+    );
+
+    server.test_parse_worker_release_side_effect_barrier();
+    assert!(
+        server.test_wait_for_parse_worker_settled(uri, Duration::from_secs(5)),
+        "released side effects must settle"
+    );
+
+    assert_eq!(index.indexed_generation(uri), Some(2));
+    let final_symbols = index.file_symbols(uri);
+    let final_names: Vec<&str> = final_symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        final_names.contains(&"beta_v2") && !final_names.contains(&"alpha_v1"),
+        "released side effects must replace superseded index symbols; got {final_names:?}"
+    );
+
+    let final_diag = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri }
+    })))?;
+    let final_items = final_diag
+        .and_then(|v| v.get("items").and_then(|i| i.as_array()).cloned())
+        .ok_or("post-release pull diagnostics must carry items")?;
+    assert!(
+        !final_items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
+        "post-release diagnostics must reflect the fixed generation-2 source; got {final_items:?}"
+    );
+
+    let metrics = must_some(server.test_parse_worker_metrics());
+    assert_eq!(metrics.jobs_published, 1);
+    assert_eq!(metrics.jobs_rejected_stale, 0);
 
     Ok(())
 }

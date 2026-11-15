@@ -22,6 +22,8 @@ max_related_tests = 8
 [severity.findings]
 # Use ripr's own classifications. Do NOT use mutation-runtime words
 # (killed/survived) when reporting these.
+# ripr 0.9.x may emit grip_class "weakly_gripped"; xtask folds that onto
+# reachable_unrevealed for suppression matching (see docs/ci/ripr.md).
 exposed = "info"
 weakly_exposed = "warning"
 reachable_unrevealed = "warning"

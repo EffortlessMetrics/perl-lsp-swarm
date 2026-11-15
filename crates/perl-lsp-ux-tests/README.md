@@ -56,8 +56,9 @@ response:
 - unsupported methods receive JSON-RPC `Method not found` (`-32601`).
 
 The child-process fixture validates exact response IDs and envelopes. The public
-`UxClient` evidence accessors expose request payloads and capability violations;
-they do not expose a general client-response or selected-policy ledger.
+`UxClient` evidence accessors expose request payloads, default-mode exchanges
+(selected policy, exact response envelope, and write disposition), and capability
+violations.
 
 Request and violation evidence stays in memory for the lifetime of one client.
 Draining normal events does not release these separate copies, and the evidence

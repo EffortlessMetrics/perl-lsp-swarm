@@ -30,7 +30,7 @@ pub(crate) mod field_trait;
 /// Generated member extraction from Moo/Moose `has` declarations.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod generated_member_extractor;
-/// Import specification extraction for static `use` statements.
+/// Import specification extraction from canonical HIR facts plus bounded overlays.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod import_extractor;
 /// Lightweight workspace symbol index.

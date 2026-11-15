@@ -137,7 +137,7 @@ fi
     && ok "successful category entries unchanged" \
     || bad "successful category entries missing"
 
-# Case 4: the index bench gets its required features; others unchanged (#17425).
+# Case 4: benchmark targets get their required features; parser stays unchanged.
 ARGS_LOG=$(mktemp)
 export CARGO_ARGS_LOG="$ARGS_LOG"
 export FAIL_BENCHES=""
@@ -149,6 +149,15 @@ fi
 grep -q "workspace_index_benchmark.*--features workspace" "$ARGS_LOG" \
     && ok "index bench invoked with --features workspace" \
     || bad "index bench missing --features workspace"
+: >"$ARGS_LOG"
+if PATH="$STUB:$PATH" bash "$RUNNER" --category lsp >"$OUT" 2>"$ERR"; then
+    ok "lsp stub run exits 0"
+else
+    bad "lsp stub run exited nonzero"
+fi
+grep -q "rope_performance_benchmark.*--features benchmarks" "$ARGS_LOG" \
+    && ok "lsp bench invoked with --features benchmarks" \
+    || bad "lsp bench missing --features benchmarks"
 : >"$ARGS_LOG"
 if PATH="$STUB:$PATH" bash "$RUNNER" --category parser >"$OUT" 2>"$ERR"; then
     ok "parser stub run exits 0"
@@ -206,7 +215,18 @@ else
 fi
 # HOME=/ (containers/CI) skips redaction instead of replacing every `/`
 # with `~` (#17453 review).
-if HOME=/ PATH="$STUB:$PATH" STUB_FAIL_MODE="homepath" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
+#
+# The toolchain probe at run-benchmarks.sh:68 runs under `set -euo pipefail`,
+# so a failing `rustc --version` aborts the runner before it writes any
+# receipt. With HOME=/ and RUSTUP_HOME unset, rustup resolves its home to
+# /.rustup, which is not creatable, so the runner died before the cargo
+# stub ran and the receipt was empty — this case then measured "no
+# receipt" rather than the redaction guard it claims to check. Pin the
+# ambient rustup home (captured before HOME is overridden) so the runner
+# reaches the stub and the assertion below tests the slash-only HOME
+# redaction path instead of a broken toolchain.
+AMBIENT_RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+if HOME=/ RUSTUP_HOME="$AMBIENT_RUSTUP_HOME" PATH="$STUB:$PATH" STUB_FAIL_MODE="homepath" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
     bad "slash-HOME run exited 0; expected nonzero"
 else
     ok "slash-HOME run exits nonzero"

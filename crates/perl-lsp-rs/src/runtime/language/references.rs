@@ -10,8 +10,9 @@
 
 use super::super::{DocumentHighlightProvider, LspServer, Value, json};
 use super::reference_text::{
-    TextReferenceQuery, callable_declarations, finalize_reference_locations, normalized_text_query,
-    search_document_texts_with_declarations, shrink_declaration_span_to_name_span,
+    TextReferenceQuery, callable_declarations, finalize_named_reference_locations,
+    normalized_text_query, search_document_texts_with_declarations,
+    shrink_declaration_span_to_name_span, uri_keys_from_reference_locations,
 };
 use crate::protocol::{
     JsonRpcError, JsonRpcId, REQUEST_CANCELLED, REQUEST_FAILED, req_position, req_uri,
@@ -140,6 +141,9 @@ pub(crate) enum SourceBackedReferenceDecline {
     DeclarationSerializationFailed,
     /// The initialized lexical declaration gate rejected the source shape.
     InitializedLexicalGateRejected,
+    /// The cursor or a proposed occurrence is not provably active for the
+    /// selected lexical binding (#18369).
+    LexicalBindingScopeRejected,
     /// An occurrence had no wire location anchor.
     OccurrenceLocationUnavailable,
     /// An occurrence wire location carried a URI that is not a valid protocol URI.
@@ -204,6 +208,9 @@ impl SourceBackedReferenceAttempt {
                     }
                     SourceBackedReferenceDecline::InitializedLexicalGateRejected => {
                         ("initialized_lexical_gate", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::LexicalBindingScopeRejected => {
+                        ("lexical_binding_scope", false, 0, None)
                     }
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable => {
                         ("occurrence_location", false, 0, None)
@@ -456,6 +463,120 @@ fn line_has_initialized_lexical_declaration(line: &str, sigil: char, name: &str)
         }
     }
     false
+}
+
+/// Source ranges of every PIR lexical fact for one variable spelling, joined
+/// to its canonical HIR binding. Built from a single parse so the P8 scope
+/// gate (#18369) does not reparse the document once per occurrence.
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+struct LexicalBindingIndex {
+    ranges: Vec<(usize, usize, Option<perl_parser_core::hir::HirBindingId>)>,
+}
+
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+impl LexicalBindingIndex {
+    fn build(source: &str, sigil: char, name: &str) -> Self {
+        use perl_parser_core::Parser;
+        use perl_parser_core::hir::lower_ast;
+        use perl_parser_core::pir::extract_lexical_facts;
+
+        let sigil_str = sigil.to_string();
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        let hir = lower_ast(&output.ast);
+        let receipt = extract_lexical_facts(&hir);
+        let ranges = receipt
+            .bodies
+            .iter()
+            .flat_map(|body| body.facts.iter())
+            .filter(|fact| fact.name.sigil.as_str() == sigil_str && fact.name.name == name)
+            .filter_map(|fact| {
+                let range = fact.source_anchor.range.as_ref()?;
+                Some((range.start, range.end, fact.binding))
+            })
+            .collect();
+        Self { ranges }
+    }
+
+    fn binding_at(&self, byte_offset: usize) -> Option<perl_parser_core::hir::HirBindingId> {
+        self.ranges
+            .iter()
+            .find(|(start, end, _)| byte_offset >= *start && byte_offset < *end)
+            .and_then(|(_, _, binding)| *binding)
+    }
+}
+
+/// An occurrence in another file that the P8 scope gate (#18369) must still
+/// prove is not a file-local lexical before the exact set can be admitted.
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct P8ForeignOccurrence {
+    uri: String,
+    start_byte: usize,
+}
+
+/// Decide whether an exact P8 occurrence set is provably bound to the selected
+/// declaration (#18369).
+///
+/// Two declaration shapes are distinguished:
+///
+/// * **Lexical declaration** (the declaration resolves to a HIR binding): the
+///   cursor and every proposed occurrence must resolve to that same binding. A
+///   file-local lexical cannot have members in another file, so any foreign
+///   occurrence declines.
+/// * **Package declaration** (no lexical binding exists at the declaration):
+///   the lexical check does not apply, but nothing in the set may be a
+///   lexical. The cursor and every same-file occurrence must resolve to no
+///   lexical binding, and every foreign occurrence is returned so the caller
+///   proves the same thing against that file's text outside the semantic view.
+///
+/// Returns `None` to decline, or the foreign occurrences still owed proof.
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+fn p8_lexical_binding_scope_admits<Q: perl_workspace::semantic::queries::SemanticQueries>(
+    source: &str,
+    request_uri: &str,
+    cursor_byte_offset: usize,
+    sigil: char,
+    name: &str,
+    decl_anchor: perl_semantic_facts::AnchorId,
+    occurrences: &[perl_semantic_facts::OccurrenceFact],
+    queries: &Q,
+) -> Option<Vec<P8ForeignOccurrence>> {
+    let decl_span = queries.anchor_source_span(decl_anchor)?;
+    if decl_span.source_uri != request_uri {
+        return None;
+    }
+    let decl_byte = usize::try_from(decl_span.start_byte).ok()?;
+    let index = LexicalBindingIndex::build(source, sigil, name);
+    // `None` here means the declaration is not a lexical (a package
+    // declaration); every member must then also resolve to no lexical.
+    let decl_binding = index.binding_at(decl_byte);
+    if index.binding_at(cursor_byte_offset) != decl_binding {
+        return None;
+    }
+
+    let occurrence_anchor_ids: Vec<_> =
+        occurrences.iter().map(|occurrence| occurrence.anchor_id).collect();
+    let spans = queries.anchor_source_spans(&occurrence_anchor_ids);
+    if spans.len() != occurrences.len() {
+        return None;
+    }
+    let mut foreign = Vec::new();
+    for span in spans {
+        let span = span?;
+        let start_byte = usize::try_from(span.start_byte).ok()?;
+        if span.source_uri != request_uri {
+            if decl_binding.is_some() {
+                return None;
+            }
+            foreign.push(P8ForeignOccurrence { uri: span.source_uri, start_byte });
+            continue;
+        }
+        if index.binding_at(start_byte) != decl_binding {
+            return None;
+        }
+    }
+    Some(foreign)
 }
 
 impl LspServer {
@@ -1017,9 +1138,22 @@ impl LspServer {
                                                 source_backed_attempt = Some(
                                                     SourceBackedReferenceAttempt::Exact(Vec::new()),
                                                 );
-                                                live_locations = finalize_reference_locations(
+                                                let narrowing_keys =
+                                                    uri_keys_from_reference_locations(
+                                                        &live_locations,
+                                                    );
+                                                let narrowing_docs = self
+                                                    .open_document_texts_for_range_narrowing(
+                                                        uri,
+                                                        &doc.text,
+                                                        &narrowing_keys,
+                                                    );
+                                                live_locations = finalize_named_reference_locations(
                                                     live_locations,
                                                     cap,
+                                                    &narrowing_docs,
+                                                    symbol_key.name.as_ref(),
+                                                    symbol_key.sigil,
                                                 );
                                                 // Precompute before the tracing macro so these
                                                 // expressions are unconditionally instrumented
@@ -1136,7 +1270,13 @@ impl LspServer {
                                         );
                                         let index_count = workspace_locations.len();
                                         let workspace_locations =
-                                            finalize_reference_locations(workspace_locations, cap);
+                                            finalize_named_reference_locations(
+                                                workspace_locations,
+                                                cap,
+                                                &docs_snapshot,
+                                                symbol_key.name.as_ref(),
+                                                symbol_key.sigil,
+                                            );
                                         return Ok((
                                             Some(to_json_array(&workspace_locations)),
                                             ReferencesAnsweringTier::WorkspaceExact,
@@ -1199,8 +1339,13 @@ impl LspServer {
                                     // consume the budget (#16638).
                                     let text_count = enhanced_locations.len();
                                     workspace_locations.extend(enhanced_locations);
-                                    let all_combined_locations =
-                                        finalize_reference_locations(workspace_locations, cap);
+                                    let all_combined_locations = finalize_named_reference_locations(
+                                        workspace_locations,
+                                        cap,
+                                        &docs_snapshot,
+                                        symbol_key.name.as_ref(),
+                                        symbol_key.sigil,
+                                    );
 
                                     if !all_combined_locations.is_empty() {
                                         tracing::debug!(
@@ -1250,8 +1395,9 @@ impl LspServer {
                                         );
                                         // Convert internal Locations to LSP Locations,
                                         // through the same occurrence-identity finalizer as
-                                        // every other tier (#17242).
-                                        let lsp_locations = finalize_reference_locations(
+                                        // every other tier (#17242), then narrow call
+                                        // expressions to the identifier (#9825).
+                                        let lsp_locations = finalize_named_reference_locations(
                                             crate::workspace_index::lsp_adapter::to_lsp_locations(
                                                 capped_refs,
                                             )
@@ -1259,6 +1405,9 @@ impl LspServer {
                                             .map(|loc| json!(loc))
                                             .collect(),
                                             cap,
+                                            &docs_snapshot,
+                                            symbol_key.name.as_ref(),
+                                            symbol_key.sigil,
                                         );
                                         if !lsp_locations.is_empty() {
                                             let result_count = lsp_locations.len();
@@ -1395,12 +1544,16 @@ impl LspServer {
                                                     // declaration) whose shapes overlap.
                                                     let capped_refs: Vec<_> =
                                                         all_refs.into_iter().take(cap).collect();
-                                                    let lsp_locations = finalize_reference_locations(
+                                                    let lsp_locations =
+                                                        finalize_named_reference_locations(
                                                         crate::workspace_index::lsp_adapter::to_lsp_locations(capped_refs)
                                                             .into_iter()
                                                             .map(|loc| json!(loc))
                                                             .collect(),
                                                         cap,
+                                                        &docs_snapshot,
+                                                        &name,
+                                                        None,
                                                     );
                                                     if !lsp_locations.is_empty() {
                                                         let result_count = lsp_locations.len();
@@ -1524,15 +1677,29 @@ impl LspServer {
 
                                     if !partial_refs.is_empty() {
                                         // The same occurrence-identity finalizer as every
-                                        // other tier (#17242).
-                                        let lsp_locations = finalize_reference_locations(
+                                        // other tier (#17242), then identifier narrowing
+                                        // (#9825).
+                                        let lsp_values: Vec<Value> =
                                             crate::workspace_index::lsp_adapter::to_lsp_locations(
-                                                partial_refs.into_iter().take(cap),
+                                                partial_refs.iter().take(cap).cloned(),
                                             )
                                             .into_iter()
                                             .map(|loc| json!(loc))
-                                            .collect(),
+                                            .collect();
+                                        let narrowing_keys =
+                                            uri_keys_from_reference_locations(&lsp_values);
+                                        let narrowing_docs = self
+                                            .open_document_texts_for_range_narrowing(
+                                                uri,
+                                                &doc.text,
+                                                &narrowing_keys,
+                                            );
+                                        let lsp_locations = finalize_named_reference_locations(
+                                            lsp_values,
                                             cap,
+                                            &narrowing_docs,
+                                            symbol_key.name.as_ref(),
+                                            symbol_key.sigil,
                                         );
                                         if !lsp_locations.is_empty() {
                                             self.check_references_cancellation(
@@ -1661,7 +1828,19 @@ impl LspServer {
                                 })
                             })
                             .collect();
-                        let locations = finalize_reference_locations(locations, cap);
+                        let narrowing_keys = uri_keys_from_reference_locations(&locations);
+                        let narrowing_docs = self.open_document_texts_for_range_narrowing(
+                            uri,
+                            &doc.text,
+                            &narrowing_keys,
+                        );
+                        let locations = finalize_named_reference_locations(
+                            locations,
+                            cap,
+                            &narrowing_docs,
+                            needle.as_str(),
+                            None,
+                        );
 
                         tracing::debug!(
                             count = locations.len(),
@@ -1739,6 +1918,83 @@ impl LspServer {
             query,
             cap,
         )
+    }
+
+    /// Open-document texts used to narrow reference ranges to identifier
+    /// tokens (#9825). Pins `current_uri` to the generation already captured
+    /// for this request so a racing `didChange` cannot mix identities. Only
+    /// loads documents whose URIs appear in `needed_uri_keys` plus the
+    /// current file.
+    fn open_document_texts_for_range_narrowing(
+        &self,
+        current_uri: &str,
+        current_text: &str,
+        needed_uri_keys: &[String],
+    ) -> Vec<(String, String)> {
+        let current_key = perl_uri::uri_key(current_uri);
+        let mut want: std::collections::HashSet<String> = needed_uri_keys.iter().cloned().collect();
+        want.insert(current_key.clone());
+
+        let documents = self.documents_guard();
+        let mut out = Vec::with_capacity(want.len().max(1));
+        let mut saw_current = false;
+        for (uri, state) in documents.iter() {
+            let key = perl_uri::uri_key(uri);
+            if !want.contains(&key) {
+                continue;
+            }
+            if key == current_key {
+                out.push((uri.clone(), current_text.to_owned()));
+                saw_current = true;
+            } else {
+                out.push((uri.clone(), state.text.clone()));
+            }
+        }
+        if !saw_current && want.contains(&current_key) {
+            out.push((current_uri.to_owned(), current_text.to_owned()));
+        }
+        out
+    }
+
+    /// Prove that no foreign member of a package-variable exact P8 set is a
+    /// file-local lexical in its own file (#18369). A member whose file is not
+    /// open has no text to prove against, so it declines rather than being
+    /// admitted unexamined.
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    fn p8_foreign_occurrences_are_not_lexical(
+        &self,
+        current_uri: &str,
+        current_text: &str,
+        sigil: char,
+        name: &str,
+        foreign: &[P8ForeignOccurrence],
+    ) -> bool {
+        if foreign.is_empty() {
+            return true;
+        }
+        let needed: Vec<String> =
+            foreign.iter().map(|occurrence| perl_uri::uri_key(&occurrence.uri)).collect();
+        let texts =
+            self.open_document_texts_for_range_narrowing(current_uri, current_text, &needed);
+        let mut indexes: std::collections::HashMap<String, LexicalBindingIndex> =
+            std::collections::HashMap::new();
+        for occurrence in foreign {
+            let key = perl_uri::uri_key(&occurrence.uri);
+            if !indexes.contains_key(&key) {
+                let Some((_, text)) = texts.iter().find(|(uri, _)| perl_uri::uri_key(uri) == key)
+                else {
+                    return false;
+                };
+                indexes.insert(key.clone(), LexicalBindingIndex::build(text, sigil, name));
+            }
+            let Some(index) = indexes.get(&key) else {
+                return false;
+            };
+            if index.binding_at(occurrence.start_byte).is_some() {
+                return false;
+            }
+        }
+        true
     }
 
     fn bounded_open_document_snapshot(
@@ -2018,7 +2274,33 @@ impl LspServer {
                             symbol,
                             entity_id,
                         );
-                        Some(Ok((outcome, decl_anchor)))
+                        let mut foreign_scope_proof = Vec::new();
+                        if let Some(sigil) = sigil
+                            && let perl_lsp_rs_core::providers::navigation::references_shadow::ReferencesCutoverResult::Exact(ref occurrences) =
+                                outcome.result
+                        {
+                            let Some(decl_anchor) = decl_anchor else {
+                                return Some(Err(
+                                    SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+                                ));
+                            };
+                            let Some(foreign) = p8_lexical_binding_scope_admits(
+                                source,
+                                uri,
+                                byte_offset as usize,
+                                sigil,
+                                symbol,
+                                decl_anchor,
+                                occurrences,
+                                &queries,
+                            ) else {
+                                return Some(Err(
+                                    SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+                                ));
+                            };
+                            foreign_scope_proof = foreign;
+                        }
+                        Some(Ok((outcome, decl_anchor, foreign_scope_proof)))
                     })
                     .flatten()
             },
@@ -2038,10 +2320,26 @@ impl LspServer {
                 SourceBackedReferenceDecline::WorkspaceIndexStale,
             );
         }
-        let (outcome, decl_anchor) = match semantic_resolution {
+        let (outcome, decl_anchor, foreign_scope_proof) = match semantic_resolution {
             Ok(resolution) => resolution,
             Err(decline) => return SourceBackedReferenceAttempt::Declined(decline),
         };
+        // Foreign members of a package-variable exact set are proved here,
+        // outside the semantic view's read guards, against the open document
+        // text of the file that owns them (#18369).
+        if let Some(sigil) = sigil
+            && !self.p8_foreign_occurrences_are_not_lexical(
+                uri,
+                source,
+                sigil,
+                symbol,
+                &foreign_scope_proof,
+            )
+        {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+            );
+        }
 
         let occurrences = match outcome.result {
             ReferencesCutoverResult::Exact(occurrences) => occurrences,
@@ -2711,6 +3009,13 @@ mod tests {
             (
                 SourceBackedReferenceDecline::InitializedLexicalGateRejected,
                 "initialized_lexical_gate",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+                "lexical_binding_scope",
                 false,
                 0,
                 None,
@@ -4688,6 +4993,381 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), ghost.len(), "no duplicated (uri, range): {ghost:?}");
 
+        Ok(())
+    }
+
+    /// #9825: one call site is one identifier-only reference.
+    ///
+    /// Aggregation across producers must not surface the call expression, the
+    /// qualified name, and the identifier as three results, and a lone
+    /// `work()` range must not swallow `()`. Nested `outer(inner())` stays two
+    /// occurrences.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn references_return_one_narrowed_range_per_occurrence() -> Result<(), Box<dyn Error>> {
+        let server = crate::runtime::LspServer::default();
+        let greeter_uri = "file:///F:/nav9825/Greeter.pm";
+        let caller_uri = "file:///F:/nav9825/caller.pl";
+        let work_uri = "file:///F:/nav9825/work.pl";
+        let nested_uri = "file:///F:/nav9825/nested.pl";
+        let greeter = "package Greeter;\nsub greet {\n    return 'hi';\n}\n1;\n";
+        let caller = "use Greeter;\nmy $a = Greeter::greet($obj);\nmy $b = $obj->greet();\n";
+        let work = "sub work {\n    return 1;\n}\n\nmy $one = work();\nmy $two = work();\n";
+        let nested = "sub greet { return 1; }\ngreet(greet());\n";
+
+        server.test_apply_did_open(greeter_uri, greeter, 1)?;
+        server.test_apply_did_open(caller_uri, caller, 1)?;
+        server.test_apply_did_open(work_uri, work, 1)?;
+        server.test_apply_did_open(nested_uri, nested, 1)?;
+        for (uri, text) in
+            [(greeter_uri, greeter), (caller_uri, caller), (work_uri, work), (nested_uri, nested)]
+        {
+            server.test_index_file_in_building_state(uri, text).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+
+        let locations =
+            |result: Option<Value>| -> Result<Vec<(String, u64, u64, u64)>, Box<dyn Error>> {
+                result
+                    .ok_or("missing references result")?
+                    .as_array()
+                    .ok_or("references result is not an array")?
+                    .iter()
+                    .map(|location| {
+                        Ok((
+                            perl_uri::uri_key(location["uri"].as_str().ok_or("missing uri")?),
+                            location["range"]["start"]["line"].as_u64().ok_or("start line")?,
+                            location["range"]["start"]["character"]
+                                .as_u64()
+                                .ok_or("start character")?,
+                            location["range"]["end"]["character"]
+                                .as_u64()
+                                .ok_or("end character")?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, Box<dyn Error>>>()
+            };
+
+        let (greeter_refs, ..) = server.handle_references_inner(
+            Some(json!({
+                "textDocument": {"uri": greeter_uri},
+                "position": {"line": 1, "character": 5},
+                "context": {"includeDeclaration": true}
+            })),
+            None,
+            reference_search_deadline(),
+        )?;
+        let greeter_refs = locations(greeter_refs)?;
+        let caller_line_1: Vec<_> = greeter_refs
+            .iter()
+            .filter(|(uri, line, ..)| uri.ends_with("caller.pl") && *line == 1)
+            .collect();
+        assert_eq!(
+            caller_line_1.len(),
+            1,
+            "one Greeter::greet($obj) occurrence must yield one reference, got: {caller_line_1:?}"
+        );
+        assert_eq!(
+            (caller_line_1[0].2, caller_line_1[0].3),
+            (17, 22),
+            "reference range must cover `greet`, not the surrounding call: {caller_line_1:?}"
+        );
+
+        let greeter_decl: Vec<_> = greeter_refs
+            .iter()
+            .filter(|(uri, line, ..)| uri.ends_with("Greeter.pm") && *line == 1)
+            .collect();
+        assert_eq!(
+            greeter_decl.len(),
+            1,
+            "declaration must answer once, with no one-character `sub` range: {greeter_decl:?}"
+        );
+        assert_eq!(
+            (greeter_decl[0].2, greeter_decl[0].3),
+            (4, 9),
+            "declaration range must cover `greet`, not `sub`: {greeter_decl:?}"
+        );
+
+        let (work_refs, ..) = server.handle_references_inner(
+            Some(json!({
+                "textDocument": {"uri": work_uri},
+                "position": {"line": 0, "character": 5},
+                "context": {"includeDeclaration": true}
+            })),
+            None,
+            reference_search_deadline(),
+        )?;
+        let work_refs = locations(work_refs)?;
+        for expected_line in [4_u64, 5] {
+            let sites: Vec<_> =
+                work_refs.iter().filter(|(_, line, ..)| *line == expected_line).collect();
+            assert_eq!(
+                sites.len(),
+                1,
+                "work() on line {expected_line} must be one reference, got {sites:?}"
+            );
+            assert_eq!(
+                (sites[0].2, sites[0].3),
+                (10, 14),
+                "work() range must cover `work`, excluding `()`: {sites:?}"
+            );
+        }
+
+        let (nested_refs, ..) = server.handle_references_inner(
+            Some(json!({
+                "textDocument": {"uri": nested_uri},
+                "position": {"line": 0, "character": 5},
+                "context": {"includeDeclaration": true}
+            })),
+            None,
+            reference_search_deadline(),
+        )?;
+        let nested_refs = locations(nested_refs)?;
+        let nested_calls: Vec<_> = nested_refs
+            .iter()
+            .filter(|(uri, line, ..)| uri.ends_with("nested.pl") && *line == 1)
+            .cloned()
+            .collect();
+        assert_eq!(
+            nested_calls.len(),
+            2,
+            "outer(inner()) must keep two occurrences, got {nested_calls:?}"
+        );
+
+        for refs in [&greeter_refs, &work_refs, &nested_refs] {
+            for (index, a) in refs.iter().enumerate() {
+                for (other, b) in refs.iter().enumerate() {
+                    if index == other || a.0 != b.0 || a.1 != b.1 {
+                        continue;
+                    }
+                    let a_contained = a.2 >= b.2 && a.3 <= b.3 && (a.2 != b.2 || a.3 != b.3);
+                    assert!(!a_contained, "reference {a:?} is strictly contained in {b:?}");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// #18369: package-variable reference queries must not admit a false-exact
+    /// P8 lexical slice when a same-name lexical exists in the file.
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    #[test]
+    fn p8_package_variable_queries_retain_cross_file_uses_without_false_exact()
+    -> Result<(), Box<dyn Error>> {
+        let main_uri = "file:///workspace/p8-binding-18369/main.pl";
+        let noise_uri = "file:///workspace/p8-binding-18369/lib/Noise.pm";
+        let noise_text = "package main;\nour $x;\nmy $alien = $x + 2;\n1;\n";
+
+        let cases: [(&str, u32, u32, u32, u32); 3] = [
+            ("$x = 3;\nmy $x = 1;\nmy $y = $x + 1;\n", 0, 1, 2, 9),
+            ("my $x = $x + 1;\nmy $y = $x + 1;\n", 0, 9, 1, 9),
+            ("{ my $x = 1; my $y = $x + 1; }\nmy $z = $x + 1;\n", 1, 9, 0, 22),
+        ];
+
+        for (case_idx, (main_text, package_line, package_char, lexical_line, lexical_char)) in
+            cases.into_iter().enumerate()
+        {
+            let server = crate::runtime::LspServer::default();
+            let version = i32::try_from(case_idx + 1).map_err(|_| "case index overflow")?;
+            server.test_apply_did_open(main_uri, main_text, version)?;
+            server.test_apply_did_open(noise_uri, noise_text, version)?;
+            for (uri, text) in [(main_uri, main_text), (noise_uri, noise_text)] {
+                server
+                    .test_index_file_in_building_state(uri, text)
+                    .map_err(std::io::Error::other)?;
+            }
+            server.test_simulate_indexing_complete();
+
+            let receipt_for = |line: u32, character: u32, include_declaration: bool| {
+                server.test_handle_references(Some(json!({
+                    "textDocument": {"uri": main_uri, "version": version},
+                    "position": {"line": line, "character": character},
+                    "context": {"includeDeclaration": include_declaration}
+                })))?;
+                server
+                    .handle_execute_command(Some(json!({
+                        "command": "perl.explainProviderDecision",
+                        "arguments": [{"provider": "references"}]
+                    })))?
+                    .and_then(|value| value.get("request_receipt").cloned())
+                    .ok_or_else(|| -> Box<dyn Error> {
+                        "missing references provider receipt".into()
+                    })
+            };
+
+            let locations_for = |line: u32,
+                                 character: u32,
+                                 include_declaration: bool|
+             -> Result<Vec<Value>, Box<dyn Error>> {
+                let (result, ..) = server.handle_references_inner(
+                    Some(json!({
+                        "textDocument": {"uri": main_uri, "version": version},
+                        "position": {"line": line, "character": character},
+                        "context": {"includeDeclaration": include_declaration}
+                    })),
+                    None,
+                    reference_search_deadline(),
+                )?;
+                Ok(result.and_then(|value| value.as_array().cloned()).unwrap_or_default())
+            };
+
+            let package_locations = locations_for(package_line, package_char, false)?;
+            let noise_use = json!({
+                "uri": noise_uri,
+                "range": {
+                    "start": {"line": 2, "character": 12},
+                    "end": {"line": 2, "character": 14}
+                }
+            });
+            assert!(
+                package_locations.iter().any(|location| location == &noise_use),
+                "package query must retain the cross-file package use; got {package_locations:?}"
+            );
+            let package_receipt = receipt_for(package_line, package_char, false)?;
+            let claims_exact = package_receipt.get("answering_tier").and_then(Value::as_str)
+                == Some("semantic_source_backed")
+                && package_receipt.get("source_backed_outcome").and_then(Value::as_str)
+                    == Some("exact");
+            assert!(
+                !claims_exact,
+                "package query must not claim false-exact P8: {package_receipt:?}"
+            );
+
+            let lexical_locations = locations_for(lexical_line, lexical_char, false)?;
+            let lexical_receipt = receipt_for(lexical_line, lexical_char, false)?;
+            if lexical_receipt.get("answering_tier").and_then(Value::as_str)
+                == Some("semantic_source_backed")
+                && lexical_receipt.get("source_backed_outcome").and_then(Value::as_str)
+                    == Some("exact")
+            {
+                assert_eq!(
+                    lexical_locations.len(),
+                    1,
+                    "lexical exact answer must exclude inactive/package occurrences: {lexical_locations:?}"
+                );
+            }
+        }
+
+        let server = crate::runtime::LspServer::default();
+        let positive_main = "my $x = 1;\nmy $y = $x + 1;\n";
+        server.test_apply_did_open(main_uri, positive_main, 10)?;
+        server
+            .test_index_file_in_building_state(main_uri, positive_main)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        server.test_handle_references(Some(json!({
+            "textDocument": {"uri": main_uri, "version": 10},
+            "position": {"line": 1, "character": 9},
+            "context": {"includeDeclaration": false}
+        })))?;
+        let positive_receipt = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .and_then(|value| value.get("request_receipt").cloned())
+            .ok_or("missing positive P8 receipt")?;
+        assert_eq!(
+            positive_receipt.get("answering_tier").and_then(Value::as_str),
+            Some("semantic_source_backed"),
+            "simple initialized lexical must keep P8: {positive_receipt:?}"
+        );
+        assert_eq!(
+            positive_receipt.get("source_backed_outcome").and_then(Value::as_str),
+            Some("exact"),
+            "simple initialized lexical must stay exact: {positive_receipt:?}"
+        );
+
+        // A package variable with no same-name lexical is not a lexical-scope
+        // mismatch: this gate must not be what declines the package cohort.
+        // (On current main the earlier initialized-lexical gate already keeps
+        // package variables out of the P8 exact tier.)
+        let server = crate::runtime::LspServer::default();
+        let package_main = "our $x = 1;\nprint $x;\n";
+        server.test_apply_did_open(main_uri, package_main, 11)?;
+        server
+            .test_index_file_in_building_state(main_uri, package_main)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        server.test_handle_references(Some(json!({
+            "textDocument": {"uri": main_uri, "version": 11},
+            "position": {"line": 1, "character": 7},
+            "context": {"includeDeclaration": false}
+        })))?;
+        let package_receipt = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .and_then(|value| value.get("request_receipt").cloned())
+            .ok_or("missing package P8 receipt")?;
+        assert_ne!(
+            package_receipt.get("source_backed_decline_stage").and_then(Value::as_str),
+            Some("lexical_binding_scope"),
+            "a package variable without a same-name lexical must not hit the lexical scope gate: {package_receipt:?}"
+        );
+
+        Ok(())
+    }
+
+    /// #18369: a foreign member of a package-variable exact set must be proved
+    /// against its own file, not skipped.
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    #[test]
+    fn p8_foreign_occurrences_must_prove_they_are_not_file_local_lexicals()
+    -> Result<(), Box<dyn Error>> {
+        let main_uri = "file:///workspace/p8-foreign-18369/main.pl";
+        let package_uri = "file:///workspace/p8-foreign-18369/lib/Pkg.pm";
+        let lexical_uri = "file:///workspace/p8-foreign-18369/lib/Lex.pm";
+        let closed_uri = "file:///workspace/p8-foreign-18369/lib/Closed.pm";
+        let main_text = "our $x = 1;\n";
+        let package_text = "our $x;\nprint $x;\n";
+        let lexical_text = "my $x = 1;\nprint $x;\n";
+
+        let server = crate::runtime::LspServer::default();
+        server.test_apply_did_open(main_uri, main_text, 1)?;
+        server.test_apply_did_open(package_uri, package_text, 1)?;
+        server.test_apply_did_open(lexical_uri, lexical_text, 1)?;
+
+        let use_byte = |text: &str| text.rfind("$x").map(|offset| offset + 1);
+        let package_use = P8ForeignOccurrence {
+            uri: package_uri.to_owned(),
+            start_byte: use_byte(package_text).ok_or("no package use")?,
+        };
+        let lexical_use = P8ForeignOccurrence {
+            uri: lexical_uri.to_owned(),
+            start_byte: use_byte(lexical_text).ok_or("no lexical use")?,
+        };
+        let closed_use = P8ForeignOccurrence { uri: closed_uri.to_owned(), start_byte: 0 };
+
+        assert!(server.p8_foreign_occurrences_are_not_lexical(
+            main_uri,
+            main_text,
+            '$',
+            "x",
+            std::slice::from_ref(&package_use),
+        ));
+        assert!(
+            !server.p8_foreign_occurrences_are_not_lexical(
+                main_uri,
+                main_text,
+                '$',
+                "x",
+                &[package_use.clone(), lexical_use],
+            ),
+            "a foreign file-local lexical must decline the exact set"
+        );
+        assert!(
+            !server.p8_foreign_occurrences_are_not_lexical(
+                main_uri,
+                main_text,
+                '$',
+                "x",
+                &[package_use, closed_use],
+            ),
+            "a foreign member with no text to prove against must decline"
+        );
         Ok(())
     }
 }

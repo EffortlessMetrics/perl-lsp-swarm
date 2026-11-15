@@ -247,12 +247,18 @@ fn insert_by_source_position(children: &mut Vec<DocumentSymbol>, symbol: Documen
     children.insert(position, symbol);
 }
 
-fn document_symbol_sort_key(symbol: &DocumentSymbol) -> (u8, u32, u32, u32) {
+/// Ordering key for [`insert_by_source_position`]. Must match
+/// [`super::super::document_symbols`] child assembly
+/// (`sort_pending_indices`: priority, span start, span end, name, kind).
+fn document_symbol_sort_key(symbol: &DocumentSymbol) -> (u8, u32, u32, u32, u32, &str, u32) {
     (
         symbol.sort_priority,
         symbol.range.start.line,
         symbol.range.start.character,
         symbol.range.end.line,
+        symbol.range.end.character,
+        symbol.name.as_str(),
+        symbol.kind,
     )
 }
 
