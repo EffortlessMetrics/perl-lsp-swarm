@@ -23,7 +23,7 @@ versioned receipt
 (`rust_small_proof.v1`) at `target/receipts/rust-small-proof.json`, or at
 `--receipt <path>`, after admitting the destination and establishing a clean
 candidate. The schema binds the candidate SHA, `rustc`/`cargo` versions, and
-scorecard profile/features from the pinned argv to all ten selected steps.
+scorecard profile/features from the pinned argv to every selected step.
 The bootstrap and all build-producing steps use `--profile agent`; fetch,
 feature sets, selected tests, census/replay and failure handling are unchanged.
 Producer and verifier must come from the same command definition: the previous
@@ -94,7 +94,7 @@ artifact exclusion through the producer or verifier entry points.
 unknown fields; missing, extra, reordered, or renamed steps; argv drift;
 inconsistent census/outcome/exit-code combinations; execution after the first
 failure; and a subject differing from the clean candidate, toolchain, or
-scorecard profile. All ten steps and their typed failure rules remain the
+scorecard profile. The lane's steps and their typed failure rules remain the
 canonical lane contract.
 
 **Verification checks consistency and candidate identity, not success.** A

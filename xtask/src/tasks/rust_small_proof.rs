@@ -1632,8 +1632,9 @@ tests::gamma: test
 
     #[test]
     fn a_failed_lane_records_the_untouched_remainder_as_not_run() {
-        // The receipt of a lane that stopped at step 2 must still carry all
-        // ten steps: omission and non-execution have to stay distinguishable.
+        // The receipt of a lane that stopped at step 2 must still carry every
+        // step the lane defines: omission and non-execution have to stay
+        // distinguishable.
         let mut recorder = Recorder::new();
         recorder.record(
             "fetch locked inputs",
@@ -2400,7 +2401,7 @@ tests::gamma: test
         // mutation below is re-run at every index, which also documents that
         // these checks are position-independent.
         let count = expected_steps().len();
-        assert_eq!(count, 10, "the sweep must cover the whole lane");
+        assert_eq!(count, CARGO_STEPS.len() + 3, "the sweep must cover the whole lane");
 
         for index in 0..count {
             let name = || receipt_step_name(index);
