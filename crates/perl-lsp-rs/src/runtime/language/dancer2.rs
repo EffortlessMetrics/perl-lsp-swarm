@@ -197,7 +197,7 @@ impl LspServer {
     /// Preserve the shared module-resolution diagnostic when a Dancer2
     /// document has no detectable workspace root.
     fn warn_missing_workspace_root(&self) {
-        if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
+        if !self.client_session.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
             self.show_message_or_log(
                 crate::runtime::window::MessageType::Warning,
                 "Perl LSP: workspace root not detected — module resolution disabled. \
@@ -545,7 +545,7 @@ mod activation_anchoring_tests {
         if context.activations.module.is_some() {
             return Err("a document without a workspace root must not resolve a module".into());
         }
-        if !server.root_undetected_shown.load(Ordering::SeqCst) {
+        if !server.client_session.root_undetected_shown.load(Ordering::SeqCst) {
             return Err("missing workspace root must preserve the actionable warning state".into());
         }
         Ok(())

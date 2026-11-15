@@ -1294,7 +1294,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().rename {
+        if !self.client_session.advertised_features.lock().rename {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1342,8 +1342,12 @@ impl LspServer {
                     if !is_sigiled && is_rename_keyword(&token) {
                         return Ok(Some(json!(null)));
                     }
-                    let prefers_default_behavior =
-                        self.client_capabilities.lock().prepare_support_default_behavior == 1;
+                    let prefers_default_behavior = self
+                        .client_session
+                        .client_capabilities
+                        .lock()
+                        .prepare_support_default_behavior
+                        == 1;
                     if prefers_default_behavior && !is_sigiled {
                         return Ok(Some(json!({ "defaultBehavior": true })));
                     }
@@ -1419,7 +1423,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().rename {
+        if !self.client_session.advertised_features.lock().rename {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1476,7 +1480,7 @@ impl LspServer {
     /// the `{ "documentChanges" }` array format.  Otherwise returns the value
     /// unchanged.
     fn to_workspace_edit_format(&self, ws_edit: Value) -> Value {
-        if self.client_capabilities.lock().workspace_edit_document_changes_support {
+        if self.client_session.client_capabilities.lock().workspace_edit_document_changes_support {
             self.changes_to_document_changes(ws_edit)
         } else {
             ws_edit

@@ -394,11 +394,11 @@ fn registrations_refreshes_and_compat_rows_are_ledgered() {
         .1;
     let _ = jetbrains.handle_initialize(Some(params));
     assert!(
-        !jetbrains.client_capabilities.lock().dynamic_registration_support,
+        !jetbrains.client_session.client_capabilities.lock().dynamic_registration_support,
         "compat row compat.client.jetbrains.watcherForceDisable: dynamic registration must be forced off"
     );
     assert!(
-        jetbrains.pending_startup_log.lock().is_some(),
+        jetbrains.client_session.pending_startup_log.lock().is_some(),
         "compat row compat.client.jetbrains.watcherForceDisable: override logMessage must be queued"
     );
 }

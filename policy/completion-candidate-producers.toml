@@ -215,7 +215,12 @@ outcome_owner = "#10230"
 # The later request-dispatch and Dancer2 edits are behavior-preserving Rust 1.100
 # lint repairs. The same 41 files, 60 producers, 18 classes, and existing evidence,
 # identity, completeness, and migration ceilings remain current.
-source_digest = "sha256:21e0f9b8d51e0b5c955651f6e6b54fab424dbf58c8307c34c8b5c23345108094"
+# Re-audit 2026-11-14 (#16775 merge): ClientSession extraction rewrote the
+# client-capability/advertised-feature access paths in the scanned
+# `runtime/language/completion.rs` (`self.client_session.*`); candidate
+# selection, construction, channels, entry routes, and the finalizer are
+# unchanged, with no producer addition, removal, or re-channeling.
+source_digest = "sha256:13f1b41ea522d6fd8d00248ab482035cc10f002a2e1fe7f7a82b3249b0ab4b85"
 
 [[delegations]]
 module = "dancer2"
