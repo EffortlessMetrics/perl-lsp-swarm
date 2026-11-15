@@ -46,6 +46,10 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 | `dead_code_detector` | `DeadCodeDetector`, `DeadCode`, `DeadCodeType`, `DeadCodeAnalysis`, `DeadCodeStats` | Workspace-level dead code detection (non-WASM only) |
 | `index` | `WorkspaceIndex`, `SymbolDef` | Local cross-file symbol index (non-WASM only) |
 
+`DocumentDiagnosticAnalysis` is exported at the crate root. Its implementation
+module remains crate-private so `perl-parser`'s analysis wildcard re-export does
+not widen the parser's public API.
+
 ### Re-exports from `lib.rs`
 
 The crate re-exports core types from `perl-parser-core` (`Node`, `NodeKind`, `SourceLocation`, `Parser`, `ast`, `error`, etc.) and `perl-workspace::workspace_index`, so downstream crates can use a single import.
