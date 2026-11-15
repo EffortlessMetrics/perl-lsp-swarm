@@ -1,7 +1,9 @@
 pub mod perl_dap
 pub mod perl_dap::api
+pub use perl_dap::api::PerlInterpreterResult
 pub use perl_dap::api::detect_perlbrew_perl
 pub use perl_dap::api::detect_plenv_perl
+pub use perl_dap::api::find_perl_interpreter
 pub use perl_dap::api::resolve_perl_path
 pub use perl_dap::api::resolve_perl_path_with_toolchain
 pub enum perl_dap::api::BreakpointError
@@ -33,17 +35,6 @@ pub fn perl_dap::api::FrameCategory::presentation_hint(&self) -> perl_dap::stack
 pub fn perl_dap::api::FrameCategory::clone(&self) -> perl_dap::api::FrameCategory
 pub fn perl_dap::api::FrameCategory::eq(&self, other: &perl_dap::api::FrameCategory) -> bool
 pub fn perl_dap::api::FrameCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum perl_dap::api::PerlInterpreterResult
-pub perl_dap::api::PerlInterpreterResult::ConfiguredPath(std::path::PathBuf)
-pub perl_dap::api::PerlInterpreterResult::FoundOnPath(std::path::PathBuf)
-pub perl_dap::api::PerlInterpreterResult::FoundViaFallback
-pub perl_dap::api::PerlInterpreterResult::FoundViaFallback::label: alloc::string::String
-pub perl_dap::api::PerlInterpreterResult::FoundViaFallback::path: std::path::PathBuf
-pub perl_dap::api::PerlInterpreterResult::NotFound
-pub perl_dap::api::PerlInterpreterResult::NotFound::searched: alloc::vec::Vec<alloc::string::String>
-pub fn perl_dap::platform::PerlInterpreterResult::clone(&self) -> perl_dap::platform::PerlInterpreterResult
-pub fn perl_dap::platform::PerlInterpreterResult::eq(&self, other: &perl_dap::platform::PerlInterpreterResult) -> bool
-pub fn perl_dap::platform::PerlInterpreterResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::api::PerlValue
 pub perl_dap::api::PerlValue::Array(alloc::vec::Vec<perl_dap::value::PerlValue>)
 pub perl_dap::api::PerlValue::Code
@@ -330,7 +321,6 @@ pub fn perl_dap::api::create_attach_json_snippet() -> alloc::string::String
 pub fn perl_dap::api::create_launch_json_snippet() -> alloc::string::String
 pub fn perl_dap::api::filter_user_visible_frames(frames: alloc::vec::Vec<perl_dap::stack::StackFrame>) -> alloc::vec::Vec<perl_dap::stack::StackFrame>
 pub fn perl_dap::api::find_nearest_valid_line(validator: &perl_dap::api::AstBreakpointValidator, line: i64, direction: perl_dap::api::SearchDirection, max_distance: core::option::Option<usize>) -> core::option::Option<i64>
-pub fn perl_dap::api::find_perl_interpreter(configured_path: core::option::Option<&str>) -> perl_dap::platform::PerlInterpreterResult
 pub fn perl_dap::api::format_command_args(args: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_dap::api::is_internal_frame(frame: &perl_dap::stack::StackFrame) -> bool
 pub fn perl_dap::api::is_internal_frame_name_and_path(name: &str, path: core::option::Option<&str>) -> bool
@@ -1878,23 +1868,13 @@ pub fn perl_dap::peer_protocol::message::PeerResponse::deserialize<__D>(__deseri
 pub const perl_dap::peer_protocol::PROTOCOL_VERSION: &str
 pub fn perl_dap::peer_protocol::encode_message(msg: &perl_dap::peer_protocol::message::PeerMessage) -> core::result::Result<alloc::vec::Vec<u8>, perl_dap::peer_protocol::framing::PeerFrameError>
 pub mod perl_dap::platform
+pub use perl_dap::platform::PerlInterpreterResult
 pub use perl_dap::platform::detect_perlbrew_perl
 pub use perl_dap::platform::detect_plenv_perl
+pub use perl_dap::platform::find_perl_interpreter
+pub use perl_dap::platform::find_perl_interpreter_cached
 pub use perl_dap::platform::resolve_perl_path
 pub use perl_dap::platform::resolve_perl_path_with_toolchain
-pub enum perl_dap::platform::PerlInterpreterResult
-pub perl_dap::platform::PerlInterpreterResult::ConfiguredPath(std::path::PathBuf)
-pub perl_dap::platform::PerlInterpreterResult::FoundOnPath(std::path::PathBuf)
-pub perl_dap::platform::PerlInterpreterResult::FoundViaFallback
-pub perl_dap::platform::PerlInterpreterResult::FoundViaFallback::label: alloc::string::String
-pub perl_dap::platform::PerlInterpreterResult::FoundViaFallback::path: std::path::PathBuf
-pub perl_dap::platform::PerlInterpreterResult::NotFound
-pub perl_dap::platform::PerlInterpreterResult::NotFound::searched: alloc::vec::Vec<alloc::string::String>
-pub fn perl_dap::platform::PerlInterpreterResult::clone(&self) -> perl_dap::platform::PerlInterpreterResult
-pub fn perl_dap::platform::PerlInterpreterResult::eq(&self, other: &perl_dap::platform::PerlInterpreterResult) -> bool
-pub fn perl_dap::platform::PerlInterpreterResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::platform::find_perl_interpreter(configured_path: core::option::Option<&str>) -> perl_dap::platform::PerlInterpreterResult
-pub fn perl_dap::platform::find_perl_interpreter_cached(configured_path: core::option::Option<&str>) -> perl_dap::platform::PerlInterpreterResult
 pub fn perl_dap::platform::format_command_args(args: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_dap::platform::normalize_path(path: &std::path::Path) -> std::path::PathBuf
 pub fn perl_dap::platform::setup_environment(include_paths: &[std::path::PathBuf]) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
