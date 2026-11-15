@@ -20,6 +20,16 @@ pub(super) const LINT_LEDGER: &str = "policy/clippy-lints.toml";
 pub(super) const LINT_CATALOG_DIR: &str = "policy/clippy-lints.d";
 pub(super) const DEBT_LEDGER: &str = "policy/clippy-debt.toml";
 
+/// The lint identities `validate_required_dispositions` requires to appear
+/// exactly once across the merged disposition model.
+///
+/// Exposed under `#[cfg(test)]` so a synthetic policy fixture can assert set
+/// equality against the production authority rather than restating the list.
+#[cfg(test)]
+pub(crate) fn required_disposition_identities() -> Vec<&'static str> {
+    validate::required_disposition_identities()
+}
+
 /// One review-dated Clippy policy row projected into the advisory cadence inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CadenceRow {
