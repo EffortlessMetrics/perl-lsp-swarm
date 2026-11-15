@@ -1,0 +1,18 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: >-
+  Unit-test builds of `perl-lsp-rs` no longer bind the outbound writer to the
+  process stdout. In a test build the process stdout is libtest's own event
+  stream, so an LSP base-protocol frame written there landed on the
+  `--format json` observation the nightly flake lane parses: the extractor
+  reported `STREAM_INVALID`, the lane failed closed with exit 3 and zero
+  test failures, and the retry, quarantine and stable-failure-issue steps
+  never ran. Production is unchanged -- the stdio launcher still writes
+  frames to stdout -- and tests that assert on emitted frames keep using
+  `LspServer::with_io` / `LspServer::with_output` (#19459).
+time: 2026-11-15T00:00:00Z
+custom:
+  PR: "19459"
+  Slug: perl-lsp-rs-unit-test-stdout-isolation
+  Breaking: "no"
