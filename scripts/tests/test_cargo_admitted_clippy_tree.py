@@ -68,6 +68,40 @@ print(json.dumps(final))
 ''')
         self.assertTrue(row['tree_settled'])
 
+    def test_probe_bounds_capture_and_preserves_failure_and_cancellation_settlement(self):
+        for mode in ('exact-output', 'overflow', 'timeout', 'nonzero', 'cancel'):
+            with self.subTest(mode=mode):
+                row = self.worker('''
+tree=owner.ClippyTree(child_discovery='proc-parent-pidfd')
+mode=sys.argv[2]
+code={
+ 'exact-output':"import os;os.write(1,b'x'*32);os.write(2,b'y'*32)",
+ 'overflow':"import os,time;os.write(1,b'x'*32);os.write(2,b'y'*33);time.sleep(10)",
+ 'timeout':"import os,time;os.fork();time.sleep(10)",
+ 'nonzero':"import os,sys;os.write(1,b'out');os.write(2,b'err');sys.exit(7)",
+ 'cancel':"import os,signal,time;os.kill(os.getppid(),signal.SIGTERM);time.sleep(10)",
+}[mode]
+error=None
+try:
+ result=tree.probe([sys.executable,'-c',code],os.environ.copy(),timeout=.2,output_limit=64)
+ assert mode=='exact-output' and result.stdout==b'x'*32 and result.stderr==b'y'*32
+except owner.Denied as failure:
+ assert mode=='overflow' and 'observation bound' in str(failure)
+ error='output'
+except subprocess.TimeoutExpired:
+ assert mode=='timeout';error='timeout'
+except subprocess.CalledProcessError as failure:
+ assert mode=='nonzero' and failure.returncode==7 and failure.stdout==b'out' and failure.stderr==b'err'
+ error='status'
+except KeyboardInterrupt:
+ assert mode=='cancel';error='cancel'
+final=tree.finish(stop=error is not None,timeout=2,grace=.05)
+assert final['tree_settled'] and final['proof']=='kernel ECHILD (__WALL)'
+print(json.dumps({'mode':mode,'error':error,'settlement':final}))
+''', mode)
+                self.assertTrue(row['settlement']['tree_settled'])
+                self.assertEqual(row['settlement']['cancelled'], mode == 'cancel')
+
     def test_missing_child_table_empty_ledger_does_not_authorize_settlement(self):
         row = self.worker('''
 tree=owner.ClippyTree()

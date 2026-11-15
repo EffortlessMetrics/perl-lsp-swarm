@@ -13,7 +13,11 @@ use serde_yaml_ng::Value;
 // below could no longer find a job at all.
 const EXPECTED_RIPR_EXECUTION_JOBS: &[&str] =
     &["ripr-selfhosted", "ripr-github", "ripr-fallback", "seed-cache"];
-const VARIABLE_INSTALL_COMMAND: &str = "cargo install ripr --version \"$RIPR_VERSION\" --locked";
+const EXPECTED_RIPR_VERSION: &str = "0.11.0";
+const EXPECTED_RIPR_GIT_REPOSITORY: &str = "https://github.com/EffortlessMetrics/ripr-swarm.git";
+const EXPECTED_RIPR_GIT_REV: &str = "9b9143798615bbf1a14c2dbd23a2359a29942078";
+const VARIABLE_INSTALL_COMMAND: &str =
+    "cargo install ripr --git \"$RIPR_GIT_REPOSITORY\" --rev \"$RIPR_GIT_REV\" --locked";
 
 fn project_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -73,7 +77,9 @@ fn sole_pinned_version(
     }
 }
 
-/// The single reviewed release declared by every routed RIPR execution lane.
+/// The single reviewed release and immutable source revision declared by every
+/// routed RIPR execution lane. Version-form installs for 0.10.0 and earlier
+/// are historical alternatives, not accepted current-lane identities.
 fn reviewed_lane_version(ripr_workflow: &Value) -> Result<String, String> {
     let ripr_jobs = ripr_workflow
         .get("jobs")
@@ -81,16 +87,32 @@ fn reviewed_lane_version(ripr_workflow: &Value) -> Result<String, String> {
         .ok_or("ripr.yml must declare jobs")?;
     let mut versions = BTreeSet::new();
     for job_name in EXPECTED_RIPR_EXECUTION_JOBS {
-        let version = ripr_jobs
+        let env = ripr_jobs
             .get(*job_name)
             .and_then(|job| job.get("env"))
             .and_then(Value::as_mapping)
-            .and_then(|env| env.get("RIPR_VERSION"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                format!("RIPR execution job `{job_name}` must declare env.RIPR_VERSION")
-            })?;
-        versions.insert(version.to_string());
+            .ok_or_else(|| format!("RIPR execution job `{job_name}` must declare env"))?;
+        for (key, expected) in [
+            ("RIPR_VERSION", EXPECTED_RIPR_VERSION),
+            ("RIPR_GIT_REPOSITORY", EXPECTED_RIPR_GIT_REPOSITORY),
+            ("RIPR_GIT_REV", EXPECTED_RIPR_GIT_REV),
+        ] {
+            let actual = env
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("RIPR execution job `{job_name}` must declare env.{key}"))?;
+            if actual != expected {
+                return Err(format!(
+                    "RIPR execution job `{job_name}` declares {key}={actual:?}, expected {expected:?}"
+                ));
+            }
+        }
+        versions.insert(
+            env.get("RIPR_VERSION")
+                .and_then(Value::as_str)
+                .ok_or("reviewed RIPR version disappeared during validation")?
+                .to_string(),
+        );
     }
     if versions.len() != 1 {
         return Err(format!(
@@ -129,7 +151,7 @@ fn badge_installer_matches_the_reviewed_ripr_workflow_release()
         .filter_map(|(job_name, job)| {
             job_run_steps(job)
                 .iter()
-                .any(|run| run.contains("cargo install ripr --version"))
+                .any(|run| run.contains("cargo install ripr --git"))
                 .then(|| job_name.as_str())
                 .flatten()
         })
@@ -153,13 +175,18 @@ fn badge_installer_matches_the_reviewed_ripr_workflow_release()
                 format!("RIPR execution job `{job_name}` must declare env.RIPR_VERSION")
             })?;
 
-        let install_steps: Vec<_> = job_run_steps(job)
+        let run_steps = job_run_steps(job);
+        assert!(
+            !run_steps.iter().any(|run| run.contains("cargo install ripr --version")),
+            "RIPR execution job `{job_name}` must not fall back to a version-form install"
+        );
+        let install_steps: Vec<_> = run_steps
             .into_iter()
             .filter(|run| {
                 if *job_name == "ripr-github" {
                     run.trim() == VARIABLE_INSTALL_COMMAND
                 } else {
-                    run.contains("cargo install ripr --version")
+                    run.contains("cargo install ripr --git")
                 }
             })
             .collect();
@@ -189,10 +216,14 @@ fn badge_installer_matches_the_reviewed_ripr_workflow_release()
 
     let mut badge_run_steps = Vec::new();
     collect_named_strings(&badge_workflow, "run", &mut badge_run_steps)?;
+    assert!(
+        !badge_run_steps.iter().any(|run| run.contains("cargo install ripr --version")),
+        "badge generation must not fall back to a version-form install"
+    );
     let install_steps: Vec<_> = badge_run_steps
         .iter()
         .map(String::as_str)
-        .filter(|run| run.trim().starts_with("cargo install ripr --version "))
+        .filter(|run| run.trim().starts_with("cargo install ripr --git "))
         .collect();
     assert_eq!(
         install_steps.len(),
@@ -200,11 +231,25 @@ fn badge_installer_matches_the_reviewed_ripr_workflow_release()
         "badge generation must have exactly one explicit RIPR installation step"
     );
 
-    let expected_install = format!("cargo install ripr --version {reviewed_version} --locked");
+    let badge_env = badge_workflow
+        .get("env")
+        .and_then(Value::as_mapping)
+        .ok_or("badge-endpoints.yml must declare the reviewed RIPR identity in env")?;
+    for (key, expected) in [
+        ("RIPR_VERSION", reviewed_version),
+        ("RIPR_GIT_REPOSITORY", EXPECTED_RIPR_GIT_REPOSITORY),
+        ("RIPR_GIT_REV", EXPECTED_RIPR_GIT_REV),
+    ] {
+        assert_eq!(
+            badge_env.get(key).and_then(Value::as_str),
+            Some(expected),
+            "badge generation drifted from the routed RIPR identity for {key}"
+        );
+    }
     assert_eq!(
         install_steps[0].trim(),
-        expected_install,
-        "badge generation must install the reviewed published RIPR release used by routed analysis"
+        VARIABLE_INSTALL_COMMAND,
+        "badge generation must install the exact reviewed RIPR Git revision used by routed analysis"
     );
 
     Ok(())
@@ -272,19 +317,32 @@ fn documented_ripr_install_instructions_name_the_reviewed_release()
     let reviewed_version = reviewed_lane_version(&ripr_workflow)?;
 
     let ci_doc = fs::read_to_string(root.join("docs/ci/ripr.md"))?;
-    let documented_install = sole_pinned_version(
+    let documented_repository = sole_pinned_version(
         &ci_doc,
-        "cargo install ripr --version ",
-        " --locked",
-        "docs/ci/ripr.md",
+        "cargo install ripr --git ",
+        " --rev ",
+        "docs/ci/ripr.md (install repository)",
     )?;
-    if !((documented_install) == (reviewed_version)) {
+    if documented_repository != EXPECTED_RIPR_GIT_REPOSITORY {
         return Err(format!(
-            "docs/ci/ripr.md documents installing RIPR {documented_install:?} while the routed \
-         lanes run {reviewed_version:?}"
+            "docs/ci/ripr.md documents installing RIPR from {documented_repository:?} instead of \
+             {EXPECTED_RIPR_GIT_REPOSITORY:?}"
         )
         .into());
-    };
+    }
+    let documented_revision = sole_pinned_version(
+        &ci_doc,
+        "cargo install ripr --git https://github.com/EffortlessMetrics/ripr-swarm.git --rev ",
+        " --locked",
+        "docs/ci/ripr.md (install revision)",
+    )?;
+    if documented_revision != EXPECTED_RIPR_GIT_REV {
+        return Err(format!(
+            "docs/ci/ripr.md documents RIPR revision {documented_revision:?} instead of \
+             {EXPECTED_RIPR_GIT_REV:?}"
+        )
+        .into());
+    }
 
     // The same document states the version in prose as well as in the copyable
     // command. Guarding only the command is what let these two disagree: the
@@ -319,6 +377,14 @@ fn documented_ripr_install_instructions_name_the_reviewed_release()
         )
         .into());
     };
+    for identity in [EXPECTED_RIPR_GIT_REPOSITORY, EXPECTED_RIPR_GIT_REV] {
+        if !checklist.contains(identity) {
+            return Err(format!(
+                "docs/agents/SPEC_UPDATE_CHECKLIST.md omits reviewed RIPR source identity {identity}"
+            )
+            .into());
+        }
+    }
 
     Ok(())
 }

@@ -14,6 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 HELPER = "scripts/ci/pr_smoke_disk_guard.py"
+BASELINE = ".ci/pr-smoke-footprint-baseline.json"
 CURRENT_HELPER = (ROOT / HELPER).read_text(encoding="utf-8")
 GIB = 1024**3
 # Model the historical CLI contract: the candidate accepts min-free-bytes,
@@ -107,6 +108,7 @@ class WorkflowGuardTests(unittest.TestCase):
         self.candidate_sha = self.git("rev-parse", "HEAD").stdout.strip()
         self.git("checkout", "-q", "-b", "workflow")
         self.write_helper(CURRENT_HELPER)
+        self.write_baseline(85, 5)
         self.commit("workflow helper")
         self.workflow_sha = self.git("rev-parse", "HEAD").stdout.strip()
         self.git("checkout", "-q", "-b", "main")
@@ -119,7 +121,7 @@ class WorkflowGuardTests(unittest.TestCase):
         self.env.update({
             "PR_SMOKE_WORKFLOW_SHA": self.workflow_sha,
             "RUNNER_TEMP": str(self.runner_temp), "GITHUB_ENV": str(self.env_file),
-            "CARGO_TARGET_DIR": "target", "PR_SMOKE_FOOTPRINT_GIB": "85",
+            "CARGO_TARGET_DIR": "target",
         })
         # Test-only probe injection exercises the real CLI at exact capacities.
         probes = self.root / "probes"
@@ -143,8 +145,24 @@ class WorkflowGuardTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
 
+    def write_baseline(self, footprint_gib: int, reserve_gib: int) -> None:
+        path = self.repo / BASELINE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '{\n  "schema_version": 1,\n'
+            f'  "footprint_gib": {footprint_gib},\n'
+            f'  "reserve_gib": {reserve_gib},\n'
+            '  "source_run_id": 37195503421,\n'
+            '  "provenance_status": "expired-unverifiable",\n'
+            '  "recorded_date": "2026-11-08",\n'
+            '  "runner": "ubuntu-24.04"\n}\n',
+            encoding="utf-8",
+        )
+
     def commit(self, message: str) -> None:
         self.git("add", "--", HELPER)
+        if (self.repo / BASELINE).exists():
+            self.git("add", "--", BASELINE)
         self.git("commit", "-qm", message)
 
     def run_step(self, name: str) -> subprocess.CompletedProcess[str]:
@@ -203,10 +221,17 @@ class WorkflowGuardTests(unittest.TestCase):
         self.assertFalse((self.repo / HELPER).exists())
         self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), self.candidate_sha)
 
-    def test_declared_footprint_argument_cannot_be_silently_dropped(self) -> None:
+    def test_committed_baseline_change_moves_the_hosted_floor(self) -> None:
+        # The declared bound lives in the committed baseline at the
+        # workflow SHA: raising it there (86 GiB footprint) must move
+        # the preflight floor to 91 GiB with no workflow literal edit.
+        self.git("checkout", "-q", "workflow")
+        self.write_baseline(86, 5)
+        self.commit("raise committed footprint baseline")
+        self.env["PR_SMOKE_WORKFLOW_SHA"] = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("checkout", "-q", "candidate")
         result = self.materialize()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.env["PR_SMOKE_FOOTPRINT_GIB"] = "86"
         result = self.run_step("Pre-flight disk budget guard")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(f"budget {91 * GIB} bytes", result.stdout)
@@ -249,9 +274,12 @@ class WorkflowGuardTests(unittest.TestCase):
         self.assertFalse(self.env_file.exists())
 
     def test_source_and_classifier_readiness_are_bound_in_workflow(self) -> None:
-        self.assertRegex(smoke_job(), r'PR_SMOKE_FOOTPRINT_GIB: "85"')
-        metadata, _ = smoke_step("Resolve workflow-bound PR Smoke disk guard")
+        metadata, body = smoke_step("Resolve workflow-bound PR Smoke disk guard")
         self.assertIn("PR_SMOKE_WORKFLOW_SHA: ${{ github.workflow_sha }}", metadata)
+        self.assertIn(".ci/pr-smoke-footprint-baseline.json", body)
+        self.assertIn("PR_SMOKE_BASELINE_PATH", body)
+        _, preflight_body = smoke_step("Pre-flight disk budget guard")
+        self.assertIn("--baseline-path", preflight_body)
         preflight_metadata, _ = smoke_step("Pre-flight disk budget guard")
         self.assertIn("id: pr-smoke-disk-preflight", preflight_metadata)
         metadata, _ = smoke_step("Classify PR-fast disk exhaustion")

@@ -218,11 +218,7 @@ fn collect_dot_t(dir: &Path, root: &str, rows: &mut Vec<String>) -> io::Result<(
 }
 
 fn park_forever() {
-    #[expect(
-        clippy::duration_suboptimal_units,
-        reason = "the stable Duration constructors stop at seconds; the 60-second park is intentional"
-    )]
     loop {
-        thread::sleep(Duration::from_secs(60));
+        thread::sleep(Duration::from_mins(1));
     }
 }

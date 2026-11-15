@@ -5,8 +5,6 @@ use crate::os_runtime::{candidate_priority, select_path_candidate};
 #[cfg(windows)]
 use crate::os_runtime::{resolve_cmd_exe, resolve_command_invocation, windows_program_priority};
 use crate::*;
-#[cfg(windows)]
-use std::path::Path;
 
 #[test]
 fn test_subprocess_output_success() {

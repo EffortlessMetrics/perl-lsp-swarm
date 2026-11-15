@@ -1,6 +1,6 @@
 """Clippy setup/dispatch prerequisite, NOT an admitted package-proof route.
 
-Default tests preserve production refusal. Opt in to the real, installed 1.95
+Default tests preserve production refusal. Opt in to the real, installed 1.100
 driver with CLIPPY_CONTRACT_TOOLCHAIN_ROOT=/absolute/toolchain/root. It launches
 only a recording fixture instead of Cargo: no compilation, downloads or policy
 changes. Native Windows dispatch remains NOT_PROVEN (the spy is a POSIX script).
@@ -27,7 +27,7 @@ SPEC.loader.exec_module(admitted)
 class ProductionRefusalTests(unittest.TestCase):
     def test_clippy_and_external_spellings_refuse_before_resources_or_spawn(self):
         for args in (["clippy", "-p", "consumer"], ["cargo-clippy", "clippy"],
-                     ["+1.95.0", "clippy"], ["c", "-p", "consumer"],
+                     ["+1.100.0", "clippy"], ["c", "-p", "consumer"],
                      ["--preflight", "clippy", "-p", "consumer"]):
             with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()), \
                  patch.object(admitted, "resource_plan") as resources, \
@@ -67,9 +67,9 @@ class InstalledDriverDispatchTests(unittest.TestCase):
             result = subprocess.run([str(executable), "--version"], env=cls.probe_env,
                                     capture_output=True, text=True, timeout=15, check=True)
             versions.append(result.stdout.strip())
-        if not versions[0].startswith("cargo 1.95.0 ") or not versions[1].startswith("rustc 1.95.0 "):
-            raise AssertionError("this upstream dispatch packet is pinned to Rust/Cargo 1.95.0")
-        if versions[2] != versions[3] or not versions[2].startswith("clippy 0.1.95 "):
+        if not versions[0].startswith("cargo 1.100.0 ") or not versions[1].startswith("rustc 1.100.0 "):
+            raise AssertionError("this upstream dispatch packet is pinned to Rust/Cargo 1.100.0")
+        if versions[2] != versions[3] or not versions[2].startswith("clippy 0.1.100 "):
             raise AssertionError("cargo-clippy/clippy-driver must match the pinned toolchain")
 
     def setUp(self):
@@ -153,7 +153,7 @@ class InstalledDriverDispatchTests(unittest.TestCase):
         result, record = self.dispatch(["clippy", "-p", "consumer", "--version"])
         self.assertEqual(result.returncode, 0)
         self.assertIsNone(record)
-        self.assertTrue(result.stdout.startswith("clippy 0.1.95 "))
+        self.assertTrue(result.stdout.startswith("clippy 0.1.100 "))
 
     def test_unset_cargo_uses_ambient_path_instead_of_toolchain_sibling(self):
         self.env.pop("CARGO")

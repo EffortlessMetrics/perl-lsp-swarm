@@ -9,22 +9,22 @@ map of the docs tree, use [INDEX.md](INDEX.md).
 This docs tree is checked in with the active development repository,
 `EffortlessMetrics/perl-lsp-swarm` on `main`.
 
-- Clone `perl-lsp-swarm`, open ordinary development issues here, and target pull
-  requests here.
-- `EffortlessMetrics/perl-lsp` on `master` owns public release lineage and
-  published artifacts, so installation and release links may point there
-  intentionally.
-- A merge to `perl-lsp-swarm/main` is development state. It does not prove that
-  the change has completed publication, entered a release, or reached any
-  package or editor channel.
+- `perl-lsp-swarm/main` is the high-throughput product-development, development-issue,
+  and proof authority. Maintainers and authorized swarm operators may work directly here.
+- External implementation pull requests target `EffortlessMetrics/perl-lsp/master`.
+  A controlling development issue may remain in swarm; contributors should not be directed
+  to target swarm with the pull request.
+- Before integrating a shared-product public pull request, maintainers first converge
+  accepted swarm state into the public source repository; after merge, the shared-product
+  effect is reverse-converged into swarm.
+- Public release lineage and published artifacts also live in `perl-lsp`, but a source
+  merge is still distinct from release or package-channel availability.
 
 The current distinction is defined by
 [product identity](reference/product-identity.md) and the
-[publication sync protocol](swarm/sync-protocol.md). The landed
-contributor-topology projection derives the repository, branch, and publication
-relationships from local authorities without requiring network access. The bare
-command intentionally leaves live stage and channel status `NOT_PROVEN`; a captured
-`--observation` is required to project observed status:
+[publication sync protocol](swarm/sync-protocol.md). The contributor-topology projection
+derives the same static routing, including swarm issue authority and public PR ingress;
+live stage and channel status remains `NOT_PROVEN` without a captured observation:
 
 ```bash
 cargo run --locked -p xtask --bin contributor-topology

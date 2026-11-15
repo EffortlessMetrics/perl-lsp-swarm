@@ -137,11 +137,21 @@ REMEDY = {
 
 def required_contexts_from_policy(text: str) -> list[dict[str, Any]]:
     policy = tomllib.loads(text)
-    rows = [
-        {"name": str(row["name"]), "app_id": row.get("ruleset_integration_id")}
-        for row in policy.get("checks", [])
-        if isinstance(row, dict) and row.get("required") is True and row.get("name")
-    ]
+    registrations: dict[tuple[str, Any], set[str]] = {}
+    for row in policy.get("checks", []):
+        if not isinstance(row, dict) or row.get("required") is not True or not row.get("name"):
+            continue
+        binding = (str(row["name"]), row.get("ruleset_integration_id"))
+        events = row.get("events")
+        if not isinstance(events, list) or not events:
+            raise ValueError("required context event registration is missing")
+        for event in events:
+            if not isinstance(event, str) or not event:
+                raise ValueError("required context event registration is invalid")
+            if event in registrations.setdefault(binding, set()):
+                raise ValueError(f"required context and event are duplicated: {binding[0]} {event}")
+            registrations[binding].add(event)
+    rows = [{"name": name, "app_id": app_id} for name, app_id in registrations]
     rows.sort(key=lambda item: str(item["name"]))
     return rows
 

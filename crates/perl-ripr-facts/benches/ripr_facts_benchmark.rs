@@ -19,6 +19,7 @@
 //! `perl-test-must` helpers (re-exported by `perl-tdd-support`), which satisfy
 //! the workspace `deny` lints without an `allow` header.
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use perl_ripr_facts::{RiprFactsRequest, build_ripr_facts_packet};
 use perl_tdd_support::{must, must_with};

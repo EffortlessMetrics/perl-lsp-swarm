@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("cargo_admitted_discovery", ROOT / "scripts/cargo_admitted.py")
@@ -42,6 +42,8 @@ class DiscoveryAdmissionTests(unittest.TestCase):
                      patch.object(owner.sys, "platform", "linux"), \
                      patch.object(owner, "child_discovery_capability", return_value={"mode": mode}) as probe, \
                      patch.object(owner, "resource_plan", return_value=(root, slot, paths)), \
+                     patch.object(owner, "PrivateAllocation", return_value=Mock(
+                         receipt={"status": "unknown", "reason": "synthetic_discovery_fixture"})), \
                      patch.object(owner, "check_capacity", return_value={"policy": "fixture"}) as capacity, \
                      patch.object(owner.subprocess, "call") as cargo, \
                      contextlib.redirect_stderr(stderr):
