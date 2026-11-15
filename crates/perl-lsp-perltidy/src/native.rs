@@ -8,8 +8,26 @@
 //! #8048 shift-left proof seam: pure, production-unwired policy and oracle
 //! code whose integration owners are #10239/#10242.
 
+#[path = "native/config.rs"]
+pub mod config;
+#[path = "native/counters.rs"]
+pub(crate) mod counters;
+#[path = "native/doc.rs"]
+pub mod doc;
+#[path = "native/result.rs"]
+pub mod result;
+
+pub use config::{
+    BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
+    TrailingComma,
+};
+pub use doc::FormatDoc;
+pub use result::{
+    FormatDiagnostic, FormatDiagnosticSeverity, FormatResult, TextEdit, TextPosition, TextRange,
+};
 #[path = "native/edit_application.rs"]
 mod edit_application;
+#[cfg(feature = "engine")]
 #[path = "native/implementation.rs"]
 mod implementation;
 #[path = "native/line_ending.rs"]
@@ -19,12 +37,13 @@ mod outcome;
 #[path = "native/terminal_sequence.rs"]
 mod terminal_sequence;
 
-pub use edit_application::{EditApplicationError, EditSpec, PositionEncoding, apply_edits_exact};
-pub use implementation::counters::{
+pub use counters::{
     COUNTER_CLOCK_TAG, COUNTER_SCHEMA_V1, MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1,
     NativePipelineCounters, PipelineCollectorScope, SCALING_ABSOLUTE_SLACK_V1,
     SCALING_RATIO_BOUND_V1, exceeds_replacement_envelope_v1,
 };
+pub use edit_application::{EditApplicationError, EditSpec, PositionEncoding, apply_edits_exact};
+#[cfg(feature = "engine")]
 pub use implementation::*;
 pub use line_ending::{inferred_line_ending, inferred_line_ending_at};
 pub use outcome::*;

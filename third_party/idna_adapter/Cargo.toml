@@ -1,0 +1,15 @@
+[package]
+name = "idna_adapter"
+version = "1.2.2"
+edition = "2021"
+rust-version = "1.86"
+license = "Apache-2.0 OR MIT"
+description = "Lightweight ASCII-exact UTS46 back end for idna (no ICU data tables)"
+publish = false
+
+[features]
+compiled_data = []
+
+[lib]
+name = "idna_adapter"
+path = "src/lib.rs"

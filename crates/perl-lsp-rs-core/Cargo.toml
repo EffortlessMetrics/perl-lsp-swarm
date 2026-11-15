@@ -51,7 +51,7 @@ url.workspace = true
 # Wave G1b additional dependencies (10 medium-risk providers absorbed)
 # perl-lsp-tooling absorbed into perl-lsp-rs-core::tooling (Wave G3 step 7)
 perl-subprocess-runtime.workspace = true
-perl-lsp-perltidy.workspace = true
+perl-lsp-perltidy = { workspace = true, default-features = false }
 # perl-lsp-uri absorbed into perl-lsp-rs-core::uri (Wave G3 step 3)
 perl-diagnostics.workspace = true
 perl-uri.workspace = true
@@ -71,8 +71,8 @@ anyhow.workspace = true
 clap = { workspace = true }
 # Wave Final PR B: perl-content-length-framing absorbed inline into transport::framing; dep removed
 tracing.workspace = true
-tracing-appender = "0.2"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tracing-appender = { version = "0.2", optional = true }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"], optional = true }
 
 [build-dependencies]
 # Wave Final PR B: feature-catalog absorbed into feature_catalog.rs; build.rs uses inline catalog code
@@ -80,7 +80,13 @@ serde = { workspace = true, features = ["derive"] }
 toml = "1.1.2"
 
 [features]
-default = ["ai-provider"]
+default = ["ai-provider", "logging", "native-formatting"]
+# Native perltidy formatting engine call sites. Slim builds route Native mode
+# to the external Perl::Tidy decision path instead (whole-document only).
+native-formatting = ["perl-lsp-perltidy/engine"]
+# stderr/file log output via tracing-subscriber + rolling appender. Slim builds
+# omit it (tracing calls become no-ops; the LSP protocol surface is unaffected).
+logging = ["dep:tracing-appender", "dep:tracing-subscriber"]
 lsp-ga-lock = []
 lsp-compat = []
 # AI completion backend (OpenAI-compatible). Pulls in ureq/rustls/ring.
@@ -103,6 +109,8 @@ test-instrumentation = []
 [dev-dependencies]
 jsonschema = { version = "0.58", default-features = false }
 perl-test-must.workspace = true
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 perl-tdd-support.workspace = true
 sha2.workspace = true
 serde_json.workspace = true

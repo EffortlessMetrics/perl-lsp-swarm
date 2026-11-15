@@ -26,7 +26,7 @@ name = "perl_lsp"
 path = "src/lib.rs"
 
 [dependencies]
-perl-dap = { workspace = true }
+perl-dap = { workspace = true, optional = true }
 # perl-incremental-parsing absorbed into perl-parser::incremental (Wave 4-Completion)
 perl-parser = { workspace = true }
 # (perl-lsp-providers absorbed into perl-lsp-rs-core::providers::lsp_compat — Wave G1b)
@@ -49,19 +49,19 @@ perl-diagnostics = { workspace = true }
 # (perl-lsp-semantic-tokens absorbed into perl-lsp-rs-core::providers::semantic_tokens — Wave G1b)
 # Provider crates absorbed into perl-lsp-rs-core (Wave G1a)
 # perl-lsp-critic-parser absorbed into perl-lsp-rs-core::critic_parser (Wave G3 step 7)
-perl-lsp-rs-core = { workspace = true, default-features = true, features = ["lsp-compat", "ai-provider"] }
+perl-lsp-rs-core = { workspace = true, default-features = false, features = ["lsp-compat"] }
 # perl-lsp-performance absorbed into perl-lsp-rs-core::performance (Wave G3 step 5)
-perl-lsp-perltidy = { workspace = true }
+perl-lsp-perltidy = { workspace = true, default-features = false }
 perl-position-tracking = { workspace = true, features = ["lsp-compat"] }
 perl-semantic-analyzer = { workspace = true }
 perl-semantic-facts = { workspace = true }
 perl-symbol = { workspace = true }
 perl-module = { workspace = true }
 perl-pod = { workspace = true }
-perl-ripr-facts = { workspace = true }
+perl-ripr-facts = { workspace = true, optional = true }
 perl-ast = { workspace = true }
 perl-parser-core = { workspace = true }
-perl-tdd-support = { workspace = true }
+perl-tdd-support = { workspace = true, optional = true }
 perl-source-identity.workspace = true
 perl-workspace = { workspace = true }
 perl-lexer = { workspace = true }
@@ -98,6 +98,28 @@ workspace = true
 
 [features]
 default = ["workspace", "incremental"]  # Enable workspace indexing and incremental parsing by default
+# AI inline-completion backend (ureq/rustls/ring TLS stack via core). Opt-in so
+# size-capped builds can drop the whole TLS closure; no production channel
+# currently admits trusted activation, so this is fail-closed surface today.
+ai-provider = ["perl-lsp-rs-core/ai-provider"]
+# Embedded DAP interpreter-discovery (perl-dap platform cache). Opt-in so
+# size-capped builds can drop the perl-dap library; slim builds fall back to
+# configured-path + PATH discovery in runtime::lifecycle::workspace.
+dap = ["dep:perl-dap"]
+# stderr/file logging (core tracing-subscriber stack). Full builds only.
+logging = ["perl-lsp-rs-core/logging"]
+# `perllsp ripr-facts` batch CLI (perl-ripr-facts). Full builds only; slim
+# builds answer the subcommand with a not-compiled-in error.
+ripr-facts = ["dep:perl-ripr-facts"]
+# Legacy test execution/discovery (perl-tdd-support TestRunner) behind
+# perl/runTest, perl/runTestFile and experimental/testDiscovery. Full builds
+# only; slim builds answer METHOD_NOT_FOUND / empty discovery.
+test-runner = ["dep:perl-tdd-support"]
+# TCP socket transport (tokio::net listener in cli.rs). Full builds only;
+# slim builds are stdio-only and reject socket mode with an error.
+tcp = ["tokio/net"]
+# Native perltidy formatting engine (core call sites). Full builds only.
+native-formatting = ["perl-lsp-rs-core/native-formatting", "perl-lsp-perltidy/engine"]
 workspace = []  # Workspace-wide indexing for cross-file features
 incremental = ["perl-parser/incremental"]  # Incremental parsing support (perl-incremental-parsing absorbed into perl-parser)
 test-performance = []  # Performance optimizations for test environments
@@ -125,6 +147,7 @@ dap-phase3 = []  # DAP non-regression tests; no external runtime implementation 
 utf16-complete = ["perl-parser/utf16-complete"]  # Complete UTF-16 round-trip support
 
 [dev-dependencies]
+perl-tdd-support = { workspace = true }
 # Test builds only: turns on the core crate's proof-only native-critic rebuild
 # counter (#7286). A production build of `perl-lsp-rs` links core without it.
 perl-lsp-rs-core = { workspace = true, default-features = true, features = ["test-instrumentation"] }

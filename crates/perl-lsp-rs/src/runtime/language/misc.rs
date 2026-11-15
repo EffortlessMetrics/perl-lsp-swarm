@@ -12,8 +12,10 @@
 
 use super::super::{
     CodeLensProvider, INVALID_PARAMS, INVALID_REQUEST, JsonRpcError, LspServer, METHOD_NOT_FOUND,
-    TestKind, TestRunner, Value, get_shebang_lens, json, position_to_offset, resolve_code_lens,
+    Value, get_shebang_lens, json, position_to_offset, resolve_code_lens,
 };
+#[cfg(feature = "test-runner")]
+use super::super::{TestKind, TestRunner};
 use crate::protocol::{JsonRpcId, invalid_params, req_position, req_uri};
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;
@@ -1977,6 +1979,13 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        #[cfg(not(feature = "test-runner"))]
+        {
+            let _ = params;
+            // Slim build: same empty result as the no-AST fallback below.
+            return Ok(Some(json!([])));
+        }
+        #[cfg(feature = "test-runner")]
         if let Some(params) = params {
             let uri = req_uri(&params)?;
 

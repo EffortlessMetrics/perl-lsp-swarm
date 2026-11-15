@@ -109,7 +109,17 @@ exclude = [
     "tree-sitter-perl",           # Legacy C parser
     "fuzz",                       # cargo-fuzz specialized requirements
     "archive",                    # Archived legacy components
+    "third_party/idna_adapter",   # [patch.crates-io] back end, not a member
 ]
+
+# Lightweight UTS46 back end for `idna`: drops the ICU4X compiled data
+# (icu_normalizer/icu_properties + zerovec tables) from every binary that
+# links `url`. ASCII-exact; non-ASCII IDN hosts get the documented
+# approximation in third_party/idna_adapter/src/lib.rs. This is what makes
+# the 10 MiB capped perllsp profile reachable without rewriting all
+# `url::Url` call sites.
+[patch.crates-io]
+idna_adapter = { path = "third_party/idna_adapter" }
 
 [workspace.metadata.publish]
 allow = [
@@ -382,7 +392,7 @@ parking_lot = { version = "0.12.5", features = ["arc_lock"] }
 tracing = "0.1.44"
 walkdir = "2.5.0"
 clap = { version = "4.5.60", features = ["derive"] }
-tokio = { version = "1.52.3", features = ["net", "rt-multi-thread", "macros", "io-util", "sync", "time"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-util", "sync", "time"] }
 proptest = "1.11.0"
 criterion = "0.8.1"
 # Dev-only: compile-time trait-bound contracts (e.g. assert_not_impl_any!).
@@ -427,6 +437,13 @@ strip = "debuginfo"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Size-capped perllsp build (10 MiB hard cap, #19427 follow-up): opt-level "s"
+# plus the slim feature set (`-p perllsp --no-default-features`). perl-dap keeps
+# the release profile; it is already under the cap.
+[profile.capped]
+inherits = "release"
+opt-level = "z"
 
 # Workspace lints
 [workspace.lints.clippy]

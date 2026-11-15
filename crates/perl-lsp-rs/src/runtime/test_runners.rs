@@ -3,7 +3,9 @@
 //! `run_test` and `run_test_file` are used by the `perl/runTest` and
 //! `perl/runTestFile` custom LSP commands.
 
-use super::{JsonRpcError, LspServer, TestRunner, Value, document_not_found_error, json};
+use super::{JsonRpcError, LspServer, Value, document_not_found_error, json};
+#[cfg(feature = "test-runner")]
+use super::TestRunner;
 
 impl LspServer {
     /// Run an operation with a cloned document snapshot.
@@ -24,6 +26,15 @@ impl LspServer {
     }
 
     /// Run a specific test
+    #[cfg(not(feature = "test-runner"))]
+    pub(crate) fn run_test(&self, test_id: &str) -> Result<Option<Value>, JsonRpcError> {
+        Err(JsonRpcError::new(
+            crate::protocol::METHOD_NOT_FOUND,
+            format!("runTest '{test_id}' is not compiled into this slim build"),
+        ))
+    }
+
+    #[cfg(feature = "test-runner")]
     pub(crate) fn run_test(&self, test_id: &str) -> Result<Option<Value>, JsonRpcError> {
         tracing::debug!(test_id, "Running test");
 
@@ -84,6 +95,15 @@ impl LspServer {
     }
 
     /// Run all tests in a file
+    #[cfg(not(feature = "test-runner"))]
+    pub(crate) fn run_test_file(&self, uri: &str) -> Result<Option<Value>, JsonRpcError> {
+        Err(JsonRpcError::new(
+            crate::protocol::METHOD_NOT_FOUND,
+            format!("runTestFile '{uri}' is not compiled into this slim build"),
+        ))
+    }
+
+    #[cfg(feature = "test-runner")]
     pub(crate) fn run_test_file(&self, uri: &str) -> Result<Option<Value>, JsonRpcError> {
         tracing::debug!(uri, "Running test file");
 
@@ -118,6 +138,20 @@ impl LspServer {
 mod tests {
     use super::LspServer;
     use std::sync::Arc;
+
+    #[cfg(not(feature = "test-runner"))]
+    #[test]
+    fn slim_run_test_reports_method_not_found() {
+        let server = LspServer::new();
+        match server.run_test("file:///x.pl::some_test") {
+            Err(err) => assert_eq!(err.code, crate::protocol::METHOD_NOT_FOUND),
+            Ok(_) => assert!(false, "slim build must not fabricate a test run"),
+        }
+        match server.run_test_file("file:///x.pl") {
+            Err(err) => assert_eq!(err.code, crate::protocol::METHOD_NOT_FOUND),
+            Ok(_) => assert!(false, "slim build must not fabricate a test run"),
+        }
+    }
 
     #[test]
     fn document_snapshot_releases_lock_before_operation() -> Result<(), Box<dyn std::error::Error>>

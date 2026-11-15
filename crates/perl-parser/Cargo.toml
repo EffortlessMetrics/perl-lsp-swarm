@@ -35,7 +35,9 @@ serde = { workspace = true }
 perl-line-index = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 # perl-incremental-parsing absorbed into perl-parser::incremental (Wave 4-Completion)
-perl-tdd-support = { workspace = true }
+# perl-tdd-support is test-only here (compatibility re-export under cfg(test) /
+# expose_lsp_test_api); it lives in [dev-dependencies] below so production
+# consumers of perl-parser do not link it.
 # Wave D absorbed satellites need these:
 perl-ast = { workspace = true }
 thiserror.workspace = true
@@ -70,7 +72,6 @@ incremental = ["anyhow", "perl-line-index", "tracing"]
 lsp-compat = [
   "lsp-types",
   "perl-workspace/lsp-compat",
-  "perl-tdd-support/lsp-compat",
 ]  # LSP type compatibility shim for migration period
 workspace = ["perl-workspace/workspace"]  # Workspace-wide indexing for cross-file features
 test-performance = []  # Performance optimizations for test environments
@@ -96,6 +97,7 @@ slow_tests = []  # Enable slow stress tests (deep nesting, etc.)
 doc-coverage = []  # SPEC-149 documentation coverage tests
 
 [dev-dependencies]
+perl-tdd-support = { workspace = true }
 insta = { workspace = true, features = ["yaml"] }
 criterion.workspace = true
 perl-uri = { workspace = true }

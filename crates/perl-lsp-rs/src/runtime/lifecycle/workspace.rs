@@ -6,6 +6,7 @@ use super::super::session_warning_dedup::SessionWarningCode;
 #[cfg(test)]
 use super::super::*;
 use super::super::{LspServer, MessageType};
+#[cfg(feature = "dap")]
 use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter_cached};
 use perl_lsp_rs_core::config::{
     ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource, WorkspaceConfig,
@@ -54,6 +55,7 @@ use crate::perl_remediation::PERL_REMEDIATION;
 /// Perl will be used; the discovered install path is the server's filesystem
 /// view and stays out of the client-facing `window/logMessage` (#1755). The
 /// emitter records the full path server-side via `tracing`.
+#[cfg(any(feature = "dap", test))]
 fn perl_fallback_message(label: &str) -> String {
     format!(
         "Perl LSP: Perl not found on PATH; using the {label} installation. \
@@ -132,6 +134,40 @@ impl LspServer {
     /// the interpreter path changes the cache key, so mid-session
     /// reconfiguration is honored without a config watcher; probe order and
     /// results are unchanged — only repeated PATH walks are removed.
+    #[cfg(not(feature = "dap"))]
+    pub(crate) fn check_perl_interpreter(&self) {
+        // Slim build: configured-path + PATH discovery only (no perlbrew/plenv
+        // or OS-fallback detection, no memoized probe cache).
+        let configured_path = self.workspace_config.lock().perl_path.clone();
+        match configured_path.as_deref() {
+            Some(path) if std::path::Path::new(path).exists() => {
+                tracing::debug!(path = %path, "Perl interpreter: using configured path");
+            }
+            Some(_) => {
+                PERL_NOT_FOUND_WARNED.call_once(|| {
+                    let msg = perl_not_found_message(configured_path.as_deref());
+                    if let Err(e) = self.show_message(MessageType::Error, &msg) {
+                        tracing::warn!(error = %e, "Failed to send showMessage for perl not found");
+                    }
+                });
+            }
+            None => match which::which("perl") {
+                Ok(path) => {
+                    tracing::debug!(path = %path.display(), "Perl interpreter: found on PATH");
+                }
+                Err(_) => {
+                    PERL_NOT_FOUND_WARNED.call_once(|| {
+                        let msg = perl_not_found_message(None);
+                        if let Err(e) = self.show_message(MessageType::Error, &msg) {
+                            tracing::warn!(error = %e, "Failed to send showMessage for perl not found");
+                        }
+                    });
+                }
+            },
+        }
+    }
+
+    #[cfg(feature = "dap")]
     pub(crate) fn check_perl_interpreter(&self) {
         let configured_path = self.workspace_config.lock().perl_path.clone();
         let result = find_perl_interpreter_cached(configured_path.as_deref());

@@ -5,21 +5,16 @@
 //! `PerlTidyFormatter` adapter so consumers can keep an explicit legacy
 //! compatibility path while the LSP runtime uses native formatting by default.
 
-mod config;
-mod doc;
-mod result;
-
-#[path = "counters.rs"]
-pub(crate) mod counters;
-
-pub use config::{
+pub(crate) use super::counters;
+use super::config::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
     TrailingComma,
 };
-pub use doc::FormatDoc;
-pub use result::{
+use super::doc::FormatDoc;
+use super::result::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatResult, TextEdit, TextPosition, TextRange,
 };
+use super::{config, doc, result};
 
 use crate::native::inferred_line_ending;
 use perl_parser_core::{ParseError, ParseStopCause};

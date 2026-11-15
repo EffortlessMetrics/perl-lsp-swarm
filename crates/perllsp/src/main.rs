@@ -1,5 +1,7 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+#[cfg(feature = "product-extras")]
 mod claude;
+#[cfg(feature = "product-extras")]
 mod mcp;
 
 use perllsp::protocol::product_identity::{
@@ -49,6 +51,7 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
 
+    #[cfg(feature = "product-extras")]
     if let Some(code) = mcp::try_run(&args) {
         return std::process::ExitCode::from(code);
     }
@@ -77,6 +80,17 @@ fn normalize_doctor_invocation(mut args: Vec<String>) -> Vec<String> {
     args
 }
 
+#[cfg(not(feature = "product-extras"))]
+fn run_claude_product_command(args: &[String]) -> Result<Option<u8>, &'static str> {
+    match parse_claude_product_invocation(args)? {
+        Some(_) => {
+            Err("Claude product surfaces are not compiled into this slim perllsp build")
+        }
+        None => Ok(None),
+    }
+}
+
+#[cfg(feature = "product-extras")]
 fn run_claude_product_command(args: &[String]) -> Result<Option<u8>, &'static str> {
     if args.get(1).map(String::as_str) == Some("claude") {
         return Err(

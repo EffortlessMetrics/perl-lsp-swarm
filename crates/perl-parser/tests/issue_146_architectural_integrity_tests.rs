@@ -92,7 +92,7 @@ mod issue_146_tests {
         // Test that TestGenerator, TestRunner, and RefactoringSuggester APIs are compatible
         // This validates that tdd_workflow.rs can integrate with existing test infrastructure
 
-        use perl_parser::test_generator::{TestFramework, TestGenerator};
+        use perl_tdd_support::tdd::test_generator::{TestFramework, TestGenerator};
 
         // Test that TestGenerator can be instantiated
         let _test_generator = TestGenerator::new(TestFramework::Test2V0);
