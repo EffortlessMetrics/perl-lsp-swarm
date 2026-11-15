@@ -357,7 +357,9 @@ fn executable_members(required_members: &[String]) -> Result<Vec<String>> {
         if KNOWN_NON_EXECUTABLE_MEMBERS.contains(&file_name) {
             continue;
         }
-        executables.push(member.clone());
+        executables.push(
+            member.clone(),
+        );
     }
     if executables.is_empty() {
         bail!("release topology target contains no executable members");
@@ -438,7 +440,8 @@ fn detect_executable_identity(path: &Path) -> Result<Option<ExecutableIdentity>>
     }
 
     if bytes.starts_with(b"MZ") {
-        let pe_offset = read_u32_le(&bytes, 0x3c).and_then(|value| usize::try_from(value).ok());
+        let pe_offset =
+            read_u32_le(&bytes, 0x3c).and_then(|value| usize::try_from(value).ok());
         let machine = pe_offset.and_then(|offset| {
             let signature = bytes.get(offset..offset.saturating_add(4))?;
             if signature != b"PE\0\0" {
@@ -490,8 +493,9 @@ fn expected_identity(target: &str) -> Option<(&'static str, &'static str)> {
 }
 
 fn target_matches_identity(target: &str, observed: &ExecutableIdentity) -> bool {
-    expected_identity(target)
-        .is_some_and(|(format, architecture)| observed.format == format && observed.architecture == architecture)
+    expected_identity(target).is_some_and(|(format, architecture)| {
+        observed.format == format && observed.architecture == architecture
+    })
 }
 
 fn architecture_from_elf(machine: Option<u16>) -> &'static str {
@@ -512,8 +516,8 @@ fn architecture_from_pe(machine: Option<u16>) -> &'static str {
 
 fn architecture_from_mach(cpu_type: Option<u32>) -> &'static str {
     match cpu_type {
-        Some(0x0100_0007) => "x86_64",
-        Some(0x0100_000c) => "aarch64",
+        Some(0x01000007) => "x86_64",
+        Some(0x0100000c) => "aarch64",
         _ => "unknown",
     }
 }
@@ -569,7 +573,8 @@ fn write_receipt(root: &Path, path: &Path, receipt: &Receipt) -> Result<()> {
 mod tests {
     use super::{
         BudgetState, ExecutableIdentity, architecture_from_elf, architecture_from_mach,
-        architecture_from_pe, classify_state, executable_members, target_matches_identity,
+        architecture_from_pe, classify_state, executable_members,
+        target_matches_identity,
     };
     use color_eyre::eyre::Result;
 
@@ -629,15 +634,27 @@ mod tests {
         assert_eq!(architecture_from_elf(Some(183)), "aarch64");
         assert_eq!(architecture_from_pe(Some(0x8664)), "x86_64");
         assert_eq!(architecture_from_pe(Some(0xaa64)), "aarch64");
-        assert_eq!(architecture_from_mach(Some(0x0100_0007)), "x86_64");
-        assert_eq!(architecture_from_mach(Some(0x0100_000c)), "aarch64");
+        assert_eq!(architecture_from_mach(Some(0x01000007)), "x86_64");
+        assert_eq!(architecture_from_mach(Some(0x0100000c)), "aarch64");
     }
 
     #[test]
     fn target_identity_does_not_cross_os_or_architecture() {
-        let linux_x64 = ExecutableIdentity { format: "elf", architecture: "x86_64" };
-        assert!(target_matches_identity("x86_64-unknown-linux-gnu", &linux_x64));
-        assert!(!target_matches_identity("aarch64-unknown-linux-gnu", &linux_x64));
-        assert!(!target_matches_identity("x86_64-pc-windows-msvc", &linux_x64));
+        let linux_x64 = ExecutableIdentity {
+            format: "elf",
+            architecture: "x86_64",
+        };
+        assert!(target_matches_identity(
+            "x86_64-unknown-linux-gnu",
+            &linux_x64
+        ));
+        assert!(!target_matches_identity(
+            "aarch64-unknown-linux-gnu",
+            &linux_x64
+        ));
+        assert!(!target_matches_identity(
+            "x86_64-pc-windows-msvc",
+            &linux_x64
+        ));
     }
 }
