@@ -247,7 +247,9 @@ The producer starts from the complete tree of `S`, applies only the
 manifest-owned translations/exclusions, builds `J0` and `J` under one fixed
 commit identity, generates twice, and fails closed on any difference between
 the runs, any unlisted `S`→`P` difference, a blocked ledger, a non-`pass`
-invariant, stale or mismatched `R`/`S` identities, or an unsafe path. Its
+invariant, or an unsafe path. It fails closed on stale/mismatched content
+only when the optional `source_sha256`/`expected_sha256` bindings are present;
+`R` is otherwise only resolved and required to differ from `S`. Its
 output is bound to `R`, `S`, the reconciliation evidence, and the manifest.
 If the producer or its review is unavailable, stop here. Do not replace the
 missing producer with a manual exclusion checklist.

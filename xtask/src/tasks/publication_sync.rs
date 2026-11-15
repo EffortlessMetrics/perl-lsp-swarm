@@ -204,7 +204,7 @@ pub fn project(config: ProjectConfig) -> Result<()> {
     {
         return Err(eyre!("projection is not deterministic: repeated generation differed"));
     }
-    verify_against_contract(&repo, &source, &first)?;
+    verify_against_contract(&repo, &base, &source, &first)?;
 
     for name in ["packet.yaml", "projection-manifest.json", "reconciliation-ledger.json"] {
         if config.out_dir.join(name).exists() {
@@ -265,10 +265,11 @@ fn validate_input(input: &InputManifest) -> Result<()> {
         if !froms.insert(translation.from.clone()) {
             return Err(eyre!("duplicate translation from: {}", translation.from));
         }
-        for path in [&translation.from, &translation.to] {
-            if !listed.insert(path.clone()) {
-                return Err(eyre!("path listed more than once: {path}"));
-            }
+        if !listed.insert(translation.from.clone()) {
+            return Err(eyre!("path listed more than once: {}", translation.from));
+        }
+        if translation.to != translation.from && !listed.insert(translation.to.clone()) {
+            return Err(eyre!("path listed more than once: {}", translation.to));
         }
     }
     for exclusion in &input.exclusions {
@@ -277,8 +278,12 @@ fn validate_input(input: &InputManifest) -> Result<()> {
             return Err(eyre!("exclusions must not touch the control directory"));
         }
     }
+    validate_required_invariants(&input.required_invariants)
+}
+
+fn validate_required_invariants(invariants: &[Invariant]) -> Result<()> {
     let mut seen = BTreeSet::new();
-    for invariant in &input.required_invariants {
+    for invariant in invariants {
         if !REQUIRED_INVARIANT_IDS.contains(&invariant.id.as_str()) {
             return Err(eyre!("unknown required invariant: {}", invariant.id));
         }
@@ -308,6 +313,8 @@ fn validate_repo_path(path: &str) -> Result<()> {
     if path.is_empty()
         || path.starts_with('/')
         || path.contains('\\')
+        || path.contains(':')
+        || path.contains('\0')
         || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
     {
         return Err(eyre!("unsafe repo-relative path: {path:?}"));
@@ -338,6 +345,9 @@ fn canonical_ledger(raw: &[u8], input: &InputManifest) -> Result<Vec<u8>> {
         .get("decisions")
         .and_then(|v| v.as_array())
         .ok_or_else(|| eyre!("ledger decisions must be an array"))?;
+    if decisions.is_empty() {
+        return Err(eyre!("ledger decisions must not be empty"));
+    }
     for decision in decisions {
         if decision.get("status").and_then(|v| v.as_str()) != Some("resolved") {
             return Err(eyre!("every ledger decision must be resolved"));
@@ -538,8 +548,8 @@ fn count_same_path(input: &InputManifest) -> usize {
 }
 
 fn list_files(repo: &Path, commit: &str) -> Result<Vec<String>> {
-    let out = git(repo, &["ls-tree", "-r", "--name-only", commit], None, None)?;
-    Ok(out.lines().map(str::to_string).collect())
+    let out = git(repo, &["ls-tree", "-r", "-z", "--name-only", commit], None, None)?;
+    Ok(out.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
 }
 
 fn tree_entry(repo: &Path, commit: &str, path: &str) -> Result<Option<(String, String)>> {
@@ -549,11 +559,18 @@ fn tree_entry(repo: &Path, commit: &str, path: &str) -> Result<Option<(String, S
         None => Ok(None),
         Some(line) => {
             // "100644 blob <sha>\t<path>"
-            let mut parts = line.splitn(4, ' ');
-            let mode = parts.next().unwrap_or("");
-            let _kind = parts.next().unwrap_or("");
-            let sha = parts.next().unwrap_or("");
-            if mode.is_empty() || sha.is_empty() {
+            let (meta, _path) =
+                line.split_once('\t').ok_or_else(|| eyre!("unparseable ls-tree line: {line}"))?;
+            let parts: Vec<&str> = meta.split(' ').collect();
+            if parts.len() != 3 {
+                return Err(eyre!("unparseable ls-tree line: {line}"));
+            }
+            let (mode, kind, sha) = (parts[0], parts[1], parts[2]);
+            if mode.is_empty()
+                || kind != "blob"
+                || sha.len() != 40
+                || !sha.chars().all(|c| c.is_ascii_hexdigit())
+            {
                 return Err(eyre!("unparseable ls-tree line: {line}"));
             }
             Ok(Some((mode.to_string(), sha.to_string())))
@@ -729,6 +746,36 @@ pub struct VerifyJoinConfig {
     pub working_directory: Option<PathBuf>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommittedManifestInput {
+    #[allow(dead_code)]
+    schema_version: String,
+    #[allow(dead_code)]
+    release: String,
+    translations: Vec<CommittedTranslationInput>,
+    exclusions: Vec<String>,
+    required_invariants: Vec<Invariant>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommittedTranslationInput {
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PacketInput {
+    publication_sync_manifest_digest: String,
+    reconciliation_digest: String,
+    expected_projected_tree: String,
+    expected_join_parents: Vec<String>,
+    sync_join_sha: String,
+    release_base_sha: String,
+    prepared_swarm_sha: String,
+}
+
 /// Verify `J`: parents `[R, S]`, projected tree, and exact manifest diff.
 pub fn verify_join(config: VerifyJoinConfig) -> Result<()> {
     let repo = config.working_directory.clone().unwrap_or_else(|| PathBuf::from("."));
@@ -737,32 +784,93 @@ pub fn verify_join(config: VerifyJoinConfig) -> Result<()> {
     let join = resolve_commit(&repo, &config.join, "join (J)")?;
     let manifest_raw = fs::read(&config.manifest)
         .with_context(|| format!("reading manifest {}", config.manifest.display()))?;
-    let manifest: serde_json::Value =
+    let manifest: CommittedManifestInput =
         serde_json::from_slice(&manifest_raw).context("parsing committed manifest")?;
+    validate_required_invariants(&manifest.required_invariants)?;
+    // Expectations are derived from the control files committed in J, not
+    // from caller-supplied values alone.
+    let control_out = git(
+        &repo,
+        &["ls-tree", "-r", "-z", "--name-only", &join, "--", ".github/publication-sync/"],
+        None,
+        None,
+    )?;
+    let control_files: BTreeSet<String> =
+        control_out.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect();
+    let expected_control: BTreeSet<String> = [
+        ".github/publication-sync/packet.yaml",
+        ".github/publication-sync/projection-manifest.json",
+        ".github/publication-sync/reconciliation-ledger.json",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if control_files != expected_control {
+        return Err(eyre!(
+            "J must contain exactly the 3 publication-sync control files, got {control_files:?}"
+        ));
+    }
+    let committed_manifest_bytes = run_git(
+        &repo,
+        &["cat-file", "blob", &format!("{join}:.github/publication-sync/projection-manifest.json")],
+        None,
+        None,
+    )?;
+    let committed_ledger_bytes = run_git(
+        &repo,
+        &[
+            "cat-file",
+            "blob",
+            &format!("{join}:.github/publication-sync/reconciliation-ledger.json"),
+        ],
+        None,
+        None,
+    )?;
+    let packet_bytes = run_git(
+        &repo,
+        &["cat-file", "blob", &format!("{join}:.github/publication-sync/packet.yaml")],
+        None,
+        None,
+    )?;
+    let committed_manifest: CommittedManifestInput =
+        serde_json::from_slice(&committed_manifest_bytes)
+            .context("parsing committed manifest in J")?;
+    validate_required_invariants(&committed_manifest.required_invariants)?;
+    let supplied_value: serde_json::Value = serde_json::from_slice(&manifest_raw)?;
+    let committed_value: serde_json::Value = serde_json::from_slice(&committed_manifest_bytes)?;
+    if canonical_json(&supplied_value)? != canonical_json(&committed_value)? {
+        return Err(eyre!("supplied manifest does not equal manifest committed in J"));
+    }
+    let packet: PacketInput =
+        serde_json::from_slice(&packet_bytes).context("parsing packet committed in J")?;
+    if packet.release_base_sha != base || packet.prepared_swarm_sha != source {
+        return Err(eyre!("packet R/S do not match J parents"));
+    }
+    if packet.expected_join_parents != vec![base.clone(), source.clone()] {
+        return Err(eyre!("packet expected_join_parents are not exactly [R, S]"));
+    }
+    if packet.publication_sync_manifest_digest != sha256_prefixed(&committed_manifest_bytes) {
+        return Err(eyre!(
+            "packet publication_sync_manifest_digest does not match committed manifest"
+        ));
+    }
+    if packet.reconciliation_digest != sha256_prefixed(&committed_ledger_bytes) {
+        return Err(eyre!("packet reconciliation_digest does not match committed ledger"));
+    }
+    // sync_join_sha (J0) must be a commit with parents [R,S] and the projected tree.
+    let j0 = resolve_commit(&repo, &packet.sync_join_sha, "sync_join_sha (J0)")?;
+    let j0_parents = git(&repo, &["rev-list", "--parents", "-n", "1", &j0], None, None)?;
+    let j0_parts: Vec<&str> = j0_parents.split_whitespace().collect();
+    if j0_parts.len() != 3 || j0_parts[1] != base || j0_parts[2] != source {
+        return Err(eyre!("packet sync_join_sha parents are not exactly [R, S]"));
+    }
     let mut listed = BTreeSet::new();
-    for translation in manifest["translations"]
-        .as_array()
-        .ok_or_else(|| eyre!("manifest translations must be an array"))?
-    {
-        listed.insert(
-            translation["from"].as_str().ok_or_else(|| eyre!("translation from"))?.to_string(),
-        );
-        listed
-            .insert(translation["to"].as_str().ok_or_else(|| eyre!("translation to"))?.to_string());
+    for translation in &manifest.translations {
+        listed.insert(translation.from.clone());
+        listed.insert(translation.to.clone());
     }
-    for exclusion in manifest["exclusions"]
-        .as_array()
-        .ok_or_else(|| eyre!("manifest exclusions must be an array"))?
-    {
-        listed.insert(exclusion.as_str().ok_or_else(|| eyre!("exclusion"))?.to_string());
-    }
-    for invariant in manifest["required_invariants"]
-        .as_array()
-        .ok_or_else(|| eyre!("manifest required_invariants must be an array"))?
-    {
-        if invariant["status"].as_str() != Some("pass") {
-            return Err(eyre!("required invariant is not pass"));
-        }
+    for exclusion in &manifest.exclusions {
+        listed.insert(exclusion.clone());
     }
     let parents = git(&repo, &["rev-list", "--parents", "-n", "1", &join], None, None)?;
     let parts: Vec<&str> = parents.split_whitespace().collect();
@@ -778,9 +886,21 @@ pub fn verify_join(config: VerifyJoinConfig) -> Result<()> {
     if projected != config.expected_tree {
         return Err(eyre!("projected tree {projected} != expected {}", config.expected_tree));
     }
-    let diff = git(&repo, &["diff", "--name-only", &source, &join], None, None)?;
-    let changed: BTreeSet<String> =
-        diff.lines().map(str::to_string).filter(|path| !path.starts_with(CONTROL_DIR)).collect();
+    if packet.expected_projected_tree != projected {
+        return Err(eyre!("packet expected_projected_tree does not match projected tree of J"));
+    }
+    let j0_tree = git(&repo, &["rev-parse", &format!("{j0}^{{tree}}")], None, None)?;
+    if j0_tree.trim() != projected {
+        return Err(eyre!("packet sync_join_sha tree does not match projected tree of J"));
+    }
+    let diff =
+        git(&repo, &["diff", "--no-renames", "-z", "--name-only", &source, &join], None, None)?;
+    let changed: BTreeSet<String> = diff
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .filter(|path| !path.starts_with(CONTROL_DIR))
+        .collect();
     if changed != listed {
         return Err(eyre!("S..J diff does not equal manifest-listed paths"));
     }
@@ -800,8 +920,7 @@ fn strip_control_tree(repo: &Path, commit: &str) -> Result<String> {
         &["update-index", "--force-remove", "--", ".github/publication-sync/packet.yaml"],
         None,
         Some(&index_refs),
-    )
-    .ok();
+    )?;
     git(
         repo,
         &[
@@ -812,8 +931,7 @@ fn strip_control_tree(repo: &Path, commit: &str) -> Result<String> {
         ],
         None,
         Some(&index_refs),
-    )
-    .ok();
+    )?;
     git(
         repo,
         &[
@@ -824,8 +942,7 @@ fn strip_control_tree(repo: &Path, commit: &str) -> Result<String> {
         ],
         None,
         Some(&index_refs),
-    )
-    .ok();
+    )?;
     let tree = git(repo, &["write-tree"], None, Some(&index_refs))?;
     Ok(tree.trim().to_string())
 }
@@ -867,18 +984,32 @@ pub fn verify_landed(config: VerifyLandedConfig) -> Result<()> {
     Ok(())
 }
 
-fn verify_against_contract(repo: &Path, source: &str, generation: &Generation) -> Result<()> {
+fn verify_against_contract(
+    repo: &Path,
+    base: &str,
+    source: &str,
+    generation: &Generation,
+) -> Result<()> {
     // Parents of J must be exactly [R, S] in order.
     let parents =
         git(repo, &["rev-list", "--parents", "-n", "1", &generation.pr_head], None, None)?;
     let parts: Vec<&str> = parents.split_whitespace().collect();
-    if parts.len() != 3 || parts[2] != source {
-        return Err(eyre!("generated J does not have source S as second parent"));
+    if parts.len() != 3 || parts[1] != base || parts[2] != source {
+        return Err(eyre!("generated J does not have parents [R, S]"));
     }
     // diff S..J excluding the control directory must equal the listed set.
-    let diff = git(repo, &["diff", "--name-only", source, &generation.pr_head], None, None)?;
-    let changed: BTreeSet<String> =
-        diff.lines().map(str::to_string).filter(|path| !path.starts_with(CONTROL_DIR)).collect();
+    let diff = git(
+        repo,
+        &["diff", "--no-renames", "-z", "--name-only", source, &generation.pr_head],
+        None,
+        None,
+    )?;
+    let changed: BTreeSet<String> = diff
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .filter(|path| !path.starts_with(CONTROL_DIR))
+        .collect();
     let listed: BTreeSet<String> = generation.listed_paths.iter().cloned().collect();
     if changed != listed {
         return Err(eyre!(
@@ -1066,6 +1197,170 @@ mod tests {
         let out = fixture.repo.parent().ok_or_else(|| eyre!("parent"))?.join("out-np");
         let error = project(config(&fixture, out)).expect_err("not_proven invariant must fail");
         assert!(error.to_string().contains("only pass"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    fn sha256_hex(data: &[u8]) -> String {
+        hex(&Sha256::digest(data))
+    }
+
+    fn set_translations(fixture: &Fixture, translations: serde_json::Value) -> Result<()> {
+        let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&fixture.manifest)?)?;
+        value["translations"] = translations;
+        value["exclusions"] = serde_json::json!([]);
+        fs::write(&fixture.manifest, serde_json::to_vec(&value)?)?;
+        Ok(())
+    }
+
+    fn out_path(fixture: &Fixture, name: &str) -> Result<PathBuf> {
+        Ok(fixture.repo.parent().ok_or_else(|| eyre!("parent"))?.join(name))
+    }
+
+    #[test]
+    fn tree_entry_returns_blob_sha_without_tab() -> Result<()> {
+        let fixture = fixture()?;
+        let (mode, sha) = tree_entry(&fixture.repo, &fixture.source, "app/main.pl")?
+            .ok_or_else(|| eyre!("missing tree entry"))?;
+        assert_eq!(mode, "100644");
+        assert_eq!(sha.len(), 40);
+        assert!(!sha.contains('\t') && sha.chars().all(|c| c.is_ascii_hexdigit()));
+        let expected =
+            git_fixture(&fixture.repo, &["rev-parse", &format!("{}:app/main.pl", fixture.source)])?;
+        assert_eq!(sha, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn validate_required_invariants_rejects_bad_sets() -> Result<()> {
+        let inv = |id: &str, status: &str, evidence: &str| Invariant {
+            id: id.to_string(),
+            status: status.to_string(),
+            evidence: Some(evidence.to_string()),
+        };
+        let valid: Vec<Invariant> =
+            REQUIRED_INVARIANT_IDS.iter().map(|id| inv(id, "pass", "fixture")).collect();
+        assert!(validate_required_invariants(&valid).is_ok());
+        assert!(validate_required_invariants(&[]).is_err(), "empty must fail");
+        assert!(validate_required_invariants(&valid[..4]).is_err(), "missing one must fail");
+        let mut dup = valid.clone();
+        dup.push(inv("version", "pass", "fixture"));
+        assert!(validate_required_invariants(&dup).is_err(), "duplicate must fail");
+        let mut unknown = valid.clone();
+        unknown.push(inv("nope", "pass", "fixture"));
+        assert!(validate_required_invariants(&unknown).is_err(), "unknown must fail");
+        let mut nonpass = valid.clone();
+        nonpass[0].status = "fail".to_string();
+        assert!(validate_required_invariants(&nonpass).is_err(), "non-pass must fail");
+        let mut noev = valid.clone();
+        noev[0].evidence = Some("  ".to_string());
+        assert!(validate_required_invariants(&noev).is_err(), "empty evidence must fail");
+        Ok(())
+    }
+
+    #[test]
+    fn swarm_translation_sha256_bindings() -> Result<()> {
+        let digest = sha256_hex(b"use strict;\n");
+        let fixture = fixture()?;
+        set_translations(
+            &fixture,
+            serde_json::json!([{"from":"app/main.pl","to":"app/copied.pl","content":{"kind":"swarm"},"source_sha256":digest,"expected_sha256":digest}]),
+        )?;
+        project(config(&fixture, out_path(&fixture, "out-swarm")?))?;
+
+        let fixture = fixture()?;
+        set_translations(
+            &fixture,
+            serde_json::json!([{"from":"app/main.pl","to":"app/copied.pl","content":{"kind":"swarm"},"source_sha256":sha256_hex(b"wrong")}]),
+        )?;
+        let err = project(config(&fixture, out_path(&fixture, "out-swarm-stale")?))
+            .err()
+            .ok_or_else(|| eyre!("stale swarm source must fail"))?;
+        assert!(err.to_string().contains("stale input"), "unexpected: {err}");
+
+        let fixture = fixture()?;
+        set_translations(
+            &fixture,
+            serde_json::json!([{"from":"app/main.pl","to":"app/copied.pl","content":{"kind":"swarm"},"expected_sha256":sha256_hex(b"wrong")}]),
+        )?;
+        let err = project(config(&fixture, out_path(&fixture, "out-swarm-exp")?))
+            .err()
+            .ok_or_else(|| eyre!("wrong expected swarm content must fail"))?;
+        assert!(err.to_string().contains("unexpected content"), "unexpected: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn release_blob_inline_and_in_place_bindings() -> Result<()> {
+        // Release (default path = `to`) with correct expected digest.
+        let fixture = fixture()?;
+        set_translations(
+            &fixture,
+            serde_json::json!([{"from":"docs/old.md","to":"README.md","content":{"kind":"release"},"expected_sha256":sha256_hex(b"perl-lsp base\n")}]),
+        )?;
+        project(config(&fixture, out_path(&fixture, "out-release")?))?;
+
+        // Blob by id with correct expected digest.
+        let fixture = fixture()?;
+        let (_, blob) = tree_entry(&fixture.repo, &fixture.source, "app/main.pl")?
+            .ok_or_else(|| eyre!("blob entry"))?;
+        set_translations(
+            &fixture,
+            serde_json::json!([{"from":"docs/old.md","to":"docs/blob.md","content":{"kind":"blob","sha":blob},"expected_sha256":sha256_hex(b"use strict;\n")}]),
+        )?;
+        project(config(&fixture, out_path(&fixture, "out-blob")?))?;
+
+        // Inline with wrong expected digest fails as unexpected content.
+        let fixture = fixture()?;
+        set_translations(
+            &fixture,
+            serde_json::json!([{"from":"docs/old.md","to":"docs/new.md","content":{"kind":"inline","text":"new docs\n"},"expected_sha256":sha256_hex(b"wrong")}]),
+        )?;
+        let err = project(config(&fixture, out_path(&fixture, "out-inline-bad")?))
+            .err()
+            .ok_or_else(|| eyre!("wrong inline expected must fail"))?;
+        assert!(err.to_string().contains("unexpected content"), "unexpected: {err}");
+
+        // In-place from==to translation is allowed.
+        let fixture = fixture()?;
+        set_translations(
+            &fixture,
+            serde_json::json!([{"from":"app/main.pl","to":"app/main.pl","content":{"kind":"inline","text":"changed\n"}}]),
+        )?;
+        project(config(&fixture, out_path(&fixture, "out-inplace")?))?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_join_uses_committed_packet_and_rejects_tampering() -> Result<()> {
+        let fixture = fixture()?;
+        let out = out_path(&fixture, "out-verify")?;
+        project(config(&fixture, out.clone()))?;
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("projection-receipt.json"))?)?;
+        let head = receipt["pr_head_join_sha"].as_str().ok_or_else(|| eyre!("head"))?.to_string();
+        let tree =
+            receipt["expected_projected_tree"].as_str().ok_or_else(|| eyre!("tree"))?.to_string();
+        let manifest = out.join("projection-manifest.json");
+        let cfg = |manifest: PathBuf, join: String| VerifyJoinConfig {
+            base: fixture.base.clone(),
+            source: fixture.source.clone(),
+            join,
+            manifest,
+            expected_tree: tree.clone(),
+            working_directory: Some(fixture.repo.clone()),
+        };
+        verify_join(cfg(manifest.clone(), head.clone()))?;
+        // Tampered invariants (empty) fail closed.
+        let tampered = out_path(&fixture, "tampered-manifest.json")?;
+        let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
+        value["required_invariants"] = serde_json::json!([]);
+        fs::write(&tampered, serde_json::to_vec(&value)?)?;
+        assert!(verify_join(cfg(tampered, head.clone())).is_err(), "empty invariants must fail");
+        // Packet-free join (S itself) fails closed: no committed control files.
+        assert!(
+            verify_join(cfg(manifest, fixture.source.clone())).is_err(),
+            "packet-free must fail"
+        );
         Ok(())
     }
 
