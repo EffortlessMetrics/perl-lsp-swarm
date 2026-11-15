@@ -781,6 +781,7 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
     use perl_tdd_support::must;
+    use perl_test_must::must_some_with;
     use perl_workspace::semantic_shadow_compare::ShadowCompareVerdict;
 
     #[test]
@@ -1260,6 +1261,42 @@ mod tests {
         assert_eq!(names.iter().filter(|n| n.contains('x')).count(), 1, "local once: {names:?}");
         assert_ranges_contained(&result.symbols);
         Ok(())
+    }
+
+    fn find_symbol<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
+        symbols.iter().find_map(|symbol| {
+            if symbol.name == name { Some(symbol) } else { find_symbol(&symbol.children, name) }
+        })
+    }
+
+    /// #18769: ranges come from one per-request line-starts index instead of
+    /// rescanning the source per offset. Pin the exact UTF-16 wire positions
+    /// the index must produce across CRLF line ends and astral characters, so
+    /// a wrong line split or a byte/char column (instead of UTF-16) fails.
+    #[test]
+    fn document_symbol_ranges_are_utf16_positions_across_crlf_and_astral_text() {
+        // Line 0 holds a two-byte and a four-byte (surrogate-pair) character;
+        // line 2 puts the astral character before `sub f` on the same line.
+        let source =
+            "# caf\u{e9} \u{1F600}\r\npackage P;\r\nmy $x = \"\u{1F600}\"; sub f { 1 }\r\n1;\r\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+
+        let package = must_some_with(find_symbol(&result.symbols, "P"), "package P symbol");
+        assert_eq!(
+            package.selection_range,
+            WireRange::new(WirePosition::new(1, 8), WirePosition::new(1, 9)),
+            "P name"
+        );
+        assert_eq!(package.range.start, WirePosition::new(1, 0), "P extent start");
+
+        // `my $x = "` is 9 UTF-16 units, U+1F600 is 2, `"; sub ` is 7.
+        let sub = must_some_with(find_symbol(&result.symbols, "f"), "sub f symbol");
+        assert_eq!(
+            sub.selection_range,
+            WireRange::new(WirePosition::new(2, 18), WirePosition::new(2, 19)),
+            "f name"
+        );
     }
 
     #[test]
