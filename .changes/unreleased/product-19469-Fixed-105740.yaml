@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Fixed
+body: Decode incoming requests, notifications and responses through one typed envelope model. Reject malformed response objects instead of manufacturing null-result responses; existing reader APIs retain a private compatibility projection pending the response-registry cutover.
+time: 2026-11-15T10:57:40Z
+custom:
+  PR: "19469"
+  Slug: typed-incoming-envelope-foundation
+  Breaking: "no"
