@@ -161,9 +161,7 @@ export async function runAllTestsWithProve(): Promise<void> {
 
   for (const folder of workspaceFolders) {
     const name =
-      workspaceFolders.length === 1
-        ? 'Perl Tests: All'
-        : `Perl Tests: All (${folder.name})`;
+      workspaceFolders.length === 1 ? 'Perl Tests: All' : `Perl Tests: All (${folder.name})`;
     await runProveTask(name, ['-r', 't/'], folder.uri.fsPath);
   }
 }

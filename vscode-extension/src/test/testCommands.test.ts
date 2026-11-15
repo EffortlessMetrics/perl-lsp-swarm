@@ -42,11 +42,13 @@ describe('test command implementations', () => {
     setActiveEditor(undefined);
     Object.assign(vscode.workspace, { workspaceFolders: undefined });
     (vscode.workspace.getWorkspaceFolder as jest.Mock).mockReturnValue(undefined);
-    resolveProveCommandSpy = jest.spyOn(testAdapter, 'resolveProveCommand').mockImplementation((args) => ({
-      command: 'prove',
-      args,
-      shell: false,
-    }));
+    resolveProveCommandSpy = jest
+      .spyOn(testAdapter, 'resolveProveCommand')
+      .mockImplementation((args) => ({
+        command: 'prove',
+        args,
+        shell: false,
+      }));
   });
 
   afterEach(() => {
