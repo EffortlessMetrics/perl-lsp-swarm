@@ -7,10 +7,11 @@
 //!    must link to the hash declaration.  The bridge itself predates this
 //!    issue; these rows keep it pinned so a future refactor cannot silently
 //!    reintroduce 64 false Errors on a clean 8081-line module.
-//! 2. **PL110 aggregate seeding**: bare `my @out;` / `my %h;` are
-//!    defined-but-empty aggregates in Perl — reading or pushing onto them is
-//!    NOT the runtime "Use of uninitialized value" warning a bare scalar
-//!    raises, so the textbook accumulator pattern must not be flagged.
+//! 2. **PL110 aggregates**: bare `my @out;` / `my %h;` are
+//!    defined-but-empty aggregates in Perl. Whole-aggregate reads and `push`
+//!    never raise the runtime "Use of uninitialized value" warning, so the
+//!    textbook accumulator pattern must not be flagged. An element read before
+//!    any store yields `undef` and DOES warn, so it keeps reporting.
 //!
 //! Oracle, perl 5.38.2 (accumulator pattern compiles and runs clean):
 //! ```text
@@ -106,8 +107,8 @@ sub find_low_stock {
     );
 }
 
-/// `my %h; $h{a} = 1;` — the element store bridges to `%h`, which is now
-/// seeded as initialized; both the store and the `\%h` return stay clean.
+/// `my %h; $h{a} = 1;` — the element store bridges to `%h` and initializes
+/// it; both the store and the `\%h` return stay clean.
 #[test]
 fn bare_hash_element_store_and_ref_return_are_not_uninitialized() {
     let code = r#"
@@ -131,8 +132,8 @@ sub build_index {
     );
 }
 
-/// List-form aggregate declarations (`my (@out, %seen);`) are seeded like
-/// the single-variable form; a bare scalar in the same list still fires.
+/// List-form aggregate declarations (`my (@out, %seen);`) behave like the
+/// single-variable form; a bare scalar in the same list still fires.
 ///
 /// Oracle, perl 5.38.2: `perl -we 'my (@a, %h, $s); push @a, 1; $h{x}=1;
 /// print scalar(@a), scalar(%h);'` is silent; adding `print $s;` warns
@@ -187,6 +188,56 @@ fn scalar_without_initializer_still_reports_uninitialized() {
         uninit,
         issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
     );
+}
+
+/// Element reads of a never-stored bare aggregate still fire PL110.
+///
+/// Oracle, perl 5.42.0:
+/// ```text
+/// $ perl -we 'my @items; print $items[0];'
+/// Use of uninitialized value in print at -e line 1.
+/// $ perl -we 'my %h; print $h{missing};'
+/// Use of uninitialized value in print at -e line 1.
+/// ```
+#[test]
+fn element_reads_of_never_stored_bare_aggregates_still_report() {
+    for (code, name) in [
+        ("use strict;\nsub f { my @items; print $items[0]; }\n", "items"),
+        ("use strict;\nsub f { my %h; print $h{missing}; }\n", "h"),
+        ("use strict;\nsub f { my @items; print @items[0, 1]; }\n", "items"),
+    ] {
+        let issues = scope_issues_strict(code);
+        let uninit = uninitialized_names(&issues);
+        assert!(
+            uninit.iter().any(|n| n.ends_with(name)),
+            "element read of a never-stored bare aggregate must fire \
+             UninitializedVariable for {code:?}, got: {uninit:?}"
+        );
+    }
+}
+
+/// After a store (`push`, `unshift`, `splice`, element or slice assignment),
+/// element reads are no longer reported.
+#[test]
+fn element_reads_after_a_store_are_not_reported() {
+    for code in [
+        "use strict;\nsub f { my @out; push @out, 1; print $out[0]; }\n",
+        "use strict;\nsub f { my @out; push(@out, 1); print $out[0]; }\n",
+        "use strict;\nsub f { my @out; unshift @out, 1; print $out[0]; }\n",
+        "use strict;\nsub f { my @out; splice @out, 0, 0, 1; print $out[0]; }\n",
+        "use strict;\nsub f { my @items; $items[0] = 1; print $items[0]; }\n",
+        "use strict;\nsub f { my @items; @items[0, 1] = (1, 2); print $items[1]; }\n",
+        "use strict;\nsub f { my %h; $h{k} = 1; print $h{k}; }\n",
+        "use strict;\nsub f { my %h; @h{qw(a b)} = (1, 2); print $h{a}; }\n",
+    ] {
+        let issues = scope_issues_strict(code);
+        let uninit = uninitialized_names(&issues);
+        assert!(
+            uninit.is_empty(),
+            "element read after a store must not fire UninitializedVariable for {code:?}, \
+             got: {uninit:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

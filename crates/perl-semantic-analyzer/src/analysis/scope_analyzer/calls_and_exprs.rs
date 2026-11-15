@@ -85,6 +85,14 @@ pub(super) fn handle_function_call<'a>(
             let _ = scope.use_variable_parts("$", "_");
         }
     }
+    // `push`/`unshift`/`splice` store into their array operand, so later element
+    // reads of a bare `my @out;` are no longer uninitialized (#18765).
+    if matches!(name, "push" | "unshift" | "splice")
+        && let Some(target) = parenthesized_list_args(args, context.code).first()
+        && matches!(&target.kind, NodeKind::Variable { sigil, .. } if sigil == "@")
+    {
+        analyzer.mark_initialized(target, scope, context);
+    }
     ancestors.push(node);
     let declaration_arg_positions = builtin_declaration_arg_positions(name);
     for arg in args {

@@ -558,9 +558,10 @@ impl Scope {
                         // constructors (`my ($class, %args) = @_;`), where the
                         // invocant is routinely unused (#18765 item 7).
                         if (name == "self" || name == "class") && idx == 0 {
-                            // idx 0 = scalar sigil. Only skip if this scope's
-                            // parent is a subroutine scope (not Method, which
-                            // already pre-marks $self as used).
+                            // idx 0 = scalar sigil. The skip applies to any
+                            // unused scalar of these names in any scope, not
+                            // only invocants; `method` blocks already pre-mark
+                            // `$self` as used.
                             continue;
                         }
                         let full_name = format!("{}{}", index_to_sigil(idx), name);
@@ -1596,6 +1597,42 @@ impl ScopeAnalyzer {
             NodeKind::Variable { sigil, name } => {
                 if !name.contains("::") {
                     self.initialize_variable_parts_in_context(scope, sigil, name, context);
+                }
+            }
+            // An element or slice store (`$h{k} = …`, `$a[0] = …`, `@h{…} = …`)
+            // initializes the subscripted container, so later element reads of a
+            // bare `my %h;` / `my @a;` are no longer uninitialized (#18765).
+            NodeKind::Binary { op, left, .. }
+                if matches!(op.as_str(), "[]" | "{}")
+                    && matches!(&left.kind, NodeKind::Variable { name, .. } if !name.contains("::")) =>
+            {
+                if let NodeKind::Variable { name, .. } = &left.kind {
+                    let container_sigil = if op == "[]" { "@" } else { "%" };
+                    self.initialize_variable_parts_in_context(
+                        scope,
+                        container_sigil,
+                        name,
+                        context,
+                    );
+                }
+                for child in node.children() {
+                    self.mark_initialized(child, scope, context);
+                }
+            }
+            NodeKind::ArraySlice { target, .. } | NodeKind::HashSlice { target, .. } if matches!(&target.kind, NodeKind::Variable { name, .. } if !name.contains("::")) =>
+            {
+                if let NodeKind::Variable { name, .. } = &target.kind {
+                    let container_sigil =
+                        if matches!(node.kind, NodeKind::ArraySlice { .. }) { "@" } else { "%" };
+                    self.initialize_variable_parts_in_context(
+                        scope,
+                        container_sigil,
+                        name,
+                        context,
+                    );
+                }
+                for child in node.children() {
+                    self.mark_initialized(child, scope, context);
                 }
             }
             // For all other node types (parens, lists, etc.), recurse into children
