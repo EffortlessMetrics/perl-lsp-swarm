@@ -10,6 +10,33 @@ use super::{
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
 
+/// The transport the default constructors bind.
+///
+/// In a unit-test build the process stdout is libtest's own event stream.
+/// Emitting LSP base-protocol frames there corrupts the `--format json`
+/// observation stream that the nightly flake lane parses, and the lane then
+/// fails closed with a `STREAM_INVALID` verdict and zero test failures
+/// (#18643). Unit-test builds therefore bind a sink instead.
+///
+/// Tests that need to assert on emitted frames keep the injectable seam:
+/// [`LspServer::with_io`] or [`LspServer::with_output`].
+#[cfg(test)]
+fn default_output_writer() -> Box<dyn Write + Send> {
+    Box::new(io::sink())
+}
+
+/// The transport the default constructors bind (production).
+///
+/// In production the server's transport *is* the process stdout, so the
+/// default constructors bind it directly: `crates/perl-lsp-rs/src/cli.rs`
+/// launches the stdio server through
+/// [`LspServer::new_with_feature_profile_and_tuning`]. The unit-test variant
+/// of this function documents why a test build must not do the same.
+#[cfg(not(test))]
+fn default_output_writer() -> Box<dyn Write + Send> {
+    Box::new(io::stdout())
+}
+
 impl LspServer {
     /// Create a new LSP server
     pub fn new() -> Self {
@@ -44,7 +71,7 @@ impl LspServer {
 
         let default_features = feature_profile.advertised_features();
         let default_feature_ids = feature_profile.build_flags().to_feature_ids();
-        let (outbound, outbound_writer_handle) = outbound::spawn_writer(Box::new(io::stdout()));
+        let (outbound, outbound_writer_handle) = outbound::spawn_writer(default_output_writer());
 
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
@@ -686,5 +713,84 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(dropper.join().is_ok(), "drop thread must not panic");
+    }
+
+    /// #18643: the default constructors must not bind the process stdout in a
+    /// unit-test build.
+    ///
+    /// In a unit-test build the process stdout is libtest's own event stream.
+    /// The nightly flake lane parses that stream as `--format json`, so an LSP
+    /// base-protocol frame written to stdout corrupts the observation and the
+    /// lane fails closed with a `STREAM_INVALID` verdict and zero test
+    /// failures. Production keeps stdout because the server's transport *is*
+    /// the process stdout (`crates/perl-lsp-rs/src/cli.rs`).
+    ///
+    /// The assertion is about what the *process* wrote to stdout, which a
+    /// same-process test cannot observe: libtest captures `print!` but not
+    /// writes to file descriptor 1. The probe therefore runs in a child
+    /// process whose stdout the parent captures.
+    mod stdout_isolation {
+        use super::*;
+        use serde_json::json;
+
+        /// Selects which constructor the child probe exercises.
+        const CHILD_MODE: &str = "PERL_LSP_STDOUT_PROBE_MODE";
+
+        /// Child side: emit one framed notification through the selected
+        /// constructor, then drop the server so the writer thread is joined
+        /// and the frame is flushed before the process exits.
+        #[test]
+        fn stdout_probe_child_emits_frame() {
+            let Ok(mode) = std::env::var(CHILD_MODE) else {
+                return;
+            };
+            let server = if mode == "explicit-stdout" {
+                LspServer::with_io(
+                    Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+                    Box::new(std::io::stdout()),
+                )
+            } else {
+                LspServer::new()
+            };
+            let _ = server.notify("window/logMessage", json!({"type": 4, "message": "probe"}));
+            drop(server);
+        }
+
+        fn run_probe_child(mode: &str) -> String {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("stdout_probe_child_emits_frame")
+                .arg("--nocapture")
+                .env(CHILD_MODE, mode)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "stdout probe child failed: {output:?}");
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            assert!(
+                stdout.contains("1 passed"),
+                "stdout probe child must execute exactly one test, not an empty filter selection; \
+                 output: {stdout}"
+            );
+            stdout
+        }
+
+        #[test]
+        fn default_constructor_keeps_process_stdout_clean() {
+            // Positive control: an explicitly stdout-bound writer must be
+            // observable on stdout. Without it the negative assertion below
+            // would be vacuous — a probe that cannot see frames would pass
+            // against the defect as readily as against the repair.
+            let control = run_probe_child("explicit-stdout");
+            assert!(
+                control.contains("Content-Length:"),
+                "positive control must observe a framed notification on stdout; output: {control}"
+            );
+
+            let default = run_probe_child("default");
+            assert!(
+                !default.contains("Content-Length:"),
+                "the default constructor must not write LSP frames to the process stdout; \
+                 output: {default}"
+            );
+        }
     }
 }
