@@ -44,7 +44,8 @@ ASCII locale.
 
 Startup verifies installed Rust/Cargo/just commands, calls the existing declared
 release-tag preparation, then runs `just devplane-init` and
-`just agent-preflight`. The latter checks layout and explicitly does not assess
+`just agent-preflight`. The former only prints planned admitted resource paths;
+it allocates no build/cache directories. The latter checks layout and does not assess
 Cargo build capacity. In the extension directory, startup runs the toolchain
 doctor before `npm ci`. These operations can fetch Git objects and npm
 packages; setup is not an offline or read-only command.

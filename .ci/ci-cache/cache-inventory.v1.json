@@ -706,6 +706,40 @@
       "notes": null
     },
     {
+      "id": "ci/pr-fast-unblocked/0",
+      "workflow": "ci.yml",
+      "job": "pr-fast-unblocked",
+      "step_name": "Cache cargo dependencies",
+      "action": "Swatinem/rust-cache",
+      "action_ref": "6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+      "capability": "restore_and_save",
+      "trigger_event_set": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "reachable",
+      "executed_subject": "candidate",
+      "job_condition": "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'",
+      "step_condition": null,
+      "save_condition": "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}",
+      "save_authority_source": "ref_guard",
+      "payload_class": "cargo_target",
+      "cached_paths": [],
+      "key_dimensions": {
+        "key": null,
+        "shared_key": "pr-fast-unblocked",
+        "restore_keys": null
+      },
+      "key_authority": "trusted",
+      "cached_byte_provenance": "trusted_tree",
+      "artifact_provenance": null,
+      "writer_disposition": "trusted_guarded",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
       "id": "ci/pr-smoke/0",
       "workflow": "ci.yml",
       "job": "pr-smoke",

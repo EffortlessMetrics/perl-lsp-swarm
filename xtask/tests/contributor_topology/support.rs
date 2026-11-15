@@ -34,12 +34,12 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
         r#"# perl-lsp Sync Protocol
 
 `perl-lsp-swarm` is the active development source of truth. `perl-lsp` is the
-release, history, and canonical package-lineage repo.
+release, history, and canonical package-lineage repo. It is the public pull-request ingress.
 
 | Repo | Authority |
 |---|---|
 | `perl-lsp-swarm/main` | Active development |
-| `perl-lsp/master` | Release lineage |
+| `perl-lsp/master` | Release lineage; public pull-request ingress |
 
 #### Mechanics: history-preserving complete-tree merge
 

@@ -835,7 +835,7 @@ fn decode_hex_bounded(
     }
 
     let mut decoded = Vec::with_capacity(encoded.len() / 2);
-    for pair in encoded.as_bytes().chunks_exact(2) {
+    for pair in encoded.as_bytes().as_chunks::<2>().0 {
         let high = lower_hex_value(pair[0]).ok_or(ResolveEnvelopeRejection::Malformed)?;
         let low = lower_hex_value(pair[1]).ok_or(ResolveEnvelopeRejection::Malformed)?;
         decoded.push((high << 4) | low);
@@ -849,7 +849,7 @@ fn decode_hex_exact(encoded: &str, expected_bytes: usize) -> Option<Vec<u8>> {
     }
 
     let mut decoded = Vec::with_capacity(expected_bytes);
-    for pair in encoded.as_bytes().chunks_exact(2) {
+    for pair in encoded.as_bytes().as_chunks::<2>().0 {
         let high = lower_hex_value(pair[0])?;
         let low = lower_hex_value(pair[1])?;
         decoded.push((high << 4) | low);

@@ -2,6 +2,12 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
+  ExtensionOwnedWorkspaceWriteError,
+  ensureWorkspaceDirectoryPath,
+  replaceWorkspaceRegularFile,
+  workspaceRegularFileExists,
+} from './extensionOwnedWorkspaceWrite';
+import {
   BinaryDownloader,
   classifyWindowsArm64Support,
   detectMusl,
@@ -163,12 +169,8 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
  * Return true if a `.vscode/launch.json` exists under the given workspace root.
  */
 export function hasLaunchJson(workspaceRoot: string): boolean {
-  try {
-    const launchPath = path.join(workspaceRoot, '.vscode', 'launch.json');
-    return fs.existsSync(launchPath);
-  } catch {
-    return false;
-  }
+  const launchPath = path.join(workspaceRoot, '.vscode', 'launch.json');
+  return workspaceRegularFileExists(workspaceRoot, launchPath);
 }
 
 /**
@@ -271,6 +273,7 @@ export async function createDebugConfigWizard(): Promise<void> {
 
   const launchPath = path.join(workspaceRoot, '.vscode', 'launch.json');
 
+  let replacingExisting = false;
   if (hasLaunchJson(workspaceRoot)) {
     const choice = await vscode.window.showWarningMessage(
       'A `.vscode/launch.json` already exists. Overwrite it?',
@@ -286,6 +289,7 @@ export async function createDebugConfigWizard(): Promise<void> {
     if (choice !== 'Overwrite') {
       return;
     }
+    replacingExisting = true;
   }
 
   interface TemplateItem extends vscode.QuickPickItem {
@@ -310,11 +314,15 @@ export async function createDebugConfigWizard(): Promise<void> {
 
   try {
     const vscodDir = path.join(workspaceRoot, '.vscode');
-    if (!fs.existsSync(vscodDir)) {
-      fs.mkdirSync(vscodDir, { recursive: true });
-    }
-    fs.writeFileSync(launchPath, content, 'utf8');
+    await ensureWorkspaceDirectoryPath(workspaceRoot, vscodDir);
+    await replaceWorkspaceRegularFile(workspaceRoot, launchPath, content, {
+      replace: replacingExisting ? 'overwrite' : 'create-only',
+    });
   } catch (err: unknown) {
+    if (err instanceof ExtensionOwnedWorkspaceWriteError) {
+      vscode.window.showErrorMessage(err.message);
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     vscode.window.showErrorMessage(`Failed to write launch.json: ${message}`);
     return;

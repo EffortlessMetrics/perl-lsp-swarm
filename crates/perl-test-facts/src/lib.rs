@@ -457,10 +457,9 @@ fn looks_like_plan(line: &str) -> bool {
 fn parse_assertion(line: &str, line_number: usize, depth: usize) -> Option<TapAssertion> {
     let (status, remainder) = if let Some(rest) = status_remainder(line, "not ok") {
         (TapAssertionStatus::Fail, rest)
-    } else if let Some(rest) = status_remainder(line, "ok") {
-        (TapAssertionStatus::Pass, rest)
     } else {
-        return None;
+        let rest = status_remainder(line, "ok")?;
+        (TapAssertionStatus::Pass, rest)
     };
 
     let outcome = if status == TapAssertionStatus::Pass {

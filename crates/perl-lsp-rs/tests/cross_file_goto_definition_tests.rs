@@ -355,7 +355,7 @@ sub probe_def_shim { 0 }
 // ---------------------------------------------------------------------------
 
 #[test]
-fn go_to_definition_on_use_module_navigates_to_module() -> TestResult {
+fn go_to_definition_on_use_statement_navigates_to_module() -> TestResult {
     let mut harness = LspHarness::new();
     let workspace = support::lsp_harness::TempWorkspace::new()?;
 
@@ -420,6 +420,78 @@ Demo::Worker::run();
             uri
         );
     }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test 2a: Module::Runtime `use_module('Pkg')` navigates to Pkg.pm (#2511)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn go_to_definition_on_module_runtime_use_module_navigates_to_module() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = support::lsp_harness::TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Demo/Worker.pm",
+        r#"package Demo::Worker;
+use strict;
+use warnings;
+
+sub run {
+    print "working\n";
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Demo/Worker.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Demo/Worker.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+use Module::Runtime qw(use_module);
+use_module('Demo::Worker');
+
+Demo::Worker::run();
+"#;
+    harness.open(&workspace.uri("app.pl"), caller)?;
+    harness.barrier();
+
+    let (line, _character) = find_line_char(caller, "use_module('Demo::Worker')")?;
+    // Cursor on the module literal inside the call (the `Demo` segment).
+    let module_literal_offset = caller
+        .lines()
+        .nth(line as usize)
+        .ok_or("missing use_module line")?
+        .find("'Demo::Worker'")
+        .ok_or("missing module literal")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": workspace.uri("app.pl")},
+            "position": {"line": line, "character": module_literal_offset as u64 + 1}
+        }),
+    )?;
+
+    let locations = result
+        .as_array()
+        .filter(|l| !l.is_empty())
+        .ok_or("Module::Runtime use_module literal must navigate to the module file")?;
+    let first = &locations[0];
+    assert_valid_location(first);
+    let uri = first["uri"].as_str().ok_or("Expected URI")?;
+    assert!(
+        uri.contains("Demo") && uri.contains("Worker"),
+        "Definition should point to Demo/Worker.pm, got: {uri}"
+    );
 
     Ok(())
 }

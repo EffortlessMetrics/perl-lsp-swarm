@@ -116,6 +116,21 @@ fn diagnostics(client: &mut RealProcessClient, previous: Option<&str>) -> Result
     )
 }
 
+fn workspace_diagnostics(client: &mut RealProcessClient, previous: &str) -> Result<Value> {
+    request(
+        client,
+        "workspace/diagnostic",
+        json!({ "previousResultIds": [{ "uri": URI, "value": previous }] }),
+    )
+}
+
+fn workspace_item(report: &Value, uri: &str) -> Result<Value> {
+    let items = report["items"].as_array().context("workspace report omitted items")?;
+    let matching: Vec<_> = items.iter().filter(|item| item["uri"] == uri).collect();
+    ensure!(matching.len() == 1, "expected one report for {uri}: {report}");
+    Ok(matching[0].clone())
+}
+
 fn references(client: &mut RealProcessClient, line: u32, character: u32) -> Result<Value> {
     request(
         client,
@@ -228,5 +243,80 @@ fn ordered_full_replacements_and_stale_ranges_match_fresh_unicode_parse() -> Res
         }]),
     )?;
     assert_final_matches_fresh(&mut client)?;
+    finish(client)
+}
+
+#[test]
+fn workspace_pull_clears_desynchronized_diagnostics_and_recovers_like_restart() -> Result<()> {
+    const SIBLING: &str = "file:///text-sync-diagnostics-sibling.pl";
+    let mut client = start()?;
+    open(&mut client, OLD)?;
+    client.notify(
+        "textDocument/didOpen",
+        json!({ "textDocument": {
+            "uri": SIBLING, "languageId": "perl", "version": 1, "text": OLD
+        } }),
+    )?;
+    let deadline = Instant::now() + timeout();
+    let baseline = loop {
+        let report = workspace_diagnostics(&mut client, "unknown")?;
+        if report["items"].as_array().is_some_and(|items| items.len() == 2) {
+            break report;
+        }
+        ensure!(Instant::now() < deadline, "workspace parses never became ready: {report}");
+    };
+    let old = workspace_item(&baseline, URI)?;
+    let sibling = workspace_item(&baseline, SIBLING)?;
+    ensure!(old["items"].as_array().is_some_and(|items| !items.is_empty()));
+    ensure!(sibling["items"].as_array().is_some_and(|items| !items.is_empty()));
+    let old_id = old["resultId"].as_str().context("workspace baseline omitted result ID")?;
+    ensure!(
+        workspace_item(&workspace_diagnostics(&mut client, old_id)?, URI)?["kind"] == "unchanged"
+    );
+
+    for version in [2, 3] {
+        change(
+            &mut client,
+            version,
+            json!([{ "range": { "start": { "line": 0, "character": 0 },
+                                  "end": { "line": 0, "character": 1 } }, "text": "x" }]),
+        )?;
+        ensure!(diagnostics(&mut client, Some(old_id))? == json!({ "kind": "full", "items": [] }));
+        let report = workspace_diagnostics(&mut client, old_id)?;
+        ensure!(
+            workspace_item(&report, URI)?
+                == json!({ "uri": URI, "version": version, "kind": "full", "items": [] }),
+            "workspace pull did not explicitly withdraw predecessor diagnostics: {report}"
+        );
+        let retained = workspace_item(&report, SIBLING)?;
+        ensure!(retained["kind"] == "full" && retained["version"] == 1);
+        ensure!(retained["items"] == sibling["items"], "unrelated diagnostics changed");
+    }
+    // A client drops its cached ID after a no-ID clear, then pulls again.
+    let without_previous =
+        request(&mut client, "workspace/diagnostic", json!({ "previousResultIds": [] }))?;
+    ensure!(
+        workspace_item(&without_previous, URI)?
+            == json!({ "uri": URI, "version": 3, "kind": "full", "items": [] })
+    );
+    ensure!(workspace_item(&without_previous, SIBLING)?["items"] == sibling["items"]);
+
+    change(&mut client, 4, json!([{ "text": FINAL }]))?;
+    wait_for_parse(&mut client)?;
+    let recovered = workspace_item(&workspace_diagnostics(&mut client, old_id)?, URI)?;
+    ensure!(recovered["kind"] == "full" && recovered["version"] == 4);
+    ensure!(recovered["resultId"].as_str().is_some_and(|id| id != old_id));
+    ensure!(recovered["items"] != old["items"], "retained predecessor findings survived resync");
+    let mut fresh = start()?;
+    open(&mut fresh, FINAL)?;
+    let oracle = workspace_item(&workspace_diagnostics(&mut fresh, "unknown")?, URI)?;
+    ensure!(oracle["items"].as_array().is_some_and(|items| !items.is_empty()));
+    ensure!(sorted_array(&recovered["items"])? == sorted_array(&oracle["items"])?);
+    let recovered_id = recovered["resultId"].as_str().context("recovered workspace ID missing")?;
+    ensure!(
+        workspace_item(&workspace_diagnostics(&mut client, recovered_id)?, URI)?["kind"]
+            == "unchanged"
+    );
+    finish(fresh)?;
     finish(client)
 }

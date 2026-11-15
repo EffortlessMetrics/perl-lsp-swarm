@@ -72,7 +72,7 @@ const BOUNDED_ACTION_STEPS: &[(&str, &str, &str)] = &[
         r#"fetch-depth: 1
 persist-credentials: false"#,
     ),
-    ("Install Rust toolchain", "dtolnay/rust-toolchain", "toolchain: 1.95.0"),
+    ("Install Rust toolchain", "dtolnay/rust-toolchain", "toolchain: 1.100.0"),
     (
         BOUNDED_RUST_CACHE_STEP,
         "Swatinem/rust-cache",

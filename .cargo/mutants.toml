@@ -18,8 +18,7 @@ examine_globs = [
 # added so mutations in the path/qualified-name modules are caught promptly.
 additional_cargo_test_args = [
     "-p", "perl-parser-core",
-    "--test", "fix_subst_unusual_delimiters_2732",
-    "--test", "fix_subst_squote_delimiter",
+    "--test", "fix_suite_quoting_loops",
     "--test", "path_security_mutation_hardening",
     "--test", "path_normalize_mutation_hardening",
     "--test", "qualified_name_mutation_hardening",
