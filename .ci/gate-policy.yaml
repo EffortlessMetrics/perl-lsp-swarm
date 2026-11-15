@@ -1546,17 +1546,16 @@ gates:
     #   perl-subprocess-runtime       4
     #   perllsp                      33
     # The advertised-catalog snapshot proof (#19410) is an integration
-    # target, so the `--lib` leg cannot reach it; it is executed explicitly
-    # in the second invocation below so a stale snapshot reds this required
-    # lane instead of passing on a required-green head.
+    # target, so `--lib` alone cannot reach it; it is selected in the same
+    # invocation below so a stale snapshot reds this required lane instead
+    # of passing on a required-green head, without disturbing the exact
+    # package partition the LSP lanes are split by.
     command: >-
       cargo test --locked --lib
+      --test lsp_features_snapshot_test
       -p perl-lsp-perltidy -p perl-lsp-rs
       -p perl-lsp-ux-tests
       -p perl-subprocess-runtime -p perllsp
-      -- --test-threads=4 &&
-      cargo test --locked -p perl-lsp-rs
-      --test lsp_features_snapshot_test
       -- --test-threads=4
     timeout_seconds: 420
     retry_count: 1
