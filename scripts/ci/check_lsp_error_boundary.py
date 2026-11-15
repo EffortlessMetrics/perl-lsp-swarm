@@ -32,6 +32,7 @@ SOURCES = (
     CORE + "transport/incoming.rs",
     CORE + "transport/incoming_error.rs",
     CORE + "runtime/cancellation/mod.rs",
+    CORE + "transport/incoming_message.rs",
 )
 CONTRACT = "scripts/ci/fixtures/lsp_error_contract.rs"
 STRICT_DECODE = "crates/perl-lsp-rs-core/tests/strict_transport_decode.rs"

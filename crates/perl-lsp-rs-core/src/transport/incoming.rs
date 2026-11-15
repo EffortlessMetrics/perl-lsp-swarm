@@ -8,7 +8,8 @@
 //! → UTF-8 encoding
 //! → JSON syntax
 //! → JSON-RPC message shape
-//! → JsonRpcRequest
+//! → IncomingMessage
+//! → legacy method carrier only for callers not yet migrated under #7010
 //! ```
 //!
 //! The reader reports one typed outcome per completed frame. Callers own
@@ -16,7 +17,8 @@
 //! exit behavior remain #6720 / #7004.
 
 use super::framing::{ContentLengthFramer, FramingError, MAX_FRAME_SIZE};
-use crate::protocol::{JSONRPC_VERSION, JsonRpcId, JsonRpcRequest};
+use super::incoming_message::{IncomingMessage, IncomingResponsePayload, decode_incoming_message};
+use crate::protocol::{JSONRPC_VERSION, JsonRpcRequest};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Read};
 
@@ -25,80 +27,44 @@ pub use super::incoming_error::{IncomingMessageError, IncomingMessageStage};
 const CLIENT_RESPONSE_METHOD: &str = "$/perl-lsp/clientResponse";
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 
-/// Decode one complete frame body through encoding → JSON → current message shape.
+/// Decode one frame through the legacy method-shaped compatibility surface.
+///
+/// New ingress consumers should use [`decode_incoming_message`] and retain
+/// response direction. This adapter remains only until #7010 switches every
+/// shipped reader to the connection-owned response registry; #7626 then removes
+/// the synthetic carrier and its dispatch/catalog entries together.
 pub fn decode_incoming_body(body: &[u8]) -> Result<JsonRpcRequest, IncomingMessageError> {
-    let text = match std::str::from_utf8(body) {
-        Ok(text) => text,
-        Err(error) => {
-            return Err(IncomingMessageError::InvalidUtf8 {
-                payload_bytes: body.len(),
-                valid_up_to: error.valid_up_to(),
-            });
-        }
-    };
-
-    let value: Value = match serde_json::from_str(text) {
-        Ok(value) => value,
-        Err(error) => {
-            return Err(IncomingMessageError::MalformedJson {
-                payload_bytes: body.len(),
-                line: error.line(),
-                column: error.column(),
-            });
-        }
-    };
-
-    decode_jsonrpc_value(value, body.len())
+    decode_incoming_message(body).map(legacy_method_carrier)
 }
 
-fn decode_jsonrpc_value(
-    value: Value,
-    payload_bytes: usize,
-) -> Result<JsonRpcRequest, IncomingMessageError> {
-    match value {
-        Value::Array(_) => Err(IncomingMessageError::UnsupportedBatch { payload_bytes }),
-        Value::Object(_) => decode_jsonrpc_object(value, payload_bytes),
-        _ => Err(IncomingMessageError::InvalidMessageShape { payload_bytes, recoverable_id: None }),
-    }
-}
-
-fn decode_jsonrpc_object(
-    value: Value,
-    payload_bytes: usize,
-) -> Result<JsonRpcRequest, IncomingMessageError> {
-    let recoverable_id = value.get("id").and_then(JsonRpcId::from_value);
-
-    if value.get("method").is_some() {
-        if !jsonrpc_field_is_string(&value) {
-            return Err(IncomingMessageError::InvalidJsonRpc { payload_bytes, recoverable_id });
+// Migration-only projection. Never move this function into the generic runtime.
+// A valid response is known before this adapter is entered; malformed response
+// objects must not be promoted into successful null-result carriers.
+fn legacy_method_carrier(message: IncomingMessage) -> JsonRpcRequest {
+    match message {
+        IncomingMessage::Request(request) => request.into_method_call(),
+        IncomingMessage::Notification(notification) => notification.into_method_call(),
+        IncomingMessage::Response(response) => {
+            let (result, error) = match response.payload {
+                IncomingResponsePayload::Result(result) => (result, Value::Null),
+                IncomingResponsePayload::Error(error) => {
+                    let mut object = serde_json::Map::new();
+                    object.insert("code".into(), error.code.into());
+                    object.insert("message".into(), error.message.into());
+                    if let Some(data) = error.data {
+                        object.insert("data".into(), data);
+                    }
+                    (Value::Null, Value::Object(object))
+                }
+            };
+            JsonRpcRequest {
+                _jsonrpc: JSONRPC_VERSION.to_string(),
+                id: None,
+                method: CLIENT_RESPONSE_METHOD.to_string(),
+                params: Some(json!({"id": response.id, "result": result, "error": error})),
+            }
         }
-        return serde_json::from_value(value).map_err(|_| {
-            IncomingMessageError::InvalidMessageShape { payload_bytes, recoverable_id }
-        });
     }
-
-    // JSON-RPC response to a server-initiated request. Convert to the current
-    // internal pseudo-notification so the runtime can route it (#7626 owns
-    // first-class response direction).
-    if let Some(id) = value.get("id") {
-        let params = json!({
-            "id": id,
-            "result": value.get("result").cloned().unwrap_or(Value::Null),
-            "error": value.get("error").cloned(),
-        });
-        return Ok(JsonRpcRequest {
-            _jsonrpc: JSONRPC_VERSION.to_string(),
-            id: None,
-            method: CLIENT_RESPONSE_METHOD.to_string(),
-            params: Some(params),
-        });
-    }
-
-    Err(IncomingMessageError::InvalidMessageShape { payload_bytes, recoverable_id: None })
-}
-
-fn jsonrpc_field_is_string(value: &Value) -> bool {
-    matches!(value.get("jsonrpc"), Some(Value::String(_)))
 }
 
 fn log_incoming_rejection(error: &IncomingMessageError) {
@@ -141,11 +107,23 @@ impl ContentLengthMessageReader {
         &mut self,
         reader: &mut dyn Read,
     ) -> io::Result<Option<Result<JsonRpcRequest, IncomingMessageError>>> {
+        self.read_next_message_outcome(reader)
+            .map(|outcome| outcome.map(|decoded| decoded.map(legacy_method_carrier)))
+    }
+
+    /// Read exactly one typed request, notification, response, or decode failure.
+    ///
+    /// Responses remain responses here. EOF and I/O failures retain their
+    /// existing outer representation; no routing or response policy runs here.
+    pub fn read_next_message_outcome(
+        &mut self,
+        reader: &mut dyn Read,
+    ) -> io::Result<Option<Result<IncomingMessage, IncomingMessageError>>> {
         let mut chunk = [0u8; READ_CHUNK_BYTES];
 
         loop {
             match self.framer.try_next() {
-                Ok(Some(body)) => return Ok(Some(decode_incoming_body(&body))),
+                Ok(Some(body)) => return Ok(Some(decode_incoming_message(&body))),
                 Ok(None) => {}
                 Err(error) => {
                     return Ok(Some(Err(IncomingMessageError::Framing(error))));
@@ -256,6 +234,17 @@ fn recover_after_malformed_header(
 pub fn read_message_outcome(
     reader: &mut dyn BufRead,
 ) -> io::Result<Option<Result<JsonRpcRequest, IncomingMessageError>>> {
+    read_incoming_message_outcome(reader)
+        .map(|outcome| outcome.map(|decoded| decoded.map(legacy_method_carrier)))
+}
+
+/// Read one complete incoming envelope without rewriting its direction.
+///
+/// This shares the legacy one-shot reader's framing and recovery implementation.
+/// A following buffered frame remains available for the next call.
+pub fn read_incoming_message_outcome(
+    reader: &mut dyn BufRead,
+) -> io::Result<Option<Result<IncomingMessage, IncomingMessageError>>> {
     let mut content_length = None;
 
     loop {
@@ -316,7 +305,7 @@ pub fn read_message_outcome(
         return Err(error);
     }
 
-    Ok(Some(decode_incoming_body(&body)))
+    Ok(Some(decode_incoming_message(&body)))
 }
 
 /// Read an LSP message from a buffered reader.
