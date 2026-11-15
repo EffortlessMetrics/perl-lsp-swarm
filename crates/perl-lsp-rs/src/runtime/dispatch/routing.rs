@@ -94,7 +94,16 @@ impl LspServer {
             // it behind -32600 "Server has been shutdown" for every later request
             // including a valid `initialize`. Only `exit` — the notification that
             // must stay reachable to terminate the process — bypasses this gate.
-            _ if !self.initialization_accepted() && method != "exit" => {
+            // A repeated `shutdown` after a latched shutdown must reach the
+            // lifecycle handler, which returns -32600 (#17346): shutdown
+            // drains the accepted session, so without this exemption the
+            // -32002 arm below would mask the handler's InvalidRequest.
+            // A pre-init `shutdown` (no latch) still falls into -32002.
+            _ if !self.initialization_accepted()
+                && method != "exit"
+                && !(method == "shutdown"
+                    && self.client_session.shutdown_received.load(Ordering::Acquire)) =>
+            {
                 Err(JsonRpcError {
                     code: -32002, // ServerNotInitialized per LSP spec
                     message: "Server not initialized".to_string(),

@@ -230,6 +230,96 @@ fn critic_configuration_clear_preserves_the_engine_availability_identity() {
 }
 
 #[test]
+fn clear_all_families_resets_every_family() {
+    let server = LspServer::new();
+    let store = &server.client_session.session_warning_dedup;
+    let critic = profile_identity("/cfg/all-families");
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(store.note(SessionWarningFamily::Critic, critic), SessionWarningDecision::EmitFirst);
+    assert_eq!(
+        store.note_client_setting("critic.engine", "string", "not-an-engine"),
+        SessionWarningDecision::EmitFirst
+    );
+    let include_path = SessionWarningIdentity::fingerprinted(
+        SessionWarningCode::ClientIncludePathRejected,
+        SessionWarningSubjectTag::None,
+        "bad\u{0}reason",
+    );
+    assert_eq!(
+        store.note(SessionWarningFamily::ClientIncludePath, include_path),
+        SessionWarningDecision::EmitFirst
+    );
+    let auth = SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);
+    assert_eq!(
+        store.note(SessionWarningFamily::AiBackend, auth),
+        SessionWarningDecision::EmitFirst
+    );
+    let availability =
+        SessionWarningIdentity::subjectless(SessionWarningCode::CriticExternalUnavailable);
+    assert_eq!(
+        store.note(SessionWarningFamily::CriticEngineAvailability, availability),
+        SessionWarningDecision::EmitFirst
+    );
+    let formatter = SessionWarningIdentity::fingerprinted(
+        SessionWarningCode::NativeFormatterOptionsIgnored,
+        SessionWarningSubjectTag::None,
+        "ignored-key-set",
+    );
+    assert_eq!(
+        store.note(SessionWarningFamily::FormatterOptions, formatter),
+        SessionWarningDecision::EmitFirst
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let project = SessionWarningIdentity::fingerprinted(
+            SessionWarningCode::ProjectConfigInvalid,
+            SessionWarningSubjectTag::None,
+            "/repo/.perl-lsp.toml",
+        );
+        assert_eq!(
+            store.note(SessionWarningFamily::ProjectConfig, project),
+            SessionWarningDecision::EmitFirst
+        );
+    }
+
+    store.clear_all_families();
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(snapshot.critic.entries, 0, "Critic must reset");
+    assert_eq!(snapshot.client_setting.entries, 0, "ClientSetting must reset");
+    assert_eq!(snapshot.client_include_path.entries, 0, "ClientIncludePath must reset");
+    assert_eq!(snapshot.ai_backend.entries, 0, "AiBackend must reset");
+    assert_eq!(
+        snapshot.critic_engine_availability.entries, 0,
+        "CriticEngineAvailability must reset"
+    );
+    assert_eq!(snapshot.formatter_options.entries, 0, "FormatterOptions must reset");
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(snapshot.project_config.entries, 0, "ProjectConfig must reset");
+
+    // Every cleared family accepts its warning again.
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(store.note(SessionWarningFamily::Critic, critic), SessionWarningDecision::EmitFirst);
+    assert_eq!(
+        store.note(SessionWarningFamily::CriticEngineAvailability, availability),
+        SessionWarningDecision::EmitFirst
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let project = SessionWarningIdentity::fingerprinted(
+            SessionWarningCode::ProjectConfigInvalid,
+            SessionWarningSubjectTag::None,
+            "/repo/.perl-lsp.toml",
+        );
+        assert_eq!(
+            store.note(SessionWarningFamily::ProjectConfig, project),
+            SessionWarningDecision::EmitFirst
+        );
+    }
+}
+
+#[test]
 fn forget_releases_an_identity_so_a_failed_send_can_retry() {
     let server = LspServer::new();
     let auth = SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);

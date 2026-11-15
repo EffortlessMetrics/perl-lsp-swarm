@@ -375,7 +375,10 @@ impl SessionWarningDedupStore {
         self.clear_family(SessionWarningFamily::ClientSetting);
         self.clear_family(SessionWarningFamily::ClientIncludePath);
         self.clear_family(SessionWarningFamily::AiBackend);
+        self.clear_family(SessionWarningFamily::CriticEngineAvailability);
         self.clear_family(SessionWarningFamily::FormatterOptions);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.clear_family(SessionWarningFamily::ProjectConfig);
     }
 
     /// Decide, emit, and roll back on failed delivery for one

@@ -132,7 +132,9 @@ impl LspServer {
         // `shutdown` before the text-sync session contract is accepted, so
         // this handler only runs on an accepted session. A shutdown latch on
         // a never-initialized session would wedge it permanently: the
-        // post-shutdown -32600 reject also stops `initialize`.
+        // post-shutdown -32600 reject also stops `initialize`. The router
+        // exempts a latched `shutdown` from that -32002 gate so a repeated
+        // shutdown reaches here and returns -32600, not -32002.
         if self.client_session.begin_shutdown()
             == crate::runtime::client_session::ShutdownAdmission::AlreadyShutdown
         {
@@ -639,6 +641,43 @@ mod tests {
         assert_eq!(
             second_error.code, -32600,
             "second shutdown must return InvalidRequest (-32600) per LSP spec"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn given_latched_shutdown_when_shutdown_routed_again_then_invalid_request_not_server_not_initialized()
+    -> TestResult {
+        // #17346: shutdown drains the accepted session, so a routed repeat
+        // must not be masked by the router's -32002 gate; it must reach this
+        // handler and return -32600. A pre-init shutdown keeps -32002.
+        fn routed_code(server: &LspServer, id: i64) -> Option<i32> {
+            server
+                .handle_request(crate::protocol::JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: Some(JsonRpcId::Integer(id)),
+                    method: "shutdown".to_string(),
+                    params: None,
+                })
+                .and_then(|response| response.error)
+                .map(|error| error.code)
+        }
+        let pre_init = LspServer::new();
+        assert_eq!(routed_code(&pre_init, 1), Some(-32002), "pre-init shutdown keeps -32002");
+        assert!(
+            !pre_init.client_session.shutdown_received.load(Ordering::Acquire),
+            "pre-init shutdown must not latch"
+        );
+
+        let server = LspServer::new();
+        server
+            .handle_initialize(None)
+            .map_err(|e| format!("initialize request should succeed: {e}"))?;
+        assert_eq!(routed_code(&server, 1), None, "first routed shutdown must succeed");
+        assert_eq!(
+            routed_code(&server, 2),
+            Some(-32600),
+            "repeated shutdown after latched shutdown must be InvalidRequest, not ServerNotInitialized"
         );
         Ok(())
     }
