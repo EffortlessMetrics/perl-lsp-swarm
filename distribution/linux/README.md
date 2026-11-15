@@ -70,8 +70,8 @@ correct release archive for the requested architecture, and writes:
 
 Use `--arch aarch64` to render the arm64/aarch64 target set.
 
-The RPM scaffold repackages prebuilt release executables whose debuginfo is stripped
-by the release profile. It explicitly omits an empty debuginfo subpackage and checks
+The RPM scaffold repackages prebuilt release executables whose symbols (including
+debuginfo) are stripped by the release profile. It explicitly omits an empty debuginfo subpackage and checks
 both ELF inputs before RPM's normal post-install processing. Unexpected DWARF,
 STABS, debug indices, compressed or linked debug information is refused without
 modifying the input;

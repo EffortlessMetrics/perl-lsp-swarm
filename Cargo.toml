@@ -413,13 +413,15 @@ incremental = false
 opt-level = 3
 lto = true
 codegen-units = 1
-strip = "debuginfo"
+strip = "symbols"
 
 # Profile for benchmarks - maximum optimization
+# Keep debuginfo stripping only: bench binaries need symbols for perf attribution.
 [profile.bench]
 inherits = "release"
 lto = true
 codegen-units = 1
+strip = "debuginfo"
 
 # The profile that 'dist' will build with
 [profile.dist]

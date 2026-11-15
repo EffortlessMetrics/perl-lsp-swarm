@@ -50,7 +50,7 @@ mod dap_packaging {
         let workspace_cargo = read(repo_root().join("Cargo.toml"))?;
         assert!(workspace_cargo.contains("[profile.release]"));
         assert!(workspace_cargo.contains("lto = true"));
-        assert!(workspace_cargo.contains("strip = \"debuginfo\""));
+        assert!(workspace_cargo.contains("strip = \"symbols\""));
         Ok(())
     }
 

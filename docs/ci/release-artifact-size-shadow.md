@@ -7,7 +7,7 @@ The lane exists so that adopting Rust's bundled Mach-O LLD with `--icf=safe` is 
 measured, reversible decision about *this* repository's binaries rather than a
 linker trick copied from another project's blog post. The workspace already
 builds releases with `opt-level = 3`, full LTO, one codegen unit and stripped
-debuginfo, and the release workflow strips both binaries again, so the remaining
+symbols, and the release workflow strips both binaries again, so the remaining
 ICF opportunity may well be negligible. **A no-win result is a successful
 experiment, not a failed lane.**
 

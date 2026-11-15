@@ -49,9 +49,6 @@ getrandom = "0.4.2"
 # Regex for parsing debugger output
 regex.workspace = true
 
-# Async runtime
-tokio = { workspace = true, features = ["full"] }
-
 # Logging
 tracing.workspace = true
 
@@ -70,10 +67,12 @@ perl-module = { workspace = true }
 perl-lexer = { workspace = true }
 perl-lsp-rs-core = { workspace = true, default-features = true }
 
-# Process management
-# Note: tokio-process not needed (using tokio::process)
+# Process management uses std::process (see src/debug_adapter/process.rs).
 
 [dev-dependencies]
+# Async test runtime only (#[tokio::test]); production code uses std threads.
+tokio.workspace = true
+
 # Property-based testing (AC13)
 proptest.workspace = true
 

@@ -309,7 +309,7 @@ opt-level = 1                    # Slight optimization for dev builds
 opt-level = 3
 lto = true                       # Full link-time optimization
 codegen-units = 1                # Maximum optimization, slower compile
-strip = "debuginfo"              # Smaller binaries
+strip = "symbols"                # Smaller binaries
 
 [profile.bench]
 inherits = "release"
