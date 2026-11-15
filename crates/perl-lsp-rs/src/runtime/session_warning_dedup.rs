@@ -324,6 +324,44 @@ impl FamilyStore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(subject: &str) -> SessionWarningIdentity {
+        SessionWarningIdentity::fingerprinted(
+            SessionWarningCode::CoreModuleGotoDefNotice,
+            SessionWarningSubjectTag::CoreModuleName,
+            subject,
+        )
+    }
+
+    #[test]
+    fn with_cap_bounds_retention_at_the_configured_cap() {
+        // The per-family cap is the seam: at cap 2 the third distinct
+        // identity emits without retaining, and a repeat of it emits
+        // without retaining again instead of suppressing. With the
+        // default cap (32) the third identity would be retained and its
+        // repeat would suppress, so this discriminates the configured
+        // cap from the default.
+        let store = FamilyStore::with_cap(2);
+        assert_eq!(store.note(identity("strict")), SessionWarningDecision::EmitFirst);
+        assert_eq!(store.note(identity("warnings")), SessionWarningDecision::EmitFirst);
+        assert_eq!(
+            store.note(identity("utf8")),
+            SessionWarningDecision::EmitWithoutRetaining
+        );
+        assert_eq!(
+            store.note(identity("utf8")),
+            SessionWarningDecision::EmitWithoutRetaining
+        );
+        assert_eq!(store.note(identity("strict")), SessionWarningDecision::Suppress);
+        let counters = store.counters();
+        assert_eq!(counters.entries, 2);
+        assert_eq!(counters.emitted_without_retaining, 2);
+    }
+}
+
 /// Session-scoped warning-dedup store for the governed families.
 ///
 /// Presentation/operational state only (#9769): classification
