@@ -524,6 +524,31 @@ mod tests {
     }
 
     #[test]
+    fn printf_metadata_rejects_command_heredoc_arguments() {
+        let format = Node::new(
+            NodeKind::String { value: "'%s %s'".to_string(), interpolated: false },
+            SourceLocation { start: 7, end: 14 },
+        );
+        let command = Node::new(
+            NodeKind::Heredoc {
+                delimiter: "END".to_string(),
+                content: "command\n".to_string(),
+                interpolated: true,
+                indented: false,
+                command: true,
+                body_span: Some(SourceLocation { start: 25, end: 33 }),
+            },
+            SourceLocation { start: 16, end: 23 },
+        );
+        let call = Node::new(
+            NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, command] },
+            SourceLocation { start: 0, end: 23 },
+        );
+
+        assert_eq!(printf_format_arity_metadata_by_range(&call).get(&(0, 23)), None);
+    }
+
+    #[test]
     fn printf_metadata_allows_literal_at_in_static_format() {
         let format = Node::new(
             NodeKind::String {

@@ -35,6 +35,7 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
+| `argument_cardinality` | `known_scalar_argument_count` | Conservative scalar value counts in Perl list context, shared by critic, diagnostics, and quick-fix admission |
 | `semantic` | `SemanticAnalyzer`, `SemanticToken`, `SemanticTokenType`, `SemanticTokenModifier`, `HoverInfo` | Semantic token classification and hover info for LSP |
 | `symbol` | `SymbolExtractor`, `SymbolTable`, `Symbol`, `SymbolReference`, `Scope`, `ScopeKind`, `ScopeId` | Symbol extraction and symbol table construction from AST |
 | `scope_analyzer` | `ScopeAnalyzer`, `ScopeIssue`, `IssueKind` | Scope issue detection (unused/undeclared/shadowed variables) |
@@ -46,6 +47,10 @@ cargo doc -p perl-semantic-analyzer --open   # View documentation
 ### Re-exports from `lib.rs`
 
 The crate re-exports core types from `perl-parser-core` (`Node`, `NodeKind`, `SourceLocation`, `Parser`, `ast`, `error`, etc.) and `perl-workspace::workspace_index`, so downstream crates can use a single import.
+
+`known_scalar_argument_count` is exported at the crate root. Its implementation
+module stays private so `perl-parser::analysis` does not acquire another public
+module through its compatibility wildcard export.
 
 ## Usage Examples
 

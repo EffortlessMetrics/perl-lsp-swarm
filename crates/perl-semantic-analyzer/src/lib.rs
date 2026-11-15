@@ -63,6 +63,7 @@ pub use perl_parser_core::{
 /// Semantic analysis, symbol extraction, and type inference.
 pub mod analysis;
 
+pub use analysis::argument_cardinality::known_scalar_argument_count;
 pub use analysis::class_model;
 #[cfg(not(target_arch = "wasm32"))]
 pub use analysis::declaration;

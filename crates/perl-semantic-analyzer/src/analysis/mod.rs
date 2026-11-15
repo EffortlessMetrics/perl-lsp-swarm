@@ -1,5 +1,7 @@
 //! Semantic analysis, symbol extraction, and type inference.
 
+/// Conservative value counts for arguments in Perl list context.
+pub(crate) mod argument_cardinality;
 /// Pure callsite materialization for canonical callable-result relations.
 pub mod call_result_materializer;
 /// Bounded syntax-level callable exit summaries.

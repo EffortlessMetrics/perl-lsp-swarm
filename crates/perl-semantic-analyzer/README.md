@@ -19,6 +19,12 @@ workspace, refactoring, and LSP layers can consume.
 - `analysis::semantic::SemanticAnalyzer`
 - `analysis::declaration::DeclarationProvider`
 - `analysis::index::WorkspaceIndex`
+- `known_scalar_argument_count`
+
+`known_scalar_argument_count` supplies the shared conservative argument count for
+critic, diagnostics, and quick-fix admission. It returns `None` when any argument
+has unknown cardinality in Perl list context, including calls, arrays, and command
+output. An empty argument list returns `Some(0)`.
 
 ## Example
 

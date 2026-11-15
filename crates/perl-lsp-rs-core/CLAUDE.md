@@ -37,6 +37,9 @@ By module (see `src/lib.rs` doc comments for the authoritative list):
 - Perl parsing itself -- delegates to `perl-parser-core` / `perl-parser` /
   `perl-lexer`.
 - Module resolution -- delegates to `perl-module`.
+- Perl argument cardinality -- delegates to
+  `perl-semantic-analyzer::known_scalar_argument_count`; diagnostics, critic,
+  and quick-fix admission share that implementation.
 - The DAP protocol -- that's `perl-dap`, which depends on this crate only
   for shared runtime/protocol types, not for LSP behavior.
 
