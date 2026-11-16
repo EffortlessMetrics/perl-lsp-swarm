@@ -23,6 +23,53 @@ builtin = sibling('test_cargo_admitted_builtin_tree')
 class ProcParentDiscoveryTests(unittest.TestCase):
     worker = clippy.ClippyTreeTests.worker
 
+    complete_root = '90001 1 0:35 / /proc rw - proc proc rw'
+    stacked_root = '90002 90001 0:119 / /proc rw,hidepid=0 - proc proc rw,hidepid=0'
+
+    def mount_observation(self, roots):
+        # Replace only mount metadata. Native PID/namespace observations and
+        # bounded stat enumeration still run through the production reader.
+        return self.worker('''
+read=owner._proc_read
+mounts=read('/proc/self/mountinfo',1024*1024)
+other_mounts=[line for line in mounts.splitlines() if line.split()[4]!='/proc']
+fixture='\\n'.join(other_mounts+json.loads(sys.argv[2]))+'\\n'
+def changed(path,limit):
+ return fixture if path=='/proc/self/mountinfo' else read(path,limit)
+with patch.object(owner,'_proc_read',side_effect=changed):
+ try:
+  report=owner.child_discovery_capability('proc-parent-pidfd')
+ except owner.Denied as error:
+  report={'accepted':False,'error':str(error)}
+ else:report['accepted']=True
+print(json.dumps(report))
+''', json.dumps(roots))
+
+    def test_complete_procfs_roots_accept_single_and_stacked_mounts_in_either_order(self):
+        for roots in ([self.complete_root],
+                      [self.complete_root, self.stacked_root],
+                      [self.stacked_root, self.complete_root]):
+            with self.subTest(roots=roots):
+                row = self.mount_observation(roots)
+                self.assertTrue(row['accepted'], row)
+                self.assertEqual(row['mode'], 'proc-parent-pidfd')
+
+    def test_missing_or_invalid_procfs_layers_refuse_in_either_order(self):
+        row = self.mount_observation([])
+        self.assertFalse(row['accepted'], row)
+        self.assertIn('complete procfs root', row['error'])
+        invalid = {
+            'foreign-filesystem': '90002 90001 0:119 / /proc rw - tmpfs tmpfs rw',
+            'subtree-root': '90002 90001 0:119 /subtree /proc rw - proc proc rw',
+            'mount-hidepid': '90002 90001 0:119 / /proc rw,hidepid=1 - proc proc rw',
+            'superblock-hidepid': '90002 90001 0:119 / /proc rw - proc proc rw,hidepid=2',
+        }
+        for name, layer in invalid.items():
+            for roots in ([self.complete_root, layer], [layer, self.complete_root]):
+                with self.subTest(invalid=name, roots=roots):
+                    row = self.mount_observation(roots)
+                    self.assertFalse(row['accepted'], row)
+
     def test_explicit_profile_cancels_unknown_detached_adopted_child(self):
         row = self.worker('''
 tree=owner.ClippyTree(child_discovery='proc-parent-pidfd')
@@ -176,13 +223,17 @@ print(json.dumps({'fresh_child_bound':True,'settlement':final}))
     def test_visibility_and_record_failures_refuse_discovery(self):
         row = self.worker('''
 read=owner._proc_read
-for failure in ('hidepid','namespace','overlay','malformed-stat','wrong-pid','unreadable-stat'):
+for failure in ('hidepid','namespace','numeric-overlay','self-task-overlay',
+                'thread-self-overlay','malformed-stat','wrong-pid','unreadable-stat'):
  def changed(path,limit):
   data=read(path,limit)
   if failure=='hidepid' and path=='/proc/self/mountinfo':
    return '\\n'.join(line.replace(' - proc proc rw',' - proc proc rw,hidepid=2') for line in data.splitlines())
-  if failure=='overlay' and path=='/proc/self/mountinfo':
-   return data+f'99999 83 0:30 / /proc/{os.getpid()}/stat ro - proc proc rw\\n'
+  if failure.endswith('-overlay') and path=='/proc/self/mountinfo':
+   point={'numeric-overlay':f'/proc/{os.getpid()}/stat',
+          'self-task-overlay':'/proc/self/task',
+          'thread-self-overlay':'/proc/thread-self/stat'}[failure]
+   return data+f'99999 83 0:30 / {point} ro - proc proc rw\\n'
   if failure=='namespace' and path=='/proc/self/status':
    return '\\n'.join('NSpid:\\t1 2' if line.startswith('NSpid:') else line for line in data.splitlines())
   if path.endswith('/stat') and path.split('/')[-2].isdecimal():
@@ -194,9 +245,10 @@ for failure in ('hidepid','namespace','overlay','malformed-stat','wrong-pid','un
   try:owner.child_discovery_capability('proc-parent-pidfd')
   except owner.Denied:pass
   else:raise AssertionError(failure+' visibility failure accepted')
-print(json.dumps({'refused':['hidepid','namespace','overlay','malformed-stat','wrong-pid','unreadable-stat']}))
+print(json.dumps({'refused':['hidepid','namespace','numeric-overlay','self-task-overlay',
+                             'thread-self-overlay','malformed-stat','wrong-pid','unreadable-stat']}))
 ''')
-        self.assertEqual(len(row['refused']), 6)
+        self.assertEqual(len(row['refused']), 8)
 
     def test_discovery_turn_deadline_refuses_instead_of_returning_an_empty_table(self):
         row = self.worker('''

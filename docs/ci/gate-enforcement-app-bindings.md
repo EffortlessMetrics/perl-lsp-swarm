@@ -60,3 +60,41 @@ The receipt retains two different digests:
 - `exact_source_sha256` hashes the exact repository, raw policy-file, and workflow-file attestations. Byte movement, including an order-only policy edit, remains visible here.
 
 Binding, enforcement-source, role, applicability, producer, workflow, job, result, or event movement changes the semantic subject. Raw file or repository movement cannot masquerade as semantic movement, and semantic normalization does not discard exact-source evidence.
+
+## Optional reporter and coverage declaration
+
+A `[[checks]]` row may additionally declare `reporter_binding`. This is separate
+from the classic/ruleset enforcement bindings. No current production row is
+populated by this schema change.
+
+```toml
+[checks.reporter_binding]
+kind = "check-run"
+app_id = 12345
+obligation_ids = ["example-obligation-a", "example-obligation-b"]
+coverage_complete = true
+```
+
+These values illustrate syntax, not a production mapping. A legacy status instead
+uses `kind = "legacy-status"` and `creator_id`; it cannot borrow an App ID or be a
+repository-job declaration. The row's existing context name identifies the
+reporter's context. A check-run's explicit App must agree with any declared
+classic/ruleset App binding. Neither producer identity nor enforcement binding
+is inferred when absent.
+
+The table requires exactly its kind, matching positive integer identity,
+nonempty unique exact obligation IDs, and boolean `coverage_complete = true`.
+Missing fields, competing identity fields, unknown fields, partial coverage and
+conflicting declared Apps block the static contract. TOML duplicate keys also
+refuse. Obligation order is normalized in the semantic subject; identity,
+coverage membership and completeness remain digest-covered. Existing rows with
+no table retain their old static result and acquire no binding.
+
+This validates a declaration, not the truth of its complete coverage. The actual
+selector must independently establish the full aggregate denominator, and the
+native owner must authenticate the observed check/App or context/creator and
+bind it to the subject, policy and selection. A successful static contract is
+neither that join nor qualification eligibility. Missing bindings and incomplete
+join evidence remain `NOT_PROVEN`; an observed adverse result stays visible.
+No native applicability consumer, reporter authentication, producer activation,
+positive exclusion or selection-to-reporter join is installed here.

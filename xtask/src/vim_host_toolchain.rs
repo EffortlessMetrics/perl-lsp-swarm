@@ -1230,10 +1230,7 @@ fn migrate_legacy_manifest(
     if file_sha256(&archive_path).ok()?.as_str() != expected_archive_sha256 {
         return None;
     }
-    let entry_name = match entry_root.file_name() {
-        Some(name) => name.to_string_lossy(),
-        None => return None,
-    };
+    let entry_name = entry_root.file_name()?.to_string_lossy();
     let staging_root =
         entry_root.with_file_name(format!("{entry_name}.migrate.{}", std::process::id()));
     let _ = fs::remove_dir_all(&staging_root);

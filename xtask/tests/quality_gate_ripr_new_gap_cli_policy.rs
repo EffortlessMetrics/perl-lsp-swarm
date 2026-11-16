@@ -141,13 +141,14 @@ fn quality_gate_cli_rejects_malformed_changed_production_files() -> TestResult {
             .output()?;
     assert!(
         !output.status.success(),
-        "malformed changed_production_files must fail closed (stderr: {})",
+        "the raw new gap must still fail when advisory guidance is malformed (stderr: {})",
         String::from_utf8_lossy(&output.stderr)
     );
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
     assert_eq!(payload.pointer("/review_guidance/status").and_then(Value::as_str), Some("invalid"));
-    next_action(&payload, "ripr_review_receipt_not_current")?;
+    next_action(&payload, "new_ripr_gap")?;
+    assert_no_action(&payload, "ripr_review_receipt_not_current")?;
     Ok(())
 }
 
@@ -386,8 +387,7 @@ fn quality_gate_cli_blocks_missing_review_guidance_when_new_gaps_exist() -> Test
         new_gap.get("top_gaps").and_then(Value::as_array).is_some_and(Vec::is_empty),
         "missing review guidance must not invent gap repair rows: {new_gap}"
     );
-    let review_action = next_action(&payload, "ripr_review_receipt_not_current")?;
-    assert_eq!(review_action.get("reason").and_then(Value::as_str), Some("missing"));
+    assert_no_action(&payload, "ripr_review_receipt_not_current")?;
     assert!(!payload.get("next_actions").and_then(Value::as_array).is_some_and(|actions| {
         actions.iter().any(|action| {
             action.get("kind").and_then(Value::as_str)
@@ -397,12 +397,7 @@ fn quality_gate_cli_blocks_missing_review_guidance_when_new_gaps_exist() -> Test
     assert_blocking_actions_have_repair_contract(&payload)?;
 
     let markdown = fs::read_to_string(&summary)?;
-    for required in [
-        "### new_ripr_gap",
-        "### ripr_review_receipt_not_current",
-        "- repair: `Regenerate and check the RIPR review-guidance receipt for this HEAD",
-        "cargo xtask ripr-review-comments --base origin/HEAD --head HEAD --check",
-    ] {
+    for required in ["### new_ripr_gap", "review guidance receipt: `missing` (advisory)"] {
         assert!(
             markdown.contains(required),
             "missing review guidance summary lacks `{required}`: {markdown}"
@@ -667,14 +662,7 @@ fn quality_gate_cli_blocks_new_ripr_when_required_receipts_are_missing() -> Test
         "diff receipt failure must carry focused verify command: {pr_action}"
     );
 
-    let review_action = next_action(&payload, "ripr_review_receipt_not_current")?;
-    assert_eq!(review_action.get("expected_head_sha").and_then(Value::as_str), Some(head.as_str()));
-    assert!(
-        review_action.get("repair").and_then(Value::as_str).is_some_and(|repair| {
-            repair.contains("exact file, line, seam, and suggested proof")
-        }),
-        "review guidance failure must explain why the receipt is required: {review_action}"
-    );
+    assert_no_action(&payload, "ripr_review_receipt_not_current")?;
 
     Ok(())
 }
@@ -708,14 +696,11 @@ fn quality_gate_cli_blocks_new_ripr_when_required_receipts_are_invalid() -> Test
     assert_eq!(payload.pointer("/ripr_pr/status").and_then(Value::as_str), Some("invalid"));
     assert_eq!(payload.pointer("/review_guidance/status").and_then(Value::as_str), Some("invalid"));
 
-    for kind in [
-        "ripr_receipt_not_current",
-        "ripr_pr_receipt_not_current",
-        "ripr_review_receipt_not_current",
-    ] {
+    for kind in ["ripr_receipt_not_current", "ripr_pr_receipt_not_current"] {
         let action = next_action(&payload, kind)?;
         assert_eq!(action.get("reason").and_then(Value::as_str), Some("invalid"));
     }
+    assert_no_action(&payload, "ripr_review_receipt_not_current")?;
     assert_blocking_actions_have_repair_contract(&payload)?;
 
     Ok(())
@@ -755,11 +740,7 @@ fn quality_gate_cli_blocks_new_ripr_when_receipts_are_stale() -> TestResult {
         pr_action.get("receipt_head_sha").and_then(Value::as_str),
         Some("quality-gate-cli-stale-pr-head")
     );
-    let review_action = next_action(&payload, "ripr_review_receipt_not_current")?;
-    assert_eq!(
-        review_action.get("receipt_head_sha").and_then(Value::as_str),
-        Some("quality-gate-cli-stale-review-head")
-    );
+    assert_no_action(&payload, "ripr_review_receipt_not_current")?;
 
     Ok(())
 }
@@ -819,14 +800,7 @@ fn quality_gate_cli_blocks_new_ripr_when_review_guidance_generation_failed_with_
     assert_eq!(payload.pointer("/review_guidance/status").and_then(Value::as_str), Some("error"));
     assert_eq!(payload.pointer("/ripr_pr/new_unresolved").and_then(Value::as_u64), Some(1));
     next_action(&payload, "new_ripr_gap")?;
-    let action = next_action(&payload, "ripr_review_receipt_not_current")?;
-    assert_eq!(action.get("reason").and_then(Value::as_str), Some("error"));
-    assert!(
-        action.get("repair").and_then(Value::as_str).is_some_and(|repair| {
-            repair.contains("exact file, line, seam, and suggested proof")
-        }),
-        "failed review guidance must point agents back to receipt regeneration: {action}"
-    );
+    assert_no_action(&payload, "ripr_review_receipt_not_current")?;
     assert_blocking_actions_have_repair_contract(&payload)?;
 
     Ok(())
@@ -1051,8 +1025,8 @@ fn quality_gate_cli_blocks_new_ripr_when_review_guidance_is_not_actionable() -> 
         payload.pointer("/review_guidance/status").and_then(Value::as_str),
         Some("incomplete")
     );
-    let action = next_action(&payload, "ripr_review_receipt_not_current")?;
-    assert_eq!(action.get("reason").and_then(Value::as_str), Some("incomplete"));
+    next_action(&payload, "new_ripr_gap")?;
+    assert_no_action(&payload, "ripr_review_receipt_not_current")?;
 
     let markdown = fs::read_to_string(&summary)?;
     assert!(
@@ -1290,7 +1264,7 @@ fn quality_gate_cli_does_not_clear_from_unearned_dispositions() -> TestResult {
     );
     let action = next_action(&payload, "new_ripr_gap")?;
     assert_eq!(action.get("new_unresolved").and_then(Value::as_u64), Some(2));
-    next_action(&payload, "ripr_review_receipt_not_current")?;
+    assert_no_action(&payload, "ripr_review_receipt_not_current")?;
     assert_blocking_actions_have_repair_contract(&payload)?;
 
     Ok(())
@@ -1390,6 +1364,15 @@ fn next_action<'a>(receipt: &'a Value, kind: &str) -> TestResult<&'a Value> {
             actions.iter().find(|action| action.get("kind").and_then(Value::as_str) == Some(kind))
         })
         .ok_or_else(|| format!("missing next action `{kind}`").into())
+}
+
+fn assert_no_action(receipt: &Value, kind: &str) -> TestResult {
+    if receipt.get("next_actions").and_then(Value::as_array).is_some_and(|actions| {
+        actions.iter().any(|action| action.get("kind").and_then(Value::as_str) == Some(kind))
+    }) {
+        return Err(format!("unexpected next action `{kind}`").into());
+    }
+    Ok(())
 }
 
 fn assert_blocking_actions_have_repair_contract(receipt: &Value) -> TestResult {

@@ -6,6 +6,7 @@
 //! Fixture layout mirrors `tests/packet_characterization.rs` (fixed
 //! `target/`-relative root; [`RiprFactsRequest::root`] must be repo-relative).
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_ripr_facts::{RiprFactsRequest, build_ripr_facts_packet};
 use perl_tdd_support::{must, must_with};
 

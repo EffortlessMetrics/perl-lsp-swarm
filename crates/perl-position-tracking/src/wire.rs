@@ -1,24 +1,33 @@
 //! LSP wire types and conversion helpers.
 //!
-//! This module defines the protocol-facing equivalents of internal span/position
-//! types. The wire types use:
+//! This module defines **structural** protocol coordinates: `(line, character)`
+//! pairs carried on the wire. Both fields are 0-based. The `character` field has
+//! **no intrinsic encoding** in this crate — its meaning is supplied by the active
+//! session [`PositionEncodingKind`](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/types/#positionEncodingKind)
+//! (UTF-16 by default in LSP 3.17, UTF-8 when negotiated).
 //!
-//! - 0-based line indexes
-//! - UTF-16 code unit character offsets (per LSP)
+//! Conversions between [`WirePosition`] / [`WireRange`] and [`lsp_types::Position`] /
+//! [`lsp_types::Range`] copy those fields only; they never consult source text or
+//! infer an encoding.
 //!
-//! Use [`WirePosition::from_byte_offset`] and [`WirePosition::to_byte_offset`]
-//! to convert between parser byte offsets and LSP-compatible coordinates.
+//! Legacy convenience helpers ([`WirePosition::from_byte_offset`],
+//! [`WirePosition::to_byte_offset`], and the byte-offset range builders) interpret
+//! source bytes using the crate's UTF-16 line/column helpers. They remain for
+//! existing callers but are not wire-type semantics; retirement is tracked in #8727
+//! after consumers migrate to the canonical generation-bound mapper (#8491).
 use crate::{offset_to_utf16_line_col, utf16_line_col_to_offset};
 use serde::{Deserialize, Serialize};
 
 /// A protocol-facing LSP position.
 ///
-/// Both fields are 0-based. `character` is measured in UTF-16 code units.
+/// Both fields are 0-based structural coordinates. The `character` unit is defined
+/// by the active session encoding when the position is interpreted against source
+/// text; this type alone does not embed UTF-16 or UTF-8 semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WirePosition {
     /// Zero-based line number.
     pub line: u32,
-    /// Zero-based UTF-16 code-unit offset within the line.
+    /// Zero-based column offset from the start of the line, in wire column units.
     pub character: u32,
 }
 impl WirePosition {
@@ -27,13 +36,17 @@ impl WirePosition {
         Self { line, character }
     }
 
-    /// Converts a byte offset in `source` into an LSP wire position.
+    /// Converts a byte offset in `source` into wire coordinates using the legacy
+    /// UTF-16 line/column helpers in this crate.
+    ///
+    /// Prefer the canonical generation-bound mapper (#8491) for new call sites.
     pub fn from_byte_offset(source: &str, byte_offset: usize) -> Self {
         let (line, character) = offset_to_utf16_line_col(source, byte_offset);
         Self { line, character }
     }
 
-    /// Converts this LSP wire position back into a byte offset in `source`.
+    /// Converts this wire position back into a byte offset using the legacy UTF-16
+    /// line/column helpers in this crate.
     pub fn to_byte_offset(&self, source: &str) -> usize {
         utf16_line_col_to_offset(source, self.line, self.character)
     }
@@ -53,7 +66,7 @@ impl WireRange {
         Self { start, end }
     }
 
-    /// Builds a wire range from start/end byte offsets in `source`.
+    /// Builds a wire range from start/end byte offsets via [`WirePosition::from_byte_offset`].
     pub fn from_byte_offsets(source: &str, start_byte: usize, end_byte: usize) -> Self {
         Self {
             start: WirePosition::from_byte_offset(source, start_byte),
@@ -160,6 +173,28 @@ impl TryFrom<WireLocation> for lsp_types::Location {
 #[cfg(all(test, feature = "lsp-compat"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wire_position_lsp_types_round_trip_copies_fields_without_source() {
+        let wire = WirePosition::new(2, 5);
+        let lsp: lsp_types::Position = wire.into();
+        assert_eq!(lsp.line, 2);
+        assert_eq!(lsp.character, 5);
+        let back: WirePosition = lsp.into();
+        assert_eq!(back, wire);
+    }
+
+    #[test]
+    fn wire_range_lsp_types_round_trip_copies_fields_without_source() {
+        let wire = WireRange::new(WirePosition::new(0, 1), WirePosition::new(3, 4));
+        let lsp: lsp_types::Range = wire.into();
+        assert_eq!(lsp.start.line, 0);
+        assert_eq!(lsp.start.character, 1);
+        assert_eq!(lsp.end.line, 3);
+        assert_eq!(lsp.end.character, 4);
+        let back: WireRange = lsp.into();
+        assert_eq!(back, wire);
+    }
 
     #[test]
     fn wire_location_to_lsp_location_preserves_valid_uri() -> Result<(), String> {

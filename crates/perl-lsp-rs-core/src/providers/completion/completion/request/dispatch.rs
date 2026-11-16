@@ -148,11 +148,7 @@ fn complete_use_or_structural_context(
         return true;
     }
 
-    if complete_indirect_method_context(provider, completions, context, source, filepath) {
-        return true;
-    }
-
-    false
+    complete_indirect_method_context(provider, completions, context, source, filepath)
 }
 
 fn is_method_arrow_context(context: &CompletionContext) -> bool {

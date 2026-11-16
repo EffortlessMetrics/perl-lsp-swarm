@@ -448,10 +448,15 @@ error: unsupported rustdoc format v57
 # Update cargo-semver-checks
 cargo install cargo-semver-checks --locked --force
 
-# Or use older Rust toolchain for check
-rustup install 1.95.0
-rustup run 1.95.0 cargo semver-checks
+# Check with the pinned compiler, which also meets the current source MSRV
+rustup toolchain install 1.100.0
+rustup run 1.100.0 cargo semver-checks
 ```
+
+The installed cargo-semver-checks release must support the pinned compiler's
+rustdoc format. If it does not, the compatibility check remains blocked until a
+supporting version is available; running Rust 1.95 cannot check source requiring
+Rust 1.100. Updating this command does not itself qualify cargo-semver-checks.
 
 ---
 
