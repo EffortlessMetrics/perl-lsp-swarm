@@ -30,8 +30,13 @@ mod tests {
     use super::super::{CadenceState, classify, parse_date};
     use super::*;
     use color_eyre::eyre::eyre;
+    use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;
+
+    /// The lint this fixture exercises as Clippy debt, and the only identity it
+    /// presents that production does not require.
+    const DEBT_LINT: &str = "clippy::collapsible_if";
 
     #[test]
     fn debt_and_deferred_rows_keep_overdue_owner_work_visible() -> Result<()> {
@@ -146,6 +151,58 @@ configuration_state = "empty-by-design"
         Ok(())
     }
 
+    /// The cadence fixture has to present every identity production requires:
+    /// `validate_cadence_sources` fails closed on a missing one, and that
+    /// failure is projected onto every row as `Invalid`, so a stale fixture
+    /// silently turns a valid policy into a broken one.
+    ///
+    /// Assert set equality against the production authority rather than a count:
+    /// a count assertion still passes under a same-sized substitution, and this
+    /// list has already drifted twice — once per production addition that
+    /// updated a sibling fixture copy and not this one.
+    #[test]
+    fn fixture_presents_exactly_the_required_identity_set() -> Result<()> {
+        let root = tempdir()?;
+        write_fixture(root.path(), 2, "deny")?;
+
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for path in [
+            root.path().join("policy/clippy-lints.toml"),
+            root.path().join("policy/clippy-lints.d/00-fixture.toml"),
+        ] {
+            let parsed: toml::Value = toml::from_str(&fs::read_to_string(&path)?)?;
+            for key in ["lint", "deferred_due"] {
+                let Some(rows) = parsed.get(key).and_then(toml::Value::as_array) else {
+                    continue;
+                };
+                for row in rows {
+                    let name = row
+                        .get("name")
+                        .and_then(toml::Value::as_str)
+                        .ok_or_else(|| eyre!("{key} row without a name in {}", path.display()))?;
+                    *counts.entry(name.to_owned()).or_default() += 1;
+                }
+            }
+        }
+
+        let required = check_lint_policy::required_disposition_identities();
+        for identity in &required {
+            assert_eq!(
+                counts.get(*identity).copied().unwrap_or_default(),
+                1,
+                "required identity {identity} must appear exactly once in the cadence fixture"
+            );
+        }
+        for identity in counts.keys() {
+            let required = required.iter().any(|candidate| *candidate == identity.as_str());
+            assert!(
+                required || identity.as_str() == DEBT_LINT,
+                "the cadence fixture presents {identity}, which production does not require and the debt row does not exercise"
+            );
+        }
+        Ok(())
+    }
+
     fn write_fixture(root: &Path, lint_schema: u64, debt_level: &str) -> Result<()> {
         let policy = root.join("policy");
         fs::create_dir_all(policy.join("clippy-lints.d"))?;
@@ -249,6 +306,48 @@ name = "clippy::decimal_bitwise_operands"
 level = "deny"
 status = "active"
 class = "numeric"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::path_buf_push_overwrite"
+level = "deny"
+status = "active"
+class = "file-policy"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::join_absolute_paths"
+level = "deny"
+status = "active"
+class = "file-policy"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::await_holding_lock"
+level = "deny"
+status = "active"
+class = "async"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::await_holding_refcell_ref"
+level = "deny"
+status = "active"
+class = "async"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::async_yields_async"
+level = "deny"
+status = "active"
+class = "async"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::mutex_atomic"
+level = "deny"
+status = "active"
+class = "async"
 reason = "fixture required pin"
 "##,
         )?;
