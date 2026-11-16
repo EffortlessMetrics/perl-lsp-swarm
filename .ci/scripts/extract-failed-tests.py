@@ -55,12 +55,17 @@ EXIT_CODES = {
 
 # Aggregate precedence, worst first. Any non-success verdict fails the job,
 # so the ordering only decides which typed label a mixed stream reports.
-# Aggregate precedence, worst first. Any non-success verdict fails the job,
-# so the ordering only decides which typed label a mixed stream reports.
 # COMPLETE_WITH_FAILURES must outrank NO_TESTS_DISCOVERED: a filtered
 # workspace run legitimately yields zero-test packages alongside the
 # package that observed failures, and observed failures must never be
 # masked by an empty-package verdict (#15349).
+#
+# NO_TESTS_DISCOVERED is a block-level verdict, not a sweep-level one: it
+# says "this package's lib target contains no tests", which is not evidence
+# about any other package. It therefore contributes no verdict that
+# outranks COMPLETE_PASS once any block has discovered a test (#18648). The
+# aggregate NO_TESTS_DISCOVERED still fires when *no* block discovered a
+# test, which is the condition the scheduled lane's guard protects against.
 _VERDICT_PRECEDENCE = (
     "STREAM_INVALID",
     "COMMAND_FAILED",
@@ -319,7 +324,15 @@ def parse_observation_stream(lines):
         ]
     else:
         verdict = "COMPLETE_PASS"
+        # A block whose lib target contains no tests is not evidence about
+        # anything else in the sweep, so it must not veto the healthy blocks
+        # it shares the sweep with (#18648). The sweep-level
+        # NO_TESTS_DISCOVERED verdict still fires when no block discovered a
+        # test at all, which is what the scheduled lane's guard protects.
+        observed_any_test = any(b["counts"]["discovered"] > 0 for b in blocks)
         for candidate in _VERDICT_PRECEDENCE:
+            if candidate == "NO_TESTS_DISCOVERED" and observed_any_test:
+                continue
             if candidate in block_verdicts:
                 verdict = candidate
                 break
