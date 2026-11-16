@@ -1,0 +1,53 @@
+name: Compose current-main queue stack
+
+on:
+  push:
+    branches:
+      - codex/19326-current-main-stack-20261116
+
+permissions:
+  contents: write
+
+jobs:
+  compose:
+    if: github.event.head_commit.message == 'chore(ci): compose queue metadata on current main (#19326)'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact stack branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/19326-current-main-stack-20261116
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Compose reviewed metadata build-once change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'EffortlessSteven'
+          git config user.email '15812269+EffortlessSteven@users.noreply.github.com'
+          git fetch --no-tags origin \
+            +refs/heads/codex/queue-metadata-build-once:refs/remotes/origin/codex/queue-metadata-build-once
+          git merge --no-ff --no-edit \
+            -m 'ci: compose current-main queue metadata build-once (#19326) [skip ci]' \
+            origin/codex/queue-metadata-build-once
+
+      - name: Verify current-main composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest scripts.ci.test_queue_metadata -q
+          python3 -B -m py_compile \
+            scripts/ci/run_queue_metadata.py \
+            scripts/ci/test_queue_metadata.py
+          git diff --check HEAD^1..HEAD
+
+      - name: Remove one-shot composer and publish exact merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/compose-19326-current-main.yml
+          git add -A
+          git commit --amend --no-edit
+          git push origin HEAD:codex/19326-current-main-stack-20261116
