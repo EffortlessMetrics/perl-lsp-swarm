@@ -176,6 +176,15 @@ def _close_block(block, truncated_no_trailer):
         )
         return
     if counts["discovered"] == 0:
+        observed_test_events = (
+            counts["started"] + counts["passed"] + counts["failed"] + counts["ignored"]
+        )
+        if observed_test_events:
+            block["verdict"] = "NOT_PROVEN"
+            block["reasons"].append(
+                "suite declared zero tests but observed test events"
+            )
+            return
         block["verdict"] = "NO_TESTS_DISCOVERED"
         return
     if counts["failed"] > 0:

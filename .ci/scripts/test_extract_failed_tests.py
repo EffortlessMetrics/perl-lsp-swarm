@@ -526,6 +526,53 @@ class ExtractFailedTestsTest(unittest.TestCase):
         self.assertEqual(receipt["verdict"], "COMPLETE_WITH_FAILURES")
         self.assertEqual(receipt["counts"]["failed"], 1)
 
+    def test_declared_zero_with_observed_test_events_is_not_proven(self):
+        """A declared-empty suite cannot be reconciled with test events."""
+        for observed_event in ("ok", "failed"):
+            with self.subTest(observed_event=observed_event):
+                suite_event = "ok" if observed_event == "ok" else "failed"
+                passed = 1 if observed_event == "ok" else 0
+                failed = 1 if observed_event == "failed" else 0
+                exit_status = 0 if observed_event == "ok" else 101
+                lines = [
+                    envelope("pkg_healthy"),
+                    suite_start(1),
+                    test_event("started", "h::one"),
+                    test_event("ok", "h::one"),
+                    suite_end("ok", 1, 0),
+                    run_end("pkg_healthy", 0),
+                    envelope("pkg_contradictory"),
+                    suite_start(0),
+                    test_event("started", "c::one"),
+                    test_event(observed_event, "c::one"),
+                    suite_end(suite_event, passed, failed),
+                    run_end("pkg_contradictory", exit_status),
+                ]
+                receipt = self.parse(lines)
+                self.assertEqual(receipt["verdict"], "NOT_PROVEN")
+                self.assertEqual(receipt["exit_code"], 6)
+                self.assertFalse(receipt["success_verdict"])
+                self.assertEqual(receipt["counts"]["failed"], failed)
+                contradictory = receipt["blocks"][1]
+                self.assertEqual(contradictory["verdict"], "NOT_PROVEN")
+                self.assertIn(
+                    "suite declared zero tests but observed test events",
+                    contradictory["reasons"],
+                )
+                expected_failures = (
+                    [
+                        {
+                            "package": "pkg_contradictory",
+                            "target": "lib",
+                            "name": "c::one",
+                            "block_start_line": 7,
+                        }
+                    ]
+                    if failed
+                    else []
+                )
+                self.assertEqual(receipt["failures"], expected_failures)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
