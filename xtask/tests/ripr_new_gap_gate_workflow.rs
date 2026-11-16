@@ -3424,6 +3424,18 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         hosted_cap == "2560",
         "ripr-fallback must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {hosted_cap:?}.          Without the pin the lane inherits the CLI's built-in default, which ripr 0.10.0          silently tightened from 1600 to 800 (#15498)"
     );
+    // #19499: admission and partial-selection budgets must select the whole
+    // admitted diff, and the findings array must remain complete. An env entry
+    // without the matching Docker transport would be inert on the hosted lane.
+    for (key, value) in [
+        ("RIPR_MAX_DIFF_CHANGED_RUST_LINES", "8000"),
+        ("RIPR_PARTIAL_DIFF_LINE_BUDGET", "8000"),
+        ("RIPR_PARTIAL_DIFF_FILE_BUDGET", "2560"),
+        ("RIPR_CHECK_FINDINGS_BYTES", "0"),
+    ] {
+        let actual = workflow_job_env_value("ripr-github", key)?;
+        ensure!(actual == value, "ripr-github must pin {key}={value} explicitly; found {actual:?}");
+    }
     for lane in ["ripr-selfhosted"] {
         let cap = workflow_job_env_value(lane, "RIPR_MAX_DIFF_INDEX_FILES")?;
         ensure!(
@@ -3436,6 +3448,10 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         .ok_or_else(|| anyhow!("missing Generate PR evidence step"))?;
     for expected in [
         "-e RIPR_MAX_DIFF_INDEX_FILES=2560",
+        "-e RIPR_MAX_DIFF_CHANGED_RUST_LINES=8000",
+        "-e RIPR_PARTIAL_DIFF_LINE_BUDGET=8000",
+        "-e RIPR_PARTIAL_DIFF_FILE_BUDGET=2560",
+        "-e RIPR_CHECK_FINDINGS_BYTES=0",
         "--memory=14g",
         "--memory-swap=14g",
         "docker_memory=14g",
