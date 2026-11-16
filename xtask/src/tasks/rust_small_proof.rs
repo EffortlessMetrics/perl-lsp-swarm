@@ -279,7 +279,7 @@ pub struct RustSmallProofReceipt {
     pub result: ProofResult,
 }
 
-/// The full ordered step vocabulary: the seven pinned cargo steps, then census,
+/// The full ordered step vocabulary: every pinned cargo step, then census,
 /// replay, and diff hygiene. Built from the same constants the runtime uses, so
 /// a step added to `CARGO_STEPS` without a receipt entry is impossible.
 fn expected_steps() -> Vec<(String, Vec<String>)> {
@@ -1632,8 +1632,9 @@ tests::gamma: test
 
     #[test]
     fn a_failed_lane_records_the_untouched_remainder_as_not_run() {
-        // The receipt of a lane that stopped at step 2 must still carry all
-        // ten steps: omission and non-execution have to stay distinguishable.
+        // The receipt of a lane that stopped at step 2 must still carry every
+        // step the lane defines: omission and non-execution have to stay
+        // distinguishable.
         let mut recorder = Recorder::new();
         recorder.record(
             "fetch locked inputs",
@@ -1691,7 +1692,7 @@ tests::gamma: test
     #[test]
     fn a_forged_failure_result_over_all_ok_steps_is_refused() {
         // Review #13882: internal consistency was previously checked only for
-        // success, so a failure result over nine ok steps verified.
+        // success, so a failure result over all ok steps verified.
         let mut receipt = success_receipt();
         receipt.result = ProofResult::ProductFailure;
         let text = rejection(&receipt, None);
@@ -2400,7 +2401,7 @@ tests::gamma: test
         // mutation below is re-run at every index, which also documents that
         // these checks are position-independent.
         let count = expected_steps().len();
-        assert_eq!(count, 10, "the sweep must cover the whole lane");
+        assert_eq!(count, CARGO_STEPS.len() + 3, "the sweep must cover the whole lane");
 
         for index in 0..count {
             let name = || receipt_step_name(index);
