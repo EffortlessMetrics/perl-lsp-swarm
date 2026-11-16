@@ -1643,6 +1643,15 @@ fn current_commit() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_lsp_rs_core::tooling::perl_critic::{NativeCriticProfile, NativeCriticRegistry};
+
+    /// The number of native critic rules the strict profile selects.
+    ///
+    /// Derived from the registry the status report selects from, so adding a
+    /// rule cannot stale a pinned count (#17944).
+    fn strict_native_rule_count() -> u64 {
+        NativeCriticRegistry::for_profile(NativeCriticProfile::Strict).rule_ids().len() as u64
+    }
 
     #[test]
     fn native_tooling_status_writes_receipt_and_markdown() -> Result<()> {
@@ -1840,7 +1849,8 @@ mod tests {
         assert_eq!(value["formatter"]["format_else_placement"], "separate-line");
         assert_eq!(value["formatter"]["format_keyword_spacing"], "compact");
         assert_eq!(value["formatter"]["format_trailing_comma"], "add-when-wrapped");
-        assert_eq!(value["critic"]["native_rule_count"], 31);
+        let strict_rules = strict_native_rule_count();
+        assert_eq!(value["critic"]["native_rule_count"].as_u64(), Some(strict_rules));
         assert_eq!(value["critic"]["critic_check_receipt_present"], true);
         assert_eq!(value["critic"]["critic_check_profile"], "strict");
         assert_eq!(value["critic"]["critic_check_files_checked"], 3);
