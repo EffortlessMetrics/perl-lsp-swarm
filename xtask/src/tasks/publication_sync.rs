@@ -1081,7 +1081,7 @@ mod tests {
         message: PathBuf,
     }
 
-    fn fixture() -> Result<Fixture> {
+    fn make_fixture() -> Result<Fixture> {
         let dir = tempfile::tempdir()?;
         let repo = dir.path().join("repo");
         fs::create_dir_all(&repo)?;
@@ -1143,7 +1143,7 @@ mod tests {
 
     #[test]
     fn deterministic_projection_satisfies_contract_shape() -> Result<()> {
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         let out1 = fixture.repo.parent().ok_or_else(|| eyre!("parent"))?.join("out1");
         let out2 = fixture.repo.parent().ok_or_else(|| eyre!("parent"))?.join("out2");
         project(config(&fixture, out1.clone()))?;
@@ -1177,7 +1177,7 @@ mod tests {
 
     #[test]
     fn blocked_ledger_fails_closed() -> Result<()> {
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         fs::write(
             &fixture.ledger,
             r#"{"schema_version":"v0.18_reconciliation.v1","release":"0.18.0-rc.1","decisions":[],"blockers":["open"]}"#,
@@ -1190,7 +1190,7 @@ mod tests {
 
     #[test]
     fn not_proven_invariant_fails_closed() -> Result<()> {
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&fixture.manifest)?)?;
         value["required_invariants"][0]["status"] = serde_json::json!("not_proven");
         fs::write(&fixture.manifest, serde_json::to_vec(&value)?)?;
@@ -1218,7 +1218,7 @@ mod tests {
 
     #[test]
     fn tree_entry_returns_blob_sha_without_tab() -> Result<()> {
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         let (mode, sha) = tree_entry(&fixture.repo, &fixture.source, "app/main.pl")?
             .ok_or_else(|| eyre!("missing tree entry"))?;
         assert_eq!(mode, "100644");
@@ -1260,14 +1260,14 @@ mod tests {
     #[test]
     fn swarm_translation_sha256_bindings() -> Result<()> {
         let digest = sha256_hex(b"use strict;\n");
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         set_translations(
             &fixture,
             serde_json::json!([{"from":"app/main.pl","to":"app/copied.pl","content":{"kind":"swarm"},"source_sha256":digest,"expected_sha256":digest}]),
         )?;
         project(config(&fixture, out_path(&fixture, "out-swarm")?))?;
 
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         set_translations(
             &fixture,
             serde_json::json!([{"from":"app/main.pl","to":"app/copied.pl","content":{"kind":"swarm"},"source_sha256":sha256_hex(b"wrong")}]),
@@ -1277,7 +1277,7 @@ mod tests {
             .ok_or_else(|| eyre!("stale swarm source must fail"))?;
         assert!(err.to_string().contains("stale input"), "unexpected: {err}");
 
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         set_translations(
             &fixture,
             serde_json::json!([{"from":"app/main.pl","to":"app/copied.pl","content":{"kind":"swarm"},"expected_sha256":sha256_hex(b"wrong")}]),
@@ -1292,7 +1292,7 @@ mod tests {
     #[test]
     fn release_blob_inline_and_in_place_bindings() -> Result<()> {
         // Release (default path = `to`) with correct expected digest.
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         set_translations(
             &fixture,
             serde_json::json!([{"from":"docs/old.md","to":"README.md","content":{"kind":"release"},"expected_sha256":sha256_hex(b"perl-lsp base\n")}]),
@@ -1300,7 +1300,7 @@ mod tests {
         project(config(&fixture, out_path(&fixture, "out-release")?))?;
 
         // Blob by id with correct expected digest.
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         let (_, blob) = tree_entry(&fixture.repo, &fixture.source, "app/main.pl")?
             .ok_or_else(|| eyre!("blob entry"))?;
         set_translations(
@@ -1310,7 +1310,7 @@ mod tests {
         project(config(&fixture, out_path(&fixture, "out-blob")?))?;
 
         // Inline with wrong expected digest fails as unexpected content.
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         set_translations(
             &fixture,
             serde_json::json!([{"from":"docs/old.md","to":"docs/new.md","content":{"kind":"inline","text":"new docs\n"},"expected_sha256":sha256_hex(b"wrong")}]),
@@ -1321,7 +1321,7 @@ mod tests {
         assert!(err.to_string().contains("unexpected content"), "unexpected: {err}");
 
         // In-place from==to translation is allowed.
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         set_translations(
             &fixture,
             serde_json::json!([{"from":"app/main.pl","to":"app/main.pl","content":{"kind":"inline","text":"changed\n"}}]),
@@ -1332,7 +1332,7 @@ mod tests {
 
     #[test]
     fn verify_join_uses_committed_packet_and_rejects_tampering() -> Result<()> {
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         let out = out_path(&fixture, "out-verify")?;
         project(config(&fixture, out.clone()))?;
         let receipt: serde_json::Value =
@@ -1366,7 +1366,7 @@ mod tests {
 
     #[test]
     fn missing_exclusion_target_fails_closed() -> Result<()> {
-        let fixture = fixture()?;
+        let fixture = make_fixture()?;
         let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&fixture.manifest)?)?;
         value["exclusions"] = serde_json::json!(["nope/missing.txt"]);
         fs::write(&fixture.manifest, serde_json::to_vec(&value)?)?;
