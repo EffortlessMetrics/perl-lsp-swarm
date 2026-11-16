@@ -10,6 +10,6 @@ body: >-
   CI Gate Self-Tests lane instead of running nowhere.
 time: 2026-11-16T11:30:00Z
 custom:
-  PR: 18648
+  PR: 19498
   Slug: flake-empty-block-precedence
   Breaking: "no"
