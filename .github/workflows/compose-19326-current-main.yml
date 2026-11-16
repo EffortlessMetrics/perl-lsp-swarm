@@ -1,4 +1,4 @@
-name: Compose current-main queue stack
+name: Export current-main queue stack
 
 on:
   push:
@@ -6,13 +6,13 @@ on:
       - codex/19326-current-main-stack-20261116
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   compose:
     if: >-
       github.event.head_commit.message ==
-      'fix(ci): repair one-shot queue composer (#19326)'
+      'ci: export exact current-main queue composition (#19326)'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -21,7 +21,7 @@ jobs:
         with:
           ref: codex/19326-current-main-stack-20261116
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Compose reviewed metadata build-once change
         shell: bash
@@ -45,11 +45,59 @@ jobs:
             scripts/ci/test_queue_metadata.py
           git diff --check HEAD^1..HEAD
 
-      - name: Remove one-shot composer and publish exact merge
+      - name: Export exact composed files and receipt
         shell: bash
         run: |
           set -euo pipefail
-          rm .github/workflows/compose-19326-current-main.yml
-          git add -A
-          git commit --amend --no-edit
-          git push origin HEAD:codex/19326-current-main-stack-20261116
+          files=(
+            .github/workflows/agent-capability-gate.yml
+            .github/workflows/methodology-enforcement.yml
+            .github/workflows/workflow-trigger-lint.yml
+            docs/ci/queue-metadata-build-once.md
+            scripts/ci/run_queue_metadata.py
+            scripts/ci/test_queue_metadata.py
+          )
+          rm -rf export
+          mkdir -p export
+          for file in "${files[@]}"; do
+            mkdir -p "export/$(dirname "$file")"
+            cp -- "$file" "export/$file"
+          done
+          sha256sum "${files[@]}" > export/MANIFEST.sha256
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          def git(*args: str) -> str:
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          receipt = {
+              "base_merge_commit": git("merge-base", "HEAD", "origin/main"),
+              "composed_head": git("rev-parse", "HEAD"),
+              "source_head": git("rev-parse", "origin/codex/queue-metadata-build-once"),
+              "source_pr": 19368,
+              "work_package": 19326,
+              "focused_tests": [
+                  "python3 -B -m unittest scripts.ci.test_queue_metadata -q",
+                  "python3 -B -m py_compile scripts/ci/run_queue_metadata.py scripts/ci/test_queue_metadata.py",
+                  "git diff --check HEAD^1..HEAD",
+              ],
+          }
+          Path("export/COMPOSITION.json").write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          tar -C export -czf queue-metadata-current-main.tar.gz .
+          sha256sum queue-metadata-current-main.tar.gz > queue-metadata-current-main.tar.gz.sha256
+
+      - name: Upload exact current-main composition
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: queue-metadata-current-main-${{ github.run_id }}
+          path: |
+            queue-metadata-current-main.tar.gz
+            queue-metadata-current-main.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
