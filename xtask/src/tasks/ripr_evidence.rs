@@ -5725,7 +5725,12 @@ fn degraded_guidance_annotation(packet: &Value) -> Option<String> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .find(|warning| warning.get("kind").and_then(Value::as_str) == Some("tool_error"))
+        .find(|warning| {
+            matches!(
+                warning.get("kind").and_then(Value::as_str),
+                Some("tool_error" | REVIEW_GUIDANCE_OVERSIZED)
+            )
+        })
         .and_then(|warning| warning.get("message").and_then(Value::as_str))
         .map(first_line)
         .unwrap_or_else(|| "no tool_error reason was recorded".to_string());
@@ -12273,6 +12278,13 @@ paths = ["archive/["]
         let markdown = fs::read_to_string(repo.join(REVIEW_COMMENTS_MD))?;
         assert!(markdown.contains("- status: incomplete"), "{markdown}");
         assert!(markdown.contains(reason), "{markdown}");
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+        assert!(rendered.text.contains("review_guidance_oversized:"), "{rendered:?}");
+        assert!(
+            rendered.text.contains("RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES=1200"),
+            "{rendered:?}"
+        );
+        assert!(!rendered.text.contains("no tool_error reason was recorded"), "{rendered:?}");
         assert!(
             review_guidance_oversized_reason("ripr: review_guidance_oversized_metadata: unrelated")
                 .is_none()
