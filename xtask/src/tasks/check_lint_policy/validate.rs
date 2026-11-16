@@ -10,7 +10,9 @@ pub(super) use config::validate_clippy_config_value;
 #[cfg(test)]
 pub(super) use debt::validate_debt_ledger;
 #[cfg(test)]
-pub(super) use disposition::{validate_required_dispositions, validate_workspace_lints};
+pub(super) use disposition::{
+    REQUIRED_DISPOSITIONS, validate_required_dispositions, validate_workspace_lints,
+};
 
 use super::model::{DebtLedger, LintLedger};
 use color_eyre::eyre::Result;
