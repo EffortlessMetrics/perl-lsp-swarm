@@ -1026,7 +1026,15 @@ sudo() {
           ;;
         ripr-plus)
           [ "$3" = "--receipt" ] && [ "$4" = "target/receipts/quality/ripr-plus.json" ] || return 1
-          if [ "$#" -eq 5 ]; then [ "$5" = "--check" ] || return 1; elif [ "$#" -ne 4 ]; then return 1; fi
+          if [ "$#" -eq 6 ]; then
+            [ "$5" = "--checkpoint" ] || [ "$5" = "--check-generated" ] || return 1
+            [ "$6" = "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json" ] || return 1
+          elif [ "$#" -eq 7 ]; then
+            [ "$5" = "--check" ] && [ "$6" = "--checkpoint" ] || return 1
+            [ "$7" = "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json" ] || return 1
+          else
+            return 1
+          fi
           ;;
         ripr-review-comments)
           [ "$3" = "--base" ] && [ "$4" = "$FAKE_BASE" ] || return 1
@@ -1512,14 +1520,16 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     assert!(
         workflow.contains("cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json")
             && workflow.contains(
-                "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check"
+                "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check --checkpoint"
             )
             && workflow.contains("target/receipts/quality/ripr-plus.json"),
         "ripr.yml must generate, check, and upload the repo-wide RIPR+ receipt"
     );
     assert!(
         xtask_main.contains("RiprPlus")
-            && xtask_main.contains("ripr_plus(&root, &receipt, &suppressions, check)")
+            && xtask_main.contains("ripr_evidence::ripr_plus(")
+            && xtask_main.contains("checkpoint.as_deref(),")
+            && xtask_main.contains("check_generated.as_deref(),")
             && xtask_main.contains("default_value = \"policy/ripr-suppressions.toml\""),
         "PR1 workflow must not call a missing `cargo xtask ripr-plus` command"
     );
@@ -1532,7 +1542,7 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         .ok_or("missing validate step")?;
     for check_command in [
         "cargo xtask ripr-pr --base",
-        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
+        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check-generated",
     ] {
         assert!(
             validate_step.contains(check_command) && validate_step.contains("--check"),
@@ -2110,8 +2120,10 @@ ci-disk-guard() {
         );
     }
     for expected_command in [
-        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json".to_owned(),
-        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check".to_owned(),
+        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --checkpoint"
+            .to_owned(),
+        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check-generated"
+            .to_owned(),
         format!(
             "cargo xtask ripr-review-comments --base {FALLBACK_BASE} --head {FALLBACK_EVALUATED} --pr-head {FALLBACK_RAW_HEAD} --timeout-seconds 3600"
         ),

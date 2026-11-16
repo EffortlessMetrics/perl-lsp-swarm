@@ -314,6 +314,40 @@ the current advisory version for this lane, built from
 
 ---
 
+## Same-run verification in CI
+
+Ordinary `ripr-plus --check` still recomputes both repo-wide sensors and compares
+the complete receipt. Linux CI uses an explicit same-run path to avoid running
+those two sensors again after a successful generation (#19326):
+
+```bash
+cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --checkpoint "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"
+cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check-generated "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"
+```
+
+The producer verifies its written bytes against the packet it just computed and
+requires unchanged inputs before and after analysis. The later check compares the
+receipt digest and bindings for the run token, HEAD/tree/index, all checkout inputs
+outside root `.git` and `target`, suppression policy, and RIPR/xtask executables.
+It also binds Cargo/Rust/Git environment selectors, ancestor and Cargo-home
+configuration, and the selected Git, Cargo and rustc helpers (including the actual
+toolchain binary behind a rustup proxy). The CI path requires an absolute,
+discoverable Cargo home. Primary hosted steps pin `CARGO_LOG` consistently even
+when the build observer is unavailable.
+Ignored and untracked inputs are included; source links escaping the checkout are
+refused. The bounded walk accepts at most 100,000 entries and 2 GiB of source bytes.
+The checkpoint must be a regular file outside the checkout and is never cached or
+uploaded. These are same-run checks, not cross-run analysis reuse.
+
+Dependency-cache integrity is an instrument premise inherited from pinned RIPR.
+The qualified producer-to-consumer window contains no dependency installation or
+cache restore; workflow contracts enforce that order. The checkpoint does not
+claim hermeticity if another process changes the registry cache during that window.
+
+A restored receipt must first pass `--check --checkpoint` to recompute the current
+answer and compare every byte. Failure invalidates any earlier checkpoint and
+does not regenerate or retry. The normal new-gap and quality gates still run.
+
 ## Running locally
 
 ```bash

@@ -27,6 +27,9 @@ use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestry};
 
+#[path = "ripr_evidence_checkpoint.rs"]
+mod checkpoint;
+
 #[cfg(test)]
 static RIPR_BIN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -135,13 +138,67 @@ pub fn ripr_pr(
     if check { check_pr_evidence(&repo, &options) } else { write_pr_evidence(&repo, &options) }
 }
 
-pub fn ripr_plus(root: &str, receipt: &Path, suppressions: &Path, check: bool) -> Result<()> {
+pub fn ripr_plus(
+    root: &str,
+    receipt: &Path,
+    suppressions: &Path,
+    check: bool,
+    checkpoint: Option<&Path>,
+    check_generated: Option<&Path>,
+) -> Result<()> {
     let repo = repo_root()?;
     let options = RiprPlusOptions {
         root: normalized_option(root, DEFAULT_ROOT),
         suppressions: suppressions.to_path_buf(),
     };
-    let packet = ripr_plus_packet(&repo, &options)?;
+    let token = if checkpoint.is_some() || check_generated.is_some() {
+        Some(
+            env::var(FRESHNESS_TOKEN_ENV)
+                .context("same-run RIPR+ verification needs RIPR_FRESHNESS_TOKEN")?,
+        )
+    } else {
+        None
+    };
+    ripr_plus_at(&repo, &options, receipt, check, checkpoint, check_generated, token.as_deref())
+}
+
+fn ripr_plus_at(
+    repo: &Path,
+    options: &RiprPlusOptions,
+    receipt: &Path,
+    check: bool,
+    checkpoint_path: Option<&Path>,
+    check_generated: Option<&Path>,
+    token: Option<&str>,
+) -> Result<()> {
+    let identity = || {
+        checkpoint::capture(
+            repo,
+            &command_root_arg(repo, &options.root)?,
+            &options.suppressions,
+            receipt,
+            &ripr_binary()?,
+            token.ok_or_else(|| eyre!("same-run RIPR+ verification needs a run token"))?,
+        )
+    };
+    if let Some(path) = check_generated {
+        if check || checkpoint_path.is_some() {
+            bail!("--check-generated cannot be combined with --check or --checkpoint");
+        }
+        checkpoint::external_path(path, repo)?;
+        checkpoint::verify(path, &identity()?, &repo.join(receipt))?;
+        println!("RIPR+ same-run receipt is unchanged: {}", receipt.display());
+        return Ok(());
+    }
+    // A failed producer or full cache check must never leave an earlier
+    // checkpoint usable by the workflow's always-run validation step.
+    let before = if let Some(path) = checkpoint_path {
+        checkpoint::invalidate(path, repo)?;
+        Some(identity()?)
+    } else {
+        None
+    };
+    let packet = ripr_plus_packet(repo, options)?;
     let rendered = format_json(&packet)?;
     let receipt_path = repo.join(receipt);
     if check {
@@ -159,6 +216,13 @@ pub fn ripr_plus(root: &str, receipt: &Path, suppressions: &Path, check: bool) -
     } else {
         write_text(&receipt_path, &rendered)?;
         println!("Wrote {}", receipt_path.display());
+    }
+    if let (Some(path), Some(before)) = (checkpoint_path, before) {
+        let after = identity()?;
+        if before != after {
+            bail!("RIPR+ inputs changed during analysis; no same-run checkpoint published");
+        }
+        checkpoint::publish(path, &after, &receipt_path, rendered.as_bytes())?;
     }
     Ok(())
 }
@@ -9128,6 +9192,208 @@ const fn compute() -> bool {
         assert_eq!(packet["unresolved"], json!(2722));
         assert_eq!(packet["head"], json!("head-sha"));
         assert_eq!(packet["basis"], json!("canonical_actionable_gap"));
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ripr_plus_checkpoint_fixture()
+    -> Result<(tempfile::TempDir, tempfile::TempDir, RiprPlusOptions, PathBuf)> {
+        let repo = tempfile::tempdir()?;
+        let tools = tempfile::tempdir()?;
+        init_git_repo(repo.path())?;
+        fs::write(repo.path().join("ripr.toml"), "[analysis]\nmode = \"draft\"\n")?;
+        fs::write(repo.path().join(".gitignore"), "/target/\n")?;
+        fs::create_dir(repo.path().join("policy"))?;
+        fs::write(repo.path().join("policy/ripr-suppressions.toml"), "schema_version = 1\n")?;
+        let binary = write_fake_ripr_binary(tools.path())?;
+        let source = fs::read_to_string(&binary)?.replace(
+            "#!/bin/sh\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/calls\"\n",
+        );
+        fs::write(&binary, source)?;
+        let options = RiprPlusOptions {
+            root: ".".into(),
+            suppressions: "policy/ripr-suppressions.toml".into(),
+        };
+        Ok((repo, tools, options, binary))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics() -> Result<()> {
+        let (repo, tools, options, binary) = ripr_plus_checkpoint_fixture()?;
+        let _override = override_ripr_bin(&binary)?;
+        let receipt = Path::new("target/receipts/quality/ripr-plus.json");
+        let checkpoint = tools.path().join("checkpoint.json");
+        let calls = || -> Result<usize> {
+            Ok(fs::read_to_string(tools.path().join("calls"))?.lines().count())
+        };
+        ripr_plus_at(
+            repo.path(),
+            &options,
+            receipt,
+            false,
+            Some(&checkpoint),
+            None,
+            Some("run-one"),
+        )?;
+        assert_eq!(calls()?, 2);
+        ripr_plus_at(
+            repo.path(),
+            &options,
+            receipt,
+            false,
+            None,
+            Some(&checkpoint),
+            Some("run-one"),
+        )?;
+        assert_eq!(calls()?, 2, "same-run verification must not launch either sensor");
+        // This control is the old generation + --check behavior: a full check
+        // really invokes both sensors again. The optimization cannot leak into
+        // ordinary callers or accept an arbitrary restored receipt by its head.
+        ripr_plus_at(repo.path(), &options, receipt, true, None, None, None)?;
+        assert_eq!(calls()?, 4, "ordinary --check must still recompute");
+        ripr_plus_at(repo.path(), &options, receipt, true, None, None, None)?;
+        assert_eq!(calls()?, 6, "repeated ordinary --check must still recompute");
+        ripr_plus_at(
+            repo.path(),
+            &options,
+            receipt,
+            true,
+            Some(&checkpoint),
+            None,
+            Some("run-two"),
+        )?;
+        assert_eq!(calls()?, 8, "a cache hit earns its checkpoint through a full check");
+        ripr_plus_at(
+            repo.path(),
+            &options,
+            receipt,
+            false,
+            None,
+            Some(&checkpoint),
+            Some("run-two"),
+        )?;
+        assert_eq!(calls()?, 8);
+
+        let original = fs::read(repo.path().join(receipt))?;
+        fs::write(repo.path().join(receipt), b"{\"head\":\"unchanged\",\"unresolved\":0}")?;
+        assert!(
+            ripr_plus_at(
+                repo.path(),
+                &options,
+                receipt,
+                false,
+                None,
+                Some(&checkpoint),
+                Some("run-two")
+            )
+            .is_err()
+        );
+        assert_eq!(calls()?, 8, "tampered receipt refusal is analysis-free");
+        assert!(
+            ripr_plus_at(
+                repo.path(),
+                &options,
+                receipt,
+                true,
+                Some(&checkpoint),
+                None,
+                Some("run-three")
+            )
+            .is_err()
+        );
+        assert_eq!(calls()?, 10);
+        assert!(!checkpoint.exists(), "failed cache verification invalidates old checkpoint");
+        assert_ne!(
+            fs::read(repo.path().join(receipt))?,
+            original,
+            "cache checking must not repair corrupt bytes"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer()
+    -> Result<()> {
+        let (repo, tools, options, binary) = ripr_plus_checkpoint_fixture()?;
+        let _override = override_ripr_bin(&binary)?;
+        let receipt = Path::new("target/receipts/quality/ripr-plus.json");
+        let checkpoint = tools.path().join("checkpoint.json");
+        ripr_plus_at(repo.path(), &options, receipt, false, Some(&checkpoint), None, Some("run"))?;
+        let verify = |token| {
+            ripr_plus_at(
+                repo.path(),
+                &options,
+                receipt,
+                false,
+                None,
+                Some(&checkpoint),
+                Some(token),
+            )
+        };
+        assert!(verify("another-run").is_err());
+        for path in ["tracked.txt", "policy/ripr-suppressions.toml", "ripr.toml"] {
+            let full = repo.path().join(path);
+            let original = fs::read(&full)?;
+            fs::write(&full, b"different bytes")?;
+            assert!(verify("run").is_err(), "changed input {path} must invalidate");
+            fs::write(&full, original)?;
+        }
+        let producer = fs::read(&binary)?;
+        fs::write(&binary, b"#!/bin/sh\nexit 17\n")?;
+        assert!(verify("run").is_err(), "changing the actual producer must invalidate");
+        fs::write(&binary, &producer)?;
+        verify("run")?;
+        fs::write(&binary, b"#!/bin/sh\nexit 17\n")?;
+        assert!(
+            ripr_plus_at(
+                repo.path(),
+                &options,
+                receipt,
+                false,
+                Some(&checkpoint),
+                None,
+                Some("run")
+            )
+            .is_err()
+        );
+        assert!(
+            !checkpoint.exists(),
+            "failed producer must invalidate prior successful checkpoint"
+        );
+        fs::write(&binary, producer)?;
+        assert!(
+            verify("run").is_err(),
+            "restoring producer cannot revive an invalidated checkpoint"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ripr_plus_checkpoint_refuses_input_mutation_during_analysis() -> Result<()> {
+        let (repo, tools, options, binary) = ripr_plus_checkpoint_fixture()?;
+        let mutation = format!("printf changed >> '{}/tracked.txt'\n", repo.path().display());
+        let source =
+            fs::read_to_string(&binary)?.replace("#!/bin/sh\n", &format!("#!/bin/sh\n{mutation}"));
+        fs::write(&binary, source)?;
+        let _override = override_ripr_bin(&binary)?;
+        let checkpoint = tools.path().join("checkpoint.json");
+        let error = ripr_plus_at(
+            repo.path(),
+            &options,
+            Path::new("target/ripr-plus.json"),
+            false,
+            Some(&checkpoint),
+            None,
+            Some("run"),
+        )
+        .err()
+        .ok_or_else(|| eyre!("changing source unexpectedly received a checkpoint"))?;
+        assert!(error.to_string().contains("changed during analysis"));
+        assert!(!checkpoint.exists());
         Ok(())
     }
 

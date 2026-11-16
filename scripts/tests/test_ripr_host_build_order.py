@@ -8,7 +8,7 @@ import unittest
 
 DEFAULT = Path(__file__).resolve().parents[2] / '.github/workflows/ripr.yml'
 WORKFLOW = Path(os.environ.get('WORKFLOW_UNDER_TEST', DEFAULT))
-HOST_COMMAND = 'bash scripts/ci/observe-xtask-build.sh host-initial "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --locked'
+HOST_COMMAND = 'bash scripts/ci/observe-xtask-build.sh host-initial "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --bin xtask --locked'
 ALWAYS = ['Adjudicate receipt cache exactness', 'Generate repo-wide RIPR+ baseline receipt',
           'Record exact RIPR badge producer', 'Generate review guidance',
           'Generate impacted evidence', 'Generate PR evidence summary',
@@ -18,7 +18,8 @@ ALWAYS = ['Adjudicate receipt cache exactness', 'Generate repo-wide RIPR+ baseli
           'Append PR evidence summary', 'Record RIPR freshness handoff result']
 CHECKS = [
     ['xtask', 'ripr-pr', '--base', 'origin/main', '--head', 'HEAD', '--pr-head', 'fixed-pr-head', '--check'],
-    ['xtask', 'ripr-plus', '--receipt', 'target/receipts/quality/ripr-plus.json', '--check'],
+    ['xtask', 'ripr-plus', '--receipt', 'target/receipts/quality/ripr-plus.json',
+     '--check-generated', '$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json'],
     ['xtask', 'impacted-evidence', '--labels-csv', 'proof-label', '--check'],
     ['xtask', 'ripr-pr-summary', '--check'], ['xtask', 'ripr-annotations', '--check'],
 ]
@@ -100,8 +101,10 @@ class OrderProof(unittest.TestCase):
             self.assertTrue(os.access(observations, os.W_OK))
             self.assertRegex(values['RIPR_FRESHNESS_TOKEN'], r'^20/3/[0-9]+$')
 
-    def test_package_wide_build_and_conditions(self):
+    def test_main_binary_build_and_conditions(self):
         self.assertEqual(field(self.parts['Build xtask'], 'run'), HOST_COMMAND)
+        builds = re.findall(r'\bcargo build -p xtask[^\n]*', WORKFLOW.read_text())
+        self.assertEqual(builds, ['cargo build -p xtask --bin xtask --locked'] * 4)
         self.assertIn(field(self.primary_job, 'continue-on-error', indent=4), (None, 'false'))
         mandatory = ['Build xtask', 'Run ripr doctor', 'Generate PR evidence',
                      'Restore memoized ripr-plus receipt'] + ALWAYS
@@ -121,6 +124,9 @@ class OrderProof(unittest.TestCase):
                          "always() && steps.ripr-freshness-result.outputs.ready == 'true'")
         self.assertEqual(field(self.parts['Save memoized ripr-plus receipt'], 'if'),
                          "success() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''")
+        for name in ['Generate repo-wide RIPR+ baseline receipt', 'Validate PR evidence contracts']:
+            self.assertEqual(field(self.parts[name], 'CARGO_LOG', indent=10),
+                             'cargo::core::compiler::fingerprint=trace', name)
 
     def validate(self, token, fail_call=0):
         import json
@@ -139,6 +145,7 @@ class OrderProof(unittest.TestCase):
                        RIPR_FRESHNESS_TOKEN='current-token', BASE_REF='main', PR_HEAD_SHA='fixed-pr-head',
                        RIPR_BASE_SHA='origin/main', RIPR_EVALUATED_SHA='HEAD',
                        PR_LABELS='proof-label', MOCK_CALLS=str(root / 'calls.jsonl'), MOCK_FAIL_CALL=str(fail_call))
+            env['CARGO_LOG'] = field(self.parts['Validate PR evidence contracts'], 'CARGO_LOG', indent=10) or ''
             script = bash_run(self.parts['Validate PR evidence contracts'])
             # The subject guard needs a real git checkout, so it cannot run
             # under this mock-cargo harness (temp cwd, no repository). Its
@@ -156,7 +163,52 @@ class OrderProof(unittest.TestCase):
                                      script],
                                     cwd=root, env=env, text=True, capture_output=True, timeout=10)
             calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()] if (root / 'calls.jsonl').exists() else []
+            calls = [[arg.replace(str(handoff) + '/', '$RIPR_FRESHNESS_HANDOFF/')
+                      for arg in call] for call in calls]
             return result, calls
+
+    def test_restored_receipt_needs_full_verification_and_failure_does_not_regenerate(self):
+        import json
+        for cache_hit, fail in [(True, False), (False, False), (True, True), (False, True)]:
+            with self.subTest(cache_hit=cache_hit, fail=fail), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                handoff = root / 'handoff'
+                handoff.mkdir()
+                receipt = root / 'target/receipts/quality/ripr-plus.json'
+                receipt.parent.mkdir(parents=True)
+                receipt.write_text('restored bytes')
+                cargo = root / 'cargo'
+                cargo.write_text('#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\n'
+                                 'with Path(os.environ["MOCK_CALLS"]).open("a") as f:f.write(json.dumps(sys.argv[1:])+"\\n")\n'
+                                 'sys.exit(int(os.environ["MOCK_STATUS"]))\n')
+                cargo.chmod(0o700)
+                git = root / 'git'
+                git.write_text('#!/bin/sh\nprintf "fixture-head\\n"\n')
+                git.chmod(0o700)
+                env = os.environ.copy()
+                env.pop('BASH_ENV', None)
+                env.update(PATH=str(root) + os.pathsep + env['PATH'],
+                           RIPR_FRESHNESS_HANDOFF=str(handoff),
+                           RIPR_RECEIPT_CACHE_HIT=str(cache_hit).lower(),
+                           MOCK_CALLS=str(root / 'calls'), MOCK_STATUS='37' if fail else '0')
+                env['CARGO_LOG'] = field(self.parts['Generate repo-wide RIPR+ baseline receipt'], 'CARGO_LOG', indent=10) or ''
+                script = bash_run(self.parts['Generate repo-wide RIPR+ baseline receipt'])
+                observer = ('bash scripts/ci/observe-xtask-build.sh host-baseline '
+                            '"$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- ')
+                self.assertIn(observer, script)
+                # The existing observer has its own execution proof; this
+                # control discriminates the workflow's cache branches.
+                script = script.replace(observer, '')
+                result = subprocess.run(['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', script],
+                                        cwd=root, env=env, text=True, capture_output=True, timeout=10)
+                calls = [json.loads(line) for line in (root / 'calls').read_text().splitlines()] if (root / 'calls').exists() else []
+                expected = ['xtask', 'ripr-plus', '--receipt', 'target/receipts/quality/ripr-plus.json']
+                if cache_hit:
+                    expected += ['--check']
+                expected += ['--checkpoint', str(handoff / 'ripr-plus-checkpoint.json')]
+                self.assertEqual(calls, [expected], 'failed restoration must not retry as production')
+                self.assertEqual(result.returncode, 37 if fail else 0, result.stderr)
+                self.assertEqual((receipt.parent / '.ripr-plus-fresh').exists(), not cache_hit and not fail)
 
     def test_valid_marker_invokes_all_exact_checks(self):
         result, calls = self.validate('current-token')

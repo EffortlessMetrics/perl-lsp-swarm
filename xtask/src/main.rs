@@ -905,6 +905,12 @@ enum Commands {
         /// Validate the existing receipt instead of rewriting it.
         #[arg(long)]
         check: bool,
+        /// Record same-run verification after generation or a full --check.
+        #[arg(long, conflicts_with = "check_generated")]
+        checkpoint: Option<PathBuf>,
+        /// Verify unchanged inputs and receipt bytes from a same-run checkpoint.
+        #[arg(long, conflicts_with_all = ["check", "checkpoint"])]
+        check_generated: Option<PathBuf>,
     },
 
     /// Produce diff-scoped RIPR review guidance artifacts without posting comments.
@@ -6290,8 +6296,15 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::RiprPr { root, base, head, pr_head, check } => {
             ripr_evidence::ripr_pr(&root, &base, &head, pr_head.as_deref(), check)
         }
-        Commands::RiprPlus { root, receipt, suppressions, check } => {
-            ripr_evidence::ripr_plus(&root, &receipt, &suppressions, check)
+        Commands::RiprPlus { root, receipt, suppressions, check, checkpoint, check_generated } => {
+            ripr_evidence::ripr_plus(
+                &root,
+                &receipt,
+                &suppressions,
+                check,
+                checkpoint.as_deref(),
+                check_generated.as_deref(),
+            )
         }
         Commands::RiprReviewComments { root, base, head, pr_head, timeout_seconds, check } => {
             ripr_evidence::ripr_review_comments(

@@ -49,7 +49,11 @@ RECEIPT_CACHE_MARKER_GUARD = (
 )
 RECEIPT_CACHE_ADJUDICATOR = "Adjudicate receipt cache exactness"
 RECEIPT_CACHE_EXACT_GUARD = ' && [ "${RIPR_RECEIPT_CACHE_HIT:-}" = "true" ]'
-RECEIPT_SCAN = "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json"
+CHECKPOINT = '"$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"'
+RECEIPT_COMMAND = "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json"
+RECEIPT_SCAN = RECEIPT_COMMAND + " --checkpoint " + CHECKPOINT
+RECEIPT_FULL_CHECK = RECEIPT_COMMAND + " --check --checkpoint " + CHECKPOINT
+RECEIPT_SAME_RUN_CHECK = RECEIPT_COMMAND + " --check-generated " + CHECKPOINT
 OBSERVED_RECEIPT_SCAN = (
     'bash scripts/ci/observe-xtask-build.sh host-baseline '
     '"$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- ' + RECEIPT_SCAN
@@ -247,7 +251,7 @@ def validate_static_contract(source: list[str]) -> None:
     # drops comment lines, so a command named only in prose still fails here.
     commands = [field(step, "run", 8) or "" for step in workflow_steps(seed)]
     for command in ('cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked',
-                    'cargo build -p xtask --locked',
+                    'cargo build -p xtask --bin xtask --locked',
                     # #16126: the seed must actually produce the fact cache it
                     # saves. Without this the save step stores an empty
                     # directory and every analysis lane still pays the cold
@@ -256,6 +260,32 @@ def validate_static_contract(source: list[str]) -> None:
         if not any(command in text for text in commands):
             raise AssertionError(f"seed useful work is missing: {command}")
     validate_fact_cache_contract(source)
+    validate_same_run_checkpoint_window(source)
+
+
+def validate_same_run_checkpoint_window(source: list[str]) -> None:
+    """#19326: dependency/cache stability is a same-job instrument premise."""
+    windows = []
+    for job in RECEIPT_CACHE_JOBS:
+        steps = workflow_steps(block(source, job, 2))
+        names = ["\n".join(step) for step in steps]
+        producers = [i for i, step in enumerate(names)
+                     if "name: Generate repo-wide RIPR+ baseline receipt" in step]
+        consumers = [i for i, step in enumerate(names)
+                     if "name: Validate PR evidence contracts" in step]
+        if len(producers) != 1 or len(consumers) != 1 or producers[0] >= consumers[0]:
+            raise AssertionError(f"{job} must produce its checkpoint before same-run validation")
+        window = steps[producers[0] + 1:consumers[0] + 1]
+        if any(action_reference(step) for step in window):
+            raise AssertionError(f"{job} checkpoint window cannot run dependency/cache actions")
+        windows.append("\n".join(line for step in window for line in step))
+    selfhosted = "\n".join(block(source, "ripr-selfhosted", 2))
+    start = selfhosted.index(RECEIPT_SCAN) + len(RECEIPT_SCAN)
+    end = selfhosted.index(RECEIPT_SAME_RUN_CHECK, start)
+    windows.append(selfhosted[start:end])
+    for window in windows:
+        if re.search(r"\bcargo\s+(?:install|fetch|update)\b|actions/cache|rust-cache", window):
+            raise AssertionError("checkpoint window must not install dependencies or restore caches")
 
 
 def validate_fact_cache_contract(source: list[str]) -> None:
@@ -298,12 +328,9 @@ def validate_fact_cache_contract(source: list[str]) -> None:
 def validate_receipt_cache_contract(source: list[str]) -> None:
     """#16431: exact-head memoization of the repo-wide RIPR+ receipt.
 
-    The receipt is a function of the checked-out HEAD tree -- it embeds
-    `head: <current_head>` and every consumer head-binds it (`ripr-plus
-    --check` byte-compares; the quality gate marks a receipt `stale` unless
-    its head matches) -- so a cache entry keyed on the exact head can only
-    change how long the answer takes, never which answer it is. Three rules
-    hold that boundary:
+    A restored receipt must pass source-recomputing `ripr-plus --check`
+    before receiving an ephemeral same-run checkpoint. The quality gate
+    still rejects a stale head. Four rules hold the cache boundary:
 
     1. the key binds the toolchain version, the exact head sha, and the
        suppression-ledger hash, so only byte-identical inputs can collide;
@@ -312,6 +339,8 @@ def validate_receipt_cache_contract(source: list[str]) -> None:
        and the produce branch overwrites;
     3. only a freshly produced receipt is saved: the marker file exists only
        on the produce branch, so a restored receipt is never re-published.
+    4. cached bytes undergo full recomputation before checkpoint validation;
+       the checkpoint itself never enters the receipt cache.
     """
     for job in RECEIPT_CACHE_JOBS:
         steps = workflow_steps(block(source, job, 2))
@@ -381,6 +410,13 @@ def validate_receipt_cache_contract(source: list[str]) -> None:
             )
         if RECEIPT_MARKER_NAME not in receipt:
             raise AssertionError(f"{job} receipt step does not record produce-branch freshness")
+        if sum(line.strip() == RECEIPT_FULL_CHECK for line in receipt.splitlines()) != 1:
+            raise AssertionError(f"{job} restored receipt must earn its checkpoint by full verification")
+        validations = [text for _, text in names if "name: Validate PR evidence contracts" in text]
+        if len(validations) != 1 or sum(
+            line.strip() == RECEIPT_SAME_RUN_CHECK for line in validations[0].splitlines()
+        ) != 1:
+            raise AssertionError(f"{job} must validate unchanged receipt and inputs from this run")
         if not (restore < adjudicators[0] < receipt_steps[0] < save):
             raise AssertionError(
                 f"{job} receipt-cache restore/adjudicate/produce/save order drifted"
@@ -602,7 +638,7 @@ class RiprCacheAuthorityTests(unittest.TestCase):
             ),
         }
         for command in ('cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked',
-                        'cargo build -p xtask --locked',
+                        'cargo build -p xtask --bin xtask --locked',
                         SEED_SCAN):
             mutations[f"seed omits {command}"] = text.replace(
                 seed_text, seed_text.replace(command, "true", 1), 1
@@ -709,6 +745,18 @@ class RiprCacheAuthorityTests(unittest.TestCase):
             f"            {RECEIPT_CACHE_RESTORE_PREFIX}\n"
         )
         mutations = {
+            "dependency cache changes before validation": text.replace(
+                "cargo xtask impacted-evidence --labels-csv", "cargo fetch\n          cargo xtask impacted-evidence --labels-csv"
+            ),
+            "cached bytes bypass recomputation": text.replace(
+                RECEIPT_FULL_CHECK, RECEIPT_SAME_RUN_CHECK, 1
+            ),
+            "later validation reruns both sensors": text.replace(
+                RECEIPT_SAME_RUN_CHECK, RECEIPT_COMMAND + " --check"
+            ),
+            "checkpoint stored in receipt cache": text.replace(
+                RECEIPT_CACHE_PATH, "path: target/receipts/quality", 1
+            ),
             "save publishes without the fresh marker": text.replace(
                 RECEIPT_CACHE_MARKER_GUARD, "success()", 1
             ),
