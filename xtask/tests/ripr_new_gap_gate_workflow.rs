@@ -35,6 +35,21 @@ fn require_real_jq() -> Result<()> {
     Ok(())
 }
 
+fn active_run_command_offset(script: &str, command: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in script.split_inclusive('\n') {
+        if line
+            .trim()
+            .strip_prefix(command)
+            .is_some_and(|rest| rest.chars().next().is_none_or(char::is_whitespace))
+        {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
+}
+
 fn evaluate_run_block() -> Result<String> {
     workflow_run_block("ripr", "Evaluate routed result")
 }
@@ -3456,13 +3471,25 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         "-e RIPR_PARTIAL_DIFF_FILE_BUDGET=2560",
         "-e RIPR_CHECK_FINDINGS_BYTES=0",
         "-e RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES=1200",
-        "--memory=14g",
-        "--memory-swap=14g",
-        "docker_memory=14g",
     ] {
+        ensure!(
+            active_run_command_offset(&script, expected).is_some(),
+            "ripr-github's hosted producer must transport {expected:?} as an active command, not a comment or echoed string"
+        );
+    }
+    for expected in ["--memory=14g", "--memory-swap=14g", "docker_memory=14g"] {
         ensure!(
             script.contains(expected),
             "ripr-github's hosted producer must carry {expected:?}; the admission boundary and              the container budget are one measured pair (#15498)"
+        );
+    }
+    for disabled in [
+        script.replacen("-e RIPR_CHECK_FINDINGS_BYTES=0", "# -e RIPR_CHECK_FINDINGS_BYTES=0", 1),
+        script.replacen("-e RIPR_CHECK_FINDINGS_BYTES=0", "echo -e RIPR_CHECK_FINDINGS_BYTES=0", 1),
+    ] {
+        ensure!(
+            active_run_command_offset(&disabled, "-e RIPR_CHECK_FINDINGS_BYTES=0").is_none(),
+            "commented or echoed findings-budget transport must fail the workflow contract"
         );
     }
     ensure!(
@@ -3529,16 +3556,25 @@ fn hosted_raw_check_completeness_fails_closed() -> Result<()> {
     let root = project_root()?;
     let producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
     let guard = "bash scripts/ci/require-complete-ripr-check.sh target/ripr/pr/raw-check.json";
-    let guard_offset = producer
-        .find(guard)
-        .ok_or_else(|| anyhow!("hosted producer must guard the raw-check document"))?;
-    let validation_offset = producer
-        .find("cargo xtask ripr-pr --base \"$base_arg\" --head \"$RIPR_EVALUATED_SHA\" --pr-head \"$PR_HEAD_SHA\" --check")
-        .ok_or_else(|| anyhow!("hosted receipt validation is missing"))?;
+    let validation = "cargo xtask ripr-pr --base \"$base_arg\" --head \"$RIPR_EVALUATED_SHA\" --pr-head \"$PR_HEAD_SHA\" --check";
+    let guard_offset = active_run_command_offset(&producer, guard).ok_or_else(|| {
+        anyhow!("hosted producer must guard the raw-check document with an active command")
+    })?;
+    let validation_offset = active_run_command_offset(&producer, validation)
+        .ok_or_else(|| anyhow!("hosted receipt validation must be an active command"))?;
     ensure!(
         guard_offset < validation_offset,
         "raw-check completeness must precede receipt validation"
     );
+    for disabled in [
+        producer.replacen(guard, &format!("# {guard}"), 1),
+        producer.replacen(guard, &format!("echo {guard}"), 1),
+    ] {
+        ensure!(
+            active_run_command_offset(&disabled, guard).is_none(),
+            "commented or echoed raw-check guard must fail the workflow contract"
+        );
+    }
 
     let sandbox = tempfile::tempdir()?;
     let raw_check = sandbox.path().join("raw-check.json");
@@ -3566,6 +3602,29 @@ fn hosted_raw_check_completeness_fails_closed() -> Result<()> {
             false,
         ),
         ("incomplete document", r#"{"analysis_outcome":{"document_complete":false}}"#, false),
+        (
+            "multiple documents cannot hide a failing first document",
+            r#"{"analysis_outcome":{"document_complete":false}}{"analysis_outcome":{"document_complete":true}}"#,
+            false,
+        ),
+        ("emitted null run limitations", r#"{"run_limitations":null}"#, false),
+        ("emitted null analysed scope", r#"{"analysis_scope":null}"#, false),
+        (
+            "emitted null scope consumability",
+            r#"{"analysis_scope":{"downstream_consumable":null}}"#,
+            false,
+        ),
+        (
+            "emitted null scope eligibility",
+            r#"{"analysis_scope":{"gate_eligibility":null}}"#,
+            false,
+        ),
+        ("emitted null analysis outcome", r#"{"analysis_outcome":null}"#, false),
+        (
+            "emitted null document completeness",
+            r#"{"analysis_outcome":{"document_complete":null}}"#,
+            false,
+        ),
         ("malformed raw check", r#"{"summary":"#, false),
     ];
     for (label, contents, expected_success) in controls {

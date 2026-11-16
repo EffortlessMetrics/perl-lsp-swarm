@@ -10,17 +10,21 @@ if [ "$#" -ne 1 ]; then
 fi
 raw_check=$1
 
-if jq -e '
-    (if .run_limitations == null then true else
-        ((.run_limitations | type == "array") and
-         (.run_limitations | all(.downstream_consumable == true)))
-    end) and
-    (.analysis_scope.downstream_consumable == null or
-        .analysis_scope.downstream_consumable == true) and
-    (.analysis_scope.gate_eligibility == null or
-        .analysis_scope.gate_eligibility == "eligible") and
-    (.analysis_outcome.document_complete == null or
-        .analysis_outcome.document_complete == true)
+if jq -e -s '
+    def absent_or_valid($key; predicate):
+        (has($key) | not) or (.[$key] | predicate);
+    length == 1 and
+    (.[0] |
+        absent_or_valid("run_limitations";
+            (type == "array") and all(.[]; .downstream_consumable == true)) and
+        absent_or_valid("analysis_scope";
+            (type == "object") and
+            absent_or_valid("downstream_consumable"; . == true) and
+            absent_or_valid("gate_eligibility"; . == "eligible")) and
+        absent_or_valid("analysis_outcome";
+            (type == "object") and
+            absent_or_valid("document_complete"; . == true))
+    )
 ' "$raw_check" >/dev/null; then
     exit 0
 fi
