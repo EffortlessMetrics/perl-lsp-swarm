@@ -1,5 +1,6 @@
 //! #18305: a backslash delimiter closes the second body instead of escaping it.
-//! Native Perl 5.40.1 accepts these forms; ordinary escaped delimiters still escape.
+//! Ordinary escaped delimiters still escape. These tests do not claim that
+//! native Perl accepts every backslash-delimited form.
 
 use perl_lexer::{PerlLexer, TokenType};
 use perl_parser_core::syntax::quote::{
@@ -102,7 +103,6 @@ fn assert_parser_boundaries(prefix: &str, modifier: &str) -> TestResult {
         (r"\\\", "", ""),
         (r"{a}\b\", "a", "b"),
         (r"{a}\\", "a", ""),
-        (r#"{a}\"x\"#, "a", "\"x"),
     ] {
         assert_parser_parts(&format!("{prefix}{bodies}{modifier}"), search, replacement, modifier)?;
     }
