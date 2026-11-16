@@ -10,6 +10,7 @@ use super::CriticConfig;
 use super::{CriticFindingShape, Severity, insertion_range};
 use crate::providers::diagnostics::known_scalar_argument_count;
 use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
+use crate::providers::diagnostics::unreachable_code::unreachable_removal_span;
 use perl_parser_core::Node;
 use perl_parser_core::NodeKind;
 use perl_parser_core::position::{Position, Range};
@@ -1357,7 +1358,8 @@ fn unreachable_code_finding(
     end: usize,
 ) -> CriticFinding {
     let range = range_for_byte_span(source, start, end);
-    let removal_range = full_line_range_for_byte_span(source, start, end);
+    let (removal_start, removal_end) = unreachable_removal_span(source, start, end);
+    let removal_range = range_for_byte_span(source, removal_start, removal_end);
 
     CriticFinding {
         rule_id: rule.id().to_string(),
@@ -1983,12 +1985,6 @@ fn is_dollar_at_variable(node: &Node) -> bool {
         &node.kind,
         NodeKind::Variable { sigil, name } if sigil == "$" && name == "@"
     )
-}
-
-fn full_line_range_for_byte_span(source: &str, start: usize, end: usize) -> Range {
-    let line_start = source[..start].rfind('\n').map_or(0, |pos| pos + 1);
-    let line_end = source[end..].find('\n').map_or(source.len(), |pos| end + pos + 1);
-    range_for_byte_span(source, line_start, line_end)
 }
 
 fn push_printf_format_arity_finding(
@@ -4218,6 +4214,84 @@ mod tests {
             "my $dead = 2;\n"
         );
         assert_eq!(fix.edits[0].new_text, "");
+    }
+
+    /// Apply a critic fix edit to `source` and return the patched text.
+    fn apply_critic_edit(source: &str, edit: &CriticTextEdit) -> String {
+        let mut patched = source.to_string();
+        patched.replace_range(edit.range.start.byte..edit.range.end.byte, &edit.new_text);
+        patched
+    }
+
+    /// #19333: the Safe fix widened the removal to the whole physical line, so
+    /// an unreachable statement sharing a line with live code took the
+    /// subroutine declaration, the `return`, and the closing brace with it.
+    #[test]
+    fn native_unreachable_code_fix_keeps_live_code_sharing_the_line() {
+        let source = "sub f { return 1; print 2; }\n";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(UnreachableCodeRule)]);
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1, "the unreachable statement must be reported exactly once");
+        let fix = must_some(findings[0].fix.as_ref());
+        assert_eq!(fix.safety, FixSafety::Safe);
+        let patched = apply_critic_edit(source, &fix.edits[0]);
+
+        assert!(patched.contains("sub f"), "the subroutine declaration must survive: {patched:?}");
+        assert!(patched.contains("return 1;"), "the live return must survive: {patched:?}");
+        assert!(patched.contains('}'), "the closing brace must survive: {patched:?}");
+        assert!(
+            !patched.contains("print 2"),
+            "the unreachable statement must be gone: {patched:?}"
+        );
+    }
+
+    /// #19333: the same widening deleted the closing brace when the statement
+    /// shared its line with the `return` but not the subroutine header.
+    #[test]
+    fn native_unreachable_code_fix_keeps_the_closing_brace_next_to_the_statement() {
+        let source = "sub f {\n    return 1; print 2; }\n";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(UnreachableCodeRule)]);
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        let fix = must_some(findings[0].fix.as_ref());
+        let patched = apply_critic_edit(source, &fix.edits[0]);
+
+        assert!(patched.contains("sub f"), "the subroutine declaration must survive: {patched:?}");
+        assert!(patched.contains("return 1;"), "the live return must survive: {patched:?}");
+        assert!(patched.contains('}'), "the closing brace must survive: {patched:?}");
+        assert!(
+            !patched.contains("print 2"),
+            "the unreachable statement must be gone: {patched:?}"
+        );
+    }
+
+    /// Control: a statement that owns its physical line is still removed with
+    /// that line, so the fix does not leave a blank line behind.
+    #[test]
+    fn native_unreachable_code_fix_still_removes_the_line_the_statement_owns() {
+        let source = "sub f {\n    return 1;\n    print 2;\n}\n";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(UnreachableCodeRule)]);
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        let fix = must_some(findings[0].fix.as_ref());
+        let patched = apply_critic_edit(source, &fix.edits[0]);
+
+        assert_eq!(patched, "sub f {\n    return 1;\n}\n");
     }
 
     #[test]

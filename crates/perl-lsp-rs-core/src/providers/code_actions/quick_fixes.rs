@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use super::types::{
     CodeAction, CodeActionEdit, CodeActionKind, QuickFixDiagnostic, QuickFixMetadata,
 };
+use crate::providers::diagnostics::unreachable_code::unreachable_removal_span;
 use crate::providers::rename::TextEdit;
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser::ast_utils::{find_declaration_position, get_indent_at};
@@ -1022,6 +1023,75 @@ mod tests {
         let diagnostic = diagnostic_for((char_start + 1, char_start + 2), "Variable redeclared");
         let actions = fix_variable_redeclaration(source, &diagnostic);
         assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    /// Apply the quick fix edit to `source` and return the patched text.
+    fn apply_quick_fix_edit(source: &str, action: &CodeAction) -> String {
+        let edit = &action.edit.changes[0];
+        let mut patched = source.to_string();
+        patched.replace_range(edit.location.start..edit.location.end, &edit.new_text);
+        patched
+    }
+
+    /// PL406 diagnostic range for the unreachable `print 2` statement.
+    fn unreachable_diagnostic(source: &str) -> QuickFixDiagnostic {
+        let start = must_some(source.find("print 2"));
+        diagnostic_for(
+            (start, start + "print 2".len()),
+            "Unreachable code: this statement cannot be executed",
+        )
+    }
+
+    /// #19333: the quick fix widened the removal to the whole physical line, so
+    /// an unreachable statement sharing a line with live code took the
+    /// subroutine declaration, the `return`, and the closing brace with it.
+    #[test]
+    fn fix_unreachable_code_keeps_live_code_sharing_the_line() {
+        let source = "sub f { return 1; print 2; }\n";
+
+        let actions = fix_unreachable_code(source, &unreachable_diagnostic(source));
+
+        let action = must_some(actions.first());
+        let patched = apply_quick_fix_edit(source, action);
+        assert!(patched.contains("sub f"), "the subroutine declaration must survive: {patched:?}");
+        assert!(patched.contains("return 1;"), "the live return must survive: {patched:?}");
+        assert!(patched.contains('}'), "the closing brace must survive: {patched:?}");
+        assert!(
+            !patched.contains("print 2"),
+            "the unreachable statement must be gone: {patched:?}"
+        );
+    }
+
+    /// #19333: the same widening deleted the closing brace when the statement
+    /// shared its line with the `return` but not the subroutine header.
+    #[test]
+    fn fix_unreachable_code_keeps_the_closing_brace_next_to_the_statement() {
+        let source = "sub f {\n    return 1; print 2; }\n";
+
+        let actions = fix_unreachable_code(source, &unreachable_diagnostic(source));
+
+        let action = must_some(actions.first());
+        let patched = apply_quick_fix_edit(source, action);
+        assert!(patched.contains("sub f"), "the subroutine declaration must survive: {patched:?}");
+        assert!(patched.contains("return 1;"), "the live return must survive: {patched:?}");
+        assert!(patched.contains('}'), "the closing brace must survive: {patched:?}");
+        assert!(
+            !patched.contains("print 2"),
+            "the unreachable statement must be gone: {patched:?}"
+        );
+    }
+
+    /// Control: a statement that owns its physical line is still removed with
+    /// that line, so the fix does not leave a blank line behind.
+    #[test]
+    fn fix_unreachable_code_still_removes_the_line_the_statement_owns() {
+        let source = "sub f {\n    return 1;\n    print 2;\n}\n";
+
+        let actions = fix_unreachable_code(source, &unreachable_diagnostic(source));
+
+        let action = must_some(actions.first());
+        let patched = apply_quick_fix_edit(source, action);
+        assert_eq!(patched, "sub f {\n    return 1;\n}\n");
     }
 }
 
@@ -2040,16 +2110,17 @@ pub fn fix_misspelled_pragma(source: &str, diagnostic: &QuickFixDiagnostic) -> V
 /// Fix unreachable code by removing the unreachable statement
 ///
 /// PL406 fires when a statement follows an unconditional exit (return, die, exit).
-/// The fix removes the entire line containing the unreachable statement.
+/// The fix removes the unreachable statement. When the statement is the only
+/// content of its physical line the whole line goes, including its line break;
+/// when the line also carries live code (a subroutine declaration, an earlier
+/// `return`, a closing brace) only the statement itself is removed, so the
+/// removal cannot take live code with it (issue #19333).
 pub fn fix_unreachable_code(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
     let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
         return Vec::new();
     };
 
-    // Find the full line containing the unreachable statement
-    let line_start = source[..range_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let line_end =
-        source[range_end..].find('\n').map(|p| range_end + p + 1).unwrap_or(source.len());
+    let (removal_start, removal_end) = unreachable_removal_span(source, range_start, range_end);
 
     vec![CodeAction {
         title: "Remove unreachable code".to_string(),
@@ -2057,7 +2128,7 @@ pub fn fix_unreachable_code(source: &str, diagnostic: &QuickFixDiagnostic) -> Ve
         diagnostics: vec![DiagnosticCode::UnreachableCode.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: line_start, end: line_end },
+                location: SourceLocation { start: removal_start, end: removal_end },
                 new_text: String::new(),
             }],
         },
