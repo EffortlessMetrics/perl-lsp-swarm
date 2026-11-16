@@ -1,4 +1,4 @@
-# This scaffold repackages release binaries built with strip = "debuginfo".
+# This scaffold repackages release binaries built with strip = "symbols".
 # There is no DWARF to split; the pre-install guard refuses unexpected debug inputs
 # before the standard RPM strip/policy scripts can discard their information.
 %global debug_package %{nil}
