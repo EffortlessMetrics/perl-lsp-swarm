@@ -6,7 +6,7 @@ This projection inventories the current composite. It does not execute, route, a
 
 - Source: `.ci/gate-policy.yaml#policy_checks`
 - Source fingerprint: `bdabf4268fdf3f2d44473c4ec1a32eae69426b4ff5ade6ff59fc6ce05d7d4873`
-- Current role: `advisory` in `merge_gate`
+- Current role: `advisory` in `nightly`
 - Execution: `ordered_aborting_shell_chain` from `repository_root`
 - Shared timeout/budget: `240s` / `220000ms`
 
