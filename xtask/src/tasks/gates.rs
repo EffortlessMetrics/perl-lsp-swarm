@@ -44,6 +44,8 @@ mod planning_types;
 mod posix_shell;
 pub mod route_profile;
 mod routed_result_adapter;
+#[cfg(target_os = "linux")]
+mod shared_xtask;
 
 pub use first_failure::{is_cargo_test_command, parse_first_failure};
 
@@ -2730,7 +2732,25 @@ pub(crate) fn run_shell_command_with_timeout_in(
         .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))
         .map_err(|report| GateShellError { report, child_started })?;
 
-    let mut process = shell_command_process(command, timeout_secs);
+    #[cfg(target_os = "linux")]
+    let shared_command = shared_xtask::hosted_command(command)
+        .map_err(|report| GateShellError { report, child_started })?;
+    #[cfg(target_os = "linux")]
+    let execution_command = shared_command.as_deref().unwrap_or(command);
+    #[cfg(not(target_os = "linux"))]
+    let execution_command = command;
+    if execution_command != command {
+        // The receipt continues to identify the policy-owned command; make
+        // the actual child launch explicit in both hosted output and its log.
+        println!("Shared xtask child: {execution_command:?}; declared gate: {command:?}");
+        writeln!(
+            &log_file,
+            "Shared xtask child: {execution_command:?}; declared gate: {command:?}"
+        )
+        .context("recording the shared xtask child command")
+        .map_err(|report| GateShellError { report, child_started })?;
+    }
+    let mut process = shell_command_process(execution_command, timeout_secs);
     // Test fixtures select their own repositories. Hook-local Git inputs must
     // not redirect their init/config/index operations into the real checkout.
     // Keep the parent's context, and preserve it for staged commit-check gates.

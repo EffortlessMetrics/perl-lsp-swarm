@@ -11,7 +11,7 @@ const WORKFLOW_POLICY_COMMAND: &str =
     "        run: cargo test -p xtask --bin xtask --locked -- workflow_policy_lint";
 const WORKFLOW_POLICY_STEP: &str =
     "      - name: Workflow policy CLI wiring (required merge surface)";
-const REQUIRED_JOB_IF: &str = "    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
+const REQUIRED_JOB_IF: &str = "    if: ${{ !cancelled() && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true' }}";
 
 use serde_yaml_ng::Value;
 
@@ -165,18 +165,14 @@ fn malformed_required_command_shape_returns_an_error() -> Result<(), Box<dyn std
     Ok(())
 }
 
-/// Shards select helper binaries in their gate commands. PR Smoke's focused
-/// integration consumer builds every binary inside its own shorter watchdog,
-/// so its package-wide preparation is retained. Full compile proof is separate.
+/// The shared producer builds only the shard runner; nested gate commands
+/// select their own helper binaries. Manual PR Smoke retains package-wide
+/// preparation for its shorter watchdog. Full compile proof is separate.
 fn runner_warmup_wiring(workflow: &str) -> Result<(), Box<dyn std::error::Error>> {
     let parsed: Value = serde_yaml_ng::from_str(workflow)?;
     for (job_name, consumer_name, expected_command) in [
         ("pr-smoke", "Resolve immutable CI subject", "cargo build -p xtask --locked"),
-        (
-            "merge-gate-shards",
-            "Run merge-gate shard with receipts",
-            "cargo build -p xtask --bin xtask --locked",
-        ),
+        ("ci-xtask", "Bind shared xtask", "cargo build -p xtask --bin xtask --locked"),
     ] {
         let steps = parsed
             .get("jobs")
@@ -223,16 +219,69 @@ fn xtask_warmup_selects_only_shard_runner_and_preserves_all_target_proof()
 }
 
 #[test]
+fn shared_xtask_contracts_have_an_exact_required_execution_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    const MARKER: &str = "# required merge surface command 40: Shared xtask execution contracts (required merge surface)\n";
+    const NAMES: &[&str] = &[
+        "tasks::gates::shared_xtask::tests::shared_xtask_commands_match_policy_and_preserve_target_selection",
+        "tasks::gates::shared_xtask::tests::shared_xtask_simple_recipe_rejects_additional_steps_after_blank_lines",
+        "tasks::gates::shared_xtask::tests::shared_xtask_child_preserves_literal_argv_and_failure_under_existing_executor",
+        "tasks::gates::shared_xtask::tests::shared_xtask_child_keeps_watchdog_and_timeout_retry",
+    ];
+    let selectors = NAMES.join(" \\\n  ");
+    let expected = format!(
+        "_step_index=$((_step_index + 1))\n\
+         set -o pipefail\n\
+         cargo test -p xtask --bin xtask --locked -- --exact \\\n  {selectors} \\\n  \
+         --test-threads=1 --color never | tee \"$RUNNER_TEMP/shared-xtask-contract.log\"\n\
+         grep -Eq '^test result: ok\\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in ' \\\n  \
+         \"$RUNNER_TEMP/shared-xtask-contract.log\"\n\
+         for test_name in \\\n  {selectors}; do\n  \
+         grep -Fx \"test $test_name ... ok\" \"$RUNNER_TEMP/shared-xtask-contract.log\"\n\
+         done"
+    );
+    let protects_all_four = |source: &str| {
+        source.matches(MARKER).count() == 1
+            && source.split_once(MARKER).is_some_and(|(_, tail)| {
+                let body = tail.split("\n# required merge surface command ").next().unwrap_or("");
+                body.trim() == expected
+            })
+    };
+    let producer =
+        fs::read_to_string(project_root()?.join("scripts/ci/required-merge-surface.sh"))?;
+    assert!(
+        protects_all_four(&producer),
+        "all four shared-executable controls must run in the required producer"
+    );
+    for altered in [
+        producer.replace(MARKER, ""),
+        producer.replace(&format!("  {} \\\n", NAMES[0]), ""),
+        producer.replace("--locked -- --exact", "--locked --"),
+        producer.replace(
+            "4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+",
+            "3 passed; 0 failed; 0 ignored; 0 measured; [0-9]+",
+        ),
+        producer.replace(
+            "  grep -Fx \"test $test_name ... ok\" \"$RUNNER_TEMP/shared-xtask-contract.log\"",
+            "  true",
+        ),
+    ] {
+        assert_ne!(altered, producer);
+        assert!(
+            !protects_all_four(&altered),
+            "removal, filter loss or missing liveness proof must fail"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn xtask_warmup_contract_rejects_broad_build_and_missing_proof()
 -> Result<(), Box<dyn std::error::Error>> {
     let workflow =
         fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
     let runner = "cargo build -p xtask --bin xtask --locked";
-    // Start with the accepted shape even before the production command changes,
-    // so the red-first run separately exercises the instrument's controls.
-    let shard = job_block(&workflow, "merge-gate-shards").ok_or("missing shard job")?;
-    let qualified =
-        workflow.replacen(shard, &shard.replacen("cargo build -p xtask --locked", runner, 1), 1);
+    let qualified = workflow;
     runner_warmup_wiring(&qualified)?;
     for replacement in [
         "cargo build -p xtask --locked",
@@ -269,8 +318,7 @@ fn xtask_warmup_contract_rejects_broad_build_and_missing_proof()
     );
     assert!(runner_warmup_wiring(&multiline).is_err(), "accepted two shell commands");
     let normalized = qualified.replace("\r\n", "\n");
-    for (job_name, command) in
-        [("pr-smoke", "cargo build -p xtask --locked"), ("merge-gate-shards", runner)]
+    for (job_name, command) in [("pr-smoke", "cargo build -p xtask --locked"), ("ci-xtask", runner)]
     {
         let warmup = format!("      - name: Warm xtask\n        run: {command}\n");
         let job = job_block(&normalized, job_name).ok_or("missing consumer job")?;

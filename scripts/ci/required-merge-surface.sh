@@ -350,3 +350,22 @@ cargo test -p xtask --test activation --test activation_check --locked -- --noca
 # required merge surface command 39: Draft PR feedback contract (required merge surface)
 _step_index=$((_step_index + 1))
 cargo test -p xtask --test draft_pr_feedback_contract --locked -- --nocapture
+
+# required merge surface command 40: Shared xtask execution contracts (required merge surface)
+_step_index=$((_step_index + 1))
+set -o pipefail
+cargo test -p xtask --bin xtask --locked -- --exact \
+  tasks::gates::shared_xtask::tests::shared_xtask_commands_match_policy_and_preserve_target_selection \
+  tasks::gates::shared_xtask::tests::shared_xtask_simple_recipe_rejects_additional_steps_after_blank_lines \
+  tasks::gates::shared_xtask::tests::shared_xtask_child_preserves_literal_argv_and_failure_under_existing_executor \
+  tasks::gates::shared_xtask::tests::shared_xtask_child_keeps_watchdog_and_timeout_retry \
+  --test-threads=1 --color never | tee "$RUNNER_TEMP/shared-xtask-contract.log"
+grep -Eq '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in ' \
+  "$RUNNER_TEMP/shared-xtask-contract.log"
+for test_name in \
+  tasks::gates::shared_xtask::tests::shared_xtask_commands_match_policy_and_preserve_target_selection \
+  tasks::gates::shared_xtask::tests::shared_xtask_simple_recipe_rejects_additional_steps_after_blank_lines \
+  tasks::gates::shared_xtask::tests::shared_xtask_child_preserves_literal_argv_and_failure_under_existing_executor \
+  tasks::gates::shared_xtask::tests::shared_xtask_child_keeps_watchdog_and_timeout_retry; do
+  grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/shared-xtask-contract.log"
+done
