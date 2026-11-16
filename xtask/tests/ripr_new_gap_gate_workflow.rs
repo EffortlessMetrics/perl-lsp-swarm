@@ -3428,8 +3428,8 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
     // admitted diff, and the findings array must remain complete. An env entry
     // without the matching Docker transport would be inert on the hosted lane.
     for (key, value) in [
-        ("RIPR_MAX_DIFF_CHANGED_RUST_LINES", "8000"),
-        ("RIPR_PARTIAL_DIFF_LINE_BUDGET", "8000"),
+        ("RIPR_MAX_DIFF_CHANGED_RUST_LINES", "16000"),
+        ("RIPR_PARTIAL_DIFF_LINE_BUDGET", "16000"),
         ("RIPR_PARTIAL_DIFF_FILE_BUDGET", "2560"),
         ("RIPR_CHECK_FINDINGS_BYTES", "0"),
     ] {
@@ -3448,8 +3448,8 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         .ok_or_else(|| anyhow!("missing Generate PR evidence step"))?;
     for expected in [
         "-e RIPR_MAX_DIFF_INDEX_FILES=2560",
-        "-e RIPR_MAX_DIFF_CHANGED_RUST_LINES=8000",
-        "-e RIPR_PARTIAL_DIFF_LINE_BUDGET=8000",
+        "-e RIPR_MAX_DIFF_CHANGED_RUST_LINES=16000",
+        "-e RIPR_PARTIAL_DIFF_LINE_BUDGET=16000",
         "-e RIPR_PARTIAL_DIFF_FILE_BUDGET=2560",
         "-e RIPR_CHECK_FINDINGS_BYTES=0",
         "--memory=14g",
