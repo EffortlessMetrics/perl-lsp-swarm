@@ -35,6 +35,8 @@ const DYNAMIC_BOUNDARY_PATTERNS: &[(&str, &str)] = &[
     ("no strict", "unsupported_syntax"),
     ("BEGIN {", "unsupported_syntax"),
     ("require $", "module_resolution_unknown"),
+    ("use_module(", "module_resolution_unknown"),
+    ("require_module(", "module_resolution_unknown"),
 ];
 
 /// Byte offsets of statement-position `eval` keywords starting a spaced string
@@ -544,6 +546,24 @@ mod tests {
         assert!(evals.is_empty(), "comment eval must not emit a boundary: {evals:?}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dynamic_boundaries_in_lines_matches_module_runtime_calls() {
+        let lines = vec![
+            "use_module('Foo::Bar');".to_string(),
+            "Module::Runtime::require_module('Baz::Qux');".to_string(),
+        ];
+        let found = dynamic_boundaries_in_lines(&lines, false);
+        assert!(
+            found.iter().any(|(_, kind)| *kind == "module_resolution_unknown"),
+            "Module::Runtime call sites must emit module_resolution_unknown: {found:?}"
+        );
+        assert_eq!(
+            found.iter().filter(|(_, kind)| *kind == "module_resolution_unknown").count(),
+            1,
+            "duplicate patterns sharing a kind must dedupe per hunk: {found:?}"
+        );
     }
 
     #[test]

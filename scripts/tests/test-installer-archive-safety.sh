@@ -526,6 +526,7 @@ probe_need_cmds() {
         check_path() { :; }
         configure_claude() { :; }
         say() { :; }
+        run_cargo_toolchain_guard() { :; }
         INSTALL_MODE="$1"
         PRINT_TARGET=0
         WITH_CLAUDE=0

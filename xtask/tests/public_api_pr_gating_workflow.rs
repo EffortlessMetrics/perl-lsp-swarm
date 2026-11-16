@@ -840,7 +840,7 @@ fn ci_yml_runs_both_compatibility_rails_on_pull_requests() -> Result<(), Box<dyn
         "semver-pr must delegate to the shared check script exercised by scripts/ci/test_semver_pr_check.py"
     );
     assert!(
-        semver.contains("cargo-semver-checks --version 0.47.0 --locked"),
+        semver.contains("cargo-semver-checks --version 0.51.0 --locked"),
         "semver-pr must pin the same cargo-semver-checks version as the nightly lane"
     );
     assert!(

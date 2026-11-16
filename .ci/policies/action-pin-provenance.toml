@@ -246,6 +246,15 @@ sha = '0b35c9ecc4f0529d0eb674914510c22f85b196b4'
 kind = 'release_tag'
 value = 'v7.1.0'
 
+# Verified on 2026-10-19 via the upstream GitHub refs and annotated-tag APIs:
+#   refs/tags/v7.1.1 -> tag 2320916714171c258d01dbd81040d64d798c6f8e
+#   -> commit 303a32d7a59b442fa8d48b6a1cc6825c09c847a5
+[[pin]]
+action = 'codecov/codecov-action'
+sha = '303a32d7a59b442fa8d48b6a1cc6825c09c847a5'
+kind = 'release_tag'
+value = 'v7.1.1'
+
 [[pin]]
 action = 'codecov/test-results-action'
 sha = '0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3'
@@ -386,6 +395,14 @@ sha = 'ac3202722f5744e62a8fa3af3e1aaaebb08861f3'
 kind = 'release_tag'
 value = 'v1.44.0'
 
+# Verified on 2026-10-19 via the upstream GitHub refs API:
+#   refs/tags/v1.44.2 -> commit 8b574cdc2dffdae49f803204a4f2b716a2fa1db7
+[[pin]]
+action = 'shogo82148/actions-setup-perl'
+sha = '8b574cdc2dffdae49f803204a4f2b716a2fa1db7'
+kind = 'release_tag'
+value = 'v1.44.2'
+
 [[pin]]
 action = 'softprops/action-gh-release'
 sha = '3d0d9888cb7fd7b750713d6e236d1fcb99157228'
@@ -469,6 +486,14 @@ action = 'taiki-e/install-action'
 sha = 'd438492cf8a250514fa2d34b30bc3c0dc37c65ff'
 kind = 'release_tag'
 value = 'v2.87.8'
+
+# Verified on 2026-10-19 via the upstream GitHub refs API:
+#   refs/tags/v2.87.25 -> commit 183e4297cca2404691e9380e1307288dced5c82a
+[[pin]]
+action = 'taiki-e/install-action'
+sha = '183e4297cca2404691e9380e1307288dced5c82a'
+kind = 'release_tag'
+value = 'v2.87.25'
 
 # Verified against upstream on 2026-08-29:
 # github/codeql-action v4.37.8 -> db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28

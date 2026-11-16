@@ -1,8 +1,8 @@
 """Coverage and deterministic-render tests for the Domain-6 fragment (#16418).
 
-Static checks need only the checked-in artifact. The deterministic
-re-render check shells to scripts/generate_domain6_fragment.py --check and
-skips when the pinned history range is unavailable.
+Static checks need only the checked-in artifact. The two deterministic
+re-render tests live in Domain6RerenderTest so cheap checks and the separate
+deep admission gate can be selected independently of one another.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT = (
@@ -140,6 +141,151 @@ REVIEWED_ONLY_KEYS = [
 
 def load_artifact() -> dict:
     return json.loads(ARTIFACT.read_text(encoding="utf-8"))
+
+
+class Domain6BlobOidTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        import importlib.util
+        import tempfile
+
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.repo = Path(cls.temp.name) / "repo"
+        cls.repo.mkdir()
+        cls.git("init", "-q", "-b", "main")
+        cls.git("config", "user.name", "Test")
+        cls.git("config", "user.email", "test@example.invalid")
+        spec = importlib.util.spec_from_file_location("domain6_blob_generator", GENERATOR)
+        cls.generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.generator)
+        cls.files = [
+            "folder with spaces/quote'and*unicode-λ.txt",
+            "folder with spaces/bracket[1]&question?.txt",
+            "folder with spaces/nested/deep file.txt",
+            "docs/delete on merge.txt",
+        ]
+        for relative in [*cls.files[2:], "docs/initial.txt"]:
+            path = cls.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(relative, encoding="utf-8")
+        cls.git("add", "--all")
+        cls.base = cls.commit("base")
+        cls.deleted = "docs/delete on merge.txt"
+        # The main parent contains the deleted file; merging the topic branch
+        # removes it from the merged result. Add glob-bearing paths afterward:
+        # NTFS cannot create '*' or '?' files, but Git lookup must handle them.
+        cls.git("checkout", "-q", "-b", "topic")
+        cls.git("rm", cls.deleted)
+        topic = cls.commit("delete on topic")
+        cls.git("checkout", "-q", "main")
+        cls.git("commit", "--allow-empty", "-m", "main side")
+        cls.git("merge", "--no-ff", "--no-edit", "topic")
+        for relative in cls.files[:2]:
+            blob = subprocess.check_output(
+                ["git", "hash-object", "-w", "--stdin"],
+                cwd=cls.repo,
+                input=relative.encode("utf-8"),
+                stderr=subprocess.PIPE,
+            ).decode("ascii").strip()
+            cls.git(
+                "-c", "core.protectNTFS=false",
+                "update-index", "--add", "--cacheinfo",
+                f"100644,{blob},{relative}",
+            )
+        cls.merge = cls.git(
+            "commit-tree", cls.git("write-tree"),
+            "-p", cls.base, "-p", topic, "-m", "merge with virtual paths",
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.temp.cleanup()
+
+    @classmethod
+    def git(cls, *args: str) -> str:
+        return subprocess.check_output(
+            ["git", "-c", "core.hooksPath=/dev/null", *args],
+            cwd=cls.repo,
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+
+    @classmethod
+    def commit(cls, message: str) -> str:
+        cls.git(
+            "-c", "user.name=Test",
+            "-c", "user.email=test@example.invalid",
+            "commit", "-q", "-m", message,
+        )
+        return cls.git("rev-parse", "HEAD")
+
+    def setUp(self) -> None:
+        self.old_root = self.generator.REPO_ROOT
+        self.generator.REPO_ROOT = self.repo
+
+    def tearDown(self) -> None:
+        self.generator.REPO_ROOT = self.old_root
+
+    def test_real_git_oid_semantics_special_paths_directory_and_merge(self) -> None:
+        for relative in self.files[:3]:
+            with self.subTest(path=relative):
+                expected = self.git("rev-parse", f"{self.merge}:{relative}")
+                self.assertEqual(self.generator.tree_blob(self.merge, relative), expected)
+        self.assertIsNone(self.generator.tree_blob(self.base, "docs/never present.txt"))
+        self.assertEqual(
+            self.generator.tree_blob(self.base, self.deleted),
+            self.git("rev-parse", f"{self.base}:{self.deleted}"),
+        )
+        self.assertIsNone(self.generator.tree_blob(self.merge, self.deleted))
+        directory = "folder with spaces/nested"
+        directory_id = self.generator.tree_blob(self.merge, directory)
+        self.assertEqual(directory_id, self.git("rev-parse", f"{self.merge}:{directory}"))
+        self.assertEqual(self.git("cat-file", "-t", directory_id), "tree")
+
+    def test_missing_git_object_fails_closed(self) -> None:
+        with self.assertRaises(self.generator.FragmentError):
+            self.generator.tree_blob("0" * 40, "docs/initial.txt")
+
+    def test_lookup_starts_exactly_one_git_process(self) -> None:
+        expected = self.git("rev-parse", f"{self.base}:docs/initial.txt")
+        with mock.patch.object(
+            self.generator.subprocess,
+            "run",
+            wraps=self.generator.subprocess.run,
+        ) as run:
+            self.assertEqual(
+                self.generator.tree_blob(self.base, "docs/initial.txt"),
+                expected,
+            )
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(
+            run.call_args.args[0][1:4], ["ls-tree", "-z", self.base]
+        )
+
+    def test_malformed_listing_fails_closed(self) -> None:
+        def completed(stdout: bytes) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(["git"], 0, stdout=stdout, stderr=b"")
+
+        record = b"100644 blob " + b"a" * 40 + b"\tdocs/initial.txt\0"
+        for label, listing in [
+            ("wrong path", b"100644 blob " + b"a" * 40 + b"\tdocs/other.txt\0"),
+            ("uppercase oid", b"100644 blob " + b"A" * 40 + b"\tdocs/initial.txt\0"),
+            ("duplicate", record + record),
+            ("shape", b"not-an-ls-tree-record"),
+            ("NUL-only", b"\0"),
+            ("unterminated record", record[:-1]),
+            ("trailing junk", record + b"junk"),
+            ("trailing invalid utf8", record + b"\xff"),
+            ("undecodable", b"100644 blob " + b"a" * 40 + b"\t\xff\0"),
+        ]:
+            with self.subTest(listing=label):
+                with mock.patch.object(
+                    self.generator.subprocess,
+                    "run",
+                    return_value=completed(listing),
+                ):
+                    with self.assertRaises(self.generator.FragmentError):
+                        self.generator.tree_blob(self.base, "docs/initial.txt")
 
 
 class Domain6FragmentTest(unittest.TestCase):
@@ -547,6 +693,10 @@ class Domain6FragmentTest(unittest.TestCase):
         raw = ARTIFACT.read_bytes()
         self.assertNotIn(b"\r", raw)
         self.assertTrue(raw.endswith(b"\n"))
+
+
+class Domain6RerenderTest(unittest.TestCase):
+    """Deep deterministic checks for a separate merge-gate admission lane."""
 
     def test_check_rejects_crlf_mutation(self) -> None:
         import tempfile

@@ -20,8 +20,8 @@ jobs:
 
       - name: Install Rust toolchain
         run: |
-          rustup toolchain install 1.95.0 --profile minimal --no-self-update
-          rustup default 1.95.0
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
 
       - name: Install upstream Perl build dependencies
         run: |

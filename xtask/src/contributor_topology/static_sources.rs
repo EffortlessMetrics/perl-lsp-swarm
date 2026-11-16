@@ -50,9 +50,9 @@ pub(super) fn load_static_topology(
         bail!("development and publication repositories must differ");
     }
 
-    let development_branch =
+    let (development_branch, _) =
         repository_branch(&protocol, development_repository, "Active development")?;
-    let publication_branch =
+    let (publication_branch, publication_authority) =
         repository_branch(&protocol, publication_repository, "Release lineage")?;
     if development_branch != EXPECTED_DEVELOPMENT_BRANCH {
         bail!("development branch must be {EXPECTED_DEVELOPMENT_BRANCH:?}");
@@ -75,6 +75,9 @@ pub(super) fn load_static_topology(
     if !publication_role.is_match(&protocol) {
         bail!("sync protocol is missing the publication repository role");
     }
+    if !publication_authority.split(';').any(|role| role.trim() == "public pull-request ingress") {
+        bail!("publication authority row is missing the public pull-request ingress role");
+    }
     for marker in [
         "#### Mechanics: history-preserving complete-tree merge".to_string(),
         format!("git merge -s ours --no-commit swarm/{development_branch}"),
@@ -91,7 +94,7 @@ pub(super) fn load_static_topology(
         publication_repository: publication_repository.to_string(),
         publication_branch,
         issue_repository: development_repository.to_string(),
-        pull_request_repository: development_repository.to_string(),
+        pull_request_repository: publication_repository.to_string(),
         promotion_protocol: PROMOTION_PROTOCOL.to_string(),
         primary_channels,
     };
@@ -121,7 +124,11 @@ pub(super) fn load_static_topology(
     Ok((static_topology, sources))
 }
 
-fn repository_branch(protocol: &str, repository: &str, expected_authority: &str) -> Result<String> {
+fn repository_branch(
+    protocol: &str,
+    repository: &str,
+    expected_authority: &str,
+) -> Result<(String, String)> {
     let name = repository_name(repository)?;
     let pattern =
         Regex::new(&format!(r"(?m)^\|\s*`{}/([^`]+)`\s*\|\s*([^|]+)\|\s*$", regex::escape(name)))?;
@@ -144,7 +151,7 @@ fn repository_branch(protocol: &str, repository: &str, expected_authority: &str)
     if !authority.starts_with(expected_authority) {
         bail!("authority row for {repository} does not declare {expected_authority:?}");
     }
-    Ok(branch.clone())
+    Ok((branch.clone(), authority.clone()))
 }
 
 fn primary_channels(schema: &Value) -> Result<Vec<String>> {

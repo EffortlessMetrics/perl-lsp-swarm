@@ -878,6 +878,27 @@ duplicate_of = []
 review_after = "2026-06-07"
 expires = "2026-11-07"
 
+[[lane]]
+id = "merge_group_title_check"
+workflow = ".github/workflows/merge-group-title-check.yml"
+job = "validate-title"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = true
+default_pr = true
+runner = "ubuntu_24_04"
+base_lem = 1
+owner = "ci"
+intent = "Enforce the title convention for the PR named by a merge-group ref with no PR writes."
+failure_mode = "A queued PR with absent, ambiguous, or contradictory identity receives a passing title verdict."
+proof_obligation = "Match the full native queue ref, re-read that exact PR's metadata, and apply the shared title policy read-only."
+evidence = ["job output"]
+allowed_triggers = ["merge_group"]
+expensive = false
+duplicate_of = []
+review_after = "2026-06-07"
+expires = "2026-11-07"
+
 # =============================================================================
 # Lanes added by follow-up B (closing PR 11 LANE_WHITELIST_MISSING warnings)
 # =============================================================================

@@ -1,6 +1,7 @@
 //! Exact-process name-span regression slice for #8183. Broader declaration
 //! hierarchy migration remains #8157; these fixtures use one block package.
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 #[path = "support/real_process.rs"]
 mod real_process;
 
