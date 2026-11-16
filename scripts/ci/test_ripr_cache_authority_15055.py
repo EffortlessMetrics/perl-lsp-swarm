@@ -275,7 +275,10 @@ def validate_same_run_checkpoint_window(source: list[str]) -> None:
                      if "name: Validate PR evidence contracts" in step]
         if len(producers) != 1 or len(consumers) != 1 or producers[0] >= consumers[0]:
             raise AssertionError(f"{job} must produce its checkpoint before same-run validation")
-        window = steps[producers[0] + 1:consumers[0] + 1]
+        # Include the producer itself: either cache branch can execute commands
+        # after publishing the checkpoint but before its step completes. The
+        # current producer has no dependency setup before that point either.
+        window = steps[producers[0]:consumers[0] + 1]
         if any(action_reference(step) for step in window):
             raise AssertionError(f"{job} checkpoint window cannot run dependency/cache actions")
         windows.append("\n".join(line for step in window for line in step))
@@ -734,6 +737,23 @@ class RiprCacheAuthorityTests(unittest.TestCase):
             validate_receipt_cache_contract(text.replace(
                 fallback, fallback.replace(RECEIPT_SCAN, OBSERVED_RECEIPT_SCAN, 1), 1
             ).splitlines())
+
+    def test_checkpoint_window_covers_each_producer_branch(self) -> None:
+        text = "\n".join(self.source)
+        validate_same_run_checkpoint_window(self.source)
+        for job in RECEIPT_CACHE_JOBS:
+            job_text = "\n".join(block(self.source, job, 2))
+            fresh = OBSERVED_RECEIPT_SCAN if job == "ripr-github" else RECEIPT_SCAN
+            for command in (RECEIPT_FULL_CHECK, fresh):
+                with self.subTest(job=job, command=command):
+                    changed = job_text.replace(command, command + "\n            cargo fetch --locked", 1)
+                    self.assertNotEqual(job_text, changed)
+                    mutated = text.replace(job_text, changed, 1).splitlines()
+                    # This preserves the correct producer/check command counts:
+                    # only the producer-to-consumer stability rule can catch it.
+                    validate_receipt_cache_contract(mutated)
+                    with self.assertRaisesRegex(AssertionError, "must not install dependencies"):
+                        validate_static_contract(mutated)
 
     def test_receipt_cache_mutations_fail_closed(self) -> None:
         """#16431 negative controls for the exact-head receipt memoization."""

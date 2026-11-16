@@ -168,9 +168,11 @@ Compensating controls, each contract-checked:
 
 The same-run checkpoint introduced in #19326 is separate from this cache. It lives
 in the runner's external freshness handoff, is never cached or uploaded, and binds
-the run token, repository inputs, producer and consumer executables, policy, and
-receipt digest. Fresh generation checks its written bytes against the computed
-packet before creating it. Later `--check-generated` validation refuses changed
+the run token, repository inputs, sensor working directory, producer and consumer
+executables, policy, and receipt digest. Both working directory and analysis root
+must resolve to the repository root. The rendered root and policy argument
+spellings are bound as well. Fresh generation checks its written bytes against
+the computed packet before creating it. Later `--check-generated` validation refuses changed
 inputs or receipt bytes without repeating both repo-wide sensors. A cache restore
 cannot mint this checkpoint from the receipt's own claims: its first consumption
 still runs the ordinary source-recomputing `--check`, with no regeneration retry.

@@ -9,6 +9,8 @@
 //! The qualified CI window has no dependency installation or cache restoration
 //! between producer and consumer. Registry-cache integrity remains the same
 //! instrument premise as pinned RIPR; this is not a hermetic cross-run cache.
+//! Checkpoint modes require the repository root as both the sensor working
+//! directory and analysis root, matching the configuration/helper lookup below.
 
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde_json::{Value, json};
@@ -29,6 +31,7 @@ const MAX_RECEIPT_BYTES: u64 = 1024 * 1024;
 pub(super) fn capture(
     repo: &Path,
     root: &str,
+    root_argument: &str,
     suppressions: &Path,
     receipt: &Path,
     ripr: &str,
@@ -40,20 +43,21 @@ pub(super) fn capture(
     if token.is_empty() {
         bail!("same-run RIPR+ verification needs a nonempty run token");
     }
+    let repo = repo.canonicalize()?;
+    let working_directory = env::current_dir()?.canonicalize()?;
+    require_repository_root(&repo, root, &working_directory)?;
     // Only the root Cargo output directory is excluded from the input walk.
     // Do not let a caller place analyzed inputs, policies or tracked source in
     // that excluded tree. No gitignore rules or language-extension guesses are
     // used: ignored/untracked source, fixtures and configuration are all bound.
-    if Path::new(root).starts_with("target")
-        || !receipt.starts_with("target")
+    if !receipt.starts_with("target")
         || receipt.components().any(|c| !matches!(c, Component::Normal(_)))
-        || !super::run_git_bytes(repo, &["ls-files", "-z", "--", "target"])?.is_empty()
+        || !super::run_git_bytes(&repo, &["ls-files", "-z", "--", "target"])?.is_empty()
     {
         bail!(
             "same-run RIPR+ requires an untracked root target/ output and source outside target/"
         );
     }
-    let repo = repo.canonicalize()?;
     let policy = repo.join(suppressions).canonicalize()?;
     if policy.starts_with(repo.join("target")) {
         bail!("same-run RIPR+ policy cannot be inside target/");
@@ -78,13 +82,16 @@ pub(super) fn capture(
         "schema_version": 1,
         "run_token": token,
         "repository": repo,
+        "working_directory": working_directory,
         "head": super::current_head(&repo)?,
         "tree": super::run_git_output(&repo, &["rev-parse", "HEAD^{tree}"])?.trim(),
         "index_sha256": digest(&super::run_git_bytes(&repo, &["ls-files", "--stage", "-z"])?),
         "inputs_sha256": input_digest(&repo)?,
         "root": root,
+        "root_argument": root_argument,
         "receipt": receipt,
         "policy": policy,
+        "policy_argument": super::display_path(suppressions),
         "policy_sha256": file_digest(&policy)?,
         "ripr": producer,
         "ripr_sha256": file_digest(&producer)?,
@@ -94,6 +101,16 @@ pub(super) fn capture(
         "cargo_configuration_sha256": cargo_configuration_digest(&repo, &cargo_home)?,
         "helpers": [helper_identity("git", &repo)?, helper_identity("cargo", &repo)?, helper_identity("rustc", &repo)?],
     }))
+}
+
+fn require_repository_root(repo: &Path, root: &str, working_directory: &Path) -> Result<()> {
+    // command_root_arg owns canonicalization and containment of the requested
+    // root. Its normalized "." denotes the whole repository. RIPR inherits cwd,
+    // so both must agree before a checkpoint can describe that same subject.
+    if root != "." || working_directory != repo {
+        bail!("same-run RIPR+ requires the repository root as working directory and analysis root");
+    }
+    Ok(())
 }
 
 // These are the inputs read by the pinned RIPR 9b914379 analysis owners:
@@ -365,6 +382,39 @@ fn hexadecimal(bytes: impl AsRef<[u8]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ripr_plus_checkpoint_requires_repository_root_subject() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let root = repo.path().canonicalize()?;
+        fs::create_dir(root.join("nested"))?;
+        fs::create_dir(root.join("target"))?;
+        for spelling in
+            [".".to_string(), "./".to_string(), "nested/..".to_string(), root.display().to_string()]
+        {
+            let normalized = super::super::command_root_arg(&root, &spelling)?;
+            require_repository_root(&root, &normalized, &root)?;
+        }
+        for spelling in [
+            "nested".to_string(),
+            "./target".to_string(),
+            "nested/../target".to_string(),
+            root.join("target").display().to_string(),
+        ] {
+            let normalized = super::super::command_root_arg(&root, &spelling)?;
+            assert!(
+                require_repository_root(&root, &normalized, &root).is_err(),
+                "unsupported analysis root {spelling}"
+            );
+        }
+        assert!(
+            super::super::command_root_arg(&root, &outside.path().display().to_string()).is_err()
+        );
+        assert!(require_repository_root(&root, ".", &root.join("nested").canonicalize()?).is_err());
+        assert!(require_repository_root(&root, ".", &outside.path().canonicalize()?).is_err());
+        Ok(())
+    }
 
     #[test]
     fn ripr_plus_checkpoint_readback_refuses_wrong_written_bytes() -> Result<()> {

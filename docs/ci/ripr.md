@@ -329,6 +329,12 @@ The producer verifies its written bytes against the packet it just computed and
 requires unchanged inputs before and after analysis. The later check compares the
 receipt digest and bindings for the run token, HEAD/tree/index, all checkout inputs
 outside root `.git` and `target`, suppression policy, and RIPR/xtask executables.
+Checkpoint production and verification must run from the repository root with an
+analysis root that resolves to that same directory. The canonical working
+directory is bound because RIPR inherits it when resolving `--root .`. Ordinary
+generation and `--check` retain their existing root behavior. The root and policy
+argument spellings written into the receipt are also bound, so equivalent paths
+with different receipt provenance still require their own matching verification.
 It also binds Cargo/Rust/Git environment selectors, ancestor and Cargo-home
 configuration, and the selected Git, Cargo and rustc helpers (including the actual
 toolchain binary behind a rustup proxy). The CI path requires an absolute,
@@ -341,7 +347,8 @@ uploaded. These are same-run checks, not cross-run analysis reuse.
 
 Dependency-cache integrity is an instrument premise inherited from pinned RIPR.
 The qualified producer-to-consumer window contains no dependency installation or
-cache restore; workflow contracts enforce that order. The checkpoint does not
+cache restore, including commands after checkpoint creation in the producer
+step; workflow contracts enforce that order. The checkpoint does not
 claim hermeticity if another process changes the registry cache during that window.
 
 A restored receipt must first pass `--check --checkpoint` to recompute the current

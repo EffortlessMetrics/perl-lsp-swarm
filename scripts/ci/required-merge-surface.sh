@@ -65,7 +65,8 @@ if [[ ! "$subject_sha" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 # Reject a filtered or edited original command even if its marker survives.
-# New contract commands may be appended after the immutable existing prefix.
+# Group 18 retains its original command plus one exact RIPR checkpoint suffix.
+# New contract groups may be appended after the preserved existing prefix.
 python3 - <<'PY'
 import pathlib
 import re
@@ -87,6 +88,39 @@ for index, marker in enumerate(markers):
     ).strip()
     actual.append((marker.group(1), commands))
 expected = [(step['name'], step['run'].strip()) for step in original]
+# Only this reviewed suffix extends the original RIPR workflow-contract group.
+# Every original command, including group 18's prefix, remains exact.
+expected[17] = (expected[17][0], expected[17][1] + r'''
+
+# Same-run RIPR+ checkpoint runtime controls.
+set -o pipefail
+cargo test -p xtask --bin xtask --locked -- \
+  --exact \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_analysis_environment_and_external_cargo_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_ignored_and_untracked_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_readback_refuses_wrong_written_bytes \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_rejects_external_input_and_cached_checkpoint \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_requires_repository_root_subject \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_binds_rendered_root_and_policy_spellings \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_refuses_input_mutation_during_analysis \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics \
+  --test-threads=1 --color never | tee "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+grep -Eq '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in ' \
+  "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+for test_name in \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_analysis_environment_and_external_cargo_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_ignored_and_untracked_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_readback_refuses_wrong_written_bytes \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_rejects_external_input_and_cached_checkpoint \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_requires_repository_root_subject \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_binds_rendered_root_and_policy_spellings \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_refuses_input_mutation_during_analysis \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics; do
+  grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+done
+'''.rstrip())
 if actual[:len(expected)] != expected:
     position = next(
         (index for index, pair in enumerate(actual)
@@ -264,6 +298,35 @@ cargo test -p xtask --test issue_16133_ripr_liveness_dedup_paginate --locked -- 
 # required merge surface command 18: ripr gap-gate workflow contract (required merge surface)
 _step_index=$((_step_index + 1))
 cargo test -p xtask --test ripr_new_gap_gate_workflow --locked -- --nocapture
+
+# Same-run RIPR+ checkpoint runtime controls.
+set -o pipefail
+cargo test -p xtask --bin xtask --locked -- \
+  --exact \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_analysis_environment_and_external_cargo_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_ignored_and_untracked_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_readback_refuses_wrong_written_bytes \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_rejects_external_input_and_cached_checkpoint \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_requires_repository_root_subject \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_binds_rendered_root_and_policy_spellings \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_refuses_input_mutation_during_analysis \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics \
+  --test-threads=1 --color never | tee "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+grep -Eq '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in ' \
+  "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+for test_name in \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_analysis_environment_and_external_cargo_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_ignored_and_untracked_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_readback_refuses_wrong_written_bytes \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_rejects_external_input_and_cached_checkpoint \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_requires_repository_root_subject \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_binds_rendered_root_and_policy_spellings \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_refuses_input_mutation_during_analysis \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics; do
+  grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+done
 
 # required merge surface command 19: ripr version badge contract (required merge surface)
 _step_index=$((_step_index + 1))
