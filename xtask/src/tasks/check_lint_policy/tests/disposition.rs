@@ -1,9 +1,11 @@
 use super::super::validate::{
-    validate_cadence_sources, validate_required_dispositions, validate_workspace_lints,
+    REQUIRED_DISPOSITIONS, validate_cadence_sources, validate_required_dispositions,
+    validate_workspace_lints,
 };
 use super::{deferred_lint, empty_cargo, ledger_with, lint_entry, planned_lint};
 use super::{empty_debt, test_root};
 use color_eyre::eyre::{Result, bail};
+use std::collections::BTreeSet;
 use toml::Value;
 
 const REQUIRED: &[&str] = &[
@@ -19,6 +21,14 @@ const REQUIRED: &[&str] = &[
     "clippy::decimal_bitwise_operands",
     "clippy::path_buf_push_overwrite",
     "clippy::join_absolute_paths",
+    // Async discipline rail (#2323, #18916). These four identities are pinned by
+    // REQUIRED_DISPOSITIONS; the fixture below restates them so the validator
+    // sees each exactly once. Appended at the end so the REQUIRED[3] and
+    // REQUIRED[4] indices the mutation tests depend on keep their meaning.
+    "clippy::await_holding_lock",
+    "clippy::await_holding_refcell_ref",
+    "clippy::async_yields_async",
+    "clippy::mutex_atomic",
 ];
 
 fn required_ledger() -> super::super::model::LintLedger {
@@ -36,7 +46,29 @@ fn required_ledger() -> super::super::model::LintLedger {
     ledger.lint.push(lint_entry(REQUIRED[9], "active"));
     ledger.lint.push(lint_entry(REQUIRED[10], "active"));
     ledger.lint.push(lint_entry(REQUIRED[11], "active"));
+    // The async discipline rail is pinned at (deny, active); every row here is
+    // an active ledger entry, which is what REQUIRED_DISPOSITIONS requires.
+    ledger.lint.push(lint_entry(REQUIRED[12], "active"));
+    ledger.lint.push(lint_entry(REQUIRED[13], "active"));
+    ledger.lint.push(lint_entry(REQUIRED[14], "active"));
+    ledger.lint.push(lint_entry(REQUIRED[15], "active"));
     ledger
+}
+
+#[test]
+fn fixture_covers_every_required_disposition_identity() {
+    // The fixture is an independent restatement of the validator's authority,
+    // so it must name exactly the identities REQUIRED_DISPOSITIONS pins. When
+    // the two drift apart, every fixture-backed test fails on the missing
+    // identity before it reaches the behaviour it was written to check — which
+    // is what #18916's async-discipline rows did to this fixture.
+    let authority: BTreeSet<&str> =
+        REQUIRED_DISPOSITIONS.iter().map(|(name, _, _)| *name).collect();
+    let fixture: BTreeSet<&str> = REQUIRED.iter().copied().collect();
+    assert_eq!(
+        fixture, authority,
+        "the check_lint_policy fixture must cover exactly the required-disposition identities"
+    );
 }
 
 #[test]
