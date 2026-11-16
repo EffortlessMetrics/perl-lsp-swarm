@@ -1692,7 +1692,7 @@ tests::gamma: test
     #[test]
     fn a_forged_failure_result_over_all_ok_steps_is_refused() {
         // Review #13882: internal consistency was previously checked only for
-        // success, so a failure result over nine ok steps verified.
+        // success, so a failure result over all ok steps verified.
         let mut receipt = success_receipt();
         receipt.result = ProofResult::ProductFailure;
         let text = rejection(&receipt, None);
