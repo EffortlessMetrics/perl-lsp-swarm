@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   compose:
-    if: github.event.head_commit.message == 'chore(ci): compose queue metadata on current main (#19326)'
+    if: >-
+      github.event.head_commit.message ==
+      'fix(ci): repair one-shot queue composer (#19326)'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
