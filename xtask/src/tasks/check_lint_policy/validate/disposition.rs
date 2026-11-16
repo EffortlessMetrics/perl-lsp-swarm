@@ -11,7 +11,7 @@ use toml::Value;
 /// `[[deferred_due]]` rows also carry `level = "deny"`, so a row demoted out of
 /// active enforcement still satisfies a level pin. Pinning the status as well is
 /// what makes a promotion non-reversible without an explicit policy change.
-const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
+pub(super) const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("rust::const_item_interior_mutations", None, None),
     ("rust::function_casts_as_integer", None, None),
     ("clippy::same_length_and_capacity", None, None),

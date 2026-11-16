@@ -14,7 +14,7 @@ This inventory changes no compatibility behavior and removes no source.
 The dispositions below were audited against this exact source. A change to any file
 listed here invalidates the audit and the task fails until the rows are re-checked.
 
-- Digest: `sha256:0bd28c41cdda2b66f6317ee41b741fdd723a00f8044a67a723a467cb2773b3cf`
+- Digest: `sha256:b4975ae548e47a851a4a4df43fe4ef49a94f7f7a4f8e1f57390aa9a357db21ec`
 - Authority digest: `sha256:9f481f0dd02f7b88ec1853059d28eb1fd13033bc0691b56770b6fb50aea03c5a`
 - Files (7):
   - `crates/perl-tree-sitter-compat/Cargo.toml`
@@ -36,7 +36,7 @@ search alone could not establish it.
 | Disposition | Symbols | References |
 | --- | ---: | ---: |
 | `already_equivalent` | 2 | 0 |
-| `migration_only_entry_point` | 0 | 27 |
+| `migration_only_entry_point` | 0 | 28 |
 | `unique_and_required` | 9 | 0 |
 | `unique_but_invalid_or_obsolete` | 1 | 0 |
 | `unused` | 2 | 4 |
@@ -77,6 +77,7 @@ inventory's own artifacts. An unexplained reference fails the task.
 | `.spec/11246-clippy-map-err-ignore-boundaries/denominator.csv` | `documentation` | `unused` | — | — | Historical denominator row recorded by the #11246 clippy audit, noting that TreeError::ParseFailed drops parser error position. A record of a past measurement; it needs no edit when the crate is removed. |
 | `Cargo.lock` | `lockfile` | `migration_only_entry_point` | #8890 | Regenerated when the crate is deleted from the workspace. | Lockfile entry for the workspace member. |
 | `Cargo.toml` | `workspace_manifest` | `migration_only_entry_point` | #8890 | The workspace member entry and the workspace.dependencies row are removed when the crate is deleted. | Declares the crate as a workspace member and publishes a workspace dependency alias. The alias is unused: no member manifest references it. |
+| `book/src/reference/status/quality.md` | `documentation` | `migration_only_entry_point` | #8890 | Regenerated after the crate is deleted. | Published book copy of the generated quality status table, carrying the same per-crate row for the package. `scripts/populate-book.sh` commits generated copies of `docs/` pages, so this file follows `docs/project/status/quality.md` and is rewritten, not authored, when the table is regenerated. |
 | `crates/perl-tree-sitter-compat/CLAUDE.md` | `own_crate` | `migration_only_entry_point` | #8890 | Deleted with the crate. | Package-local owner guidance for the crate itself. |
 | `crates/perl-tree-sitter-compat/Cargo.toml` | `own_crate` | `migration_only_entry_point` | #8890 | Deleted with the crate. | The crate's own manifest. Not counted as a Cargo dependent: a package is not a consumer of itself. |
 | `crates/perl-tree-sitter-compat/README.md` | `own_crate` | `migration_only_entry_point` | #8890 | Deleted with the crate. | The crate's own README. |
