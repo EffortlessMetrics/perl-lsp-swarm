@@ -482,6 +482,7 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
         (
             Node::new(
                 NodeKind::Regex {
+                    form: perl_ast::RegexSurfaceForm::BarePattern,
                     pattern: "foo".to_string(),
                     replacement: Some("bar".to_string()),
                     modifiers: "g".to_string(),

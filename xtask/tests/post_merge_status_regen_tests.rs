@@ -16,6 +16,10 @@ use std::path::PathBuf;
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
 
+#[cfg(unix)]
+#[path = "support/external_command.rs"]
+mod external_command;
+
 fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
     let mut workflows = BTreeSet::new();
     for check in ["check", "checks"]
@@ -26,6 +30,12 @@ fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn st
     {
         let name =
             check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+        let Some(events) = check.get("events").and_then(TomlValue::as_array) else {
+            continue;
+        };
+        if !events.iter().any(|event| event.as_str() == Some("workflow_dispatch")) {
+            continue;
+        }
         let workflow = check
             .get("workflow")
             .and_then(TomlValue::as_str)
@@ -73,85 +83,43 @@ fn assert_dispatch_loop_behavior(
     base_sha: &str,
     head_sha: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::process::{Command, Output};
-
-    let temp_dir = tempfile::tempdir()?;
-    let stub_dir = temp_dir.path().join("bin");
-    fs::create_dir(&stub_dir)?;
-    let stub_gh = stub_dir.join("gh");
-    // Record the full argument vector for every call and tolerate any arity:
-    // ci.yml's workflow_dispatch requires `-f base_sha=… -f head_sha=…`
-    // (#13019), so a five-arg stub would reject exactly the call this fixture
-    // must admit — and did, leaving this test red on main unobserved (#15100).
-    fs::write(
-        &stub_gh,
-        "#!/usr/bin/env bash\n\
-         printf '%s\\n' \"$*\" >> \"$GH_LOG\"\n\
-         if [ -n \"${FAIL_WORKFLOW:-}\" ] && [ \"$FAIL_WORKFLOW\" = \"${3:-}\" ]; then exit 1; fi\n",
-    )?;
-    use std::os::unix::fs::PermissionsExt;
-    let mut permissions = fs::metadata(&stub_gh)?.permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&stub_gh, permissions)?;
-    // Stub every dispatch call, not just the first: the ci.yml special case
-    // precedes the bare `elif` dispatch, and an unstubbed suffix would invoke
-    // the real gh — failing hermeticity and, on an authenticated machine,
-    // dispatching real workflows.
-    let simulation_run =
-        dispatch_run.replace("gh workflow run", &format!("{} workflow run", stub_gh.display()));
-    assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
-
-    let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
-        let log_path = temp_dir.path().join(log_name);
-        let existing_path = std::env::var_os("PATH").unwrap_or_default();
-        let path = std::env::join_paths(
-            std::iter::once(stub_dir.clone()).chain(std::env::split_paths(&existing_path)),
-        )?;
-        let mut command = Command::new("/bin/bash");
-        command
-            .arg("-c")
-            .arg(&simulation_run)
-            .env("PATH", path)
-            .env("BRANCH", branch)
-            .env("BASE_SHA", base_sha)
-            .env("GENERATED_HEAD_SHA", head_sha)
-            .env("GH_LOG", &log_path);
-        if let Some(fail_workflow) = fail_workflow {
-            command.env("FAIL_WORKFLOW", fail_workflow);
-        } else {
-            command.env_remove("FAIL_WORKFLOW");
-        }
-        let output: Output = command.output().map_err(|error| {
-            format!("failed to execute dispatch shell for {}: {error}", log_path.display())
-        })?;
-        let calls = fs::read_to_string(&log_path)
-            .map_err(|error| {
-                format!(
-                    "failed to read {}: {error}; stdout={}; stderr={}",
-                    log_path.display(),
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                )
-            })?
-            .lines()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        Ok::<_, Box<dyn std::error::Error>>((output, calls))
+    use external_command::{
+        ExpectedExternalCommand, ExternalCommandFixture, HermeticCommandEnv,
+        ObservedExternalCommand,
     };
 
-    let (success_output, success_calls) = run_dispatch(None, "all-success.log")?;
-    assert!(
-        success_output.status.success(),
-        "all-success dispatch run failed: {}",
-        String::from_utf8_lossy(&success_output.stderr)
-    );
-    // ci.yml's workflow_dispatch requires the dispatched subject's exact
-    // base/head SHAs (#13019); every other required workflow declares no
-    // dispatch inputs and stays bare (#13355).
+    fn workflow_spec(
+        workflow: &str,
+        branch: &str,
+        base_sha: &str,
+        head_sha: &str,
+        fail: bool,
+    ) -> ExpectedExternalCommand {
+        let mut argv = vec![
+            "workflow".to_string(),
+            "run".to_string(),
+            workflow.to_string(),
+            "--ref".to_string(),
+            branch.to_string(),
+        ];
+        if (workflow == "ci.yml" || workflow == "ripr.yml") {
+            argv.push("-f".into());
+            argv.push(format!("base_sha={base_sha}"));
+            argv.push("-f".into());
+            argv.push(format!("head_sha={head_sha}"));
+        }
+        let spec = ExpectedExternalCommand::exact("gh", argv);
+        if fail { spec.error("dispatch failed") } else { spec.stdout("") }
+    }
+
+    fn calls_from(observations: &[ObservedExternalCommand]) -> Vec<String> {
+        observations.iter().map(|observed| observed.argv.join(" ")).collect()
+    }
+
     let expected_calls = dispatch_order
         .iter()
         .map(|workflow| {
-            if workflow == "ci.yml" {
+            if (workflow == "ci.yml" || workflow == "ripr.yml") {
                 format!(
                     "workflow run {workflow} --ref {branch} -f base_sha={base_sha} -f head_sha={head_sha}"
                 )
@@ -160,13 +128,53 @@ fn assert_dispatch_loop_behavior(
             }
         })
         .collect::<Vec<_>>();
-    assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
+
+    let mut success = ExternalCommandFixture::new();
+    for workflow in dispatch_order {
+        success = success.expect(workflow_spec(workflow, branch, base_sha, head_sha, false));
+    }
+    let success_env = HermeticCommandEnv::install("gh", &success)?;
+    let success_output = success_env.run_bash(
+        dispatch_run,
+        &[("BRANCH", branch), ("BASE_SHA", base_sha), ("GENERATED_HEAD_SHA", head_sha)],
+    )?;
+    assert!(
+        success_output.status.success(),
+        "all-success dispatch run failed: {}",
+        String::from_utf8_lossy(&success_output.stderr)
+    );
+    if success_env.sentinel_hit() {
+        return Err("live gh fallback reached the PATH sentinel".into());
+    }
+    assert_eq!(
+        calls_from(&success_env.observations()?),
+        expected_calls,
+        "all required dispatches must run in workflow order"
+    );
 
     let first_workflow = dispatch_order.first().ok_or("required workflow set must not be empty")?;
-    let (failure_output, failure_calls) = run_dispatch(Some(first_workflow), "first-failure.log")?;
+    let mut failure = ExternalCommandFixture::new();
+    for workflow in dispatch_order {
+        failure = failure.expect(workflow_spec(
+            workflow,
+            branch,
+            base_sha,
+            head_sha,
+            workflow == first_workflow,
+        ));
+    }
+    let failure_env = HermeticCommandEnv::install("gh", &failure)?;
+    let failure_output = failure_env.run_bash(
+        dispatch_run,
+        &[("BRANCH", branch), ("BASE_SHA", base_sha), ("GENERATED_HEAD_SHA", head_sha)],
+    )?;
     assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
+    if failure_env.sentinel_hit() {
+        return Err("live gh fallback reached the PATH sentinel".into());
+    }
     assert_eq!(
-        failure_calls, expected_calls,
+        calls_from(&failure_env.observations()?),
+        expected_calls,
         "a failed dispatch must not skip later required workflows"
     );
 
@@ -357,19 +365,26 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
         .and_then(TomlValue::as_array)
         .ok_or("required-checks.toml must declare a checks array")?;
 
-    for check in checks
+    let required_names: BTreeSet<&str> = checks
         .iter()
         .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
-    {
-        let required_name =
-            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
-        let events = check
-            .get("events")
-            .and_then(TomlValue::as_array)
-            .ok_or_else(|| format!("`{required_name}` must declare events"))?;
+        .map(|check| {
+            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>")
+        })
+        .collect();
+    for required_name in required_names {
+        let has_dispatch_route = checks
+            .iter()
+            .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+            .filter(|check| check.get("name").and_then(TomlValue::as_str) == Some(required_name))
+            .any(|check| {
+                check.get("events").and_then(TomlValue::as_array).is_some_and(|events| {
+                    events.iter().any(|event| event.as_str() == Some("workflow_dispatch"))
+                })
+            });
         assert!(
-            events.iter().any(|event| event.as_str() == Some("workflow_dispatch")),
-            "`{required_name}` must record workflow_dispatch as a supported route"
+            has_dispatch_route,
+            "`{required_name}` must record workflow_dispatch on at least one event registration"
         );
     }
 
@@ -456,7 +471,7 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         "generated-PR dispatch step must continue after an individual failure and fail overall"
     );
 
-    // The ci.yml dispatch arm reads its subject identity from step env
+    // The ci.yml and ripr.yml dispatch arms read their subject identity from env
     // (#13355); both names must be declared so the simulated invocation is
     // the one the workflow really makes.
     let step_env = dispatch_step
@@ -469,6 +484,14 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
             "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
         );
     }
+
+    assert!(
+        dispatch_run
+            .contains("if [ \"$workflow\" = ci.yml ] || [ \"$workflow\" = ripr.yml ]; then")
+            && dispatch_run.contains("-f \"base_sha=$BASE_SHA\"")
+            && dispatch_run.contains("-f \"head_sha=$GENERATED_HEAD_SHA\""),
+        "ripr.yml must receive the generated PR's base and head SHAs instead of running bare"
+    );
 
     #[cfg(unix)]
     assert_dispatch_loop_behavior(

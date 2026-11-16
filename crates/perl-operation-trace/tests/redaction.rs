@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+
 //! Redaction against a hostile fixture, exercised through `serde_json`, not
 //! only `Debug`.
 //!

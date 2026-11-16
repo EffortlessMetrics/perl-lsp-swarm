@@ -1,4 +1,11 @@
-# Workspace-Wide Rename Refactoring Specification
+# Workspace-Wide Rename Refactoring Specification (Historical)
+
+> **Status correction (2026-08-31):** This document describes the former
+> filesystem-mutating `RefactoringEngine` design and is retained as historical
+> context. It is not the current implementation or API contract. The engine
+> was retired by #5231; live rename authority is operation-specific and is
+> owned by the workspace/LSP providers. Future reusable planning work belongs
+> to #8281.
 
 > **Feature ID**: #433
 > **Component**: perl-refactoring, perl-workspace-index

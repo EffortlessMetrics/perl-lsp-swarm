@@ -131,7 +131,7 @@ echo "4. Performance Gates"
 echo "-------------------"
 
 # Check if benchmarks can run
-if cargo bench --no-run 2>/dev/null; then
+if cargo bench --features perl-lsp-rs/benchmarks --no-run 2>/dev/null; then
     print_status "OK" "Gate PASSED: Benchmark Compilation"
     GATES_PASSED=$((GATES_PASSED + 1))
 else
@@ -316,7 +316,7 @@ if [ "$PASS_RATE" -ge "$REQUIRED_PASS_RATE" ]; then
     echo "Next steps:"
     echo "1. Review the detailed report: $REPORT_FILE"
     echo "2. Run final integration tests: just e2e-validation"
-    echo "3. Execute release process: cargo publish"
+    echo "3. Follow the reviewed release transaction (#13768 / #6055): docs/release/RUNBOOK.md"
     echo "4. Update documentation and changelog"
 else
     print_status "ERROR" "❌ NOT PRODUCTION READY: Some gates failed"

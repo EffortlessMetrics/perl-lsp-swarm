@@ -18,15 +18,19 @@
 
 mod support;
 use serde_json::json;
-use support::lsp_harness::LspHarness;
+use support::lsp_harness::{LspHarness, TempWorkspace};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+// Virtual-document cases own an empty root so indexing cannot scan the host checkout.
+// Keep their synthetic document URIs to preserve open-document resolution coverage.
 /// Tests feature spec: call_hierarchy_provider.rs#prepare
 /// Test basic prepareCallHierarchy at a function definition
 #[test]
 fn test_prepare_call_hierarchy_basic_function() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -70,8 +74,9 @@ sub main {
 /// Test prepareCallHierarchy with method calls
 #[test]
 fn test_prepare_call_hierarchy_method() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -118,8 +123,9 @@ $obj->process();
 /// Test incoming calls (callers of a function)
 #[test]
 fn test_incoming_calls_basic() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -186,8 +192,9 @@ sub say_hi {
 /// Test incoming calls with multiple call sites in same function
 #[test]
 fn test_incoming_calls_multiple_sites() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -247,8 +254,9 @@ sub process {
 /// Test outgoing calls (functions called by this function)
 #[test]
 fn test_outgoing_calls_basic() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -316,8 +324,9 @@ sub main_function {
 /// Test outgoing calls with method calls
 #[test]
 fn test_outgoing_calls_methods() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -389,8 +398,9 @@ sub process_data {
 /// Test detection of recursive function calls
 #[test]
 fn test_recursive_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -474,8 +484,9 @@ sub main {
 /// Test cross-package function calls
 #[test]
 fn test_cross_package_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -544,8 +555,9 @@ App::process();
 /// Test call hierarchy with no calls found
 #[test]
 fn test_no_calls_found() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -597,8 +609,9 @@ sub unused_function {
 /// Test call hierarchy at invalid position (no symbol)
 #[test]
 fn test_prepare_at_invalid_position() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -633,8 +646,9 @@ sub hello {
 /// Test call hierarchy with Unicode function names
 #[test]
 fn test_unicode_function_names() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -680,8 +694,9 @@ sub main {
 /// Test deeply nested function calls
 #[test]
 fn test_nested_function_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -771,8 +786,9 @@ sub main {
 /// Test call hierarchy with anonymous subroutines (edge case)
 #[test]
 fn test_anonymous_subroutines() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -810,8 +826,9 @@ sub main {
 /// Test call hierarchy with complex call expressions
 #[test]
 fn test_complex_call_expressions() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -854,8 +871,9 @@ sub main {
 /// Test call hierarchy with builtin function calls (should not appear in hierarchy)
 #[test]
 fn test_builtin_function_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -901,8 +919,9 @@ sub custom_print {
 /// Test call hierarchy with method calls on specific variables
 #[test]
 fn test_method_calls_on_objects() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -980,8 +999,9 @@ sub run_query {
 /// Test that call hierarchy capability is advertised in server capabilities
 #[test]
 fn test_call_hierarchy_capability_advertised() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init_response = harness.initialize(None)?;
+    let init_response = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let capabilities = &init_response["capabilities"];
 
@@ -999,8 +1019,9 @@ fn test_call_hierarchy_capability_advertised() -> TestResult {
 /// incoming calls from app.pl must appear even though the item URI is Utils.pm.
 #[test]
 fn test_cross_file_incoming_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     // File that defines the target subroutine
     harness.open(
@@ -1070,8 +1091,9 @@ process();
 /// should report the URI of Utils.pm, not app.pl.
 #[test]
 fn test_cross_file_outgoing_calls_uri() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     // File that defines the callee
     harness.open(
@@ -1165,8 +1187,9 @@ process();
 /// multiple same-named subs in different packages.
 #[test]
 fn test_cross_file_outgoing_calls_disambiguate_package_qualified_target() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     harness.open(
         "file:///lib/Alpha.pm",
@@ -1238,8 +1261,9 @@ sub orchestrate {
 /// outgoing call resolution should point fetch() at Repo.pm.
 #[test]
 fn test_cross_file_outgoing_calls_infer_receiver_package() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     harness.open(
         "file:///lib/Repo.pm",
@@ -1301,8 +1325,9 @@ sub process {
 /// Tests fix for issue #2878: workspace-backed incoming calls should refresh after edits.
 #[test]
 fn test_cross_file_incoming_calls_refresh_after_change() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     harness.open(
         "file:///lib/Utils.pm",
@@ -1383,8 +1408,9 @@ sub process {
 /// not on argument emptiness (PR #17379 review BUG_0001).
 #[test]
 fn test_incoming_calls_do_not_report_code_reference_creation() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -1494,8 +1520,9 @@ sub call_both {
 /// collapsed into one callee keyed by bare method name.
 #[test]
 fn test_outgoing_calls_distinguish_bareword_class_receivers() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(

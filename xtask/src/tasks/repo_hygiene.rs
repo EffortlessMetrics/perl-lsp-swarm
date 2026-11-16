@@ -689,7 +689,10 @@ mod tests {
     fn git_proof_inputs_treat_pathspecs_literally() -> Result<()> {
         let repository = tempfile::tempdir()?;
         let run_git = |args: &[&str]| -> Result<Vec<u8>> {
-            let output = Command::new("git").args(args).current_dir(repository.path()).output()?;
+            let output = xtask::git_environment::isolate(Command::new("git"))
+                .args(args)
+                .current_dir(repository.path())
+                .output()?;
             ensure!(
                 output.status.success(),
                 "git {:?} failed: {}",

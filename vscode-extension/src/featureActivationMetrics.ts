@@ -1,12 +1,11 @@
 export type FeatureActivationDomain =
-  | 'mcp'
   | 'whats_new'
   | 'providers'
   | 'configuration'
   | 'debugger'
   | 'onboarding';
 
-type RegistrationStatus = 'not_started' | 'registered' | 'failed';
+type RegistrationStatus = 'not_started' | 'registered' | 'failed' | 'deferred';
 type FirstUseStatus = 'not_observed' | 'observed';
 
 export interface FeatureActivationMeasurement {
@@ -40,6 +39,20 @@ export class FeatureActivationMetrics {
     this.activationId += 1;
     this.origin = performance.now();
     this.measurements.clear();
+  }
+
+  public recordDeferred(domain: FeatureActivationDomain, activationCritical: boolean): void {
+    this.measurements.set(domain, {
+      domain,
+      activation_critical: activationCritical,
+      module_evaluation: 'static-import-not-observable',
+      registration_status: 'deferred',
+      registration_ms: 0,
+      first_use_status: 'not_observed',
+      first_use_ms: null,
+      error: null,
+      registration_started_at: undefined,
+    });
   }
 
   public measure<T>(

@@ -364,13 +364,24 @@ impl DebugAdapter {
         }
 
         let parsed = if let Some(lines) = framed_lines.as_ref() {
-            Self::parse_evaluate_result_from_lines(
-                lines,
-                expression,
-                true,
-                DebuggerOutputOrigin::DebuggerControlPayload,
-                ParseIdentity::new().with_operation_id_from_i64(request_seq),
-            )
+            // This handler queried `x`, which renders a numbered dump (`0  5`,
+            // one `N  ` line per element). Strip the dump scaffolding into the
+            // single value text the response should present first; the generic
+            // line parse stays the fallback for anything that is not a dump
+            // (#17244). The setExpression read-back path sends `p`, whose
+            // unquoted output can legitimately look dump-shaped, so it must
+            // not go through this reshape.
+            Self::parse_evaluate_result_from_x_dump(lines)
+                .map(|(value, type_name)| (value, type_name, None))
+                .or_else(|| {
+                    Self::parse_evaluate_result_from_lines(
+                        lines,
+                        expression,
+                        true,
+                        DebuggerOutputOrigin::DebuggerControlPayload,
+                        ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                    )
+                })
         } else {
             self.parse_evaluate_result_from_output(expression)
         };
@@ -1234,6 +1245,7 @@ mod evaluate_allocation_tests {
                 thread_id: 1,
                 debuggee_cwd: PathBuf::from("."),
                 last_resume_mode: ResumeMode::Unknown,
+                reader_stop_epoch: 0,
                 initial_stop_pending: false,
                 entry_stop_pending: false,
                 stopped_generation: 0,

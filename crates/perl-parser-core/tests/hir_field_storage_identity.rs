@@ -237,13 +237,15 @@ fn an_aggregate_element_reference_resolves_the_same_for_field_and_my() -> TestRe
     // Boundary, pinned rather than left implicit. `$items[0]` carries the
     // scalar sigil while the binding records `@items`, and the scope graph
     // matches sigils exactly — so an element reference does not reach its
-    // declaration. That is a pre-existing property of the scope graph, not
-    // something field storage introduced: `my @items` behaves identically, and
-    // this test fails if the two ever diverge.
-    //
-    // The point is the *equality*. If element resolution is later repaired
-    // (#14682), both sides move together and this test fails, which is the
-    // signal to update it rather than a regression.
+    // declaration. The aggregate-sigil fallback added in #14682 closes that
+    // gap and resolves the container to the underlying aggregate binding, so
+    // both the `field @items` declaration and the `my @items` declaration now
+    // flow through to the body view. The two sides diverge on *storage* (a
+    // field is `Field`, a lexical is `Lexical`) but agree on the lookup
+    // outcome — every element reference reaches its aggregate declaration
+    // through the same code path, and that was the point of the original
+    // equality check. Updated for #14682: field gives `Field`, my gives
+    // `Lexical`; neither is the unresolved `Package` placeholder anymore.
     let field_file = lower_source(
         "use feature 'class';\nclass C {\n    field @items;\n    method m { $items[0] }\n}\n",
     );
@@ -258,14 +260,14 @@ fn an_aggregate_element_reference_resolves_the_same_for_field_and_my() -> TestRe
     let my_kind = variable_kind(my_body, "items")?;
 
     assert_eq!(
-        field_kind, my_kind,
-        "an aggregate element reference must resolve the same for `field` and `my`; \
-         field gave {field_kind:?}, my gave {my_kind:?}"
+        field_kind,
+        VariableKind::Field,
+        "`field @items` element reference must carry the field's storage (#14682)"
     );
     assert_eq!(
-        field_kind,
-        VariableKind::Package,
-        "both are currently unresolved element references (#14682)"
+        my_kind,
+        VariableKind::Lexical,
+        "`my @items` element reference must carry the lexical's storage (#14682)"
     );
     Ok(())
 }

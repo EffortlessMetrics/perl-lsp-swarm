@@ -16,9 +16,11 @@ use super::{
     json, source_path_from_uri,
     types::best_workspace_folder_for_doc,
 };
+use crate::features::diagnostics::overlap::{codes_collapse_pair, is_native_critic_code};
 use crate::features::diagnostics::report_identity::{
     DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
 };
+use crate::features::diagnostics::wire_code::{wire_code_category, wire_code_documentation_url};
 use perl_lsp_rs_core::config::AcceptedCriticSnapshot;
 
 use crate::features::diagnostics::{
@@ -173,6 +175,20 @@ fn resolved_parse_diagnostic_offset(error: &crate::error::ParseError, text: &str
     }
 }
 
+/// A parser anchor is a byte offset; diagnostic ranges must end on the next
+/// scalar boundary before conversion to the client's UTF-16 coordinates.
+fn parse_error_position_range(
+    text: &str,
+    line_starts: &perl_parser::position::LineStartsCache,
+    offset: usize,
+) -> ((u32, u32), (u32, u32)) {
+    let end = text
+        .get(offset..)
+        .and_then(|suffix| suffix.chars().next())
+        .map_or(offset, |next| offset + next.len_utf8());
+    (line_starts.offset_to_position(text, offset), line_starts.offset_to_position(text, end))
+}
+
 /// Orchestrator for pull diagnostics operations.
 ///
 /// Coordinates between LspServer state and the pure-logic PullDiagnosticsProvider.
@@ -272,8 +288,7 @@ impl PullDiagnosticsOrchestrator {
             }))
         };
 
-        let profile =
-            perlcritic_profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
+        let profile = perlcritic_profile.filter(|p| !p.trim().is_empty());
 
         let identity_root_path = workspace_root.clone();
 
@@ -574,13 +589,22 @@ impl LspServer {
             let source_path = source_path_from_uri(uri);
             let project_version = project_version_for_doc(self, uri);
 
-            // Wait for index build, then sample staleness before touching the
-            // workspace index tier (#5016 item 2).  Sample after readiness and
-            // before any documents_guard re-entry (#6199 deadlock lesson).
+            // Sample staleness before touching the workspace index tier
+            // (#5016 item 2). Sample after readiness and before any
+            // documents_guard re-entry (#6199 deadlock lesson).
+            //
+            // Push diagnostics is a background stream: it uses the current
+            // snapshot and never blocks on index readiness (the readiness
+            // module's SnapshotOnly contract). Waiting here stalled every
+            // debounced publish behind the post-open Building window for up
+            // to INDEX_READY_WAIT_MS (#18774); the not-ready fallback below
+            // keeps the payload honest until the index lands. The pull path
+            // and workspace diagnostics keep WaitBriefly -- those are
+            // explicit user requests where waiting is the point.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             let workspace_index_tier_enabled = {
                 let _ = self.check_index_readiness(
-                    crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
+                    crate::runtime::readiness::IndexReadinessPolicy::SnapshotOnly,
                 );
                 !self.workspace_index_stale_for_any_open_document()
             };
@@ -770,6 +794,12 @@ impl LspServer {
                         _ => 1,
                     };
                     let code_str = d.code.as_deref().unwrap_or("");
+                    // Match the pull projection's message form: the suggestion
+                    // is part of the published row the code action embeds.
+                    let message = match d.suggestion {
+                        Some(ref s) => format!("{}\nSuggestion: {}", d.message, s),
+                        None => d.message.clone(),
+                    };
                     let mut diag = diagnostic_json(
                         start_line,
                         start_char,
@@ -778,19 +808,20 @@ impl LspServer {
                         severity,
                         code_str,
                         push_diagnostic_source(d.code.as_deref()),
-                        json!(d.message),
+                        json!(message),
                     );
                     if !d.tags.is_empty() {
                         diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                     }
 
                     // Enrichment fields for push/pull parity (#1773):
-                    // codeDescription, relatedInformation, and data.
+                    // codeDescription, relatedInformation, and data. The
+                    // resolution consults every owning registry so native
+                    // critic and dead-code identities enrich exactly like
+                    // built-in PL* codes (#17241).
                     if let Some(ref code_str) = d.code {
                         // codeDescription: link to documentation URL
-                        if let Some(url) = DiagnosticCode::parse_code(code_str)
-                            .and_then(|dc| dc.documentation_url())
-                        {
+                        if let Some(url) = wire_code_documentation_url(code_str) {
                             diag["codeDescription"] = json!({ "href": url });
                         }
                     }
@@ -820,9 +851,7 @@ impl LspServer {
 
                     // data: structured metadata (category, fixability, tags)
                     if let Some(ref code_str) = d.code {
-                        let category = DiagnosticCode::parse_code(code_str)
-                            .map(|dc| format!("{:?}", dc.category()))
-                            .unwrap_or_else(|| "Other".to_string());
+                        let category = wire_code_category(code_str);
                         let fixable = d.fixable;
                         let tag_strings: Vec<String> = d
                             .tags
@@ -862,14 +891,14 @@ impl LspServer {
                             None => base_message,
                         };
 
-                    // Convert byte offset to line/column
-                    let (line, character) = pos16(location);
+                    let ((line, character), (end_line, end_character)) =
+                        parse_error_position_range(&text, &line_starts, location);
 
                     diagnostic_json(
                         line,
                         character,
-                        line,
-                        character + 1,
+                        end_line,
+                        end_character,
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
@@ -1011,18 +1040,17 @@ impl LspServer {
                 "perl-lsp",
                 msg_val,
             );
-            // Enrichment parity (#1773). These are catalog-backed codes, so the
-            // catalog can answer both fields here exactly as it does on the full
-            // path; a `PL1000` should not lose its documentation link merely
-            // because the server is running in syntax-only mode.
+            // Enrichment parity (#1773, #17241). Resolution goes through the
+            // shared wire-code authority, so these rows answer both fields
+            // exactly as the full path does — a `PL1000` should not lose its
+            // documentation link merely because the server is running in
+            // syntax-only mode, and any provider identity this route can
+            // carry enriches identically.
             if let Some(code_str) = d.code.as_deref() {
-                if let Some(url) =
-                    DiagnosticCode::parse_code(code_str).and_then(|dc| dc.documentation_url())
-                {
+                if let Some(url) = wire_code_documentation_url(code_str) {
                     diag["codeDescription"] = json!({ "href": url });
                 }
-                let category = DiagnosticCode::parse_code(code_str)
-                    .map_or_else(|| "Other".to_string(), |dc| format!("{:?}", dc.category()));
+                let category = wire_code_category(code_str);
                 diag["data"] = diagnostic_data(code_str, &category, d.fixable, &[]);
             }
             diag
@@ -1037,7 +1065,6 @@ impl LspServer {
         line_starts: &perl_parser::position::LineStartsCache,
         markup_message_support: bool,
     ) -> Vec<Value> {
-        let pos16 = |offset: usize| line_starts.offset_to_position(text, offset);
         let mut items: Vec<Value> =
             parse_errors
                 .iter()
@@ -1052,14 +1079,15 @@ impl LspServer {
                             Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
                             None => base_message,
                         };
-                    let (line, character) = pos16(location);
+                    let ((line, character), (end_line, end_character)) =
+                        parse_error_position_range(text, line_starts, location);
                     let msg_val =
                         Self::diagnostic_message_value(&message, None, markup_message_support);
                     diagnostic_json(
                         line,
                         character,
-                        line,
-                        character + 1,
+                        end_line,
+                        end_character,
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
@@ -1279,8 +1307,6 @@ impl LspServer {
             hook();
         }
 
-        let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
-
         let lsp_diagnostics: Vec<Value> =
             parse_errors
                 .iter()
@@ -1295,12 +1321,13 @@ impl LspServer {
                             Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
                             None => base_message,
                         };
-                    let (line, character) = pos16(location);
+                    let ((line, character), (end_line, end_character)) =
+                        parse_error_position_range(&text, &line_starts, location);
                     diagnostic_json(
                         line,
                         character,
-                        line,
-                        character + 1,
+                        end_line,
+                        end_character,
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
@@ -1424,7 +1451,15 @@ impl LspServer {
             .as_str()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
-        let previous_result_id = params["previousResultId"].as_str().map(|s| s.to_string());
+        let previous_result_id = match params.get("previousResultId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) => Some(id.clone()),
+            Some(_) => {
+                return Err(invalid_params(
+                    "textDocument/diagnostic params.previousResultId must be a string resultId from an earlier diagnostic report; omit it or use null to request a full report.",
+                ));
+            }
+        };
 
         // Parse URI — an unparseable URI is a client-side protocol error (LSP 3.17)
         let uri: Uri =
@@ -1841,6 +1876,34 @@ impl LspServer {
                 .find(|(u, _)| u == uri_str)
                 .and_then(|(_, id)| id.clone());
 
+            // Full-sync loss cannot finish parsing until explicit recovery.
+            // Unlike a transient pending parse, omission would leave the
+            // client's predecessor findings visible indefinitely (#17998).
+            if doc.full_sync_required() {
+                if let Ok(report) = self.commit_if_diagnostic_subject_current(
+                    DiagnosticSubject {
+                        uri: uri_str,
+                        document_instance: generation,
+                        generation: *gen_at_snapshot,
+                        workspace_generation: Some(*workspace_gen_at_snapshot),
+                        accepted_folder_config_generation: *config_generation_at_snapshot,
+                        accepted_critic_snapshot: None,
+                        accepted_topology_generation: None,
+                    },
+                    || {
+                        json!({
+                            "uri": uri_str,
+                            "version": doc.version,
+                            "kind": "full",
+                            "items": []
+                        })
+                    },
+                ) {
+                    items.push(report);
+                }
+                continue;
+            }
+
             let Some(parsed) = doc.current_parsed() else { continue };
 
             // Syntax-only short-circuit for workspace pull. Mirrors the
@@ -2174,9 +2237,10 @@ impl LspServer {
                                     );
                                 }
                                 if let Some(ref code_str) = d.code {
-                                    let category = DiagnosticCode::parse_code(code_str)
-                                        .map(|dc| format!("{:?}", dc.category()))
-                                        .unwrap_or_else(|| "Other".to_string());
+                                    let category = wire_code_category(code_str);
+                                    if let Some(url) = wire_code_documentation_url(code_str) {
+                                        diag["codeDescription"] = json!({ "href": url });
+                                    }
                                     let fixable = d.fixable;
                                     let tag_strings: Vec<String> =
                                         d.tags.iter().map(|t| match t {
@@ -2273,9 +2337,10 @@ impl LspServer {
                                 );
                             }
                             if let Some(ref code_str) = d.code {
-                                let category = DiagnosticCode::parse_code(code_str)
-                                    .map(|dc| format!("{:?}", dc.category()))
-                                    .unwrap_or_else(|| "Other".to_string());
+                                let category = wire_code_category(code_str);
+                                if let Some(url) = wire_code_documentation_url(code_str) {
+                                    diag["codeDescription"] = json!({ "href": url });
+                                }
                                 let fixable = d.fixable;
                                 let tag_strings: Vec<String> =
                                     d.tags.iter().map(|t| match t {
@@ -2577,50 +2642,8 @@ fn dedup_overlapping_diagnostics(diagnostics: &mut Vec<perl_lsp_rs_core::provide
     diagnostics.dedup_by(|a, b| {
         a.range == b.range
             && a.severity == b.severity
-            && (is_native_critic_code(a.code.as_deref()) ^ is_native_critic_code(b.code.as_deref()))
-            && !is_upstream_merged_alias_pair(a.code.as_deref(), b.code.as_deref())
+            && codes_collapse_pair(a.code.as_deref(), b.code.as_deref())
     });
-}
-
-/// Whether one `(PL* code, native rule id)` pair is a reviewed alias whose
-/// duplicate prevention moved upstream into the normalized critic seam
-/// (#11918).
-///
-/// The table lists exactly the reviewed alias pairs of the migrated producer
-/// cohort, in both orders: PL404 (literal shape) with the undef-comparison
-/// alias; PL601 with the backtick alias and, for the qx shape, the
-/// qx/readpipe alias; PL606 (readpipe shape) with the qx/readpipe alias; and
-/// PL603/PL604 with the system/exec rule that owns both shapes. Every other
-/// overlap pair keeps the transport-level coincidence dedup until its own
-/// producers migrate, so unrelated rows never lose their existing collapse
-/// behavior to this exemption.
-fn is_upstream_merged_alias_pair(a_code: Option<&str>, b_code: Option<&str>) -> bool {
-    let forward = matches!(
-        (a_code, b_code),
-        (Some("PL404"), Some("native.common.undef_comparison"))
-            | (
-                Some("PL601"),
-                Some("native.security.backtick_exec" | "native.security.qx_readpipe")
-            )
-            | (Some("PL606"), Some("native.security.qx_readpipe"))
-            | (Some("PL603" | "PL604"), Some("native.security.system_exec"))
-    );
-    let reverse = matches!(
-        (b_code, a_code),
-        (Some("PL404"), Some("native.common.undef_comparison"))
-            | (
-                Some("PL601"),
-                Some("native.security.backtick_exec" | "native.security.qx_readpipe")
-            )
-            | (Some("PL606"), Some("native.security.qx_readpipe"))
-            | (Some("PL603" | "PL604"), Some("native.security.system_exec"))
-    );
-    forward || reverse
-}
-
-/// Returns `true` if the code string looks like a native-critic code (not a PL* code).
-fn is_native_critic_code(code: Option<&str>) -> bool {
-    !code.is_some_and(|c| c.starts_with("PL"))
 }
 
 /// Determine the diagnostic source based on the code.
@@ -3699,7 +3722,18 @@ mod tests {
             .as_array()
             .and_then(|items| items.first())
             .ok_or("absent lifecycle item missing")?;
-        assert!(!absent_item.to_string().contains("PL900"));
+        // #16611: with the project version absent, a signed sub carries no
+        // declared-version fallback, so the versionless PL900 warning is
+        // the intended report (not the pre-#18270 silence).
+        let absent_text = absent_item.to_string();
+        assert!(
+            absent_text.contains("PL900"),
+            "absent project version must keep the versionless PL900 warning: {absent_text}"
+        );
+        assert!(
+            absent_text.contains("no Perl version declared"),
+            "absent project version must use the versionless PL900 message: {absent_text}"
+        );
         Ok(())
     }
 
@@ -4030,11 +4064,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         buf.lock().clear();
 
+        let committed_before_push =
+            server.test_last_committed_push_diagnostic(&server.normalize_uri_key(uri));
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
-        // Positive control: the push under test really published, so a skipped
+        // Positive control: the push under test really committed, so a skipped
         // push cannot pass this by leaving the cells untouched.
-        assert_push_published(&buf.lock().clone(), uri)?;
+        assert_push_committed(&server, uri, committed_before_push)?;
 
         let analysis = {
             let documents = server.documents.lock();
@@ -4093,15 +4129,18 @@ mod tests {
         };
 
         // Push cycle: production's server-initiated publish.
+        let committed_before_push =
+            server.test_last_committed_push_diagnostic(&server.normalize_uri_key(uri));
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
 
         // `after_push == 1` below does not on its own prove this push ran:
         // `didOpen` publishes too, so the cell is already warm at 1 before
         // `publish_diagnostics` is called, and a write-once cell reads 1 either
-        // way. Require the publish itself, which the buffer clear above makes
-        // attributable to this push alone.
-        assert_push_published(&buf.lock().clone(), uri)?;
+        // way. Require the commit itself, whose ledger sequence advances on
+        // every commit -- including one whose byte-identical frame #18774
+        // suppresses on the wire.
+        assert_push_committed(&server, uri, committed_before_push)?;
 
         let after_push = build_count(&server)?;
         assert_eq!(
@@ -4186,19 +4225,44 @@ mod tests {
     /// or raced push would leave them green while proving nothing about the
     /// push route -- only about the pull that follows.
     ///
-    /// The capture buffer is the instrument that can tell the difference,
-    /// because each test clears it after `didOpen` settles: a
-    /// `publishDiagnostics` frame naming this document can then only have come
-    /// from the explicit push under test. The snapshot's
-    /// `diagnostic_analysis_build_count` cannot substitute here -- `didOpen`
-    /// publishes too, so it has already warmed that cell to 1 before the push
-    /// runs, and the counter reads 1 whether or not the push happened.
-    fn assert_push_published(captured: &[u8], uri: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let text = std::str::from_utf8(captured)?;
+    /// The *committed* ledger is the instrument that can tell the difference.
+    /// Its per-URI sequence advances on every commit -- including a commit
+    /// whose outbound frame was suppressed by #18774's identical-content law
+    /// -- and it does not advance at all when no commit happened.
+    ///
+    /// The outbound frame used to serve this role and no longer can.
+    /// `publishDiagnostics` is replace-mode, so a publication whose
+    /// diagnostics are byte-identical to the last committed one carries no
+    /// new client-visible information and is deliberately not sent. A
+    /// frame-observing guard therefore cannot distinguish "the push ran and
+    /// published" from "the push ran, committed, and was suppressed" -- two
+    /// states the identical-content law made indistinguishable on the wire --
+    /// and it never could distinguish "the push never ran". The committed
+    /// ledger distinguishes all three, and it names the generation the push
+    /// committed against.
+    ///
+    /// The snapshot's `diagnostic_analysis_build_count` still cannot
+    /// substitute here -- `didOpen` publishes too, so it has already warmed
+    /// that cell to 1 before the push runs, and the counter reads 1 whether or
+    /// not the push happened.
+    ///
+    /// `before` is the ledger record observed immediately before the push
+    /// under test.
+    fn assert_push_committed(
+        server: &LspServer,
+        uri: &str,
+        before: Option<(u32, u64)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let key = server.normalize_uri_key(uri);
+        let after = server.test_last_committed_push_diagnostic(&key).ok_or_else(|| {
+            format!("the push under test must have committed diagnostics for {uri}")
+        })?;
+        let before_sequence = before.map(|record| record.1).unwrap_or(0);
         assert!(
-            latest_published_diagnostics(text, uri).is_some(),
-            "the push under test must have published diagnostics for {uri}; without a real \
-             push the rebuild count asserted below measures only the pull route"
+            after.1 > before_sequence,
+            "the push under test must have committed diagnostics for {uri}; the committed \
+             sequence did not advance (before={before:?} after={after:?}), so the rebuild \
+             count asserted below measures only the pull route"
         );
         Ok(())
     }
@@ -4263,9 +4327,11 @@ mod tests {
         reset_native_critic_scope_rebuild_count();
         reset_native_critic_scope_reuse_count();
 
+        let committed_before_push =
+            server.test_last_committed_push_diagnostic(&server.normalize_uri_key(uri));
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
-        assert_push_published(&buf.lock().clone(), uri)?;
+        assert_push_committed(&server, uri, committed_before_push)?;
 
         // Read the push's contribution before the pull runs: a total taken at
         // the end cannot tell a pull that composed from a pull that skipped the
@@ -4412,9 +4478,11 @@ mod tests {
         reset_native_critic_scope_rebuild_count();
         reset_native_critic_scope_reuse_count();
 
+        let committed_before_push =
+            server.test_last_committed_push_diagnostic(&server.normalize_uri_key(uri));
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
-        assert_push_published(&buf.lock().clone(), uri)?;
+        assert_push_committed(&server, uri, committed_before_push)?;
 
         let push_rebuilds = native_critic_scope_rebuild_count();
         let push_reuses = native_critic_scope_reuse_count();
@@ -4504,6 +4572,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         buf.lock().clear();
 
+        // #18774's identical-content law suppresses an outbound frame whose
+        // diagnostics array is byte-identical to the last committed one. This
+        // test's claim is about the *codes* the push route publishes, so it
+        // needs the frame itself: detach the committed ledger so the push
+        // reaches the wire unconditionally. That is the falsifier the sink
+        // ships for exactly this purpose.
+        server.test_clear_committed_push_diagnostics();
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
 
@@ -4717,6 +4792,9 @@ mod tests {
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         buf.lock().clear();
 
+        let key = server.normalize_uri_key(uri);
+        let committed_before_gap_push = server.test_last_committed_push_diagnostic(&key);
+
         // While the gap is open, nothing is published.
         server.publish_diagnostics(uri);
         {
@@ -4726,6 +4804,16 @@ mod tests {
                 !text.contains("publishDiagnostics"),
                 "gap must still suppress publish before republication; got: {text:?}"
             );
+            // The frame alone proves nothing under #18774's identical-content
+            // law: a suppressed frame and a gap-suppressed publish look
+            // identical on the wire. The committed ledger does not -- a
+            // gap-suppressed publish never reaches the commit boundary, so
+            // the committed sequence cannot advance.
+            assert_eq!(
+                server.test_last_committed_push_diagnostic(&key),
+                committed_before_gap_push,
+                "the pending-parse gap must suppress the commit, not merely the frame"
+            );
         }
 
         // Close the gap by publishing a snapshot for the current generation.
@@ -4733,15 +4821,22 @@ mod tests {
             .test_publish_parse_for_current_generation(uri)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         server.publish_diagnostics(uri);
-        drop(server);
         std::thread::sleep(Duration::from_millis(50));
 
-        let bytes = buf.lock().clone();
-        let text = String::from_utf8(bytes)?;
+        // The publish must have *resumed*. `my $y = 2;` and `my $y = 3;`
+        // differ only in a literal that appears in no diagnostic, so the
+        // diagnostics array is byte-identical and #18774 correctly suppresses
+        // the redundant frame. The commit still happens and the ledger records
+        // it, so the ledger -- not the wire -- is what proves the resume.
+        let committed_after_resume = server.test_last_committed_push_diagnostic(&key);
         assert!(
-            text.contains("publishDiagnostics"),
-            "publish must resume once a fresh snapshot closes the pending-parse gap; got: {text:?}"
+            committed_after_resume.map(|record| record.1).unwrap_or(0)
+                > committed_before_gap_push.map(|record| record.1).unwrap_or(0),
+            "publish must resume once a fresh snapshot closes the pending-parse gap; \
+             the committed ledger did not advance: before={committed_before_gap_push:?} \
+             after={committed_after_resume:?}"
         );
+        drop(server);
         Ok(())
     }
 
@@ -5444,6 +5539,18 @@ system($path);
                     && diag["source"].as_str() == Some("perl-lsp")
             }),
             "native critic engine should add native warnings finding to workspace diagnostics: {report}"
+        );
+        // Workspace rows resolve category and documentation through the same
+        // owning registries as push/pull (#17241): the native strict row
+        // carries its critic-identity category and its PL100 alias page.
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag["code"].as_str() == Some("native.testing.require_use_strict")
+                    && diag["data"]["category"].as_str() == Some("Syntax")
+                    && diag["codeDescription"]["href"].as_str()
+                        == Some("https://docs.perl-lsp.org/errors/PL100")
+            }),
+            "workspace native row must carry wire category and codeDescription: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
@@ -6571,11 +6678,14 @@ system($path);
     #[test]
     fn native_critic_code_actions_use_native_source_not_perl_critic() {
         // On the default native engine, critic quick-fixes must carry the
-        // native diagnostic identity (`source: perl-lsp`, `native.*`
-        // code) that the publish path emits — never the external tool's
-        // `Perl::Critic` brand. This is the #3276 native-product-surface leak:
-        // the code-action handler previously ran the legacy analyzer
-        // unconditionally and hardcoded `source: "Perl::Critic"`.
+        // diagnostic identity the publish path emits — `source: perl-lsp`,
+        // never the external tool's `Perl::Critic` brand. This is the #3276
+        // native-product-surface leak: the code-action handler previously ran
+        // the legacy analyzer unconditionally and hardcoded
+        // `source: "Perl::Critic"`. Since the #5088 transport collapse now
+        // retires twin-covered native spellings on push and pull alike
+        // (#17241), the publish identity for require-use-strict is the
+        // built-in PL100 row, and the action embeds that same identity.
         let (server, _buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
@@ -6602,25 +6712,28 @@ system($path);
             !text.contains("Perl::Critic"),
             "native engine code actions must NOT leak the Perl::Critic brand; got: {text}"
         );
+        assert!(
+            !text.contains("TestingAndDebugging::RequireUseStrict"),
+            "native engine code actions must NOT leak the legacy policy spelling; got: {text}"
+        );
 
         // Structural check: SOME code action must carry an embedded diagnostic
-        // whose `code` and `source` are BOTH native on the same object — a loose
-        // whole-response substring match would pass even if the native code and
-        // native source landed on two different actions. This is the exact
-        // guarantee the PR makes (code + source line up with the published
-        // native diagnostic, so the client associates the fix).
+        // whose `code` and `source` line up on the same object with the
+        // identity the publish path emits for the strict fact — the built-in
+        // PL100 row after the transport collapse. A loose whole-response
+        // substring match would pass even if the code and source landed on two
+        // different actions.
         let actions = result.as_array().cloned().unwrap_or_default();
-        let has_native_diag = actions.iter().any(|a| {
+        let has_published_identity = actions.iter().any(|a| {
             a["diagnostics"].as_array().is_some_and(|diags| {
                 diags.iter().any(|d| {
-                    d["code"].as_str() == Some("native.testing.require_use_strict")
-                        && d["source"].as_str() == Some("perl-lsp")
+                    d["code"].as_str() == Some("PL100") && d["source"].as_str() == Some("perl-lsp")
                 })
             })
         });
         assert!(
-            has_native_diag,
-            "a native code action must carry code `native.testing.require_use_strict` AND source `perl-lsp` on the SAME diagnostic; got: {text}"
+            has_published_identity,
+            "a code action must carry the published strict identity (PL100) AND source `perl-lsp` on the SAME diagnostic; got: {text}"
         );
     }
 
@@ -6638,7 +6751,7 @@ system($path);
     /// associate the fix with the problem it resolves.
     #[test]
     fn native_critic_code_action_diagnostic_matches_the_published_row() {
-        let (server, _buf) = make_server_with_capture();
+        let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
         let uri = "file:///native_critic_action_parity.pl";
@@ -6670,19 +6783,19 @@ system($path);
             .or_else(|| report["diagnostics"].as_array().cloned())
             .unwrap_or_default();
 
-        // Every native row an action embeds must exist, identically, in the
-        // published set.
+        // Every diagnostic row an action embeds must exist, identically, in
+        // the published set. The comparison is not limited to `native.*`
+        // spellings: a transport-coincidence native fact that push and pull
+        // collapse into its built-in twin (#5088, #17241) embeds the twin's
+        // published identity, so client association holds for every row.
         let mut compared = 0usize;
         for action in actions.as_array().cloned().unwrap_or_default() {
             for embedded in action["diagnostics"].as_array().cloned().unwrap_or_default() {
                 let Some(code) = embedded["code"].as_str() else { continue };
-                if !code.starts_with("native.") {
-                    continue;
-                }
                 let found = published.iter().find(|row| row["code"].as_str() == Some(code));
                 assert!(
                     found.is_some(),
-                    "action embedded native row `{code}` has no published counterpart;                      published: {published:?}"
+                    "action embedded row `{code}` has no published counterpart;                      published: {published:?}"
                 );
                 let Some(matching) = found else { continue };
                 assert_eq!(
@@ -6702,7 +6815,24 @@ system($path);
         }
         assert!(
             compared > 0,
-            "the fixture must produce at least one native action row to compare;              actions: {actions}"
+            "the fixture must produce at least one action row to compare;              actions: {actions}"
+        );
+
+        // The push transport must publish the same normalized row: an embedded
+        // PL100 message (with its appended suggestion) must appear verbatim in
+        // the publishDiagnostics payload, not as the bare producer message.
+        let push_text = capture_until(&buf, |output| output.contains("publishDiagnostics"));
+        let embedded_pl100 = actions
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|action| action["diagnostics"].as_array().cloned().unwrap_or_default())
+            .find(|row| row["code"].as_str() == Some("PL100"))
+            .expect("fixture must embed a PL100 action row");
+        assert!(
+            push_text.contains(&embedded_pl100["message"].to_string()),
+            "push payload must carry the embedded PL100 message verbatim; got: {push_text}"
         );
     }
 
@@ -6722,12 +6852,14 @@ system($path);
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
-                    "text": "my $x = 1;
-print $x;
-"
+                    "text": "my $x = 1;\nprint $x;\nsub f { return 1; print 2; }\n"
                 }
             })))
             .expect("did_open must succeed");
+        // The liveness probe is a twin-less-on-this-severity native fact
+        // (#17241): `native.common.unreachable_code` survives the transport
+        // collapse beside its Hint-severity PL406 twin and carries a Safe fix,
+        // so the native service's own action row stays observable on the wire.
 
         let result = server
             .test_handle_code_action(Some(code_action_params(uri)))
@@ -6838,8 +6970,14 @@ print $x;
             .expect("code_action must succeed")
             .unwrap_or_default();
         let actions = result.as_array().cloned().unwrap_or_default();
-        let quickfixes =
-            native_critic_quickfixes_for_code(&actions, "native.testing.require_use_strict");
+        // The safe fix keeps its one-click surface; since the transport
+        // collapse (#5088, #17241) retires the twin-covered native spelling on
+        // every surface, the quickfix embeds the published built-in twin
+        // resolved through the owning identity registry.
+        let published_code = perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::
+unambiguous_builtin_alias_code("native.testing.require_use_strict")
+            .expect("require_use_strict has one reviewed built-in alias");
+        let quickfixes = native_critic_quickfixes_for_code(&actions, published_code);
 
         assert_eq!(
             quickfixes.len(),
@@ -7018,6 +7156,12 @@ print $x;
         server.test_simulate_indexing_complete();
 
         buf.lock().clear();
+        // #18774's identical-content law suppresses an outbound frame whose
+        // diagnostics array is byte-identical to the last committed one. This
+        // test's claim is about the dead-code diagnostic the publish route
+        // produces, so it needs the frame itself: detach the committed ledger
+        // so the publish reaches the wire unconditionally.
+        server.test_clear_committed_push_diagnostics();
         server.publish_diagnostics(uri);
         wait_for_published_diagnostics(&buf, uri)?;
         drop(server);
@@ -7103,41 +7247,6 @@ print $x;
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn upstream_merged_alias_exemption_covers_exactly_the_reviewed_pairs() {
-        // #11918: the transport XOR retirement is keyed to the exact reviewed
-        // alias pairs, not a cross-product of cohort codes, so unrelated
-        // overlap pairs keep their pre-existing coincidence dedup.
-        let pl = |code: &'static str| Some(code);
-        for (a, b) in [
-            (pl("PL404"), pl("native.common.undef_comparison")),
-            (pl("PL601"), pl("native.security.backtick_exec")),
-            (pl("PL601"), pl("native.security.qx_readpipe")),
-            (pl("PL606"), pl("native.security.qx_readpipe")),
-            (pl("PL603"), pl("native.security.system_exec")),
-            (pl("PL604"), pl("native.security.system_exec")),
-        ] {
-            assert!(
-                is_upstream_merged_alias_pair(a, b) && is_upstream_merged_alias_pair(b, a),
-                "reviewed alias pair {a:?}/{b:?} must be exempt in both orders"
-            );
-        }
-        for (a, b) in [
-            (pl("PL404"), pl("native.security.system_exec")),
-            (pl("PL603"), pl("native.security.qx_readpipe")),
-            (pl("PL606"), pl("native.security.backtick_exec")),
-            (pl("PL100"), pl("native.security.system_exec")),
-            (pl("PL404"), pl("PL603")),
-            (pl("native.common.undef_comparison"), pl("native.security.system_exec")),
-            (pl("PL603"), None),
-        ] {
-            assert!(
-                !is_upstream_merged_alias_pair(a, b) && !is_upstream_merged_alias_pair(b, a),
-                "unrelated pair {a:?}/{b:?} must keep the transport coincidence dedup"
-            );
-        }
     }
 
     // ------------------------------------------------------------------
@@ -7539,5 +7648,173 @@ print $x;
         assert_eq!(markup_diag["source"], string_diag["source"]);
         assert_eq!(markup_diag["range"], string_diag["range"]);
         assert_eq!(markup_diag["code"], "native.testing.require_use_strict");
+    }
+
+    // ── #18771 end-to-end: undefined methods and stray =cut reach the wire ──
+
+    /// The Fixer-persona repro, over the real push path: a typo'd method call
+    /// on a constructor-inferred receiver publishes exactly one PL306, the
+    /// correctly-spelled sibling publishes none, and the stray-`=cut` file
+    /// publishes PL412 on the `=cut` line.
+    #[test]
+    fn issue_18771_fixer_fixtures_reach_the_push_path() -> Result<(), Box<dyn std::error::Error>> {
+        let typo_source = r#"package Inventory;
+sub new { bless {}, shift }
+sub find_sku { my ($self, $sku) = @_; return $sku; }
+sub demo {
+    my $inv = Inventory->new;
+    $inv->find_skku('GIZMO-B');
+}
+"#;
+        let control_source = typo_source.replace("find_skku", "find_sku");
+        let stray_cut_source = "use strict;
+sub before { 1 };
+=cut
+sub after { 2 }
+";
+
+        let (typo_server, typo_buf) = make_server_with_capture();
+        let typo_uri = "file:///issue_18771_typo.pl";
+        typo_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": typo_uri, "languageId": "perl", "version": 1, "text": typo_source}
+        })))?;
+        typo_server.publish_diagnostics(typo_uri);
+        drop(typo_server);
+        let typo_text = String::from_utf8(typo_buf.lock().clone())?;
+        let typo_frame = latest_published_diagnostics(&typo_text, typo_uri)
+            .ok_or("typo fixture must publish diagnostics")?;
+        let typo_items = serde_json::from_str::<Value>(typo_frame)?["params"]["diagnostics"]
+            .as_array()
+            .ok_or("typo frame must carry a diagnostics array")?
+            .clone();
+        let pl306_items: Vec<&Value> =
+            typo_items.iter().filter(|item| item["code"].as_str() == Some("PL306")).collect();
+        assert_eq!(
+            pl306_items.len(),
+            1,
+            "the typo must publish exactly one PL306; got {typo_items:?}"
+        );
+        assert_eq!(pl306_items[0]["severity"], 2, "PL306 must publish as Warning (2)");
+        assert!(
+            pl306_items[0]["message"].as_str().is_some_and(|m| m.contains("find_skku")),
+            "the warning must name the typo: {}",
+            pl306_items[0]["message"]
+        );
+
+        let (control_server, control_buf) = make_server_with_capture();
+        let control_uri = "file:///issue_18771_control.pl";
+        control_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": control_uri, "languageId": "perl", "version": 1, "text": control_source}
+        })))?;
+        control_server.publish_diagnostics(control_uri);
+        drop(control_server);
+        let control_text = String::from_utf8(control_buf.lock().clone())?;
+        let control_frame = latest_published_diagnostics(&control_text, control_uri)
+            .ok_or("control fixture must publish diagnostics")?;
+        assert!(
+            !control_frame.contains("PL306"),
+            "the correctly-spelled call must not publish PL306: {control_frame}"
+        );
+
+        let (cut_server, cut_buf) = make_server_with_capture();
+        let cut_uri = "file:///issue_18771_stray_cut.pl";
+        cut_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": cut_uri, "languageId": "perl", "version": 1, "text": stray_cut_source}
+        })))?;
+        cut_server.publish_diagnostics(cut_uri);
+        drop(cut_server);
+        let cut_text = String::from_utf8(cut_buf.lock().clone())?;
+        let cut_frame = latest_published_diagnostics(&cut_text, cut_uri)
+            .ok_or("stray-cut fixture must publish diagnostics")?;
+        let cut_items = serde_json::from_str::<Value>(cut_frame)?["params"]["diagnostics"]
+            .as_array()
+            .ok_or("cut frame must carry a diagnostics array")?
+            .clone();
+        let pl412_items: Vec<&Value> =
+            cut_items.iter().filter(|item| item["code"].as_str() == Some("PL412")).collect();
+        assert_eq!(
+            pl412_items.len(),
+            1,
+            "the lone =cut must publish exactly one PL412; got {cut_items:?}"
+        );
+        // The stray `=cut` is on line 3 (1-based); the published range start
+        // character must fall on that line.
+        let cut_line =
+            pl412_items[0]["range"]["start"]["line"].as_u64().ok_or("PL412 must carry a line")?;
+        assert_eq!(cut_line, 2, "PL412 must land on the =cut line (0-based): {pl412_items:?}");
+        Ok(())
+    }
+
+    /// SyntaxOnly mode (latency-harness path) must stay lint-free: no PL306
+    /// and no PL412 may appear even for the #18771 fixtures.
+    #[test]
+    fn issue_18771_lints_stay_out_of_syntax_only_mode() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
+        let (server, buf) = make_server_with_capture_and_tuning(tuning);
+        let typo_uri = "file:///issue_18771_syntax_only_typo.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": typo_uri, "languageId": "perl", "version": 1,
+                "text": "package Inventory;
+sub new { bless {}, shift }
+sub find_sku { }
+sub demo { my $inv = Inventory->new; $inv->find_skku('x'); }
+"}
+        })))?;
+        let cut_uri = "file:///issue_18771_syntax_only_cut.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": cut_uri, "languageId": "perl", "version": 1,
+                "text": "use strict;
+sub before { 1 };
+=cut
+sub after { 2 }
+"}
+        })))?;
+        server.publish_diagnostics(typo_uri);
+        server.publish_diagnostics(cut_uri);
+        drop(server);
+        let text = String::from_utf8(buf.lock().clone())?;
+        assert!(
+            !text.contains("PL306"),
+            "SyntaxOnly must not run the undefined-method lint: {text:?}"
+        );
+        assert!(!text.contains("PL412"), "SyntaxOnly must not run the stray-cut lint: {text:?}");
+        Ok(())
+    }
+
+    /// #18774: the push publish path must not block on workspace-index
+    /// readiness. With `indexing_in_progress` set and the coordinator held
+    /// in Building -- exactly the post-open eager-indexing window -- the
+    /// old WaitBriefly policy stalled every debounced publish in a 1ms
+    /// poll loop for up to INDEX_READY_WAIT_MS (2s). SnapshotOnly must
+    /// publish from the current snapshot well inside that budget.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn push_publish_does_not_block_while_workspace_index_is_building()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, _buf) = make_server_with_capture();
+        let uri = "file:///sink_building_index_publish.pl";
+        let text = "package Building;\nsub new { bless {}, shift }\n1;\n";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": text}
+        })))?;
+
+        // Hold the exact post-open window: coordinator Building plus the
+        // background-indexing flag -- the condition WaitBriefly polls on.
+        server.test_index_file_in_building_state(uri, text)?;
+        server.test_simulate_indexing_start();
+
+        let start = Instant::now();
+        server.publish_diagnostics(uri);
+        let elapsed = start.elapsed();
+
+        server.test_simulate_indexing_complete();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "push publish must use the current snapshot instead of waiting \
+             for index readiness; took {elapsed:?} (the WaitBriefly budget is 2s)"
+        );
+        Ok(())
     }
 }

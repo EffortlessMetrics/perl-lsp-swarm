@@ -854,6 +854,66 @@ impl DebugAdapter {
         }
     }
 
+    /// Name the JSON kind of a malformed attach option so a typed refusal can
+    /// report what the client actually supplied, without echoing the value
+    /// (#17951).
+    fn json_type_name(value: &Value) -> &'static str {
+        match value {
+            Value::Null => "null",
+            Value::Bool(_) => "boolean",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
+        }
+    }
+
+    /// Read the native attach timeout aliases without coercion (#17951).
+    ///
+    /// Both supplied aliases are type-checked, so a malformed alias that
+    /// another alias shadows is still refused instead of being silently
+    /// discarded; `null` keeps its default semantics. Selection then stays
+    /// presence-based: a present `timeout`, including null, wins over
+    /// `timeoutMs`, and a shadowed alias is never range-checked.
+    fn typed_attach_timeout(args: &Value) -> Result<Option<u32>, String> {
+        for field in ["timeout", "timeoutMs"] {
+            if let Some(value) = args.get(field)
+                && !value.is_null()
+                && value.as_u64().is_none()
+            {
+                return Err(format!(
+                    "Invalid {field}: expected a non-negative integer in milliseconds, got JSON {}",
+                    Self::json_type_name(value)
+                ));
+            }
+        }
+        Ok(args
+            .get("timeout")
+            .or_else(|| args.get("timeoutMs"))
+            .and_then(|t| t.as_u64())
+            .map(Self::u64_to_u32_saturating))
+    }
+
+    /// Read `stopOnEntry` for the native attach path without coercion
+    /// (#17951): absent or null means false; any other non-boolean is a
+    /// typed refusal that names the JSON kind actually supplied.
+    ///
+    /// The attach path keeps its own reader instead of sharing
+    /// `typed_stop_on_entry`: the launch path's shorter message is the
+    /// launch contract (#18027), while the attach refusal has to name the
+    /// supplied JSON kind to stay diagnosable.
+    fn typed_attach_stop_on_entry(args: &Value) -> Result<bool, String> {
+        match args.get("stopOnEntry") {
+            None | Some(Value::Null) => Ok(false),
+            Some(value) => value.as_bool().ok_or_else(|| {
+                format!(
+                    "Invalid stopOnEntry: expected a boolean, got JSON {}",
+                    Self::json_type_name(value)
+                )
+            }),
+        }
+    }
+
     /// Admit the typed launch options without coercion (#18027), following
     /// the `parse_launch_script_args` precedent: a present-but-wrong-typed
     /// value fails the request instead of silently changing behavior.
@@ -1169,6 +1229,7 @@ impl DebugAdapter {
                     thread_id,
                     debuggee_cwd: debuggee_cwd.clone(),
                     last_resume_mode: ResumeMode::Unknown,
+                    reader_stop_epoch: 0,
                     entry_stop_pending: stop_on_entry,
                     initial_stop_pending: !stop_on_entry,
                     stopped_generation: 0,
@@ -1519,16 +1580,18 @@ impl DebugAdapter {
             prog_cwd,
         );
         oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let output = match oracle
-            .into_command()
-            .arg("-c")
-            .arg("--")
-            .arg(program)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-        {
+        let timeout = oracle.timeout;
+        let mut syntax_cmd = oracle.into_command();
+        syntax_cmd.arg("-c").arg("--").arg(program).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let output = match crate::bounded_subprocess::output_with_timeout(syntax_cmd, timeout) {
             Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return Err(format!(
+                    "Syntax check timed out after {} seconds for '{}' — the interpreter did not finish compiling the script.",
+                    timeout.as_secs(),
+                    program
+                ));
+            }
             Err(e) => {
                 // `perl` not found or could not be spawned — skip the check
                 // and let the real launch produce the "perl not on PATH" error.
@@ -2198,6 +2261,7 @@ impl DebugAdapter {
                                         // configurationDone handler will publish it only after
                                         // correlating the engine installation.
                                         s.state = DebugState::Stopped;
+                                        s.reader_stop_epoch = s.reader_stop_epoch.saturating_add(1);
                                         s.last_resume_mode = ResumeMode::Unknown;
                                         continue;
                                     }
@@ -2256,6 +2320,8 @@ impl DebugAdapter {
                                         } else if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
                                             s.state = DebugState::Stopped;
+                                            s.reader_stop_epoch =
+                                                s.reader_stop_epoch.saturating_add(1);
                                         } else if breakpoint_outcome.matched {
                                             logpoint_messages = breakpoint_outcome.log_messages;
 
@@ -2339,6 +2405,8 @@ impl DebugAdapter {
                                             if breakpoint_outcome.should_stop {
                                                 stop_reason = "breakpoint".to_string();
                                                 s.state = DebugState::Stopped;
+                                                s.reader_stop_epoch =
+                                                    s.reader_stop_epoch.saturating_add(1);
                                             } else {
                                                 if let Some(stdin) = s.process.stdin.as_mut() {
                                                     let _ = stdin.write_all(b"c\n");
@@ -2365,6 +2433,8 @@ impl DebugAdapter {
                                             should_auto_continue = true;
                                         } else {
                                             s.state = DebugState::Stopped;
+                                            s.reader_stop_epoch =
+                                                s.reader_stop_epoch.saturating_add(1);
                                         }
 
                                         if !should_auto_continue {
@@ -2458,8 +2528,18 @@ impl DebugAdapter {
                                     // already established this suspension's
                                     // generation — a prompt carrying that native
                                     // context must reuse it rather than advance
-                                    // a second time.
-                                    let context_established_suspension = prompt_has_native_context;
+                                    // a second time. A prompt that arrives
+                                    // without its context chunk but with a
+                                    // frame the context branch already admitted
+                                    // for the pending entry stop is the same
+                                    // suspension too: `DB<n>` output can be
+                                    // chunked apart from its context line, and
+                                    // advancing again would mint a second
+                                    // identity for one stop and let the
+                                    // fallback below discard the authoritative
+                                    // frame (#18491).
+                                    let context_established_suspension = prompt_has_native_context
+                                        || (s.entry_stop_pending && !s.stack_frames.is_empty());
                                     let current_frame_id = current_stopped_frame_id(
                                         s,
                                         matches!(s.state, DebugState::Running)
@@ -2503,21 +2583,49 @@ impl DebugAdapter {
                                         // the pending reason so the client is never left
                                         // waiting, and the prompt stop must remain
                                         // `stackTrace`-answerable.
-                                        let frame = StackFrame {
-                                            id: current_frame_id,
-                                            name: "main".to_string(),
-                                            source: Source {
-                                                name: Some("<unknown>".to_string()),
-                                                path: "<unknown>".to_string(),
-                                                source_reference: None,
-                                            },
-                                            line: 1,
-                                            column: 1,
-                                            end_line: None,
-                                            end_column: None,
-                                        };
-                                        s.stack_frames = vec![frame];
-                                        s.stack_frame_arguments.clear();
+                                        //
+                                        // A frame for THIS suspension may already exist: the
+                                        // context branch admitted an authoritative source
+                                        // frame for the entry stop before the prompt arrived,
+                                        // and a bare `DB<n>` chunk carries no context of its
+                                        // own (#18491). Downgrading that same-suspension frame
+                                        // to the `<unknown>` placeholder would trade a real
+                                        // location for a fabricated one, so keep it and admit
+                                        // the fallback only when no frame for this
+                                        // suspension exists yet.
+                                        //
+                                        // While the entry stop is pending, ANY admitted frame
+                                        // belongs to this suspension: frames start empty at
+                                        // launch and nothing else admits one inside the
+                                        // pending window. The id comparison alone misses the
+                                        // interleaving where an intervening context-shaped
+                                        // line without source (`func::__ANON__`) re-minted
+                                        // the suspension generation without re-admitting the
+                                        // frame (#18536 review thread on process.rs), so the
+                                        // pending-entry disjunct keeps the authoritative
+                                        // frame regardless of that re-mint.
+                                        let same_suspension_frame_present = (s.entry_stop_pending
+                                            && !s.stack_frames.is_empty())
+                                            || s.stack_frames
+                                                .first()
+                                                .is_some_and(|frame| frame.id == current_frame_id);
+                                        if !same_suspension_frame_present {
+                                            let frame = StackFrame {
+                                                id: current_frame_id,
+                                                name: "main".to_string(),
+                                                source: Source {
+                                                    name: Some("<unknown>".to_string()),
+                                                    path: "<unknown>".to_string(),
+                                                    source_reference: None,
+                                                },
+                                                line: 1,
+                                                column: 1,
+                                                end_line: None,
+                                                end_column: None,
+                                            };
+                                            s.stack_frames = vec![frame];
+                                            s.stack_frame_arguments.clear();
+                                        }
                                     }
                                     if was_running
                                         && matches!(s.last_resume_mode, ResumeMode::RunToBreakpoint)
@@ -2543,6 +2651,7 @@ impl DebugAdapter {
                                         let entry_stop = s.entry_stop_pending;
                                         s.entry_stop_pending = false;
                                         s.state = DebugState::Stopped;
+                                        s.reader_stop_epoch = s.reader_stop_epoch.saturating_add(1);
                                         should_emit_stopped = true;
                                         if entry_stop {
                                             stop_reason = "entry".to_string();
@@ -2779,6 +2888,15 @@ impl DebugAdapter {
     /// - `host`: Hostname or IP address (default: "localhost")
     /// - `port`: Port number (default: 13603)
     /// - `timeout`: Connection timeout in milliseconds (optional)
+    /// - `timeoutMs`: Accepted alias for `timeout` (optional)
+    ///
+    /// Supplied options are type-checked before any socket contact or session
+    /// replacement (#17951): a malformed non-null `stopOnEntry`, `timeout`, or
+    /// `timeoutMs` is refused with a diagnostic naming the field and the JSON
+    /// type, never echoing the supplied value. Both timeout aliases are
+    /// type-checked, so a malformed alias that another alias shadows is still
+    /// refused; selection stays presence-based, so a present `timeout`,
+    /// including null, wins over `timeoutMs`.
     ///
     /// # Current Implementation
     ///
@@ -2846,26 +2964,47 @@ impl DebugAdapter {
                 }
             };
             let normalized_host = host.trim();
-            let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
-            if raw_port > 65535 {
-                return DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: false,
-                    command: "attach".to_string(),
-                    body: None,
-                    message: Some(format!("Port {raw_port} out of range (must be 1-65535)")),
-                };
-            }
-            let port = raw_port as u16;
-            let timeout = args
-                .get("timeout")
-                .or_else(|| args.get("timeoutMs"))
-                .and_then(|t| t.as_u64())
-                .map(Self::u64_to_u32_saturating);
-            // #18027: a present-but-non-boolean stopOnEntry is a typed
+            let port = match args.get("port") {
+                None | Some(Value::Null) => 13603,
+                Some(value) => match value
+                    .as_u64()
+                    .and_then(|port| u16::try_from(port).ok())
+                    .filter(|port| *port != 0)
+                {
+                    Some(port) => port,
+                    None => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "attach".to_string(),
+                            body: None,
+                            message: Some(
+                                "Invalid port: expected an integer in range 1-65535".to_string(),
+                            ),
+                        };
+                    }
+                },
+            };
+            // #17951: a supplied malformed timeout alias is refused before any
+            // socket contact or session replacement, and the refusal names the
+            // field and JSON type instead of echoing the value.
+            let timeout = match Self::typed_attach_timeout(&args) {
+                Ok(timeout) => timeout,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
+            // #17951/#18027: a present-but-non-boolean stopOnEntry is a typed
             // refusal here too, never a silent false.
-            let stop_on_entry = match Self::typed_stop_on_entry(&args) {
+            let stop_on_entry = match Self::typed_attach_stop_on_entry(&args) {
                 Ok(value) => value,
                 Err(message) => {
                     return DapMessage::Response {
@@ -3932,6 +4071,7 @@ fn deliver_reserved_terminated_event(
 
 #[cfg(test)]
 mod tests {
+    use super::super::patterns::DEBUGGER_QUERY_WAIT_MS;
     use super::super::sync_utils::EventDrainLatch;
     use super::super::sync_utils::EventSender;
     use super::{
@@ -4011,8 +4151,9 @@ mod tests {
         assert!(stop && timeout == 30 && env.get("A").map(String::as_str) == Some("1"));
     }
 
-    /// #18027: the TCP attach handler refuses a string `stopOnEntry` before
-    /// any session is created or connected.
+    /// #18027/#17951: the TCP attach handler refuses a string `stopOnEntry`
+    /// before any session is created or connected, and the refusal names the
+    /// supplied JSON kind.
     #[test]
     fn attach_refuses_string_stop_on_entry_before_connecting() {
         let adapter = DebugAdapter::new();
@@ -4024,7 +4165,10 @@ mod tests {
         match message {
             DapMessage::Response { success, message, .. } => {
                 assert!(!success, "malformed attach stopOnEntry must fail");
-                assert_eq!(message.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
+                assert_eq!(
+                    message.as_deref(),
+                    Some("Invalid stopOnEntry: expected a boolean, got JSON string")
+                );
             }
             other => panic!("expected failed attach response, got {other:?}"),
         }
@@ -4032,6 +4176,60 @@ mod tests {
             lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
             "no TCP session may be created for a refused attach"
         );
+    }
+
+    /// #17951: a supplied malformed attach timeout alias is refused before
+    /// any socket contact, naming the field and JSON type. Both aliases are
+    /// type-checked, so a malformed alias shadowed by another alias is still
+    /// refused, and the launch path keeps its own shorter message (#18027).
+    #[test]
+    fn attach_refuses_malformed_timeout_aliases_before_connecting() {
+        for (options, expected) in [
+            (
+                json!({ "timeout": "bad" }),
+                "Invalid timeout: expected a non-negative integer in milliseconds, got JSON string",
+            ),
+            (
+                json!({ "timeoutMs": [] }),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON array",
+            ),
+            (
+                json!({ "timeout": null, "timeoutMs": [] }),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON array",
+            ),
+            (
+                json!({ "timeout": 5000, "timeoutMs": "bad" }),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON string",
+            ),
+            (
+                json!({ "timeout": "bad", "timeoutMs": 5000 }),
+                "Invalid timeout: expected a non-negative integer in milliseconds, got JSON string",
+            ),
+        ] {
+            let adapter = DebugAdapter::new();
+            let mut arguments = options.clone();
+            arguments["host"] = json!("127.0.0.1");
+            arguments["port"] = json!(13603);
+            let response = adapter.handle_attach(1, 7, Some(arguments));
+            assert!(
+                matches!(&response, DapMessage::Response { .. }),
+                "expected a failed attach response, got {response:?}"
+            );
+            if let DapMessage::Response { success, message, .. } = &response {
+                assert!(!*success, "malformed attach timeout must fail: {options:?}");
+                assert_eq!(message.as_deref(), Some(expected), "options: {options:?}");
+            }
+            assert!(
+                lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
+                "no TCP session may be created for a refused attach: {options:?}"
+            );
+        }
+
+        // The launch path keeps the shorter refusal: the attach path owns the
+        // JSON-kind diagnostic, the launch path does not (#18027).
+        let launch_refusal =
+            DebugAdapter::parse_launch_typed_options(&json!({ "stopOnEntry": "true" })).err();
+        assert_eq!(launch_refusal.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
     }
 
     fn launch_failure_message(response: super::DapMessage) -> Option<String> {
@@ -4376,6 +4574,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4521,6 +4720,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::RunToBreakpoint,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4670,6 +4870,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4742,6 +4943,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4825,6 +5027,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4861,6 +5064,111 @@ mod tests {
                     return Err(format!("context fixture timed out: {observed:?}"));
                 }
                 Err(RecvTimeoutError::Disconnected) => return Err("reader disconnected".into()),
+            }
+        }
+    }
+
+    /// Deterministic proof for the #18491 same-suspension frame preservation:
+    /// a bare `DB<n>` prompt arriving after the native context's per-stop
+    /// authority was already spent must not downgrade the frame the context
+    /// branch admitted for the pending entry stop to the `<unknown>:1`
+    /// placeholder. The polling e2e (`dap_entry_stop_stack_trace_18491`) can
+    /// pass through a transient downgrade and cannot force a prompt that lost
+    /// its context chunk; this fixture fixes the byte sequence instead.
+    ///
+    /// The intervening line that actually spends `native_context_pending_prompt`
+    /// is a context-shaped line without a file/line capture (`main::__ANON__`,
+    /// native-context block): a warning line does not match `context_re` and
+    /// leaves the pending authority intact, so the bare prompt would still
+    /// carry the native context through the prompt-branch front door. The
+    /// no-source context line also re-mints the suspension generation without
+    /// re-admitting the frame, which is exactly the interleaving the
+    /// pending-entry disjunct of `same_suspension_frame_present` covers.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_entry_frame_survives_contextless_prompt() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'main::(/tmp/dap-same-suspension-fixture.pl:4):\\tmy $entry = 1;\\nmain::__ANON__\\nDB<1>\\nSUSPENSION_READER_DONE\\n' >&2; sleep 1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn same-suspension fixture: {error}"))?;
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
+            last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
+            entry_stop_pending: true,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+        let mut observed = Vec::new();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str());
+                    if reason != Some("entry") {
+                        return Err(format!("expected entry stop, got {reason:?}"));
+                    }
+                    let guard = lock_or_recover(&adapter.session, "test.session");
+                    let session = guard.as_ref().ok_or("reader cleared test session")?;
+                    let frame = session.stack_frames.first().ok_or_else(|| {
+                        format!(
+                            "entry frame missing; observed={observed:?} generation={}",
+                            session.stopped_generation
+                        )
+                    })?;
+                    if frame.source.path != "/tmp/dap-same-suspension-fixture.pl" {
+                        return Err(format!(
+                            "contextless prompt downgraded the native entry frame: path={}, \
+                             line={}, frame_id={}, generation={}, observed={observed:?}",
+                            frame.source.path, frame.line, frame.id, session.stopped_generation
+                        ));
+                    }
+                    if frame.line != 4 {
+                        return Err(format!(
+                            "contextless prompt replaced the native entry line: line={}, \
+                             observed={observed:?}",
+                            frame.line
+                        ));
+                    }
+                    return Ok(());
+                }
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
+                    observed.push(format!("{event}:{body:?}"));
+                }
+                Ok(other) => observed.push(format!("message:{other:?}")),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(format!("same-suspension fixture timed out: {observed:?}"));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("same-suspension reader disconnected".into());
+                }
             }
         }
     }
@@ -5281,6 +5589,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -5413,6 +5722,7 @@ mod tests {
                 thread_id: 1,
                 debuggee_cwd: PathBuf::from("/tmp"),
                 last_resume_mode: ResumeMode::Unknown,
+                reader_stop_epoch: 0,
                 entry_stop_pending: true,
                 initial_stop_pending: false,
                 stopped_generation: 0,
@@ -5738,6 +6048,19 @@ mod tests {
         }
     }
 
+    // These protocol fixtures need an owned session, but do not exercise process
+    // termination. Establish natural no-op exit before testing event ordering so
+    // unrelated child shutdown latency cannot consume the cleanup deadline.
+    fn seed_quiescent_protocol_session(adapter: &DebugAdapter) -> Result<(), String> {
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let mut session = adapter.session.lock().map_err(|_| "session lock poisoned")?;
+        let session = session.as_mut().ok_or("seeded session missing")?;
+        if !DebugAdapter::wait_for_child_exit(&mut session.process, Duration::from_secs(5)) {
+            return Err("protocol fixture no-op child did not exit during setup".to_string());
+        }
+        Ok(())
+    }
+
     #[test]
     fn disconnect_terminal_after_async_completion_and_invalidation() -> Result<(), String> {
         for (invalidate, fail_cleanup) in [(false, false), (true, false), (true, true)] {
@@ -5745,7 +6068,7 @@ mod tests {
             let mut adapter = DebugAdapter::new();
             adapter.set_event_sender(sender);
             if fail_cleanup {
-                adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+                seed_quiescent_protocol_session(&adapter)?;
             }
             let event_sender = adapter.event_sender.as_ref().ok_or("missing event sender")?;
             let generation = adapter.current_session_generation();
@@ -5826,7 +6149,7 @@ mod tests {
             .map_err(|error| error.to_string())?;
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(outbound.clone());
-        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        seed_quiescent_protocol_session(&adapter)?;
         let generation = adapter.current_session_generation();
         let state = adapter.termination_state.clone();
         let sequence = adapter.seq.clone();
@@ -5942,7 +6265,7 @@ mod tests {
         let (sender, receiver) = sync_channel(4);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(sender);
-        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        seed_quiescent_protocol_session(&adapter)?;
         let reported_delivery = super::emit_terminated_event_guarded(
             adapter.event_sender.as_ref().ok_or("missing event sender")?,
             &adapter.seq,
@@ -6646,6 +6969,48 @@ mod tests {
         );
     }
 
+    /// Pre-launch `perl -c` must not hang indefinitely when the interpreter
+    /// blocks during compile (#2316).
+    #[test]
+    #[cfg(unix)]
+    fn check_syntax_times_out_on_hanging_interpreter() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let script = temp.path().join("ok.pl");
+        std::fs::write(&script, "use strict;\n1;\n").map_err(|error| error.to_string())?;
+
+        let fake_perl = temp.path().join("fake-perl-hang");
+        std::fs::write(
+            &fake_perl,
+            "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then sleep 120; fi\nexit 0\n",
+        )
+        .map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&fake_perl, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+
+        let start = Instant::now();
+        let result = DebugAdapter::check_syntax(
+            fake_perl.to_str().ok_or("non-utf8 fake perl path")?,
+            script.to_str().ok_or("non-utf8 script path")?,
+            &HashMap::new(),
+            Some(temp.path().to_path_buf()),
+        );
+
+        assert!(result.is_err(), "hanging syntax check must fail, got {result:?}");
+        let message = result.unwrap_err();
+        assert!(
+            message.to_lowercase().contains("timed out"),
+            "expected timeout message, got: {message}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "syntax check should respect the 5s oracle timeout, took {:?}",
+            start.elapsed()
+        );
+        Ok(())
+    }
+
     /// Verify that a failed launch returns a response whose message mentions Perl.
     ///
     /// We construct a temporary file so that the file-exists check passes, then
@@ -7336,6 +7701,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -7399,12 +7765,22 @@ mod tests {
         Ok(())
     }
 
-    fn spawn_reader_fixture_child(mode: &str) -> Result<super::Child, String> {
-        std::process::Command::new("perl")
+    fn spawn_reader_fixture_child(mode: &str) -> Result<(super::Child, String), String> {
+        static NEXT_READY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let ready = format!(
+            "READER_READY_{}",
+            NEXT_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let child = std::process::Command::new("perl")
                 .arg("-e")
                 .arg(r##"
-                    my $mode = shift; my $round = 0; my $active;
+                    my $mode = shift; my $ready = shift; my $round = 0; my $active;
                     select STDERR; $|=1; select STDOUT; $|=1;
+                    if ($mode eq 'startup_delayed') {
+                        select undef, undef, undef, 0.9;
+                        $mode = 'valid';
+                    }
+                    print STDERR "$ready\n";
                     while (<STDIN>) {
                         if (/DAP_BEGIN_(\d+)/) {
                             ++$round; $active = $round == 1 ? $mode : 'valid';
@@ -7433,11 +7809,13 @@ mod tests {
                     }
                 "##)
                 .arg(mode)
+                .arg(&ready)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|error| format!("failed to spawn reader fixture: {error}"))
+                .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+        Ok((child, ready))
     }
 
     fn reader_stack_fixture(mode: &str) -> Result<Arc<DebugAdapter>, String> {
@@ -7456,16 +7834,21 @@ mod tests {
             end_column: None,
         }]);
         adapter.seed_stack_frame_arguments_for_test(1, vec!["sentinel_arg".to_string()]);
+        let ready;
         {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_fixture");
             let session = guard.as_mut().ok_or("Perl is required for the reader fixture")?;
             session.stopped_generation = 1;
-            let child = spawn_reader_fixture_child(mode)?;
+            let (child, child_ready) = spawn_reader_fixture_child(mode)?;
+            ready = child_ready;
             let mut previous = std::mem::replace(&mut session.process, child);
             let _ = previous.kill();
             previous.wait().map_err(|error| format!("failed to reap seed process: {error}"))?;
         }
         adapter.start_output_reader(PathBuf::from("."));
+        // Spawn success does not establish interpreter startup. Start each
+        // unchanged query deadline only after this child's reader is ready.
+        wait_for_reader_barrier(&adapter, &ready)?;
         // Drop owns bounded child cleanup on both success and every error path.
         Ok(adapter)
     }
@@ -7522,8 +7905,61 @@ mod tests {
         Ok(())
     }
 
+    /// Asserts the accepted authority for a `late` fixture payload whose end
+    /// marker landed inside the framed-query window (coverage clamp, #18348):
+    /// the parsed `main` frame replaces the pre-seeded sentinel as the
+    /// response and the cached session frames, and the sentinel arguments are
+    /// dropped with the replaced frame.
+    fn assert_in_window_late_payload_accepted(
+        adapter: &DebugAdapter,
+        response: DapMessage,
+    ) -> Result<(), String> {
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("in-window late stackTrace failed: {response:?}"));
+        };
+        let frame = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .and_then(|frames| frames.first())
+            .ok_or_else(|| format!("missing stack frame: {body}"))?;
+        if frame.get("name").and_then(Value::as_str) != Some("main")
+            || frame.get("line").and_then(Value::as_i64) != Some(9)
+        {
+            return Err(format!("in-window late payload not accepted: {body}"));
+        }
+        let guard = lock_or_recover(&adapter.session, "test.reader_late_window");
+        let session = guard.as_ref().ok_or("reader lost the session")?;
+        let cached = session.stack_frames.first().ok_or("reader lost cached frames")?;
+        if cached.name != "main" || cached.line != 9 {
+            return Err("in-window late payload did not reach cached authority".to_string());
+        }
+        if session.stack_frame_arguments.contains_key(&cached.id) {
+            return Err("in-window late payload kept the sentinel arguments".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn framed_reader_startup_precedes_query_deadline() -> Result<(), String> {
+        // Startup exceeds the unchanged 600ms query budget. Readiness must
+        // absorb it before the query; query latency still remains bounded.
+        let adapter = reader_stack_fixture("startup_delayed")?;
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        assert_reader_stack(&adapter, response, "main::run", 7, &["$value", "[1, 2]", "\"a,b\""])
+    }
+
     #[test]
     fn framed_reader_preserves_stack_and_recovers_after_partial_output() -> Result<(), String> {
+        // The `late` fixture withholds its end marker for 0.9s. Against the
+        // plain framed-query window (`DEBUGGER_QUERY_WAIT_MS * 8`) that is
+        // genuinely late: the query times out and the pre-seeded sentinel
+        // frame stays authoritative. Coverage instrumentation clamps the
+        // window to >=15s (#18348), which pulls the marker inside the window,
+        // so the completed poison payload is then legitimately accepted as
+        // stack authority. Derive the expectation from the effective window
+        // rather than raw instrumentation env checks (#18348).
+        let late_marker_in_window = Duration::from_millis(900)
+            <= DebugAdapter::framed_query_window_for_test(DEBUGGER_QUERY_WAIT_MS * 8);
         for mode in ["empty", "internal", "partial", "late", "late_begin", "valid"] {
             let adapter = reader_stack_fixture(mode)?;
             let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
@@ -7536,6 +7972,8 @@ mod tests {
                     7,
                     &["$value", "[1, 2]", "\"a,b\""],
                 )?;
+            } else if mode == "late" && late_marker_in_window {
+                assert_in_window_late_payload_accepted(&adapter, response)?;
             } else {
                 assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
             }
@@ -7616,14 +8054,14 @@ mod tests {
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
         adapter.begin_session_generation();
-        let mut old_child = {
+        let (mut old_child, ready) = {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_replacement");
             let session = guard.as_mut().ok_or("missing old session")?;
-            let child = spawn_reader_fixture_child("valid")?;
+            let (child, ready) = spawn_reader_fixture_child("valid")?;
             session.stack_frames.first_mut().ok_or("missing old frame")?.name =
                 "replacement".to_string();
             session.stack_frame_arguments.insert(1, vec!["replacement_arg".to_string()]);
-            std::mem::replace(&mut session.process, child)
+            (std::mem::replace(&mut session.process, child), ready)
         };
         adapter.operation_broker.open_session();
         adapter.start_output_reader(PathBuf::from("."));
@@ -7632,6 +8070,9 @@ mod tests {
         // must leave the replacement's authorities intact.
         drop(old_child.stdin.take());
         let result = (|| {
+            // The unique marker prevents the previous child's startup from
+            // satisfying replacement readiness under concurrent host load.
+            wait_for_reader_barrier(&adapter, &ready)?;
             if !DebugAdapter::wait_for_child_exit(&mut old_child, Duration::from_secs(5)) {
                 return Err("old reader fixture failed to finish delayed output".to_string());
             }
@@ -7738,6 +8179,7 @@ mod tests {
                 thread_id: 1,
                 debuggee_cwd: PathBuf::from("."),
                 last_resume_mode: ResumeMode::Unknown,
+                reader_stop_epoch: 0,
                 initial_stop_pending,
                 entry_stop_pending,
                 stopped_generation: 0,
@@ -8043,6 +8485,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,

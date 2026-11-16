@@ -316,6 +316,16 @@ pub(super) fn did_close_params(method: &str, value: &Value) -> Result<(), Schema
     text_document_identifier(method, "$.params.textDocument", object.get("textDocument"))
 }
 
+/// LSP 3.17 `DidSaveTextDocumentParams`: an identifier and optional saved text.
+pub(super) fn did_save_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), "$.params", value)?;
+    text_document_identifier(method, "$.params.textDocument", object.get("textDocument"))?;
+    if let Some(text) = object.get("text") {
+        expect_string(Some(method), "$.params.text", Some(text))?;
+    }
+    Ok(())
+}
+
 /// LSP 3.17 DocumentHighlightParams and its inherited progress-token fields.
 pub(super) fn document_highlight_params(method: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), "$.params", value)?;
@@ -359,6 +369,9 @@ pub(super) fn document_highlight_result(method: &str, value: &Value) -> Result<(
     Ok(())
 }
 
+#[cfg(test)]
+#[path = "../../../tests/support/protocol_schema_did_save.rs"]
+mod did_save_seam_proofs;
 #[cfg(test)]
 #[path = "../../../tests/support/protocol_schema_document_highlight.rs"]
 mod document_highlight_seam_proofs;

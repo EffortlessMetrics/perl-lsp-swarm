@@ -356,16 +356,14 @@ fn lsp_location_count(value: Option<&Value>) -> usize {
     }
 }
 
-/// Naive comment-only heuristic for the goto-definition and completion
-/// guards (#5066/#5408/#5411): `true` when a `#` appears earlier on the
-/// same line.
+/// Naive comment-only heuristic (#5066/#5408/#5411): `true` when a `#`
+/// appears earlier on the same line.
 ///
-/// This is deliberately NOT the rename candidate classifier and is
-/// deliberately not string-aware: a `#` inside a string literal still reads
-/// as a comment to this guard, and that trade-off is pinned by the guard
-/// regression tests. Rename's edit policy uses the generation-bound
-/// `SourceRegionIndex` instead (#4964).
-pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
+/// This is deliberately NOT string-aware on its own: callers that guard a
+/// user-visible answer use [`is_in_comment_for_guard`], which adjudicates
+/// a hit with the generation-bound `SourceRegionIndex` (#19206). The naive
+/// verdict remains the fallback when no usable snapshot can adjudicate.
+fn is_in_comment_naive(position: usize, source: &str) -> bool {
     let line_start =
         if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
     let line = &source[line_start..];
@@ -375,6 +373,55 @@ pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
         position >= comment_absolute
     } else {
         false
+    }
+}
+
+/// Comment guard for definition/completion (#19206): adjudicate a naive
+/// `#`-earlier-on-line hit with the generation-bound [`SourceRegionIndex`]
+/// from the current snapshot, so a `#` inside a string, quote-like, or
+/// regex region no longer kills the rest of the line.
+///
+/// The naive check runs first, so lines without a `#` pay no snapshot or
+/// index cost. With no snapshot, or a snapshot parsed from different text,
+/// the naive verdict stands (fail-closed, the pre-#19206 behavior).
+/// Blocking kinds mirror rename's `rename_blocked_at` plus
+/// `RecoveryAmbiguous`; proven `Code` always rescues the position. Proven
+/// literal kinds (string, quote-like, regex, heredoc) rescue only when
+/// `rescue_literals` is set: completion passes `true` because its provider
+/// classifies string/regex context itself, while definition passes `false`
+/// so quoted text cannot gain jumps the naive guard used to suppress
+/// (for example a module name inside `"# use Foo::Bar"`). EOF cursors fall
+/// back to the empty-range left-hand kind; invalid UTF-8 boundaries fail
+/// closed.
+pub(crate) fn is_in_comment_for_guard(
+    position: usize,
+    source: &str,
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+    rescue_literals: bool,
+) -> bool {
+    if !is_in_comment_naive(position, source) {
+        return false;
+    }
+    let Some(snapshot) = snapshot.filter(|snapshot| snapshot.source() == source) else {
+        return true;
+    };
+    let index = snapshot.source_region_index();
+    let kind = index.classify_offset(position).proven_kind().or_else(|| {
+        match index.classify_range_checked(position, position) {
+            perl_parser_core::SourceRangeClassification::EmptyBoundary { left, .. } => left,
+            _ => None,
+        }
+    });
+    match kind {
+        Some(
+            perl_parser_core::SourceRegionKind::LineComment
+            | perl_parser_core::SourceRegionKind::Pod
+            | perl_parser_core::SourceRegionKind::DataSection
+            | perl_parser_core::SourceRegionKind::RecoveryAmbiguous,
+        ) => true,
+        Some(perl_parser_core::SourceRegionKind::Code) => false,
+        Some(_) => !rescue_literals,
+        None => true,
     }
 }
 
@@ -966,6 +1013,23 @@ fn workspace_location_is_callable(
 /// the requested Sub kind, so revalidate each location against typed metadata.
 /// Return None to fall through to same-file resolution for an unproved target.
 #[cfg(feature = "workspace")]
+fn semantic_method_definition_lsp_location(
+    workspace_index: &crate::workspace_index::WorkspaceIndex,
+    doc_uri: &str,
+    pkg: &str,
+    method_name: &str,
+) -> Option<lsp_types::Location> {
+    let anchor_id = workspace_index.with_semantic_queries_for_uri(doc_uri, |_, queries| {
+        queries.method_candidates(pkg, method_name).into_iter().find_map(|candidate| {
+            queries.anchor_source_span(candidate.anchor_id).map(|_| candidate.anchor_id)
+        })
+    })??;
+
+    let wire = workspace_index.semantic_anchor_wire_location(anchor_id)?;
+    lsp_types::Location::try_from(wire).ok()
+}
+
+#[cfg(feature = "workspace")]
 fn find_workspace_definition_location(
     workspace_index: &crate::workspace_index::WorkspaceIndex,
     pkg: &str,
@@ -1219,6 +1283,7 @@ fn lookup_workspace_definition(
     name: &str,
     doc_uri: Option<&str>,
     require_callable: bool,
+    allow_semantic_generated_method_fallback: bool,
 ) -> Option<Value> {
     let coord = coordinator?;
 
@@ -1294,6 +1359,14 @@ fn lookup_workspace_definition(
         return Some(json!([lsp_location]));
     }
 
+    if allow_semantic_generated_method_fallback
+        && let Some(uri) = doc_uri
+        && let Some(lsp_location) =
+            semantic_method_definition_lsp_location(workspace_index, uri, pkg, name)
+    {
+        return Some(json!([lsp_location]));
+    }
+
     None
 }
 
@@ -1345,9 +1418,23 @@ fn semantic_definition_query_symbol(
 
 #[cfg(feature = "workspace")]
 fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, group: usize) -> bool {
-    regex
-        .captures_iter(text)
-        .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
+    regex_capture_text_at_cursor(regex, text, cursor, group).is_some()
+}
+
+/// The captured text of `group` when the cursor sits inside that capture of
+/// some match, else `None`. `cursor_in_regex_capture` is the yes/no shape of
+/// the same question; callers that need to know *what* was captured use this.
+#[cfg(feature = "workspace")]
+fn regex_capture_text_at_cursor<'a>(
+    regex: &regex::Regex,
+    text: &'a str,
+    cursor: usize,
+    group: usize,
+) -> Option<&'a str> {
+    regex.captures_iter(text).find_map(|cap| {
+        let matched = cap.get(group)?;
+        (cursor >= matched.start() && cursor <= matched.end()).then_some(matched.as_str())
+    })
 }
 
 /// Which `::`-separated component of a fully-qualified name the cursor is on.
@@ -1921,18 +2008,17 @@ impl LspServer {
                     // AST resolver, goto-label, Mason, etc.) so it covers all
                     // navigation, not just the module-reference path.
                     //
-                    // String-aware guarding is intentionally omitted: text-based
-                    // quote scanners produce false positives on real Perl code
-                    // (regexes, heredocs, qw(), POD).  The original guard used
-                    // `is_in_comment && !is_in_string`, which was logically
-                    // inverted — it only blocked when in a comment that was NOT
-                    // also classified as a string.  This now blocks whenever the
-                    // offset is inside a comment.
+                    // The naive `#`-earlier-on-line hit is adjudicated by
+                    // the generation-bound SourceRegionIndex (#19206): a
+                    // `#` inside a string or regex no longer blocks code
+                    // later on the line, while a real comment still does.
+                    // Without a generation-current snapshot the naive
+                    // verdict stands.
                     let text = &doc.text;
-                    if is_in_comment_naive(offset, text) {
+                    let current_parsed = doc.current_parsed();
+                    if is_in_comment_for_guard(offset, text, current_parsed.as_deref(), false) {
                         return Ok(Some(Value::Null));
                     }
-                    let current_parsed = doc.current_parsed();
                     let cursor_in_single_quoted_literal =
                         in_single_quoted_literal(current_parsed.as_deref(), offset);
                     let quoted_parent_base_argument = cursor_in_single_quoted_literal
@@ -1966,6 +2052,17 @@ impl LspServer {
                     ) {
                         Some((
                             EarlyDefinitionTarget::XsBootstrap(module_name),
+                            doc.text_arc.to_string(),
+                            offset,
+                        ))
+                    } else if let Some(module_name) =
+                        perl_lsp_rs_core::providers::document_links::module_runtime_module_at_byte_offset(
+                            text,
+                            offset,
+                        )
+                    {
+                        Some((
+                            EarlyDefinitionTarget::UseModule(module_name),
                             doc.text_arc.to_string(),
                             offset,
                         ))
@@ -2429,22 +2526,21 @@ impl LspServer {
                                 {
                                     return Ok(Some(Value::Null));
                                 }
+                                let qualified_role = qualified_occurrence_role(
+                                    &doc.text,
+                                    self.pos16_to_offset(doc, line, character),
+                                    parsed.as_ref().and_then(|p| p.ast()).map(|ast| ast.as_ref()),
+                                    &package,
+                                    &name,
+                                );
                                 if workspace_index_is_fresh()
                                     && let Some(result) = lookup_workspace_definition(
                                         self.coordinator(),
                                         &package,
                                         &name,
                                         Some(uri),
-                                        qualified_occurrence_role(
-                                            &doc.text,
-                                            self.pos16_to_offset(doc, line, character),
-                                            parsed
-                                                .as_ref()
-                                                .and_then(|p| p.ast())
-                                                .map(|ast| ast.as_ref()),
-                                            &package,
-                                            &name,
-                                        ) == QualifiedOccurrenceRole::Call,
+                                        qualified_role == QualifiedOccurrenceRole::Call,
+                                        qualified_role == QualifiedOccurrenceRole::Call,
                                     )
                                     && workspace_index_is_fresh()
                                 {
@@ -2508,7 +2604,21 @@ impl LspServer {
                                 method_name,
                                 Some(uri),
                                 true,
+                                true,
                             ) && workspace_index_is_fresh()
+                            {
+                                return Ok(Some(result));
+                            }
+                            if is_universal_method(method_name)
+                                && let Some(result) = lookup_workspace_definition(
+                                    self.coordinator(),
+                                    "UNIVERSAL",
+                                    method_name,
+                                    Some(uri),
+                                    true,
+                                    true,
+                                )
+                                && workspace_index_is_fresh()
                             {
                                 return Ok(Some(result));
                             }
@@ -2528,18 +2638,6 @@ impl LspServer {
                                 {
                                     return Ok(Some(json!([lsp_location])));
                                 }
-                            }
-                            if is_universal_method(method_name)
-                                && let Some(result) = lookup_workspace_definition(
-                                    self.coordinator(),
-                                    "UNIVERSAL",
-                                    method_name,
-                                    Some(uri),
-                                    true,
-                                )
-                                && workspace_index_is_fresh()
-                            {
-                                return Ok(Some(result));
                             }
                             // Partial/None: fall through to same-file resolution
                             break;
@@ -2571,7 +2669,21 @@ impl LspServer {
                                         method_name,
                                         Some(uri),
                                         true,
+                                        true,
                                     ) && workspace_index_is_fresh()
+                                    {
+                                        return Ok(Some(result));
+                                    }
+                                    if is_universal_method(method_name)
+                                        && let Some(result) = lookup_workspace_definition(
+                                            self.coordinator(),
+                                            "UNIVERSAL",
+                                            method_name,
+                                            Some(uri),
+                                            true,
+                                            true,
+                                        )
+                                        && workspace_index_is_fresh()
                                     {
                                         return Ok(Some(result));
                                     }
@@ -2600,6 +2712,7 @@ impl LspServer {
                                     "UNIVERSAL",
                                     method_name,
                                     Some(uri),
+                                    true,
                                     true,
                                 )
                                 && workspace_index_is_fresh()
@@ -2733,6 +2846,7 @@ impl LspServer {
                                     argument_key.name.as_ref(),
                                     Some(uri),
                                     true,
+                                    false,
                                 ) && workspace_index_is_fresh()
                                 {
                                     return Ok(Some(result));
@@ -2905,6 +3019,49 @@ impl LspServer {
                                     | crate::symbol::SymbolKind::Method
                             )
                         {
+                            return Ok(Some(json!([])));
+                        }
+                        // #18110: an unresolvable `->method` selector has no
+                        // same-file definition. The semantic analyzer falls
+                        // back to the sub whose span contains the cursor —
+                        // the enclosing sub — which is not the method's
+                        // definition. Reject exactly that artifact: the
+                        // cursor sits on a method selector and the offered
+                        // callable both encloses the cursor and does not
+                        // carry the method's name (same-name recursion still
+                        // navigates to its own declaration).
+                        let var_method_re = get_var_method_regex()?;
+                        let cursor_method_name = regex_capture_text_at_cursor(
+                            get_arrow_method_regex()?,
+                            &text_around,
+                            cursor_in_text,
+                            2,
+                        )
+                        .or_else(|| {
+                            regex_capture_text_at_cursor(
+                                var_method_re,
+                                &text_around,
+                                cursor_in_text,
+                                2,
+                            )
+                        });
+                        if let Some(method_name) = cursor_method_name
+                            && matches!(
+                                definition.kind,
+                                crate::symbol::SymbolKind::Subroutine
+                                    | crate::symbol::SymbolKind::Method
+                            )
+                            && definition.location.start <= offset
+                            && offset <= definition.location.end
+                            && definition.name != method_name
+                        {
+                            tracing::debug!(
+                                offset,
+                                method = %method_name,
+                                enclosing = %definition.name,
+                                "Suppressing same-file enclosing-sub fallback for an \
+                                 unresolvable method call (#18110)"
+                            );
                             return Ok(Some(json!([])));
                         }
                         // #17252: use the typed semantic identity at this tier.
@@ -4533,7 +4690,8 @@ mod tests {
                         "Other",
                         "compute_0",
                         Some(&caller_uri),
-                        true
+                        true,
+                        true,
                     )
                     .is_none()
                 );
@@ -5076,6 +5234,42 @@ mod tests {
         let receipt =
             explanation.get("request_receipt").cloned().ok_or("missing request_receipt")?;
         Ok((result, receipt))
+    }
+
+    /// #18110: goto-definition on an unresolvable `->method` selector must not
+    /// return the enclosing sub. The same-file tier's semantic fallback answers
+    /// an unknown method name with the sub containing the cursor; the same-file
+    /// tier has to refuse that artifact instead of jumping the editor to the
+    /// top of the sub it is already in.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn unresolvable_method_selector_refuses_instead_of_returning_the_enclosing_sub()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/gotodef-18110-widget.pm";
+        let text = "package Widget;\nsub check {\n    my ($self) = @_;\n    return $self->isa('Widget');\n}\n";
+        server.test_apply_did_open(uri, text, 1)?;
+        server.test_index_file_in_building_state(uri, text).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        // Cursor on the `isa` selector (line 3, character 18). Before the fix
+        // this answered `sub check`'s own span (line 1 through line 4).
+        let (result, _receipt) = goto_definition_request_receipt(&server, uri, 3, 18)?;
+        assert!(
+            result.as_ref().is_some_and(Value::is_null)
+                || result.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty),
+            "an unresolvable `$self->isa` must refuse without the enclosing sub, got {result:?}"
+        );
+
+        // Control: the sub's own name still navigates to its declaration.
+        let (known, _receipt) = goto_definition_request_receipt(&server, uri, 1, 8)?;
+        let known = known.ok_or("goto-def on a declared sub name must answer")?;
+        assert_eq!(
+            known.pointer("/0/range/start/line").and_then(Value::as_u64),
+            Some(1),
+            "goto-def on `check` must land on its declaration, got {known:?}"
+        );
+        Ok(())
     }
 
     /// Cross-file definition must not consume predecessor workspace facts while

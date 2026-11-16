@@ -671,6 +671,45 @@ describe('package.json contributes', () => {
       expect(setting.default).toBe(3);
     });
 
+    test.each(['critic', 'perlcritic'])(
+      '%s severity picker matches the canonical schema and explains the reporting threshold',
+      (name) => {
+        const schema = readJson<{
+          properties: {
+            perl: {
+              properties: Record<
+                string,
+                { properties: { severity: { minimum: number; maximum: number; default: number } } }
+              >;
+            };
+          };
+        }>('../schemas/perllsp-settings.schema.json');
+        const threshold = schema.properties.perl.properties[name]!.properties.severity;
+        const setting = getSetting(properties, `perl-lsp.${name}.severity`);
+        const levels = Array.from(
+          { length: threshold.maximum - threshold.minimum + 1 },
+          (_, index) => threshold.minimum + index,
+        );
+
+        expect(setting.enum).toEqual(levels);
+        expect(setting.default).toBe(threshold.default);
+        expect(setting.enumDescriptions).toHaveLength(levels.length);
+        // The native registry's severity_enabled reports severity >= threshold.
+        // Describe the included findings directly, avoiding the ambiguous
+        // "permissive/strict" labels that previously reversed the advice.
+        for (const [index, level] of levels.entries()) {
+          const effect =
+            level === threshold.minimum
+              ? 'report all severities'
+              : level === threshold.maximum
+                ? `report only severity ${level}`
+                : `report severity ${level} and above`;
+          expect(setting.enumDescriptions[index]).toContain(effect);
+        }
+        expect(setting.enumDescriptions[levels.indexOf(threshold.default)]).toContain('default');
+      },
+    );
+
     test('defines critic.include and critic.exclude as string arrays', () => {
       for (const key of ['perl-lsp.critic.include', 'perl-lsp.critic.exclude']) {
         const setting = getSetting(properties, key);

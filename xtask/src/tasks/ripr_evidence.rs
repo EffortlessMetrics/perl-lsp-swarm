@@ -2170,6 +2170,10 @@ fn wait_within_cap(
 #[derive(Debug)]
 struct RiprCheckIngestion {
     analysis_base: Option<Value>,
+    /// Producer-owned completeness and typed limitations. Older ripr releases
+    /// do not emit this field, so it remains optional rather than being
+    /// inferred from the finding count.
+    analysis_outcome: Option<Value>,
     summary_counts: RiprPrSummaryCounts,
     /// Mirrors `check_value.get("summary").and_then(Value::as_object).is_some()`:
     /// a `summary` key that is not an object still counts as absent.
@@ -2202,6 +2206,7 @@ fn ripr_check_ingestion_from_file(
     validate_check_findings_array(payload.findings_is_array)?;
     Ok(RiprCheckIngestion {
         analysis_base: payload.base,
+        analysis_outcome: payload.analysis_outcome,
         summary_counts: ripr_summary_counts_merge(
             ripr_summary_counts_seed(check_summary),
             buckets,
@@ -2248,6 +2253,7 @@ where
 struct RiprCheckPayload {
     summary: Option<Value>,
     base: Option<Value>,
+    analysis_outcome: Option<Value>,
     findings_is_array: bool,
 }
 
@@ -2282,6 +2288,7 @@ where
                         map.next_value_seed(StreamFindingsSeed { on_event: self.on_event })?;
                 }
                 "base" => payload.base = Some(map.next_value()?),
+                "analysis_outcome" => payload.analysis_outcome = Some(map.next_value()?),
                 // Values the receipt never consumes are skipped in place —
                 // serde_json discards skipped tokens without buffering them.
                 _ => {
@@ -4414,6 +4421,7 @@ fn pr_evidence_packet_with_count(
         options,
         &RiprCheckIngestion {
             analysis_base: check_value.get("base").cloned(),
+            analysis_outcome: check_value.get("analysis_outcome").cloned(),
             summary_counts: summary,
             check_summary_present: check_summary.is_some(),
         },
@@ -4455,6 +4463,12 @@ fn pr_evidence_packet_from_summary(
         .saturating_sub(summary.outside_head_unclassified)
         .saturating_sub(summary.non_production_unclassified);
     let ripr_severe_gap = severe_gaps > 0;
+    let partial_analysis = ingestion
+        .analysis_outcome
+        .as_ref()
+        .and_then(|outcome| outcome.pointer("/outcome/kind"))
+        .and_then(Value::as_str)
+        == Some("partial_with_limitations");
     let warnings = if ingestion.check_summary_present {
         Vec::new()
     } else {
@@ -4464,12 +4478,12 @@ fn pr_evidence_packet_from_summary(
             "path": null
         })]
     };
-    json!({
+    let mut packet = json!({
         "schema_version": "0.1",
         "tool": "ripr",
         "kind": "pr_evidence",
         "scope": "diff",
-        "status": if warnings.is_empty() { "advisory" } else { "incomplete" },
+        "status": if warnings.is_empty() && !partial_analysis { "advisory" } else { "incomplete" },
         "root": options.root,
         "base": options.base,
         "base_sha": base_sha,
@@ -4537,7 +4551,11 @@ fn pr_evidence_packet_from_summary(
             "This packet does not post review comments or execute mutation.",
             "Public badge state must not be derived from this diff-scoped packet."
         ]
-    })
+    });
+    if let Some(outcome) = &ingestion.analysis_outcome {
+        packet["analysis_outcome"] = outcome.clone();
+    }
+    packet
 }
 
 fn validate_pr_evidence_packet(
@@ -4707,7 +4725,34 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
         "- declaration_seam_excluded: {}\n",
         count_field(summary, "declaration_seam_excluded")
     ));
-    out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
+    out.push_str(&format!("- severe gaps: {}\n", count_field(summary, "severe_gaps")));
+    if let Some(outcome) = packet.get("analysis_outcome").filter(|value| !value.is_null()) {
+        out.push_str(&format!(
+            "- analysis outcome: `{}`\n",
+            md_escape(
+                outcome.pointer("/outcome/kind").and_then(Value::as_str).unwrap_or("unknown")
+            )
+        ));
+        if let Some(limitations) = outcome.pointer("/outcome/limitations").and_then(Value::as_array)
+        {
+            for limitation in limitations {
+                out.push_str(&format!(
+                    "- analysis limitation: `{}`: {}\n",
+                    md_escape(string_field(limitation, "kind", "unknown")),
+                    md_escape(
+                        limitation
+                            .get("detail")
+                            .or_else(|| limitation.get("bounded_detail"))
+                            .or_else(|| limitation.get("message"))
+                            .or_else(|| limitation.get("summary"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("producer did not supply limitation detail")
+                    )
+                ));
+            }
+        }
+    }
+    out.push('\n');
     out.push_str("## Targeted Mutation\n\n");
     out.push_str(&format!(
         "- requires_targeted_mutation: {}\n",
@@ -4860,7 +4905,8 @@ fn current_pr_evidence_has_no_severe_gaps(
     if validate_comparison_subject(&packet, subject.as_ref()).is_err() {
         return Ok(false);
     }
-    Ok(packet.pointer("/summary/severe_gaps").and_then(Value::as_u64) == Some(0))
+    Ok(packet.get("status").and_then(Value::as_str) == Some("advisory")
+        && packet.pointer("/summary/severe_gaps").and_then(Value::as_u64) == Some(0))
 }
 
 fn validate_review_comments(
@@ -4991,16 +5037,33 @@ fn render_clean_review_comments_markdown(packet: &Value) -> String {
     )
 }
 
+const REVIEW_GUIDANCE_OVERSIZED: &str = "review_guidance_oversized";
+
+/// Preserve the producer's typed refusal instead of reducing the whole command
+/// failure to its exit-status line. The source emits the reason on one line;
+/// retaining that complete line keeps counts, limits, and repair text auditable.
+fn review_guidance_oversized_reason(error: &str) -> Option<&str> {
+    error.lines().map(str::trim).find_map(|line| {
+        let reason = line.strip_prefix("ripr: ").unwrap_or(line);
+        reason.starts_with("review_guidance_oversized:").then_some(reason)
+    })
+}
+
+fn review_guidance_failure_message(error: &str) -> String {
+    review_guidance_oversized_reason(error).map(str::to_owned).unwrap_or_else(|| first_line(error))
+}
+
 fn write_error_review_comments(
     repo: &Path,
     options: &ReviewCommentsOptions,
     root: &str,
     error: &str,
 ) -> Result<()> {
+    let oversized = review_guidance_oversized_reason(error).is_some();
     let packet = json!({
         "schema_version": "0.1",
         "tool": "ripr",
-        "status": "error",
+        "status": if oversized { "incomplete" } else { "error" },
         "root": normalize_path_text(root),
         "base": options.base,
         "head": options.head,
@@ -5023,8 +5086,8 @@ fn write_error_review_comments(
         "suppressed": [],
         "warnings": [
             {
-                "kind": "tool_error",
-                "message": first_line(error),
+                "kind": if oversized { REVIEW_GUIDANCE_OVERSIZED } else { "tool_error" },
+                "message": review_guidance_failure_message(error),
                 "path": null
             }
         ],
@@ -5043,9 +5106,16 @@ fn render_error_review_comments_markdown(packet: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("review guidance generation did not complete");
     format!(
-        "# RIPR PR Guidance\n\n- status: error\n- base: `{}`\n- head: `{}`\n- line annotations: 0\n- summary-only recommendations: 0\n- suppressed recommendations: 0\n\nNo review guidance was generated.\n\n## Warnings\n\n- tool_error: {}\n",
+        "# RIPR PR Guidance\n\n- status: {}\n- base: `{}`\n- head: `{}`\n- line annotations: 0\n- summary-only recommendations: 0\n- suppressed recommendations: 0\n\nNo review guidance was generated.\n\n## Warnings\n\n- {}: {}\n",
+        string_field(packet, "status", "error"),
         string_field(packet, "base", DEFAULT_BASE),
         string_field(packet, "head", DEFAULT_HEAD),
+        packet
+            .get("warnings")
+            .and_then(Value::as_array)
+            .and_then(|warnings| warnings.first())
+            .map(|warning| string_field(warning, "kind", "tool_error"))
+            .unwrap_or("tool_error"),
         md_escape(warning)
     )
 }
@@ -5403,8 +5473,8 @@ fn write_fallback_review_comments(
         "suppressed": [],
         "warnings": [
             {
-                "kind": "tool_error",
-                "message": first_line(error),
+                "kind": if review_guidance_oversized_reason(error).is_some() { REVIEW_GUIDANCE_OVERSIZED } else { "tool_error" },
+                "message": review_guidance_failure_message(error),
                 "path": null
             },
             {
@@ -5460,7 +5530,13 @@ fn render_fallback_review_comments_markdown(packet: &Value) -> String {
         .and_then(|warning| warning.get("message"))
         .and_then(Value::as_str)
     {
-        markdown.push_str(&format!("\n## Warnings\n\n- tool_error: {}\n", md_escape(warning)));
+        let kind = packet
+            .get("warnings")
+            .and_then(Value::as_array)
+            .and_then(|warnings| warnings.first())
+            .map(|entry| string_field(entry, "kind", "tool_error"))
+            .unwrap_or("tool_error");
+        markdown.push_str(&format!("\n## Warnings\n\n- {kind}: {}\n", md_escape(warning)));
     }
     markdown
 }
@@ -6180,8 +6256,8 @@ fn ancestry_failure_guidance(base: &str, head: &str, receipt: &AncestryReceipt) 
 
 fn write_pr_diff(repo: &Path, receipt: &CommittedDiffReceipt) -> Result<()> {
     let range = format!("{}...{}", receipt.base, receipt.head);
-    let diff = run_git_output(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
-    write_text(&repo.join(PR_DIFF), &diff)?;
+    let diff = run_git_bytes(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
+    write_text(&repo.join(PR_DIFF), &String::from_utf8_lossy(&diff))?;
     let receipt_json = format_json(&serde_json::to_value(receipt)?)?;
     write_text(&repo.join(PR_DIFF_RECEIPT), &receipt_json)
 }
@@ -6278,6 +6354,8 @@ fn run_output(cmd: &str, args: &[String]) -> Result<String> {
 /// blocks on the write and can never exit. The timeout then becomes the only
 /// way out, which is how `ripr-review-comments` lanes burned tens of minutes
 /// before an external SIGTERM on diffs whose output exceeded the buffer.
+/// The sole production caller is RIPR review guidance; the heartbeat names that
+/// phase and reports process liveness only, never semantic completion progress.
 fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Result<String> {
     let stdout_file =
         tempfile::NamedTempFile::new().context("failed to create command stdout file")?;
@@ -6290,6 +6368,7 @@ fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Res
         .spawn()
         .with_context(|| format!("failed to run {cmd}"))?;
     let started = Instant::now();
+    let mut next_progress = Duration::ZERO;
     let status = loop {
         if let Some(status) = child.try_wait().with_context(|| format!("failed to poll {cmd}"))? {
             break status;
@@ -6303,6 +6382,11 @@ fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Res
                 String::from_utf8_lossy(&read_output_excerpt(&stdout_file)?).trim(),
                 String::from_utf8_lossy(&read_output_excerpt(&stderr_file)?).trim()
             );
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= next_progress {
+            write_timed_command_progress(child.id(), elapsed, &stdout_file, &stderr_file);
+            next_progress = elapsed.saturating_add(Duration::from_secs(30));
         }
         std::thread::sleep(Duration::from_millis(200));
     };
@@ -6321,6 +6405,76 @@ fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Res
         );
     }
     String::from_utf8(stdout_bytes).with_context(|| format!("{cmd} stdout was not UTF-8"))
+}
+
+/// Keep a long captured-output command observable without exposing its output or
+/// arguments. Best-effort diagnostics do not decide admission or change the
+/// configured timeout, cancellation, or exit-status policy. Linux memory fields are
+/// optional; other platforms still report elapsed time and captured byte counts.
+fn write_timed_command_progress(
+    child_id: u32,
+    elapsed: Duration,
+    stdout: &tempfile::NamedTempFile,
+    stderr: &tempfile::NamedTempFile,
+) {
+    let (process, host) = if cfg!(target_os = "linux") {
+        (
+            read_progress_proc_file(&format!("/proc/{child_id}/status")),
+            read_progress_proc_file("/proc/meminfo"),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    let line = timed_command_progress_line(
+        child_id,
+        elapsed,
+        stdout.as_file().metadata().ok().map(|m| m.len()),
+        stderr.as_file().metadata().ok().map(|m| m.len()),
+        &process,
+        &host,
+    );
+    let _ = std::io::Write::write_all(&mut io::stderr(), line.as_bytes());
+}
+
+fn read_progress_proc_file(path: &str) -> String {
+    let mut text = String::new();
+    if let Ok(file) = fs::File::open(path) {
+        let _ = file.take(16 * 1024).read_to_string(&mut text);
+    }
+    text
+}
+
+fn proc_kib_field(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next()? != key {
+            return None;
+        }
+        let value = fields.next()?.parse().ok()?;
+        (fields.next()? == "kB" && fields.next().is_none()).then_some(value)
+    })
+}
+
+fn timed_command_progress_line(
+    child_id: u32,
+    elapsed: Duration,
+    stdout_bytes: Option<u64>,
+    stderr_bytes: Option<u64>,
+    process: &str,
+    host: &str,
+) -> String {
+    let metric = |value: Option<u64>| {
+        value.map(|value| value.to_string()).unwrap_or_else(|| "unavailable".to_string())
+    };
+    format!(
+        "ripr_timed_command_progress phase=review_guidance pid={child_id} elapsed_ms={} stdout_bytes={} stderr_bytes={} child_rss_kib={} child_peak_rss_kib={} host_available_kib={}\n",
+        elapsed.as_millis(),
+        metric(stdout_bytes),
+        metric(stderr_bytes),
+        metric(proc_kib_field(process, "VmRSS:")),
+        metric(proc_kib_field(process, "VmHWM:")),
+        metric(proc_kib_field(host, "MemAvailable:")),
+    )
 }
 
 /// Reads the first `MAX_RIPR_STDERR_BYTES` of a captured stream file for a
@@ -11172,7 +11326,7 @@ paths = ["archive/["]
 
         assert_eq!(
             extents
-                .resolve("/home/runner/work/perl-lsp-swarm/xtask/src/tasks/check_version_sync.rs"),
+                .resolve("/unavailable/work/perl-lsp-swarm/xtask/src/tasks/check_version_sync.rs"),
             HeadPathState::Present(13)
         );
         assert_eq!(
@@ -11361,6 +11515,56 @@ paths = ["archive/["]
         );
         assert_eq!(packet["head_sha"], json!(head));
         assert!(markdown.contains("zero severe gaps"), "{markdown}");
+        Ok(())
+    }
+
+    #[test]
+    fn partial_zero_gap_evidence_does_not_take_the_clean_guidance_shortcut() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let head = revision_sha(repo, "HEAD")?;
+        let packet = pr_evidence_packet(
+            &options,
+            &["src/lib.rs".to_string()],
+            &json!({
+                "summary": {
+                    "weakly_exposed": 0,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": 0
+                },
+                "analysis_outcome": {
+                    "analysis_complete": false,
+                    "outcome": {
+                        "kind": "partial_with_limitations",
+                        "limitations": [{
+                            "kind": "language_scope_unsupported",
+                            "bounded_detail": "Python preview adapter is not enabled"
+                        }]
+                    }
+                }
+            }),
+            &head,
+            &head,
+            &RiprSuppressionRules::default(),
+        );
+        write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
+        let review_options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+
+        assert_eq!(packet["status"], json!("incomplete"));
+        assert!(!current_pr_evidence_has_no_severe_gaps(repo, &review_options)?);
         Ok(())
     }
 
@@ -11990,6 +12194,90 @@ paths = ["archive/["]
                 "reach": { "state": "no", "summary": "No static test path found for the changed owner" }
             }
         })
+    }
+
+    #[test]
+    fn pr_evidence_preserves_partial_analysis_and_adapter_limitations() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let analysis_outcome = json!({
+            "analysis_complete": false,
+            "outcome": {
+                "kind": "partial_with_limitations",
+                "limitations": [{
+                    "kind": "language_scope_unsupported",
+                    "bounded_detail": "Python preview adapter is not enabled for scripts/ci/probe.py"
+                }]
+            }
+        });
+        let packet = pr_evidence_packet_with_count(
+            &options,
+            &json!({
+                "summary": {
+                    "weakly_exposed": 0,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": 0
+                },
+                "findings": [],
+                "analysis_outcome": analysis_outcome
+            }),
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+            None,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                attribution_scope: None,
+                production_surface: None,
+            },
+        );
+
+        assert_eq!(packet["status"], json!("incomplete"));
+        assert_eq!(packet["analysis_outcome"], analysis_outcome);
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        let markdown = render_pr_evidence_markdown(&packet);
+        assert!(markdown.contains("analysis outcome: `partial_with_limitations`"), "{markdown}");
+        assert!(markdown.contains("Python preview adapter is not enabled"), "{markdown}");
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_review_guidance_receipt_preserves_the_typed_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+        let reason = "review_guidance_oversized: 4554 closure input files exceed the review-guidance ceiling (RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES=1200); the guidance pass was not run to protect runner memory.";
+        let error =
+            format!("ripr failed with status exit status: 2\nstdout:\n\nstderr:\nripr: {reason}\n");
+
+        write_error_review_comments(repo, &options, ".", &error)?;
+        stamp_review_comments_receipt(repo, &options)?;
+        validate_review_comments(repo, &options, true)?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        assert_eq!(packet["status"], json!("incomplete"));
+        assert_eq!(packet.pointer("/warnings/0/kind"), Some(&json!(REVIEW_GUIDANCE_OVERSIZED)));
+        assert_eq!(packet.pointer("/warnings/0/message"), Some(&json!(reason)));
+        let markdown = fs::read_to_string(repo.join(REVIEW_COMMENTS_MD))?;
+        assert!(markdown.contains("- status: incomplete"), "{markdown}");
+        assert!(markdown.contains(reason), "{markdown}");
+        assert!(
+            review_guidance_oversized_reason("ripr: review_guidance_oversized_metadata: unrelated")
+                .is_none()
+        );
+        Ok(())
     }
 
     #[test]
@@ -13160,7 +13448,10 @@ paths = ["archive/["]
     }
 
     fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(repo)
+            .output()?;
         if !output.status.success() {
             bail!("git {:?} failed with status {}", args, output.status);
         }
@@ -13168,6 +13459,134 @@ paths = ["archive/["]
             .context("git command returned non-UTF8 output")?
             .trim()
             .to_string())
+    }
+
+    #[cfg(not(windows))]
+    fn diff_repo_with_corpus(non_utf8: bool) -> Result<tempfile::TempDir> {
+        let repo = tempfile::tempdir()?;
+        init_git_repo(repo.path())?;
+        fs::create_dir_all(repo.path().join("src"))?;
+        write_text(&repo.path().join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n")?;
+        run_git(repo.path(), &["add", "tracked.txt", "src/lib.rs"])?;
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "rust base",
+            ],
+        )?;
+
+        write_text(&repo.path().join("src/lib.rs"), "pub fn value() -> u8 { 2 }\n")?;
+        let corpus = repo.path().join("fuzz/corpus/incremental_edit_sequences/non_utf8_seed");
+        fs::create_dir_all(corpus.parent().ok_or_else(|| eyre!("corpus parent missing"))?)?;
+        if non_utf8 {
+            fs::write(&corpus, [b's', b'e', b'e', b'd', b'\n', 0xff, b'\n'])?;
+        } else {
+            fs::write(&corpus, b"seed\nreplacement\n")?;
+        }
+        run_git(repo.path(), &["add", "src/lib.rs", "fuzz/corpus"])?;
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "candidate",
+            ],
+        )?;
+        Ok(repo)
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_utf8_pr_diff_is_lossy_utf8_and_preserves_ripr_findings() -> Result<()> {
+        // `ripr_binary()` reads the process-global override, so hold the
+        // override lock for the whole comparison: a concurrent override
+        // test must not swap the binary between iterations.
+        let _exclusive = RIPR_BIN_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let clean = diff_repo_with_corpus(false)?;
+        let lossy = diff_repo_with_corpus(true)?;
+        let mut outputs = Vec::new();
+        for (repo, expect_non_utf8) in [(&clean, false), (&lossy, true)] {
+            let receipt = resolve_committed_diff(repo.path(), "HEAD~1", "HEAD")?;
+            let expected_digest = receipt.diff_digest.clone();
+            let range = format!("{}...{}", receipt.base, receipt.head);
+            let raw =
+                run_git_bytes(repo.path(), &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
+            assert_eq!(std::str::from_utf8(&raw).is_err(), expect_non_utf8);
+
+            write_pr_diff(repo.path(), &receipt)?;
+            let persisted = fs::read(repo.path().join(PR_DIFF))?;
+            let text = std::str::from_utf8(&persisted)?;
+            assert_eq!(text.contains('\u{fffd}'), expect_non_utf8);
+            assert!(!persisted.contains(&0xff));
+            let persisted_receipt: CommittedDiffReceipt =
+                serde_json::from_str(&fs::read_to_string(repo.path().join(PR_DIFF_RECEIPT))?)?;
+            assert_eq!(persisted_receipt.diff_digest, expected_digest);
+            assert_eq!(receipt, resolve_committed_diff(repo.path(), "HEAD~1", "HEAD")?);
+
+            let binary = ripr_binary()?;
+            // The production ripr CLI rejects `--version` (#19414), so probe by
+            // running the supported `check` invocation itself. A spawn failure
+            // means ripr is unavailable on this runner; a non-zero exit is real
+            // evidence and stays blocking in the assertion below. The
+            // unavailable path records a typed limitation marker beside the
+            // receipt so the evidence distinguishes "ripr absent" from
+            // "ripr agreed" instead of silently continuing (#19414).
+            let output = match Command::new(&binary)
+                .args([
+                    "check",
+                    "--root",
+                    ".",
+                    "--diff",
+                    &repo.path().join(PR_DIFF).display().to_string(),
+                    "--format",
+                    "json",
+                ])
+                .current_dir(repo.path())
+                .env("RIPR_CACHE_DIR", repo.path().join("target/ripr-facts"))
+                .output()
+            {
+                Ok(output) => output,
+                Err(error) => {
+                    let marker = repo.path().join("target/ripr/pr/ripr-comparison-limitation.json");
+                    if let Some(parent) = marker.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(
+                        &marker,
+                        serde_json::json!({
+                            "limitation": "ripr_unavailable",
+                            "binary": binary.clone(),
+                            "spawn_error": error.to_string(),
+                            "comparison": "not_run",
+                        })
+                        .to_string(),
+                    )?;
+                    eprintln!("ripr is unavailable; lossy writer proof passed, comparison not run");
+                    continue;
+                }
+            };
+            assert!(
+                output.status.success(),
+                "ripr check failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            outputs.push(serde_json::from_slice::<Value>(&output.stdout)?);
+        }
+        if outputs.len() == 2 {
+            assert_eq!(outputs[0]["findings"], outputs[1]["findings"]);
+            assert_eq!(outputs[0]["summary"], outputs[1]["summary"]);
+        }
+        Ok(())
     }
 
     /// Serializes every test that swaps the `ripr` binary.
@@ -13486,6 +13905,58 @@ esac
     }
 
     #[test]
+    fn timed_command_progress_reports_only_numeric_resource_fields() {
+        let line = timed_command_progress_line(
+            42,
+            Duration::from_secs(30),
+            Some(123),
+            Some(456),
+            "Name:\tprivate-payload\nVmRSS:\t1024 kB\nVmHWM:\t2048 kB\n",
+            "MemAvailable: 4096 kB\nOther: private-token\n",
+        );
+        assert_eq!(
+            line,
+            "ripr_timed_command_progress phase=review_guidance pid=42 elapsed_ms=30000 stdout_bytes=123 stderr_bytes=456 child_rss_kib=1024 child_peak_rss_kib=2048 host_available_kib=4096\n"
+        );
+    }
+
+    #[test]
+    fn timed_command_progress_marks_missing_measurements_unavailable() {
+        let line = timed_command_progress_line(7, Duration::ZERO, None, None, "", "");
+        assert_eq!(
+            line,
+            "ripr_timed_command_progress phase=review_guidance pid=7 elapsed_ms=0 stdout_bytes=unavailable stderr_bytes=unavailable child_rss_kib=unavailable child_peak_rss_kib=unavailable host_available_kib=unavailable\n"
+        );
+    }
+
+    #[test]
+    fn timed_command_progress_rejects_malformed_resource_values() {
+        for input in [
+            "VmRSS: -1 kB",
+            "VmRSS: 18446744073709551616 kB",
+            "VmRSS: 12 bytes",
+            "VmRSS: secret kB",
+            "VmRSS: 12 kB extra",
+            "VmRSSExtra: 12 kB",
+        ] {
+            assert_eq!(proc_kib_field(input, "VmRSS:"), None, "{input}");
+        }
+        assert_eq!(proc_kib_field("VmRSS: 0 kB", "VmRSS:"), Some(0));
+    }
+
+    #[test]
+    fn timed_command_progress_bounds_proc_reads_and_tolerates_absence() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("status");
+        fs::write(&path, format!("{}\nVmRSS: 42 kB\n", "x".repeat(16 * 1024)))?;
+        let text = read_progress_proc_file(&path.to_string_lossy());
+        assert_eq!(text.len(), 16 * 1024);
+        assert_eq!(proc_kib_field(&text, "VmRSS:"), None);
+        assert!(read_progress_proc_file(&dir.path().join("missing").to_string_lossy()).is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn run_git_reports_failure_status() -> Result<()> {
         let temp = tempfile::tempdir()?;
 
@@ -13788,7 +14259,7 @@ esac
     /// is deliberately not pointed at `/dev/null`: that path does not exist on
     /// Windows, and this crate's tests are in the Windows CI crate scope.
     fn ancestry_git(repository: &Path, arguments: &[&str]) -> Result<String> {
-        let output = Command::new("git")
+        let output = xtask::git_environment::isolate(Command::new("git"))
             .args([
                 "-c",
                 "commit.gpgsign=false",

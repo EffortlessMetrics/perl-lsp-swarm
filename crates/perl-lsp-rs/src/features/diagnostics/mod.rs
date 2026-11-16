@@ -1,7 +1,10 @@
 //! Diagnostics provider (delegated to perl-lsp-providers).
 
+pub(crate) mod overlap;
 pub mod pull;
 pub mod report_identity;
+pub(crate) mod wire_code;
+pub(crate) use pull::PullCriticOutcome;
 pub use pull::{AcceptedStateCurrentness, PullDiagnosticsContext, PullDiagnosticsProvider};
 pub use report_identity::{
     DiagnosticProjectionFragment, NotReusable, PullPositionEncoding, PullReportResultId,

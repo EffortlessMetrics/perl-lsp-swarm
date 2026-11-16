@@ -27,6 +27,8 @@ impl Checkpointable for PerlLexer<'_> {
             hash_brace_depth,
             after_var_subscript,
             paren_depth,
+            print_list_parens,
+            pending_print_list_paren,
             current_pos,
             after_newline,
             pending_heredocs,
@@ -36,6 +38,11 @@ impl Checkpointable for PerlLexer<'_> {
             qw_recovery_enabled,
             eof_emitted,
             pod_cut_cache: _,
+            // Operation-local record, like `pod_cut_cache`: the checkpoint's
+            // replay state describes *where to resume*, not which POD blocks a
+            // particular lexing pass happened to skip. A consumer that needs
+            // the full record drives its own lexer to EOF.
+            stray_cut_opens: _,
             scan_limit,
             logical_source,
             generation,
@@ -84,6 +91,8 @@ impl Checkpointable for PerlLexer<'_> {
             hash_brace_depth: *hash_brace_depth,
             after_var_subscript: *after_var_subscript,
             paren_depth: *paren_depth,
+            print_list_parens: print_list_parens.clone(),
+            pending_print_list_paren: *pending_print_list_paren,
             current_pos: *current_pos,
             after_newline: *after_newline,
             pending_heredocs: pending_heredocs
@@ -146,6 +155,8 @@ impl Checkpointable for PerlLexer<'_> {
         self.hash_brace_depth = replay.hash_brace_depth;
         self.after_var_subscript = replay.after_var_subscript;
         self.paren_depth = replay.paren_depth;
+        self.print_list_parens = replay.print_list_parens.clone();
+        self.pending_print_list_paren = replay.pending_print_list_paren;
         self.current_pos = replay.current_pos;
         self.after_newline = replay.after_newline;
         self.pending_heredocs = replay
@@ -166,6 +177,13 @@ impl Checkpointable for PerlLexer<'_> {
         });
         self.eof_emitted = replay.eof_emitted;
         self.scan_limit = None;
+        // The record accumulates as the lexer passes each directive. Resuming
+        // from `replay.position` will re-traverse any directive at or beyond
+        // it and re-record those, so drop the not-yet-owned tail to keep the
+        // post-restore record duplicate-free (#19051 review). Entries before
+        // the restored position came from already-consumed tokens and stay.
+        let restore_position = replay.position;
+        self.stray_cut_opens.retain(|event| event.cut_offset < restore_position);
         if matches!(replay.context, CheckpointContext::Format { .. }) {
             self.mode = LexerMode::InFormatBody;
         }

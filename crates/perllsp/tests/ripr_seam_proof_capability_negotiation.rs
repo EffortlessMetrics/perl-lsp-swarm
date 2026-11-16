@@ -11,6 +11,11 @@
 mod real_process;
 
 use anyhow::{Result, ensure};
+use perl_lsp::features::policy::FeatureProfile;
+use perl_lsp::protocol::capabilities::{BuildFlags, capabilities_json};
+use perl_lsp::protocol::effective_surface::{
+    CapabilityFamily, EffectiveLspSurface, FamilyOutcome, SuppressionReason, SurfaceInputs,
+};
 use real_process::RealProcessClient;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -303,6 +308,176 @@ fn code_action_documentation_requires_boolean_true() -> Result<()> {
         );
         if let Some(entries) = documentation {
             ensure!(!entries.is_empty(), "advertised documentation must have entries");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_symbol_disabled_parent_withdraws_resolve_advertisement() -> Result<()> {
+    for options in [
+        json!({ "disabledFeatures": ["lsp.workspace_symbol"] }),
+        json!({ "perl-lsp": { "disabledFeatures": ["lsp.workspace_symbol"] } }),
+        json!({ "perl_lsp": { "disabledFeatures": ["lsp.workspace_symbol"] } }),
+    ] {
+        let mut client = RealProcessClient::spawn_exact()?;
+        let response = initialize(&mut client, "capability-matrix", json!({}), Some(options))?;
+        let id = json!("disabled-workspace-symbol");
+        let symbols =
+            client.request(id.clone(), "workspace/symbol", json!({ "query": "" }), timeout())?;
+        ensure!(symbols.get("id") == Some(&id), "workspace-symbol ID mismatch: {symbols}");
+        ensure!(
+            symbols.pointer("/error/code") == Some(&json!(-32601)),
+            "disabled workspace-symbol route must return MethodNotFound: {symbols}"
+        );
+        ensure!(
+            response.pointer("/result/capabilities/workspaceSymbolProvider").is_none(),
+            "disabled workspace-symbol parent remained advertised: {response}"
+        );
+        // #18464: resolve enriches items from the parent request; with the
+        // parent withdrawn it must refuse with the same MethodNotFound shape
+        // instead of executing the un-advertised feature.
+        let resolve_id = json!("disabled-workspace-symbol-resolve");
+        let resolve = client.request(
+            resolve_id.clone(),
+            "workspace/symbol/resolve",
+            json!({
+                "name": "main",
+                "kind": 12,
+                "location": { "uri": "file:///not-open.pl", "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 4 }
+                } }
+            }),
+            timeout(),
+        )?;
+        ensure!(resolve.get("id") == Some(&resolve_id), "resolve ID mismatch: {resolve}");
+        ensure!(
+            resolve.pointer("/error/code") == Some(&json!(-32601)),
+            "resolve must refuse while the workspace-symbol parent is withdrawn: {resolve}"
+        );
+        finish(&mut client)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_symbol_resolve_disable_id_selects_simple_true_advertisement() -> Result<()> {
+    // #18464: `lsp.workspace_symbol_resolve` is a cataloged, suppressible ID.
+    // Disabling it must downgrade the advertisement to the simple-true shape
+    // the builder already implements while the parent route stays live.
+    let mut client = RealProcessClient::spawn_exact()?;
+    let response = initialize(
+        &mut client,
+        "capability-matrix",
+        json!({}),
+        Some(json!({ "disabledFeatures": ["lsp.workspace_symbol_resolve"] })),
+    )?;
+    ensure!(
+        response.pointer("/result/capabilities/workspaceSymbolProvider") == Some(&json!(true)),
+        "resolve-off advertisement must be the simple-true shape: {response}"
+    );
+
+    // The parent flat query stays enabled and must keep answering.
+    let id = json!("resolve-off-flat-query");
+    let symbols =
+        client.request(id.clone(), "workspace/symbol", json!({ "query": "" }), timeout())?;
+    assert_success_response(&symbols, &id, "workspace/symbol under resolve-off")?;
+
+    // Resolve itself still executes: the simple-true shape means the client
+    // will not call resolve, but the runtime lever must not disable the route
+    // (only `lsp.workspace_symbol` withdraws the parent).
+    let resolve_id = json!("resolve-off-resolve");
+    let resolve = client.request(
+        resolve_id.clone(),
+        "workspace/symbol/resolve",
+        json!({
+            "name": "main",
+            "kind": 12,
+            "location": { "uri": "file:///not-open.pl", "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 4 }
+            } }
+        }),
+        timeout(),
+    )?;
+    assert_success_response(&resolve, &resolve_id, "resolve under resolve-off")?;
+    ensure!(
+        resolve.pointer("/error").is_none(),
+        "resolve must stay live under lsp.workspace_symbol_resolve: {resolve}"
+    );
+
+    finish(&mut client)
+}
+
+#[test]
+fn workspace_symbol_enabled_parent_retains_resolve_advertisement() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    let response = initialize(&mut client, "capability-matrix", json!({}), None)?;
+    ensure!(
+        response.pointer("/result/capabilities/workspaceSymbolProvider/resolveProvider")
+            == Some(&json!(true)),
+        "enabled workspace-symbol parent lost resolve advertisement: {response}"
+    );
+    let id = json!("enabled-workspace-symbol");
+    let symbols =
+        client.request(id.clone(), "workspace/symbol", json!({ "query": "" }), timeout())?;
+    assert_success_response(&symbols, &id, "workspace/symbol")?;
+    ensure!(
+        symbols.get("result").is_some_and(Value::is_array),
+        "enabled workspace-symbol route must return its result array: {symbols}"
+    );
+    finish(&mut client)
+}
+
+#[test]
+fn workspace_symbol_builder_requires_parent_for_every_resolve_flag() {
+    for (parent, resolve, expected) in [
+        (false, false, None),
+        (false, true, None),
+        (true, false, Some(json!(true))),
+        (true, true, Some(json!({ "resolveProvider": true }))),
+    ] {
+        let mut flags = BuildFlags::all();
+        flags.workspace_symbol = parent;
+        flags.workspace_symbol_resolve = resolve;
+        let capabilities = capabilities_json(flags);
+        assert_eq!(
+            capabilities.get("workspaceSymbolProvider"),
+            expected.as_ref(),
+            "workspace-symbol advertisement for parent={parent}, resolve={resolve}"
+        );
+    }
+}
+
+#[test]
+fn workspace_symbol_model_follows_parent_suppression() -> Result<()> {
+    for profile in [FeatureProfile::GaLock, FeatureProfile::Production, FeatureProfile::All] {
+        for disabled in [false, true] {
+            let mut inputs = SurfaceInputs::new_subject(profile);
+            if disabled {
+                inputs.disabled_feature_ids.insert("lsp.workspace_symbol".to_string());
+            }
+            let surface = EffectiveLspSurface::build(&inputs)
+                .map_err(|error| anyhow::anyhow!("model construction refused: {error:?}"))?;
+            let expected = (!disabled).then(|| json!({ "resolveProvider": true }));
+            assert_eq!(
+                surface.server_capabilities.get("workspaceSymbolProvider"),
+                expected.as_ref(),
+                "workspace-symbol model advertisement for {profile:?}, disabled={disabled}"
+            );
+            let expected_family = if disabled {
+                FamilyOutcome::Suppressed(SuppressionReason::DisabledByConfiguration {
+                    feature_id: "lsp.workspace_symbol".to_string(),
+                })
+            } else {
+                FamilyOutcome::Static
+            };
+            assert_eq!(
+                surface.families.get(&CapabilityFamily::WorkspaceSymbol),
+                Some(&expected_family),
+                "workspace-symbol model disposition for {profile:?}, disabled={disabled}"
+            );
         }
     }
     Ok(())

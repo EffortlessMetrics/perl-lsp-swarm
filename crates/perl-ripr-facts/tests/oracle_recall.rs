@@ -49,6 +49,7 @@ const FIXTURES: &[&str] = &[
     "test2_bundle",
     "mixed_assertions",
     "done_testing_only",
+    "matcher_grading",
 ];
 
 /// One labeled oracle: (assertion call name, oracle kind, oracle strength).

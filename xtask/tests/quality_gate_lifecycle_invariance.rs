@@ -496,7 +496,10 @@ expires = "2026-10-30"
 }
 
 fn current_head(root: &Path) -> TestResult<String> {
-    let output = StdCommand::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output()?;
+    let output = xtask::git_environment::isolate(StdCommand::new("git"))
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()?;
     if !output.status.success() {
         return Err(format!("git rev-parse HEAD failed with {}", output.status).into());
     }

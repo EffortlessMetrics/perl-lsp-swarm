@@ -26,8 +26,11 @@ impl Policy for RequireUseStrict {
         "TestingAndDebugging::RequireUseStrict"
     }
 
+    // Severity parity (#17372): the built-in policies carry the same names as
+    // their upstream Perl::Critic counterparts, so each severity must match the
+    // upstream default. Measured with real perlcritic 1.156: severity 5.
     fn severity(&self) -> Severity {
-        Severity::Harsh
+        Severity::Gentle
     }
 
     fn analyze(&self, _ast: &Node, content: &str) -> Vec<Violation> {
@@ -48,8 +51,9 @@ impl Policy for RequireUseWarnings {
         "TestingAndDebugging::RequireUseWarnings"
     }
 
+    // Severity parity (#17372): upstream Perl::Critic default severity 4.
     fn severity(&self) -> Severity {
-        Severity::Harsh
+        Severity::Stern
     }
 
     fn analyze(&self, _ast: &Node, content: &str) -> Vec<Violation> {
@@ -76,8 +80,9 @@ impl Policy for ProhibitBarewordFileHandles {
         "InputOutput::ProhibitBarewordFileHandles"
     }
 
+    // Severity parity (#17372): upstream Perl::Critic default severity 5.
     fn severity(&self) -> Severity {
-        Severity::Stern
+        Severity::Gentle
     }
 
     fn analyze(&self, _ast: &Node, content: &str) -> Vec<Violation> {
@@ -100,8 +105,11 @@ impl Policy for ProhibitTwoArgOpen {
         "InputOutput::ProhibitTwoArgOpen"
     }
 
+    // Severity parity (#17372): upstream Perl::Critic default severity 5
+    // (measured with real perlcritic 1.156; the issue reported only the other
+    // four policies, this one was found and fixed in the same sweep).
     fn severity(&self) -> Severity {
-        Severity::Harsh
+        Severity::Gentle
     }
 
     fn analyze(&self, _ast: &Node, content: &str) -> Vec<Violation> {
@@ -128,8 +136,9 @@ impl Policy for ProhibitStringyEval {
         "BuiltinFunctions::ProhibitStringyEval"
     }
 
+    // Severity parity (#17372): upstream Perl::Critic default severity 5.
     fn severity(&self) -> Severity {
-        Severity::Cruel
+        Severity::Gentle
     }
 
     fn analyze(&self, _ast: &Node, content: &str) -> Vec<Violation> {
@@ -414,9 +423,57 @@ fn is_stringy_eval_line(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::BuiltInAnalyzer;
+    use super::Severity;
     use perl_parser::Parser;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// #17372 severity parity: the built-in policies reuse upstream
+    /// Perl::Critic policy names verbatim, so a user comparing `perl.runCritic`
+    /// output with a direct `perlcritic` run must see the same per-policy
+    /// severity. These values are the upstream 1.156 defaults, measured with
+    /// `perlcritic --verbose="%p;%s\n" --severity=1` on a fixture carrying all
+    /// five violation shapes (gentle=5 is the MOST severe bucket — see
+    /// [`Severity`], whose variant names are threshold names).
+    #[test]
+    fn builtin_policy_severities_match_upstream_perlcritic_defaults() -> TestResult {
+        let analyzer = BuiltInAnalyzer::new();
+        let severities: Vec<(&str, Severity)> =
+            analyzer.policies.iter().map(|p| (p.name(), p.severity())).collect();
+        let severity_of = |name: &str| {
+            severities
+                .iter()
+                .find(|(policy, _)| *policy == name)
+                .map(|(_, severity)| *severity)
+                .ok_or_else(|| format!("policy {name} must be registered"))
+        };
+        assert_eq!(
+            severity_of("TestingAndDebugging::RequireUseStrict")?,
+            Severity::Gentle,
+            "upstream RequireUseStrict severity is 5"
+        );
+        assert_eq!(
+            severity_of("TestingAndDebugging::RequireUseWarnings")?,
+            Severity::Stern,
+            "upstream RequireUseWarnings severity is 4"
+        );
+        assert_eq!(
+            severity_of("InputOutput::ProhibitBarewordFileHandles")?,
+            Severity::Gentle,
+            "upstream ProhibitBarewordFileHandles severity is 5"
+        );
+        assert_eq!(
+            severity_of("InputOutput::ProhibitTwoArgOpen")?,
+            Severity::Gentle,
+            "upstream ProhibitTwoArgOpen severity is 5"
+        );
+        assert_eq!(
+            severity_of("BuiltinFunctions::ProhibitStringyEval")?,
+            Severity::Gentle,
+            "upstream ProhibitStringyEval severity is 5"
+        );
+        Ok(())
+    }
 
     #[test]
     fn builtin_analyzer_flags_bareword_open_filehandle() -> TestResult {

@@ -62,7 +62,7 @@
       "id": "launch-contract",
       "subject": "launch-contract.v1.json",
       "authority": "canonical_stage_spec",
-      "digest": "75bb984c28b826572e565034ba0ca5a7d35fefeec6f0618e96edcb57b8add06a",
+      "digest": "866df9bf9ecef1399e48dcc102ac014ae1c96b363421603691d5803c9bebf5eb",
       "instruction_allowed": false,
       "sensitivity": "public"
     },

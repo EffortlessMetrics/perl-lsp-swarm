@@ -140,6 +140,44 @@ impl UxComponent {
             UxComponent::AiCompletion => 14,
         }
     }
+
+    /// Inverse of [`Self::exhaustiveness_witness`]: canonical index to variant.
+    ///
+    /// Returns `None` once `index` passes the last witness slot. Contiguity
+    /// tests derive expected cardinality from this range instead of
+    /// [`Self::ALL`], so a variant registered only in the witness still fails
+    /// until it appears in `ALL` (and the receipt schema lock).
+    #[cfg(test)]
+    const fn witness_component_at(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(UxComponent::Completion),
+            1 => Some(UxComponent::Diagnostics),
+            2 => Some(UxComponent::ModuleResolution),
+            3 => Some(UxComponent::WorkspaceSymbols),
+            4 => Some(UxComponent::Rename),
+            5 => Some(UxComponent::SafeDelete),
+            6 => Some(UxComponent::Hover),
+            7 => Some(UxComponent::GotoDefinition),
+            8 => Some(UxComponent::SignatureHelp),
+            9 => Some(UxComponent::CodeLens),
+            10 => Some(UxComponent::FoldingRange),
+            11 => Some(UxComponent::SemanticTokens),
+            12 => Some(UxComponent::CodeActions),
+            13 => Some(UxComponent::Infra),
+            14 => Some(UxComponent::AiCompletion),
+            _ => None,
+        }
+    }
+
+    /// Number of witness slots (variant cardinality), independent of `ALL`.
+    #[cfg(test)]
+    fn witness_variant_count() -> usize {
+        let mut count = 0usize;
+        while Self::witness_component_at(count).is_some() {
+            count += 1;
+        }
+        count
+    }
 }
 
 #[cfg(test)]
@@ -152,12 +190,47 @@ mod ux_component_all_tests {
     /// once with no gaps.
     #[test]
     fn all_lists_every_variant_exactly_once_in_canonical_order() {
+        let witness_count = UxComponent::witness_variant_count();
+        let witness_ordered: Vec<UxComponent> = (0..witness_count)
+            .map(|index| {
+                UxComponent::witness_component_at(index)
+                    .unwrap_or_else(|| panic!("witness_variant_count() promised index {index}"))
+            })
+            .collect();
+        assert_eq!(
+            UxComponent::ALL,
+            witness_ordered.as_slice(),
+            "UxComponent::ALL must match the exhaustiveness witness canonical order"
+        );
+
         let indexes: Vec<usize> = UxComponent::ALL
             .iter()
             .map(|component| UxComponent::exhaustiveness_witness(*component))
             .collect();
-        let expected: Vec<usize> = (0..UxComponent::ALL.len()).collect();
+        let expected: Vec<usize> = (0..witness_count).collect();
         assert_eq!(indexes, expected, "UxComponent::ALL drifted from the UxComponent variant set");
+    }
+
+    #[test]
+    fn exhaustiveness_witness_and_index_lookup_are_inverse() {
+        let witness_count = UxComponent::witness_variant_count();
+        for index in 0..witness_count {
+            let component = UxComponent::witness_component_at(index)
+                .unwrap_or_else(|| panic!("missing witness slot at index {index}"));
+            assert_eq!(
+                UxComponent::exhaustiveness_witness(component),
+                index,
+                "witness index lookup drifted for {component:?}"
+            );
+        }
+        for &component in UxComponent::ALL {
+            let index = UxComponent::exhaustiveness_witness(component);
+            assert_eq!(
+                UxComponent::witness_component_at(index),
+                Some(component),
+                "witness component lookup drifted for {component:?}"
+            );
+        }
     }
 }
 
@@ -188,6 +261,34 @@ impl UxEvidenceClass {
     /// Every evidence class in canonical taxonomy order.
     pub const ALL: &'static [UxEvidenceClass] =
         &[UxEvidenceClass::SemanticProof, UxEvidenceClass::TransportCharacterization];
+
+    /// Wildcard-free witness over the variant set, indexed in declaration order.
+    #[cfg(test)]
+    const fn exhaustiveness_witness(class: Self) -> usize {
+        match class {
+            UxEvidenceClass::SemanticProof => 0,
+            UxEvidenceClass::TransportCharacterization => 1,
+        }
+    }
+
+    /// Inverse of [`Self::exhaustiveness_witness`]; see [`UxComponent::witness_component_at`].
+    #[cfg(test)]
+    const fn witness_class_at(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(UxEvidenceClass::SemanticProof),
+            1 => Some(UxEvidenceClass::TransportCharacterization),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn witness_variant_count() -> usize {
+        let mut count = 0usize;
+        while Self::witness_class_at(count).is_some() {
+            count += 1;
+        }
+        count
+    }
 
     /// Whether this class may satisfy semantic/provider proof projections.
     ///
@@ -361,13 +462,25 @@ mod tests {
 
     #[test]
     fn evidence_class_all_lists_every_variant_exactly_once() {
-        let mut seen = UxEvidenceClass::ALL.to_vec();
-        seen.dedup();
+        let witness_count = UxEvidenceClass::witness_variant_count();
+        let witness_ordered: Vec<UxEvidenceClass> = (0..witness_count)
+            .map(|index| {
+                UxEvidenceClass::witness_class_at(index)
+                    .unwrap_or_else(|| panic!("witness_variant_count() promised index {index}"))
+            })
+            .collect();
         assert_eq!(
-            seen.len(),
-            UxEvidenceClass::ALL.len(),
-            "UxEvidenceClass::ALL must not repeat variants"
+            UxEvidenceClass::ALL,
+            witness_ordered.as_slice(),
+            "UxEvidenceClass::ALL must match the exhaustiveness witness canonical order"
         );
+
+        let indexes: Vec<usize> = UxEvidenceClass::ALL
+            .iter()
+            .map(|class| UxEvidenceClass::exhaustiveness_witness(*class))
+            .collect();
+        let expected: Vec<usize> = (0..witness_count).collect();
+        assert_eq!(indexes, expected, "UxEvidenceClass::ALL drifted from the variant set");
     }
 
     // ── UxCiTier serde round-trip ────────────────────────────────────────

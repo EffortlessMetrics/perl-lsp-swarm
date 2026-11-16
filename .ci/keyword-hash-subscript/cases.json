@@ -1,0 +1,2860 @@
+{
+  "schema": "keyword-hash-subscript-oracle/v1",
+  "scope": "24 terminal/comma rows for next,last,redo,return across direct,arrow,slice, plus20 controls; partial #14059",
+  "profiles": [
+    {
+      "id": "perl-5.40.1-strict-warnings",
+      "version": "5.40.1",
+      "archname": "x86_64-linux-gnu-thread-multi",
+      "pragmas": [
+        "strict",
+        "warnings"
+      ],
+      "features": [],
+      "other_versions": "NOT_PROVEN"
+    }
+  ],
+  "denominator": {
+    "words": [
+      "next",
+      "last",
+      "redo",
+      "return"
+    ],
+    "forms": [
+      "direct",
+      "arrow",
+      "slice"
+    ],
+    "contexts": [
+      "terminal",
+      "comma"
+    ],
+    "matrix_ids": [
+      "next-scalar-terminal",
+      "next-scalar-comma",
+      "next-arrow-terminal",
+      "next-arrow-comma",
+      "next-slice-terminal",
+      "next-slice-comma",
+      "last-scalar-terminal",
+      "last-scalar-comma",
+      "last-arrow-terminal",
+      "last-arrow-comma",
+      "last-slice-terminal",
+      "last-slice-comma",
+      "redo-scalar-terminal",
+      "redo-scalar-comma",
+      "redo-arrow-terminal",
+      "redo-arrow-comma",
+      "redo-slice-terminal",
+      "redo-slice-comma",
+      "return-scalar-terminal",
+      "return-scalar-comma",
+      "return-arrow-terminal",
+      "return-arrow-comma",
+      "return-slice-terminal",
+      "return-slice-comma"
+    ],
+    "control_ids": [
+      "scalar-ordinary-terminal",
+      "scalar-ordinary-comma",
+      "scalar-quoted-terminal",
+      "scalar-quoted-comma",
+      "scalar-return-list-operands",
+      "scalar-next-label-comma",
+      "arrow-ordinary-terminal",
+      "arrow-ordinary-comma",
+      "arrow-quoted-terminal",
+      "arrow-quoted-comma",
+      "arrow-return-list-operands",
+      "arrow-next-label-comma",
+      "slice-ordinary-terminal",
+      "slice-ordinary-comma",
+      "slice-quoted-terminal",
+      "slice-quoted-comma",
+      "slice-return-list-operands",
+      "slice-next-label-comma",
+      "ordinary-next-label",
+      "ordinary-return-operand"
+    ],
+    "remaining": {
+      "words": [
+        "goto",
+        "continue",
+        "undef",
+        "eval",
+        "not",
+        "and",
+        "or",
+        "xor",
+        "do",
+        "local",
+        "cmp",
+        "tie",
+        "untie",
+        "try",
+        "defer"
+      ],
+      "canonical_families": [
+        "declarations",
+        "conditions-and-loops",
+        "package-and-module",
+        "OOP",
+        "phase",
+        "exception",
+        "recovery-sensitive"
+      ],
+      "quote_like": [
+        "q",
+        "qq",
+        "qw",
+        "qx",
+        "qr",
+        "m",
+        "s",
+        "tr",
+        "y"
+      ],
+      "contexts": [
+        "dereference-slice",
+        "fat-arrow",
+        "hash-literal",
+        "Unicode",
+        "numeric-and-dynamic-keys",
+        "nested-call/operator",
+        "trailing-comma",
+        "comments/newlines",
+        "missing/malformed-closer",
+        "operand-bearing-controls-beyond-return-and-next"
+      ],
+      "versions": "All versions/feature profiles except exact Perl5.40.1 strict/warnings; no all-version inference"
+    }
+  },
+  "cases": [
+    {
+      "id": "next-scalar-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{next}; } }\n",
+      "source_sha256": "521023a30af50342d53c9c424af84a0748d20ab6001b3f52dc520b23daa3d7cc",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "next",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        76
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            76
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              75
+            ],
+            "name": "next"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'next'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "next-scalar-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{next, $x}; } }\n",
+      "source_sha256": "4cdee78e179810a46c18f797721b226f9883addadb580199a378698a57c4baff",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "next",
+      "context": "comma",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            80
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  71,
+                  75
+                ],
+                "op": "next",
+                "label": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  77,
+                  79
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (next), $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "next-arrow-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{next}; } }\n",
+      "source_sha256": "0ef87ab237a7820fc46409a18382c598258bfa7e5e6ea43de24c9f88f0e022c6",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "next",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        78
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            78
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              73,
+              77
+            ],
+            "name": "next"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'next'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "next-arrow-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{next, $x}; } }\n",
+      "source_sha256": "f1b8593e16c42015180a76249bd86ef447acde58aafb9396cd4a3a6048f19742",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "next",
+      "context": "comma",
+      "subject_span": [
+        68,
+        82
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            82
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              81
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  73,
+                  77
+                ],
+                "op": "next",
+                "label": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  79,
+                  81
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (next), $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "next-slice-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{next}; } }\n",
+      "source_sha256": "363333bd44335e738afbb21fc43860a67b2df3f79495bc0bae6f24c620a2bf14",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "next",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        76
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            76
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              75
+            ],
+            "name": "next"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'next'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "next-slice-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{next, $x}; } }\n",
+      "source_sha256": "9a6ad05d00ea161c8cd743784eb331764e8d68d19cafd72bc4b0e06e175f9768",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "next",
+      "context": "comma",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            80
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  71,
+                  75
+                ],
+                "op": "next",
+                "label": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  77,
+                  79
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(next), $x};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "last-scalar-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{last}; } }\n",
+      "source_sha256": "4cc3524251edb1c5e9ccc9d0e15fb2922b29ced876df2fbfc563639a995f09ca",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "last",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        76
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            76
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              75
+            ],
+            "name": "last"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'last'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "last-scalar-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{last, $x}; } }\n",
+      "source_sha256": "ed185ea46d9427cd0dc9f861e34de4ab7869505f9d47f3845def0b14854af9ab",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "last",
+      "context": "comma",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            80
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  71,
+                  75
+                ],
+                "op": "last",
+                "label": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  77,
+                  79
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (last), $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "last-arrow-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{last}; } }\n",
+      "source_sha256": "1ba53d37d7c458d19ee249bbc20c099f4926fa8ad6e137a9ff5996950bee859a",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "last",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        78
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            78
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              73,
+              77
+            ],
+            "name": "last"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'last'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "last-arrow-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{last, $x}; } }\n",
+      "source_sha256": "99f99b497fd3df4950a3532a8a20d616f0e7f3bf84240a6e09f4858522085b82",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "last",
+      "context": "comma",
+      "subject_span": [
+        68,
+        82
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            82
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              81
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  73,
+                  77
+                ],
+                "op": "last",
+                "label": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  79,
+                  81
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (last), $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "last-slice-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{last}; } }\n",
+      "source_sha256": "e43f57364e30167d36a7dc16fb46f8a9449bf39b47c1769c7f54c2fe78641c39",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "last",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        76
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            76
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              75
+            ],
+            "name": "last"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'last'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "last-slice-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{last, $x}; } }\n",
+      "source_sha256": "93cfadc1f0e9507100c7bb1452db04e08b16e935f6b36a5bc31d482d6f0ed56f",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "last",
+      "context": "comma",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            80
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  71,
+                  75
+                ],
+                "op": "last",
+                "label": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  77,
+                  79
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(last), $x};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "redo-scalar-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{redo}; } }\n",
+      "source_sha256": "f023922b0b9bb8fb958d564a08fd5ebf739a8eabfc73b0733868daacd447dbb7",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "redo",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        76
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            76
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              75
+            ],
+            "name": "redo"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'redo'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "redo-scalar-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{redo, $x}; } }\n",
+      "source_sha256": "704f5483f8b3fc07d8865ab42f69a6ae342ea79defafc4bda0e829dce4a49ba3",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "redo",
+      "context": "comma",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            80
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  71,
+                  75
+                ],
+                "op": "redo",
+                "label": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  77,
+                  79
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (redo), $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "redo-arrow-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{redo}; } }\n",
+      "source_sha256": "b8d76661a11269ec0736abb6d5440d21be850a039656dd81c71ab3e4a5bb8cee",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "redo",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        78
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            78
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              73,
+              77
+            ],
+            "name": "redo"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'redo'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "redo-arrow-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{redo, $x}; } }\n",
+      "source_sha256": "7ede08fb0c7f9f7e504f3a19a54ea5f4d594da9efd6de0e8befb505c0e1bd208",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "redo",
+      "context": "comma",
+      "subject_span": [
+        68,
+        82
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            82
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              81
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  73,
+                  77
+                ],
+                "op": "redo",
+                "label": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  79,
+                  81
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (redo), $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "redo-slice-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{redo}; } }\n",
+      "source_sha256": "13c78231525c8e159f17726fa26bb1ba3ef1f2d2c9716e981e913d91d50858c2",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "redo",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        76
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            76
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              75
+            ],
+            "name": "redo"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'redo'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "redo-slice-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{redo, $x}; } }\n",
+      "source_sha256": "6c6a260b6227357fcbc8a256d6ce4fdeeccc3293b73a737665ea0865d8db7599",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "redo",
+      "context": "comma",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            80
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  71,
+                  75
+                ],
+                "op": "redo",
+                "label": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  77,
+                  79
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(redo), $x};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "return-scalar-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{return}; } }\n",
+      "source_sha256": "2a082197a48567aa009e04f3267f54f2fd814ffffcea983fc4653dc91c353ffe",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "return",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        78
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            78
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              77
+            ],
+            "name": "return"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'return'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "return-scalar-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{return, $x}; } }\n",
+      "source_sha256": "e87e7ab3d00416f2a432d16de58c02a25ea4ad332d3e7f87cfd0a8705b57e9d6",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "return",
+      "context": "comma",
+      "subject_span": [
+        68,
+        82
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            82
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              81
+            ],
+            "elements": [
+              {
+                "kind": "Return",
+                "span": [
+                  71,
+                  77
+                ],
+                "value": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  79,
+                  81
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (return), $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "return-arrow-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{return}; } }\n",
+      "source_sha256": "e0c23eaec2613f40019360203e5ae9f871f1a74839ffffe8387ad08c6336dc88",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "return",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            80
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              73,
+              79
+            ],
+            "name": "return"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'return'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "return-arrow-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{return, $x}; } }\n",
+      "source_sha256": "2134d06a488b99b1649ab7728b49b84d705e3c801705e3ee8d01c474f3bc2962",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "return",
+      "context": "comma",
+      "subject_span": [
+        68,
+        84
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            84
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              83
+            ],
+            "elements": [
+              {
+                "kind": "Return",
+                "span": [
+                  73,
+                  79
+                ],
+                "value": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  81,
+                  83
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (return), $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "return-slice-terminal",
+      "intent": "static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{return}; } }\n",
+      "source_sha256": "63b4999233b258e8ae253554366fabecec57c9728cd018f3880ab2454b7467b2",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "return",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        78
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            78
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              77
+            ],
+            "name": "return"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'return'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "return-slice-comma",
+      "intent": "empty-flow-node-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{return, $x}; } }\n",
+      "source_sha256": "116d3c887ca87b2e6f4059b07a48271d208b1331950f76cf9c55b3e553d1db34",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "return",
+      "context": "comma",
+      "subject_span": [
+        68,
+        82
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            82
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              81
+            ],
+            "elements": [
+              {
+                "kind": "Return",
+                "span": [
+                  71,
+                  77
+                ],
+                "value": null
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  79,
+                  81
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(return), $x};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "scalar-ordinary-terminal",
+      "intent": "static-ordinary-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{ordinary}; } }\n",
+      "source_sha256": "3ca36511cb4728d5c5e27879f7635ae980781ceca445c4998e0b9d9821987389",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "control",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            80
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              79
+            ],
+            "name": "ordinary"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'ordinary'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "scalar-ordinary-comma",
+      "intent": "strict-subs-rejection",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{ordinary, $x}; } }\n",
+      "source_sha256": "d2bbe2291eb9e296c80aad1957e6da4f394ef6f03f54bb9a3f136fb164160f32",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        84
+      ],
+      "expected": {
+        "disposition": "rejected",
+        "ast": null,
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 255,
+        "deparse_exit": 255,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, 'ordinary', $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": 14065
+    },
+    {
+      "id": "scalar-quoted-terminal",
+      "intent": "quoted-static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{'next'}; } }\n",
+      "source_sha256": "3547bf86d42443837ae0b083f1e9427640eeef26a501db5f244f0377d3036f97",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "control",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        78
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            78
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "String",
+            "span": [
+              71,
+              77
+            ],
+            "value": "'next'",
+            "interpolated": false
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'next'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "scalar-quoted-comma",
+      "intent": "static-string-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{'next', $x}; } }\n",
+      "source_sha256": "755e520d700d39956dfddc7a6a947d47a7304766ddcb9876843eaf4d3a9c5acc",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        82
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            82
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              81
+            ],
+            "elements": [
+              {
+                "kind": "String",
+                "span": [
+                  71,
+                  77
+                ],
+                "value": "'next'",
+                "interpolated": false
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  79,
+                  81
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, 'next', $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "scalar-return-list-operands",
+      "intent": "return-owns-both-operands",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{return $x, 7}; } }\n",
+      "source_sha256": "830b70e89c6c0ec8c5f977a58f5be764f94abbb31b8f9ebf3feaa2d98766eae2",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        84
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            84
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Return",
+            "span": [
+              71,
+              83
+            ],
+            "value": {
+              "kind": "ArrayLiteral",
+              "span": [
+                78,
+                83
+              ],
+              "elements": [
+                {
+                  "kind": "Variable",
+                  "span": [
+                    78,
+                    80
+                  ],
+                  "sigil": "$",
+                  "name": "x"
+                },
+                {
+                  "kind": "Number",
+                  "span": [
+                    82,
+                    83
+                  ],
+                  "value": "7"
+                }
+              ]
+            }
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{return $x, 7};\n    }\n}\n"
+      },
+      "mismatch_owner": 14065
+    },
+    {
+      "id": "scalar-next-label-comma",
+      "intent": "next-owns-label-with-sibling-number",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h{next OUTER, 7}; } }\n",
+      "source_sha256": "304d3c68776a8e82186ca41c18f5abf1bdbd33a7bae70af4ec5fe280f29cbabf",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "direct",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        85
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            85
+          ],
+          "op": "{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              84
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  71,
+                  81
+                ],
+                "op": "next",
+                "label": "OUTER"
+              },
+              {
+                "kind": "Number",
+                "span": [
+                  83,
+                  84
+                ],
+                "value": "7"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (next OUTER), 7)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "arrow-ordinary-terminal",
+      "intent": "static-ordinary-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{ordinary}; } }\n",
+      "source_sha256": "7bdb55295afa50ad46d269c24c4ed12740a3babf922ca7846915de3cad7d53f4",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "control",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        82
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            82
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Identifier",
+            "span": [
+              73,
+              81
+            ],
+            "name": "ordinary"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'ordinary'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "arrow-ordinary-comma",
+      "intent": "strict-subs-rejection",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{ordinary, $x}; } }\n",
+      "source_sha256": "99d1575068e5cf7ad6000b860667d583039f5772392e393bbcaa3c76583e7a2f",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        86
+      ],
+      "expected": {
+        "disposition": "rejected",
+        "ast": null,
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 255,
+        "deparse_exit": 255,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, 'ordinary', $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": 14065
+    },
+    {
+      "id": "arrow-quoted-terminal",
+      "intent": "quoted-static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{'next'}; } }\n",
+      "source_sha256": "e31bcb7e913942aa30d9c1c94162e79f0fd0037bf5a9b8fa212a18f27f0046cd",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "control",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            80
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "String",
+            "span": [
+              73,
+              79
+            ],
+            "value": "'next'",
+            "interpolated": false
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'next'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "arrow-quoted-comma",
+      "intent": "static-string-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{'next', $x}; } }\n",
+      "source_sha256": "a9d9d8c3df16fba17e1fd7eaea349f71134bfe27107a69e6efce09e151d2c66d",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        84
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            84
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              83
+            ],
+            "elements": [
+              {
+                "kind": "String",
+                "span": [
+                  73,
+                  79
+                ],
+                "value": "'next'",
+                "interpolated": false
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  81,
+                  83
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, 'next', $x)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "arrow-return-list-operands",
+      "intent": "return-owns-both-operands",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{return $x, 7}; } }\n",
+      "source_sha256": "0c17db7360b56d7474bcdee947e9998f2c4935f64733effb54dd2b8b8c6be3e7",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        86
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            86
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "Return",
+            "span": [
+              73,
+              85
+            ],
+            "value": {
+              "kind": "ArrayLiteral",
+              "span": [
+                80,
+                85
+              ],
+              "elements": [
+                {
+                  "kind": "Variable",
+                  "span": [
+                    80,
+                    82
+                  ],
+                  "sigil": "$",
+                  "name": "x"
+                },
+                {
+                  "kind": "Number",
+                  "span": [
+                    84,
+                    85
+                  ],
+                  "value": "7"
+                }
+              ]
+            }
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{return $x, 7};\n    }\n}\n"
+      },
+      "mismatch_owner": 14065
+    },
+    {
+      "id": "arrow-next-label-comma",
+      "intent": "next-owns-label-with-sibling-number",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { $h->{next OUTER, 7}; } }\n",
+      "source_sha256": "d61e06e955a5872f490a87ec732de116fdf037fc6d80657f2c9e2d81c0a07e14",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "arrow",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        87
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Binary",
+          "span": [
+            68,
+            87
+          ],
+          "op": "->{}",
+          "left": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "$",
+            "name": "h"
+          },
+          "right": {
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              86
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  73,
+                  83
+                ],
+                "op": "next",
+                "label": "OUTER"
+              },
+              {
+                "kind": "Number",
+                "span": [
+                  85,
+                  86
+                ],
+                "value": "7"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (next OUTER), 7)};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "slice-ordinary-terminal",
+      "intent": "static-ordinary-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{ordinary}; } }\n",
+      "source_sha256": "89ed847fe2154990ca01e34772e550c16e814ce6607cac57627b0cf307156c4b",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "control",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        80
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            80
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "Identifier",
+            "span": [
+              71,
+              79
+            ],
+            "name": "ordinary"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'ordinary'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "slice-ordinary-comma",
+      "intent": "strict-subs-rejection",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{ordinary, $x}; } }\n",
+      "source_sha256": "80c102e6b00e60b4c5875df95c45836c220dd39ec017aa3acc3b53d596c352e8",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        84
+      ],
+      "expected": {
+        "disposition": "rejected",
+        "ast": null,
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 255,
+        "deparse_exit": 255,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'ordinary', $x};\n    }\n}\n"
+      },
+      "mismatch_owner": 14065
+    },
+    {
+      "id": "slice-quoted-terminal",
+      "intent": "quoted-static-key",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{'next'}; } }\n",
+      "source_sha256": "c96adf7edd8f253a8a1f4511f1a3fd53b9d80975e0b29e453985ca1527429d26",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "control",
+      "context": "terminal",
+      "subject_span": [
+        68,
+        78
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            78
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "String",
+            "span": [
+              71,
+              77
+            ],
+            "value": "'next'",
+            "interpolated": false
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'next'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "slice-quoted-comma",
+      "intent": "static-string-and-variable-comma-siblings",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{'next', $x}; } }\n",
+      "source_sha256": "561dca9715bd84ddf86c255070e97df239ada844d6eb192068c717a95d9c91ae",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        82
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            82
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              81
+            ],
+            "elements": [
+              {
+                "kind": "String",
+                "span": [
+                  71,
+                  77
+                ],
+                "value": "'next'",
+                "interpolated": false
+              },
+              {
+                "kind": "Variable",
+                "span": [
+                  79,
+                  81
+                ],
+                "sigil": "$",
+                "name": "x"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'next', $x};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "slice-return-list-operands",
+      "intent": "return-owns-both-operands",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{return $x, 7}; } }\n",
+      "source_sha256": "71792fbcd4d84c672d7bcfce51d824bcea34b9a06865306f71c61a780142795c",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        84
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            84
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "Return",
+            "span": [
+              71,
+              83
+            ],
+            "value": {
+              "kind": "ArrayLiteral",
+              "span": [
+                78,
+                83
+              ],
+              "elements": [
+                {
+                  "kind": "Variable",
+                  "span": [
+                    78,
+                    80
+                  ],
+                  "sigil": "$",
+                  "name": "x"
+                },
+                {
+                  "kind": "Number",
+                  "span": [
+                    82,
+                    83
+                  ],
+                  "value": "7"
+                }
+              ]
+            }
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{return $x, 7};\n    }\n}\n"
+      },
+      "mismatch_owner": 14065
+    },
+    {
+      "id": "slice-next-label-comma",
+      "intent": "next-owns-label-with-sibling-number",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { @h{next OUTER, 7}; } }\n",
+      "source_sha256": "bb1f99fef13b921958d9a1c8495935e622497bcc182c2531f87555aa67a8dacb",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "slice",
+      "family": "control",
+      "context": "comma",
+      "subject_span": [
+        68,
+        85
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "HashSlice",
+          "span": [
+            68,
+            85
+          ],
+          "target": {
+            "kind": "Variable",
+            "span": [
+              68,
+              70
+            ],
+            "sigil": "@",
+            "name": "h"
+          },
+          "keys": {
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              84
+            ],
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "span": [
+                  71,
+                  81
+                ],
+                "op": "next",
+                "label": "OUTER"
+              },
+              {
+                "kind": "Number",
+                "span": [
+                  83,
+                  84
+                ],
+                "value": "7"
+              }
+            ]
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(next OUTER), '7'};\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "ordinary-next-label",
+      "intent": "executable-next-label",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { next OUTER; } }\n",
+      "source_sha256": "30b9d16ada231257d32566d40f8f354883d2bb44c4aa3f7b891b49d48d61f061",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "statement",
+      "family": "control",
+      "context": "ordinary",
+      "subject_span": [
+        68,
+        78
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "LoopControl",
+          "span": [
+            68,
+            78
+          ],
+          "op": "next",
+          "label": "OUTER"
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        (next OUTER);\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    },
+    {
+      "id": "ordinary-return-operand",
+      "intent": "executable-return-with-variable-child",
+      "source": "use strict; use warnings; our (%h, $h, $x); sub probe { while (1) { return $x; } }\n",
+      "source_sha256": "8a7300162896d903ed72d8dc4479f0b863a2ccfea81783b5c14a5faa06e877de",
+      "profile": "perl-5.40.1-strict-warnings",
+      "form": "statement",
+      "family": "control",
+      "context": "ordinary",
+      "subject_span": [
+        68,
+        77
+      ],
+      "expected": {
+        "disposition": "clean",
+        "ast": {
+          "kind": "Return",
+          "span": [
+            68,
+            77
+          ],
+          "value": {
+            "kind": "Variable",
+            "span": [
+              75,
+              77
+            ],
+            "sigil": "$",
+            "name": "x"
+          }
+        },
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "oracle": {
+        "compile_exit": 0,
+        "deparse_exit": 0,
+        "deparse_stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        (return $x);\n    }\n}\n"
+      },
+      "mismatch_owner": null
+    }
+  ]
+}

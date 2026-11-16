@@ -370,9 +370,7 @@
 #                ^^^ source.perl meta.declaration.subroutine.perl
 #                   ^ source.perl meta.declaration.subroutine.perl string.regexp.replace.perl keyword.other.perl
 #                    ^ source.perl meta.declaration.subroutine.perl string.regexp.replace.perl
-#                     ^^^ source.perl meta.declaration.subroutine.perl string.regexp.replace.perl
-#                        ^^ source.perl meta.declaration.subroutine.perl string.regexp.replace.perl
-#                          ^ source.perl meta.declaration.subroutine.perl
+#                     ^^^^^^ source.perl meta.declaration.subroutine.perl string.regexp.replace.perl
 #                           ^ source.perl meta.declaration.subroutine.perl
 #                            ^ source.perl meta.declaration.subroutine.perl
 #                             ^^^^ source.perl

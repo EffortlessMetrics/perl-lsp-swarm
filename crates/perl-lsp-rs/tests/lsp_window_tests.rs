@@ -678,6 +678,104 @@ fn lsp_window_progress_without_capability() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// Exercise the dispatcher and code-lens provider, then join the outbound writer
+/// before inspecting its complete stream. No sleep decides whether progress ended.
+fn code_lens_progress_after_error_and_recovery(
+    supports_progress: bool,
+) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+    let output = OutputCapture::new();
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(output.clone()));
+    initialize_for_window_test(
+        &server,
+        json!({"capabilities": {"window": {"workDoneProgress": supports_progress}}}),
+    );
+
+    let failed = server
+        .handle_request(perl_lsp::JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(701)),
+            method: "textDocument/codeLens".to_string(),
+            params: Some(json!({"textDocument": {}})),
+        })
+        .ok_or("malformed code-lens request must respond")?;
+    assert_eq!(failed.id, Some(perl_lsp::protocol::JsonRpcId::Integer(701)));
+    assert_eq!(failed.error.as_ref().map(|error| error.code), Some(-32602));
+
+    let uri = "file:///code_lens_progress_recovery.pl";
+    server.handle_request(perl_lsp::JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "textDocument/didOpen".to_string(),
+        params: Some(json!({"textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub progress_target { return 1; }\nprogress_target();\n"
+        }})),
+    });
+    let recovered = server
+        .handle_request(perl_lsp::JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(702)),
+            method: "textDocument/codeLens".to_string(),
+            params: Some(json!({"textDocument": {"uri": uri}})),
+        })
+        .ok_or("code-lens recovery request must respond")?;
+    assert_eq!(recovered.id, Some(perl_lsp::protocol::JsonRpcId::Integer(702)));
+    assert!(recovered.error.is_none(), "recovery failed: {recovered:?}");
+    let lenses = recovered.result.as_ref().and_then(Value::as_array).ok_or("expected lenses")?;
+    assert!(!lenses.is_empty(), "recovery must run the provider and produce a real lens");
+
+    // Drop joins the writer; every admitted frame is now observable, including
+    // any duplicate or missing end. Startup indexing can emit independent progress.
+    drop(server);
+    Ok(output.get_messages())
+}
+
+#[test]
+fn code_lens_progress_ends_once_after_error_and_recovery() -> Result<(), Box<dyn std::error::Error>>
+{
+    let messages = code_lens_progress_after_error_and_recovery(true)?;
+    let progress: Vec<_> = messages
+        .iter()
+        .filter(|message| {
+            message["params"]["token"].as_str().is_some_and(|token| token.starts_with("code-lens-"))
+        })
+        .collect();
+    assert_eq!(
+        progress.len(),
+        6,
+        "each code-lens request must create, begin and end: {progress:?}"
+    );
+    let mut tokens = Vec::new();
+    for lifecycle in progress.chunks_exact(3) {
+        assert_eq!(lifecycle[0]["method"], "window/workDoneProgress/create");
+        let token = lifecycle[0]["params"]["token"].as_str().ok_or("expected string token")?;
+        assert!(token.starts_with("code-lens-"), "unexpected progress owner: {token}");
+        tokens.push(token);
+        for (message, kind) in lifecycle[1..].iter().zip(["begin", "end"]) {
+            assert_eq!(message["method"], "$/progress");
+            assert_eq!(message["params"]["token"], token);
+            assert_eq!(message["params"]["value"]["kind"], kind);
+        }
+    }
+    assert_ne!(tokens[0], tokens[1], "recovery must use a fresh progress token");
+    Ok(())
+}
+
+#[test]
+fn code_lens_progress_is_silent_without_capability() -> Result<(), Box<dyn std::error::Error>> {
+    let messages = code_lens_progress_after_error_and_recovery(false)?;
+    assert!(
+        messages.iter().all(|message| !matches!(
+            message["method"].as_str(),
+            Some("window/workDoneProgress/create" | "$/progress")
+        )),
+        "unsupported progress must stay silent through error and recovery: {messages:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn lsp_window_show_document_external_flag() {
     let output = OutputCapture::new();

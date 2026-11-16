@@ -14,7 +14,7 @@ struct TempRepo {
 
 impl TempRepo {
     fn git(&self) -> Command {
-        let mut command = Command::new("git");
+        let mut command = xtask::git_environment::isolate(Command::new("git"));
         command
             .current_dir(self.root())
             .env("GIT_CONFIG_GLOBAL", self.root().join("missing-global-config"))

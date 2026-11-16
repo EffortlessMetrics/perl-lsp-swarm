@@ -1,0 +1,853 @@
+{
+  "schema": "keyword-hash-subscript-perl-receipt/v1",
+  "matrix_sha256": "f1507c98208a49b1a04efc3bdc1051850c7e4840fd17d02151c94c4a06384dcb",
+  "runner_sha256": "2e1ae22a6290ec017ac6bccfc2ec036364797807f5ec53321ad2c6822800c292",
+  "status": "PROVEN",
+  "rows": [
+    {
+      "id": "next-scalar-terminal",
+      "source_sha256": "521023a30af50342d53c9c424af84a0748d20ab6001b3f52dc520b23daa3d7cc",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'next'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "next-scalar-comma",
+      "source_sha256": "4cdee78e179810a46c18f797721b226f9883addadb580199a378698a57c4baff",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (next), $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "next-arrow-terminal",
+      "source_sha256": "0ef87ab237a7820fc46409a18382c598258bfa7e5e6ea43de24c9f88f0e022c6",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'next'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "next-arrow-comma",
+      "source_sha256": "f1b8593e16c42015180a76249bd86ef447acde58aafb9396cd4a3a6048f19742",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (next), $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "next-slice-terminal",
+      "source_sha256": "363333bd44335e738afbb21fc43860a67b2df3f79495bc0bae6f24c620a2bf14",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"next\"} better written as $h{\"next\"} at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'next'};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"next\"} better written as $h{\"next\"} at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "next-slice-comma",
+      "source_sha256": "9a6ad05d00ea161c8cd743784eb331764e8d68d19cafd72bc4b0e06e175f9768",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(next), $x};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "last-scalar-terminal",
+      "source_sha256": "4cc3524251edb1c5e9ccc9d0e15fb2922b29ced876df2fbfc563639a995f09ca",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'last'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "last-scalar-comma",
+      "source_sha256": "ed185ea46d9427cd0dc9f861e34de4ab7869505f9d47f3845def0b14854af9ab",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (last), $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "last-arrow-terminal",
+      "source_sha256": "1ba53d37d7c458d19ee249bbc20c099f4926fa8ad6e137a9ff5996950bee859a",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'last'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "last-arrow-comma",
+      "source_sha256": "99f99b497fd3df4950a3532a8a20d616f0e7f3bf84240a6e09f4858522085b82",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (last), $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "last-slice-terminal",
+      "source_sha256": "e43f57364e30167d36a7dc16fb46f8a9449bf39b47c1769c7f54c2fe78641c39",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"last\"} better written as $h{\"last\"} at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'last'};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"last\"} better written as $h{\"last\"} at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "last-slice-comma",
+      "source_sha256": "93cfadc1f0e9507100c7bb1452db04e08b16e935f6b36a5bc31d482d6f0ed56f",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(last), $x};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "redo-scalar-terminal",
+      "source_sha256": "f023922b0b9bb8fb958d564a08fd5ebf739a8eabfc73b0733868daacd447dbb7",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'redo'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "redo-scalar-comma",
+      "source_sha256": "704f5483f8b3fc07d8865ab42f69a6ae342ea79defafc4bda0e829dce4a49ba3",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (redo), $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "redo-arrow-terminal",
+      "source_sha256": "b8d76661a11269ec0736abb6d5440d21be850a039656dd81c71ab3e4a5bb8cee",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'redo'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "redo-arrow-comma",
+      "source_sha256": "7ede08fb0c7f9f7e504f3a19a54ea5f4d594da9efd6de0e8befb505c0e1bd208",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (redo), $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "redo-slice-terminal",
+      "source_sha256": "13c78231525c8e159f17726fa26bb1ba3ef1f2d2c9716e981e913d91d50858c2",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"redo\"} better written as $h{\"redo\"} at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'redo'};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"redo\"} better written as $h{\"redo\"} at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "redo-slice-comma",
+      "source_sha256": "6c6a260b6227357fcbc8a256d6ce4fdeeccc3293b73a737665ea0865d8db7599",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(redo), $x};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "return-scalar-terminal",
+      "source_sha256": "2a082197a48567aa009e04f3267f54f2fd814ffffcea983fc4653dc91c353ffe",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'return'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "return-scalar-comma",
+      "source_sha256": "e87e7ab3d00416f2a432d16de58c02a25ea4ad332d3e7f87cfd0a8705b57e9d6",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (return), $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "return-arrow-terminal",
+      "source_sha256": "e0c23eaec2613f40019360203e5ae9f871f1a74839ffffe8387ad08c6336dc88",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'return'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "return-arrow-comma",
+      "source_sha256": "2134d06a488b99b1649ab7728b49b84d705e3c801705e3ee8d01c474f3bc2962",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (return), $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "return-slice-terminal",
+      "source_sha256": "63b4999233b258e8ae253554366fabecec57c9728cd018f3880ab2454b7467b2",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"return\"} better written as $h{\"return\"} at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'return'};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"return\"} better written as $h{\"return\"} at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "return-slice-comma",
+      "source_sha256": "116d3c887ca87b2e6f4059b07a48271d208b1331950f76cf9c55b3e553d1db34",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(return), $x};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "scalar-ordinary-terminal",
+      "source_sha256": "3ca36511cb4728d5c5e27879f7635ae980781ceca445c4998e0b9d9821987389",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'ordinary'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "scalar-ordinary-comma",
+      "source_sha256": "d2bbe2291eb9e296c80aad1957e6da4f394ef6f03f54bb9a3f136fb164160f32",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 255,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\nBareword \"ordinary\" not allowed while \"strict subs\" in use at - line 1.\n- had compilation errors.\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 255,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, 'ordinary', $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\nBareword \"ordinary\" not allowed while \"strict subs\" in use at - line 1.\n- had compilation errors.\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "scalar-quoted-terminal",
+      "source_sha256": "3547bf86d42443837ae0b083f1e9427640eeef26a501db5f244f0377d3036f97",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{'next'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "scalar-quoted-comma",
+      "source_sha256": "755e520d700d39956dfddc7a6a947d47a7304766ddcb9876843eaf4d3a9c5acc",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, 'next', $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "scalar-return-list-operands",
+      "source_sha256": "830b70e89c6c0ec8c5f977a58f5be764f94abbb31b8f9ebf3feaa2d98766eae2",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{return $x, 7};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "scalar-next-label-comma",
+      "source_sha256": "304d3c68776a8e82186ca41c18f5abf1bdbd33a7bae70af4ec5fe280f29cbabf",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h{join($;, (next OUTER), 7)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "arrow-ordinary-terminal",
+      "source_sha256": "7bdb55295afa50ad46d269c24c4ed12740a3babf922ca7846915de3cad7d53f4",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'ordinary'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "arrow-ordinary-comma",
+      "source_sha256": "99d1575068e5cf7ad6000b860667d583039f5772392e393bbcaa3c76583e7a2f",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 255,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\nBareword \"ordinary\" not allowed while \"strict subs\" in use at - line 1.\n- had compilation errors.\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 255,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, 'ordinary', $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\nBareword \"ordinary\" not allowed while \"strict subs\" in use at - line 1.\n- had compilation errors.\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "arrow-quoted-terminal",
+      "source_sha256": "e31bcb7e913942aa30d9c1c94162e79f0fd0037bf5a9b8fa212a18f27f0046cd",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $h->{'next'};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "arrow-quoted-comma",
+      "source_sha256": "a9d9d8c3df16fba17e1fd7eaea349f71134bfe27107a69e6efce09e151d2c66d",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, 'next', $x)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "arrow-return-list-operands",
+      "source_sha256": "0c17db7360b56d7474bcdee947e9998f2c4935f64733effb54dd2b8b8c6be3e7",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{return $x, 7};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "arrow-next-label-comma",
+      "source_sha256": "d61e06e955a5872f490a87ec732de116fdf037fc6d80657f2c9e2d81c0a07e14",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        $$h{join($;, (next OUTER), 7)};\n    }\n}\n",
+        "stderr": "Useless use of hash element in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "slice-ordinary-terminal",
+      "source_sha256": "89ed847fe2154990ca01e34772e550c16e814ce6607cac57627b0cf307156c4b",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"ordinary\"} better written as $h{\"ordinary\"} at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'ordinary'};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"ordinary\"} better written as $h{\"ordinary\"} at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "slice-ordinary-comma",
+      "source_sha256": "80c102e6b00e60b4c5875df95c45836c220dd39ec017aa3acc3b53d596c352e8",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 255,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nBareword \"ordinary\" not allowed while \"strict subs\" in use at - line 1.\n- had compilation errors.\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 255,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'ordinary', $x};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nBareword \"ordinary\" not allowed while \"strict subs\" in use at - line 1.\n- had compilation errors.\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "slice-quoted-terminal",
+      "source_sha256": "c96adf7edd8f253a8a1f4511f1a3fd53b9d80975e0b29e453985ca1527429d26",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"next\"} better written as $h{\"next\"} at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'next'};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\nScalar value @h{\"next\"} better written as $h{\"next\"} at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "slice-quoted-comma",
+      "source_sha256": "561dca9715bd84ddf86c255070e97df239ada844d6eb192068c717a95d9c91ae",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{'next', $x};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "slice-return-list-operands",
+      "source_sha256": "71792fbcd4d84c672d7bcfce51d824bcea34b9a06865306f71c61a780142795c",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{return $x, 7};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "slice-next-label-comma",
+      "source_sha256": "bb1f99fef13b921958d9a1c8495935e622497bcc182c2531f87555aa67a8dacb",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        @h{(next OUTER), '7'};\n    }\n}\n",
+        "stderr": "Useless use of hash slice in void context at - line 1.\n- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "ordinary-next-label",
+      "source_sha256": "30b9d16ada231257d32566d40f8f354883d2bb44c4aa3f7b891b49d48d61f061",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        (next OUTER);\n    }\n}\n",
+        "stderr": "- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    },
+    {
+      "id": "ordinary-return-operand",
+      "source_sha256": "8a7300162896d903ed72d8dc4479f0b863a2ccfea81783b5c14a5faa06e877de",
+      "profile": "perl-5.40.1-strict-warnings",
+      "compile": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "",
+        "stderr": "- syntax OK\n"
+      },
+      "deparse": {
+        "status": "completed",
+        "exit": 0,
+        "stdout": "use strict;\nuse warnings;\nour(%h, $h, $x);\nsub probe {\n    while (1) {\n        (return $x);\n    }\n}\n",
+        "stderr": "- syntax OK\n"
+      },
+      "status": "PROVEN",
+      "failures": []
+    }
+  ],
+  "executable": "/usr/bin/perl",
+  "executable_sha256": "2e341d06b8e72eae72cd72da47b38ba1174bedc83904ab177fe8fd9f89f220cd",
+  "identity": {
+    "status": "completed",
+    "exit": 0,
+    "stdout": "version='5.40.1';\narchname='x86_64-linux-gnu-thread-multi';\n",
+    "stderr": ""
+  },
+  "version": "5.40.1"
+}

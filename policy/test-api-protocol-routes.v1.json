@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "controlling_issue": "#9207",
+  "routes": [
+    {
+      "surface_id": "protocol:$/test/slowOperation",
+      "method": "$/test/slowOperation",
+      "harness_profiles": ["cfg(test)", "expose_lsp_test_api"],
+      "harness_consumers": [
+        "crates/perl-lsp-rs/tests/server_cancellation_test.rs",
+        "crates/perl-lsp-rs/tests/slow_operation_timeout_route_tests.rs"
+      ],
+      "routing_authority": "crates/perl-lsp-rs/src/runtime/dispatch/routing.rs",
+      "method_constant": "crates/perl-lsp-rs-core/src/protocol/methods.rs#TEST_SLOW_OPERATION"
+    }
+  ]
+}

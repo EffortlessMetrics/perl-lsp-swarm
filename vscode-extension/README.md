@@ -11,7 +11,7 @@
 
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads)](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs)
 [![Codecov parser branch coverage](https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/master/graph/badge.svg)](https://codecov.io/gh/EffortlessMetrics/perl-lsp)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org/)
+[![MSRV](https://img.shields.io/badge/MSRV-1.100-blue)](https://www.rust-lang.org/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/EffortlessMetrics/perl-lsp/blob/master/LICENSE-MIT)
 
 A fast, native Perl 5 language server extension. Written in Rust for speed and reliability. No runtime dependencies -- just install and code.
@@ -62,15 +62,21 @@ for support-tier boundaries, explanations, previews, and copyable receipts.
 
 ### AI Completion
 
-Perl LSP supports **AI-powered inline completions**, surfaced through VS Code's
-inline-suggestion UI. The feature is **off by default** and only available when
-your language server advertises inline-completion support (`inlineCompletionProvider`).
+AI inline-completion behavior depends on the connected server build. AI is
+**off by default**. The extension offers its enable prompt only when the server
+advertises explicit AI activation support and the language client has a
+registered inline-completion provider, whether registered at initialization or
+dynamically afterward.
 
-To enable it, set `perl-lsp.aiCompletion.enabled` to `true` (Settings → search
-`perl-lsp.aiCompletion`). Progressive streaming is controlled separately by
-`perl-lsp.aiCompletion.streaming.enabled`. When the running server advertises
-support and the feature is off, the extension also offers a one-time prompt to
-turn it on.
+The public `perl-lsp` `v0.17.0` server accepts generic AI configuration. The
+development server at `28efaee0d8a0267c1919018ee2ae689f0db72dfa` rejects generic
+activation and requires trusted server authority. Do not infer server-side
+enforcement from the extension's prompt or a `0.17.0` version string.
+
+`perl-lsp.aiCompletion.enabled` and `perl-lsp.aiCompletion.streaming.enabled`
+are machine-scoped client preferences; they do not grant server activation
+authority. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)
+for the exact source boundary and each build's configuration behavior.
 
 ### Quick Start: Demo Project
 
@@ -201,7 +207,8 @@ All settings are under the `perl-lsp.*` namespace. Open settings with `Ctrl+,` a
 | `perl-lsp.trace.server`          | `"off"`                      | LSP trace level for debugging: `off`, `messages`, `verbose`                                                                                                              |
 | `perl-lsp.featureProfile`        | `"auto"`                     | Runtime capability profile. Keep `auto` unless you need a specific compatibility profile                                                                                 |
 | `perl-lsp.downloadBaseUrl`       | `""`                         | Internal mirror URL for air-gapped deployments                                                                                                                           |
-| `perl-lsp.mcp.servers`           | `[]`                         | **Removed and inert.** The generic configured-command MCP passthrough is disabled; existing values are read by nothing and start no process                              |
+
+Stale `perl-lsp.mcp.servers` values in an existing user profile are migration-only: they register no MCP provider and start no process (#7119).
 
 ### Internal / Air-Gapped Deployment
 

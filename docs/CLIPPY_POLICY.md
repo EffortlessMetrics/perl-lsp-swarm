@@ -126,7 +126,7 @@ rust-toolchain.toml channel
 .ci/gate-policy.yaml global.toolchain.msrv
 ```
 
-`1.95` and `1.95.0` describe the same product version. Any other drift fails closed. A private analysis-tool toolchain, including Cargo-Hawk's compiler, does not satisfy this product contract.
+`1.100` and `1.100.0` describe the same product version. Any other drift fails closed. A private analysis-tool toolchain, including Cargo-Hawk's compiler, does not satisfy this product contract.
 
 ## Local check
 

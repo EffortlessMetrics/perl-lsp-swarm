@@ -10,6 +10,22 @@ fn project_root() -> PathBuf {
     dir
 }
 
+/// Extract one gate row from `.ci/gate-policy.yaml` (comments included).
+fn policy_gate_block<'a>(policy: &'a str, gate: &str) -> Option<&'a str> {
+    let header = format!("\n  - name: {gate}\n");
+    let start = policy.find(&header)? + 1;
+    let rest = &policy[start..];
+    let body_offset = rest.find('\n')? + 1;
+    let end = rest[body_offset..]
+        .match_indices('\n')
+        .find(|(idx, _)| {
+            let line = &rest[body_offset + idx + 1..];
+            line.starts_with("  - name:")
+        })
+        .map_or(rest.len(), |(idx, _)| body_offset + idx + 1);
+    Some(&rest[..end])
+}
+
 #[derive(Debug, Deserialize)]
 struct GatePolicyDoc {
     gates: Vec<PolicyGate>,
@@ -457,11 +473,14 @@ fn package_args(command: &str) -> Vec<String> {
         .collect()
 }
 
-const DAP_HELPER_TARGETS: [&str; 4] = [
+const DAP_HELPER_TARGETS: [&str; 5] = [
     "eval_ref_cache_miss_resume_tests",
     "dap_evaluate_comprehensive_tests",
     "dap_variable_reference_hardening_tests",
     "pause_signal_delivery_tests",
+    // Not feature-gated; the #18491 entry-stop stackTrace regression proof
+    // must execute on this required lane (PR #18536 review F1).
+    "dap_entry_stop_stack_trace_18491",
 ];
 
 fn dap_helper_command_error(command: &str) -> Option<String> {
@@ -476,6 +495,11 @@ fn dap_helper_command_error(command: &str) -> Option<String> {
 
     let separator = tokens.iter().position(|token| *token == "&&")?;
     let helper_tokens = &tokens[separator + 1..];
+    if !helper_tokens.starts_with(&["env", "PERL_LSP_DAP_REQUIRE_PERL=1"]) {
+        return Some(
+            "DAP helper command must fail closed when no interpreter can run (#18536)".to_string(),
+        );
+    }
 
     // Cargo's `--` boundary: everything after the first standalone `--` is
     // harness arguments, not package/target selection. Selectors are only
@@ -552,6 +576,8 @@ fn dap_support_gate_binds_all_helper_targets_and_propagates_failures()
     if let Some(error) = dap_helper_command_error(&gate.command) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error).into());
     }
+    let without_strict_perl = gate.command.replace("env PERL_LSP_DAP_REQUIRE_PERL=1 ", "");
+    assert!(dap_helper_command_error(&without_strict_perl).is_some());
 
     for target in DAP_HELPER_TARGETS {
         let mutated = gate.command.replacen(&format!(" --test {target}"), "", 1);
@@ -671,6 +697,9 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
                  changes what is executed"
             );
         }
+        // Presence checks cannot detect a flag added to only one lane (the
+        // exact divergence the identical-flags contract warns about), so the
+        // non-package flag sequence is compared across lanes below.
 
         // The union check below is satisfied by any partition of the surface,
         // including swapping the two lanes or collapsing everything into one.
@@ -700,6 +729,35 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
         seen.extend(packages);
     }
 
+    // Flag-set equality: strip each lane's package selection (`-p <crate>`
+    // pairs) and require the remaining token sequences to be identical, so
+    // a flag added to one lane (for example an extra `--test` selection)
+    // fails here instead of silently changing what one lane executes.
+    let flag_sequence = |lane_name: &str| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let lane = parsed
+            .gates
+            .iter()
+            .find(|gate| gate.name == lane_name)
+            .ok_or_else(|| format!("gate '{lane_name}' must exist"))?;
+        let tokens: Vec<&str> = lane.command.split_whitespace().collect();
+        let mut flags = Vec::new();
+        let mut index = 0;
+        while index < tokens.len() {
+            if tokens[index] == "-p" {
+                index += 2;
+                continue;
+            }
+            flags.push(tokens[index].to_string());
+            index += 1;
+        }
+        Ok(flags)
+    };
+    assert_eq!(
+        flag_sequence("unit_lsp_core_full")?,
+        flag_sequence("unit_lsp_full")?,
+        "LSP unit lanes must run under identical flags; only their package sets may differ"
+    );
+
     let mut deduped = seen.clone();
     deduped.sort();
     deduped.dedup();
@@ -717,6 +775,34 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
          A crate missing here is coverage silently dropped; an extra crate is \
          coverage silently duplicated or moved from another lane."
     );
+
+    Ok(())
+}
+
+/// #17714: the LSP merge_gate lanes must not read closed issues as live blockers.
+#[test]
+fn lsp_merge_gate_comments_do_not_cite_closed_red_suite_blocker()
+-> Result<(), Box<dyn std::error::Error>> {
+    let policy = fs::read_to_string(project_root().join(".ci/gate-policy.yaml"))?;
+    const STALE: &str = "blocked on the red suites in #11708";
+    const STALE_RECORDED: &str = "Recorded per #11694; flipping";
+
+    for gate_name in ["unit_lsp_core_full", "unit_lsp_full"] {
+        let block = policy_gate_block(&policy, gate_name)
+            .ok_or_else(|| format!("gate '{gate_name}' must exist in .ci/gate-policy.yaml"))?;
+        assert!(
+            !block.contains(STALE),
+            "{gate_name} must not cite #11708 as a live `--tests` blocker"
+        );
+        assert!(
+            !block.contains(STALE_RECORDED),
+            "{gate_name} must not present #11694 as the active flip gate"
+        );
+        assert!(
+            block.contains("#6054"),
+            "{gate_name} must name #6054 as the owner of expanding `--lib` merge gates to `--tests`"
+        );
+    }
 
     Ok(())
 }

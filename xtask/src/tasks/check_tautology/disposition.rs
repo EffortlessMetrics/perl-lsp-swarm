@@ -177,6 +177,7 @@ impl DispositionLedger {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn cadence_rows(path: &Path) -> Result<Vec<CadenceRow>> {
     Ok(DispositionLedger::load(path)?.cadence_rows())
 }

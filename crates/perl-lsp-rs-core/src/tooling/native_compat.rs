@@ -572,6 +572,28 @@ fn apply_supported_perltidy_option(
                 &mut suggestion.invalid_options,
             );
         }
+        // Only actual boolean flags reject attached values. Keyword-list
+        // options such as --space-after-keyword=if have a different grammar.
+        "-t"
+        | "--tabs"
+        | "-nt"
+        | "--notabs"
+        | "-ce"
+        | "--cuddled-else"
+        | "-nce"
+        | "--nocuddled-else"
+        | "-bl"
+        | "--opening-brace-on-new-line"
+        | "-bar"
+        | "--opening-brace-always-on-right"
+        | "-atc"
+        | "--add-trailing-commas"
+        | "-natc"
+        | "--no-add-trailing-commas"
+            if option.value.is_some() =>
+        {
+            push_unique(&mut suggestion.invalid_options, option.option.clone());
+        }
         "-t" | "--tabs" => suggestion.perltidy_tabs = Some(true),
         "-nt" | "--notabs" => suggestion.perltidy_tabs = Some(false),
         "-ce" | "--cuddled-else" => suggestion.perltidy_cuddled_else = Some(true),
@@ -959,6 +981,86 @@ mod tests {
         assert!(markdown.contains("- approximated presets: `-pbp`"));
         assert!(markdown.contains("- external-only options: `-ci`"));
         assert!(markdown.contains("- ignored execution/output options: `-st`"));
+    }
+
+    #[test]
+    fn perltidy_profile_rejects_attached_values_on_boolean_flags() {
+        let options = [
+            "-t",
+            "--tabs",
+            "-nt",
+            "--notabs",
+            "-ce",
+            "--cuddled-else",
+            "-nce",
+            "--nocuddled-else",
+            "-bl",
+            "--opening-brace-on-new-line",
+            "-bar",
+            "--opening-brace-always-on-right",
+            "-atc",
+            "--add-trailing-commas",
+            "-natc",
+            "--no-add-trailing-commas",
+        ];
+        for prefix in ["", "-t -ce -bl -atc", "-nt -nce -bar -natc"] {
+            let baseline = classify_perltidy_profile(prefix);
+            for option in options {
+                for value in ["", "0", "1", "true", "false", "garbage"] {
+                    let raw = format!("{prefix}\n{option}={value}\n-l=110\n-i=2\n");
+                    let report = classify_perltidy_profile(&raw);
+                    let mut expected = baseline.suggested_config.clone();
+                    expected.perltidy_maximum_line_length = Some(110);
+                    expected.perltidy_indent_columns = Some(2);
+                    expected.invalid_options = vec![option.to_string()];
+                    assert_eq!(report.suggested_config, expected, "profile: {raw:?}");
+                    assert_eq!(report.option_count, baseline.option_count + 3);
+                    assert_eq!(report.options[baseline.option_count].option, option);
+                    assert_eq!(report.options[baseline.option_count].value.as_deref(), Some(value));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn perltidy_profile_keeps_bare_boolean_flags_and_recovers_after_invalid_values() {
+        for (raw, expected) in [
+            ("-t -ce -bl -atc", true),
+            ("--tabs --cuddled-else --opening-brace-on-new-line --add-trailing-commas", true),
+            ("-nt -nce -bar -natc", false),
+            (
+                "--notabs --nocuddled-else --opening-brace-always-on-right --no-add-trailing-commas",
+                false,
+            ),
+        ] {
+            let report = classify_perltidy_profile(raw);
+            let config = &report.suggested_config;
+            assert_eq!(report.option_count, 4);
+            assert_eq!(report.supported_count, 4);
+            assert!(config.invalid_options.is_empty());
+            assert_eq!(config.perltidy_tabs, Some(expected));
+            assert_eq!(config.perltidy_cuddled_else, Some(expected));
+            assert_eq!(config.perltidy_opening_brace_on_new_line, Some(expected));
+            assert_eq!(config.perltidy_add_trailing_commas, Some(expected));
+
+            let recovered = classify_perltidy_profile(&format!("--tabs=garbage\n{raw}"));
+            let mut expected_config = report.suggested_config;
+            expected_config.invalid_options = vec!["--tabs".to_string()];
+            assert_eq!(recovered.suggested_config, expected_config);
+        }
+    }
+
+    #[test]
+    fn perltidy_profile_keeps_keyword_lists_out_of_boolean_value_validation() {
+        // These are string-valued options, not boolean flags. Their native
+        // mapping is a separate concern; an accepted keyword is not malformed.
+        for option in ["--space-after-keyword", "--nospace-after-keyword", "-sak", "-nsak"] {
+            let report = classify_perltidy_profile(&format!("{option}=if\n"));
+            assert_eq!(report.option_count, 1);
+            assert!(report.suggested_config.invalid_options.is_empty(), "{option}");
+            assert_eq!(report.options[0].option, option);
+            assert_eq!(report.options[0].value.as_deref(), Some("if"));
+        }
     }
 
     #[test]

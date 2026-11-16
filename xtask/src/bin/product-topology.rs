@@ -1165,10 +1165,10 @@ mod tests {
     #[test]
     fn admitted_stage_rejects_optional_required_dependency() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
-        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
-            if let Some(dependency) = mcp.dependencies.first_mut() {
-                dependency.optional = true;
-            }
+        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp")
+            && let Some(dependency) = mcp.dependencies.first_mut()
+        {
+            dependency.optional = true;
         }
         let report = validate(&policy, &metadata, &manifest);
         require_finding(
@@ -1180,10 +1180,10 @@ mod tests {
     #[test]
     fn admitted_stage_rejects_renamed_required_dependency() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
-        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
-            if let Some(dependency) = mcp.dependencies.first_mut() {
-                dependency.rename = Some("transport".to_owned());
-            }
+        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp")
+            && let Some(dependency) = mcp.dependencies.first_mut()
+        {
+            dependency.rename = Some("transport".to_owned());
         }
         let report = validate(&policy, &metadata, &manifest);
         require_finding(
@@ -1213,11 +1213,11 @@ mod tests {
     #[test]
     fn admitted_stage_rejects_external_required_dependency() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
-        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
-            if let Some(dependency) = mcp.dependencies.first_mut() {
-                dependency.source =
-                    Some("registry+https://github.com/rust-lang/crates.io-index".to_owned());
-            }
+        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp")
+            && let Some(dependency) = mcp.dependencies.first_mut()
+        {
+            dependency.source =
+                Some("registry+https://github.com/rust-lang/crates.io-index".to_owned());
         }
         let report = validate(&policy, &metadata, &manifest);
         require_finding(

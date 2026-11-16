@@ -563,6 +563,40 @@ fn compiler_upstream_conformance_status_rejects_dangling_successor() -> TestResu
 }
 
 #[test]
+fn compiler_upstream_conformance_status_rejects_no_current_snapshot_when_series_selects_snapshot()
+-> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = agreement_row("op-masked-absence", "perl-5.38");
+    row.terminal_state = TerminalState::NoCurrentSnapshot;
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("cannot be no_current_snapshot"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_agreement_current_requires_installed_witness() -> TestResult
+{
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = agreement_row("op-current-no-witness", "perl-5.38");
+    row.witness = None;
+    write_inputs(dir.path(), &manifest, std::slice::from_ref(&row))?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("requires a recorded installed witness"), "{message}");
+
+    let witness = installed_witness("t/op/op-current-no-witness.t")
+        .ok_or_else(|| anyhow::anyhow!("fixture witness must be present"))?;
+    row.witness =
+        Some(WitnessRecord { installation: WitnessInstallation::NotInstalled, ..witness });
+    write_inputs(dir.path(), &manifest, std::slice::from_ref(&row))?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("requires an installed witness"), "{message}");
+    Ok(())
+}
+
+#[test]
 fn compiler_upstream_conformance_status_rejects_ineligible_evidence_and_private_bindings()
 -> TestResult {
     let dir = TempDir::new()?;
@@ -755,6 +789,35 @@ fn compiler_upstream_conformance_status_diff_reports_row_and_binding_changes() -
 }
 
 #[test]
+fn compiler_upstream_conformance_status_diff_reports_limitation_only_change() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = agreement_row("op-limitation-diff", "perl-5.38");
+    row.terminal_state = TerminalState::AgreementWithDeclaredLimitation;
+    row.limitation = Some(LimitationRecord {
+        statement: "initial limitation".to_string(),
+        nonclaims: vec!["no broader claim".to_string()],
+        claim_ceiling: "declared slice only".to_string(),
+    });
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let before = project_from(dir.path())?;
+    let mut after = before.clone();
+    after.rows[0].limitation = Some(LimitationRecord {
+        statement: "revised limitation".to_string(),
+        nonclaims: vec!["no broader claim".to_string()],
+        claim_ceiling: "declared slice only".to_string(),
+    });
+    let before_path = dir.path().join("before.json");
+    let after_path = dir.path().join("after.json");
+    fs::write(&before_path, canonical_bytes(&before)?)?;
+    fs::write(&after_path, canonical_bytes(&after)?)?;
+    let summary = error_message(run_diff(&before_path, &after_path));
+    assert!(summary.contains("limitation changed"), "{summary}");
+    assert!(!summary.contains("0 summarized differences"), "{summary}");
+    Ok(())
+}
+
+#[test]
 fn compiler_upstream_conformance_status_markdown_metadata_is_line_terminated() -> TestResult {
     let dir = TempDir::new()?;
     let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
@@ -897,5 +960,90 @@ fn compiler_upstream_conformance_status_code_spans_pad_edge_backticks() -> TestR
     packet.rows[0].upstream_case.case_name = "`starts-with-backtick".to_string();
     let rendered = render_markdown(&packet)?;
     assert!(rendered.contains("`` `starts-with-backtick ``"), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_retained_evidence_identities_reject_private_paths()
+-> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    write_inputs(dir.path(), &manifest, &[agreement_row("op-evidence-identity", "perl-5.38")])?;
+    let mut valid = project_from(dir.path())?;
+    valid.rows[0].witness.as_mut().ok_or_else(|| anyhow::anyhow!("fixture witness"))?.identity =
+        "witness:repo/minimized-001".to_string();
+    valid.rows[0].performance.correctness_eligible = true;
+    valid.rows[0].performance.evidence_identity = Some("performance:packet/u17".to_string());
+    valid.rows[0].history.predecessor_row_id = Some("history:prior/obligation".to_string());
+    valid.rows[0].history.recurrence_of_row_id = Some("history:recurring/obligation".to_string());
+    validate_packet(&valid)?;
+    let rendered = render_markdown(&valid)?;
+    for identity in [
+        "witness:repo/minimized-001",
+        "performance:packet/u17",
+        "history:prior/obligation",
+        "history:recurring/obligation",
+    ] {
+        assert!(rendered.contains(identity), "valid relative identity missing: {identity}");
+    }
+    // Optional identities retain their existing grammar, including '@'.
+    assert_eq!(
+        valid.subject_binding.semantic_obligation_graph_identity.as_deref(),
+        Some("obligation-graph:u08@absent")
+    );
+
+    // Original upstream provenance remains visible even when no current snapshot is selected.
+    let mut absent = valid.clone();
+    absent.subject_binding.maintained_series[0].snapshot_identity = None;
+    absent.rows[0].terminal_state = TerminalState::NoCurrentSnapshot;
+    absent.rows[0].witness = None;
+    absent.rows[0].performance =
+        PerformanceEvidence { correctness_eligible: false, evidence_identity: None };
+    absent.rows[0].upstream_case.snapshot_ref = "snapshot:retained/upstream".to_string();
+    absent.descriptive_counts = compute_counts(&absent.rows);
+    validate_packet(&absent)?;
+    assert!(render_markdown(&absent)?.contains("snapshot:retained/upstream"));
+
+    let mut accepted_private_paths = Vec::new();
+    for field in [
+        "witness.identity",
+        "performance.evidence_identity",
+        "history.predecessor_row_id",
+        "history.recurrence_of_row_id",
+        "upstream.snapshot_ref",
+    ] {
+        for leaked in ["/private/evidence", "C:/private/evidence"] {
+            let mut packet =
+                if field == "upstream.snapshot_ref" { absent.clone() } else { valid.clone() };
+            match field {
+                "witness.identity" => {
+                    packet.rows[0]
+                        .witness
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("fixture witness"))?
+                        .identity = leaked.to_string();
+                }
+                "performance.evidence_identity" => {
+                    packet.rows[0].performance.evidence_identity = Some(leaked.to_string());
+                }
+                "history.predecessor_row_id" => {
+                    packet.rows[0].history.predecessor_row_id = Some(leaked.to_string());
+                }
+                "history.recurrence_of_row_id" => {
+                    packet.rows[0].history.recurrence_of_row_id = Some(leaked.to_string());
+                }
+                _ => packet.rows[0].upstream_case.snapshot_ref = leaked.to_string(),
+            }
+            let message = error_message(validate_packet(&packet));
+            let rendered = render_markdown(&packet);
+            if !message.contains(field) || rendered.is_ok() {
+                accepted_private_paths.push(format!("{field}={leaked}: {message}"));
+            }
+        }
+    }
+    assert!(
+        accepted_private_paths.is_empty(),
+        "private paths accepted: {accepted_private_paths:#?}"
+    );
     Ok(())
 }

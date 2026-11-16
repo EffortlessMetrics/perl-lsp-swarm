@@ -586,7 +586,7 @@ def _restore_bench_side_effects(ctx, before):
 T3_QUICK_WARMUP = [
     ("perl-parser", "parser_benchmark", None),
     ("perl-lexer", "lexer_benchmarks", None),
-    ("perl-lsp-rs", "rope_performance_benchmark", None),
+    ("perl-lsp-rs", "rope_performance_benchmark", "benchmarks"),
     ("perl-workspace", "workspace_index_benchmark", "workspace"),
     ("perl-ripr-facts", "ripr_facts_benchmark", None),
 ]

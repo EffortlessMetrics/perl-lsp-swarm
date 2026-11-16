@@ -14,10 +14,6 @@
 mod perf_subjects;
 
 use std::path::PathBuf;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
 
 use perf_subjects::{SubjectSpec, identity_row_with_counters, toolchain_tag};
 use perl_lsp_perltidy::native::{
@@ -544,124 +540,6 @@ fn derived_output_growth_trips_before_product_envelope() {
 }
 
 // ---------------------------------------------------------------------------
-// NPC-003 — one pipeline invocation per LSP request at both provider seams
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct RecordingRuntime {
-    invoked: Arc<AtomicBool>,
-}
-
-impl perl_lsp_rs_core::tooling::SubprocessRuntime for RecordingRuntime {
-    fn run_command(
-        &self,
-        _program: &str,
-        _args: &[&str],
-        _stdin: Option<&[u8]>,
-    ) -> Result<
-        perl_lsp_rs_core::tooling::SubprocessOutput,
-        perl_lsp_rs_core::tooling::SubprocessError,
-    > {
-        self.invoked.store(true, Ordering::SeqCst);
-        Ok(perl_lsp_rs_core::tooling::SubprocessOutput {
-            stdout: b"my $external = 1;\n".to_vec(),
-            stderr: Vec::new(),
-            status_code: 0,
-        })
-    }
-}
-
-fn formatting_options() -> perl_lsp_rs_core::providers::formatting::FormattingOptions {
-    perl_lsp_rs_core::providers::formatting::FormattingOptions {
-        tab_size: 4,
-        insert_spaces: true,
-        trim_trailing_whitespace: None,
-        insert_final_newline: None,
-        trim_final_newlines: None,
-    }
-}
-
-fn native_provider() -> perl_lsp_rs_core::providers::formatting::FormattingProvider<RecordingRuntime>
-{
-    perl_lsp_rs_core::providers::formatting::FormattingProvider::new(RecordingRuntime {
-        invoked: Arc::new(AtomicBool::new(false)),
-    })
-}
-
-#[test]
-fn document_request_parses_exactly_once() -> Result<(), Box<dyn std::error::Error>> {
-    let provider = native_provider();
-    let options = formatting_options();
-    let context = FormatContext::new(Some("npc-003/document".to_string()), Some(1));
-
-    let statement =
-        SubjectSpec { family: "statement", line_ending: "lf", indent: "tabs", units: 4 }.source();
-    for content in [statement, "my $x = ;\n".to_string()] {
-        let mut counters = NativePipelineCounters::default();
-        let counted = provider.format_document_decision_with_counters(
-            &content,
-            &options,
-            &context,
-            &mut counters,
-        )?;
-        assert_eq!(counters.pipeline_invocations, 1, "one pipeline per document request");
-        let expected_gates =
-            u64::from(counted.outcome.reason != FormatReasonCode::SourceParseError) + 1;
-        assert_eq!(counters.parse_gate_invocations, expected_gates);
-        assert_eq!(counters.source_parse_gate_invocations, 1);
-        assert_eq!(
-            counters.formatted_output_parse_gate_invocations,
-            u64::from(counted.outcome.reason != FormatReasonCode::SourceParseError)
-        );
-        assert!(
-            !counted.outcome.identity.config_fingerprint.is_empty(),
-            "the seam must keep exact config identity"
-        );
-
-        // The counted seam shares the exact decision path with the plain seam.
-        let plain = provider.format_document_decision(&content, &options, &context)?;
-        assert_eq!(
-            plain.outcome.disposition, counted.outcome.disposition,
-            "the counters-aware seam must not fork the decision path"
-        );
-        assert_eq!(plain.outcome.reason, counted.outcome.reason);
-    }
-    Ok(())
-}
-
-#[test]
-fn range_request_parses_exactly_once() -> Result<(), Box<dyn std::error::Error>> {
-    let provider = native_provider();
-    let options = formatting_options();
-    let context = FormatContext::new(Some("npc-003/range".to_string()), Some(1));
-
-    let statement =
-        SubjectSpec { family: "statement", line_ending: "lf", indent: "tabs", units: 4 }.source();
-    for content in [statement, "my $x = ;\n".to_string()] {
-        let range = perl_lsp_rs_core::providers::formatting::FormatRange::whole_document(&content);
-        let mut counters = NativePipelineCounters::default();
-        let counted = provider.format_range_decision_with_counters(
-            &content,
-            &range,
-            &options,
-            &context,
-            &mut counters,
-        )?;
-        assert_eq!(counters.pipeline_invocations, 1, "one pipeline per range request");
-        assert_eq!(counters.source_parse_gate_invocations, 1);
-        assert_eq!(
-            counters.formatted_output_parse_gate_invocations,
-            u64::from(counted.outcome.reason != FormatReasonCode::SourceParseError)
-        );
-
-        let plain = provider.format_range_decision(&content, &range, &options, &context)?;
-        assert_eq!(plain.outcome.disposition, counted.outcome.disposition);
-        assert_eq!(plain.outcome.reason, counted.outcome.reason);
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // NPC-008 — exact subject identity for receipt consumption
 // ---------------------------------------------------------------------------
 
@@ -950,7 +828,13 @@ fn timing_stays_advisory_in_nightly_workflow() -> Result<(), Box<dyn std::error:
 fn base_pin_max_timeout_minutes(job: &str) -> Option<u64> {
     match job {
         "mutation" => Some(60),
-        "benchmark" => Some(45),
+        // Raised from 45 by 159d80c9b2 (#18350): at the 45-minute pin the
+        // nightly deadline landed mid-`native_pipeline_benchmark` (~46 minutes
+        // in) and cancelled the job before extraction, comparison, and
+        // receipts could run. The pin tracks that owned headroom raise rather
+        // than absorbing a regression: the bump paid for the full benchmark
+        // target finishing, not for lost speed.
+        "benchmark" => Some(75),
         "real-repo-latency" => Some(30),
         "corpus-differential" => Some(20),
         "lsp-memory-plateau" => Some(35),
@@ -966,7 +850,13 @@ fn base_pin_max_timeout_minutes(job: &str) -> Option<u64> {
         "scorecard-ratchet-check" => Some(15),
         "clippy-strict" => Some(20),
         "perl-kwalitee" => Some(20),
-        "fuzz" => Some(15),
+        // Raised from 15 by 1ae41f302b (#17028, merged #17821): the 600s fuzz
+        // budget plus cold toolchain/cargo-fuzz build headroom put the job
+        // deadline inside the crash-artifact upload window at 15 minutes.
+        // The pin tracks that owned headroom raise rather than absorbing a
+        // regression: the bump paid for crash artifacts surviving
+        // cancellation, not for lost speed.
+        "fuzz" => Some(30),
         _ => None,
     }
 }

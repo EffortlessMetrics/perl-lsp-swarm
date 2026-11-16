@@ -72,13 +72,70 @@ fn test_refactor_module_accessible() -> TestResult {
     Ok(())
 }
 
-/// Test that refactoring engine is accessible
+/// Guard that the retired filesystem-mutating `RefactoringEngine` (#5231) stays
+/// retired: its module file must not return, and no crate source may import or
+/// instantiate it. Live refactor operations are owned by their operation-specific
+/// providers; a future reusable pure planner is owned by #8281.
 #[test]
-fn test_refactoring_engine_accessible() -> TestResult {
-    // perl_parser::refactor::refactoring should contain the unified engine
-    // This verifies the module path is correct post-absorption
-    let _engine: Option<perl_parser::refactor::refactoring::RefactoringEngine> = None;
+fn test_refactoring_engine_stays_retired() -> TestResult {
+    let engine_file = ws("crates/perl-parser/src/refactor/refactoring.rs");
+    if engine_file.exists() {
+        return Err(format!(
+            "{} exists again — the filesystem-mutating RefactoringEngine was retired by #5231 and must not return",
+            engine_file.display()
+        )
+        .into());
+    }
+
+    // Scan only live crate source trees (crates/*/src); generated targets,
+    // vendored dirs, and test fixtures are not live providers.
+    let crates_dir = ws("crates");
+    let mut offenders = Vec::new();
+    let mut stack = Vec::new();
+    for entry in fs::read_dir(&crates_dir)? {
+        let src = entry?.path().join("src");
+        if src.is_dir() {
+            stack.push(src);
+        }
+    }
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name == "target" || name == "node_modules" || name.starts_with('.') {
+                    continue;
+                }
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let content = fs::read_to_string(&path)?;
+                if contains_identifier(&content, "RefactoringEngine") {
+                    offenders.push(path.display().to_string());
+                }
+            }
+        }
+    }
+
+    if !offenders.is_empty() {
+        return Err(format!(
+            "RefactoringEngine was retired by #5231; no crate source may reference it, found references in: {}",
+            offenders.join(", ")
+        )
+        .into());
+    }
     Ok(())
+}
+
+fn contains_identifier(source: &str, identifier: &str) -> bool {
+    source.match_indices(identifier).any(|(start, _)| {
+        let end = start + identifier.len();
+        let is_ident = |byte: Option<u8>| {
+            byte.is_some_and(|value| value == b'_' || value.is_ascii_alphanumeric())
+        };
+        !is_ident(source.as_bytes().get(start.wrapping_sub(1)).copied())
+            && !is_ident(source.as_bytes().get(end).copied())
+    })
 }
 
 #[cfg(feature = "incremental")]

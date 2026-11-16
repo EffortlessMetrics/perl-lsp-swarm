@@ -96,11 +96,11 @@ pub fn run(version: String, yes: bool) -> Result<()> {
 
     println!("📋 Next steps:");
     println!("1. Review the release artifacts");
-    println!("2. Create git tag: git tag -a v{} -m 'Release v{}'", version, version);
-    println!("3. Push tag: git push origin v{}", version);
-    println!("4. Create GitHub release and upload artifacts");
-    println!("5. Run: cargo xtask publish-crates");
-    println!("6. Run: cargo xtask publish-vscode");
+    println!("2. These locally prepared artifacts do not authorize public mutation");
+    println!(
+        "3. Follow the reviewed release transaction (#13768 / #6055) for tags, GitHub assets \
+         and selected publisher channels: docs/release/RUNBOOK.md"
+    );
 
     Ok(())
 }

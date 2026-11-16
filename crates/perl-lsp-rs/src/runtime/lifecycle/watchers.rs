@@ -3,9 +3,10 @@
 //! Handles registration of file watchers for workspace files.
 
 use super::super::{LspServer, json};
+use crate::util::uri::try_parse_uri;
 use lsp_types::{
     DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern, OneOf, Registration,
-    RegistrationParams, RelativePattern, Uri, WatchKind,
+    RegistrationParams, RelativePattern, WatchKind,
     notification::{DidChangeWatchedFiles, Notification},
 };
 
@@ -94,10 +95,13 @@ impl LspServer {
         let workspace_uris = self.workspace_folder_uris();
         let base_uris = workspace_uris
             .iter()
-            .filter_map(|uri| match uri.parse::<Uri>() {
-                Ok(parsed) => Some(parsed),
-                Err(error) => {
-                    tracing::debug!(uri, %error, "Skipping invalid workspace URI for file watcher RelativePattern");
+            .filter_map(|uri| match try_parse_uri(uri) {
+                Some(parsed) => Some(parsed),
+                None => {
+                    tracing::debug!(
+                        uri,
+                        "Skipping invalid workspace URI for file watcher RelativePattern"
+                    );
                     None
                 }
             })

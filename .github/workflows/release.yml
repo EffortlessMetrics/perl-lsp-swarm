@@ -187,7 +187,7 @@ jobs:
           fi
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable (master)
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -369,7 +369,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable (master)
         with:
           toolchain: stable
 
@@ -699,6 +699,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           VERSION: ${{ needs.release-metadata.outputs.version }}
           TAG: ${{ needs.release-metadata.outputs.tag }}
+          PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
           EXPECTED_SHA: ${{ github.sha }}
           CANDIDATE_RUN_ID: ${{ needs.publisher-eligibility.outputs.candidate_run_id }}
           MANIFEST_SHA256: ${{ needs.publisher-eligibility.outputs.manifest_sha256 }}
@@ -710,6 +711,35 @@ jobs:
           printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$CANDIDATE_RUN_ID" | grep -Eq '^[0-9]+$'
           printf '%s' "$MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'
+          # RC_PRIMARY_CONTAINMENT_BEGIN (#17628)
+          # Primary publishers (crates.io, the combined Marketplace/Open VSX
+          # extension workflow, and Docker Hub) are authorized only for a
+          # final, non-prerelease release. SKIP_* flags can only withhold a
+          # dispatch; they can never grant primary-publisher authority, so an
+          # RC/prerelease is contained here before any dispatch is issued.
+          # The typed prerelease output must be exactly true/false and the
+          # tag/version identity must agree; anything malformed fails closed
+          # instead of falling through to a publisher. A hyphenated SemVer
+          # version is a prerelease even if the flag were somehow false.
+          # Follow-up (#17628): publish-extension.yml has no channel-select
+          # input, so an RC cannot dispatch Open VSX without also invoking
+          # the combined Marketplace carrier from this step. Open VSX for an
+          # RC stays withheld until a separately qualified channel adapter
+          # can select Open VSX alone; do not re-enable extension dispatch
+          # for prereleases here to work around that.
+          if [ -z "$VERSION" ] || [ "$TAG" != "v$VERSION" ]; then
+            printf '::error::Primary publisher tag/version identity differs\n'
+            exit 1
+          fi
+          case "$PRERELEASE" in
+            true|false) ;;
+            *) printf '::error::Primary publisher prerelease state is missing or malformed\n'; exit 1 ;;
+          esac
+          if [ "$PRERELEASE" = "true" ] || [[ "$VERSION" == *-* ]]; then
+            printf 'Primary publishers withheld for prerelease %s. Open VSX is explicitly deferred until its separate channel adapter qualifies (#17628).\n' "$TAG"
+            exit 0
+          fi
+          # RC_PRIMARY_CONTAINMENT_END
           if [ "$SKIP_CRATES" != "true" ]; then
             gh api -X POST \
               /repos/$REPOSITORY/actions/workflows/publish-crates.yml/dispatches \
@@ -731,27 +761,182 @@ jobs:
               -f inputs[manifest_sha256]="$MANIFEST_SHA256"
           fi
 
-      - name: Dispatch downstream package refresh workflows
+      - name: Dispatch brew-bump workflow
         if: needs.release-metadata.outputs.prerelease != 'true'
+        id: dispatch-brew
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          workflows=(
-            brew-bump.yml
-            scoop-bump.yml
-            chocolatey-bump.yml
-            winget-bump.yml
-          )
-          for workflow in "${workflows[@]}"; do
-            printf 'Dispatching %s for %s\n' "$workflow" "$RELEASE_TAG"
-            gh workflow run "$workflow" \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref "$DEFAULT_BRANCH" \
-              --field "tag=$RELEASE_TAG"
-          done
+          # #15460: match the prior dispatch by its durable release identity:
+          # the child's run-name carries the tag, unlike head_sha, which is the
+          # default-branch tip at dispatch time and moves during a long release.
+          # Fail closed: unavailable idempotency evidence is not proof that no
+          # prior run exists. A prior run that failed, was cancelled, or timed
+          # out does not count: this workflow is the retry path for it.
+          if ! response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/workflows/brew-bump.yml/runs?event=workflow_dispatch&per_page=100"); then
+            printf '::error::brew-bump duplicate lookup failed; failing this channel closed\n'
+            exit 1
+          fi
+          if ! printf '%s' "$response" | jq -e . >/dev/null; then
+            printf '::error::brew-bump duplicate lookup response unparseable; failing this channel closed\n'
+            exit 1
+          fi
+          existing_id=$(printf '%s' "$response" | jq -r --arg title "Homebrew Auto-Bump $RELEASE_TAG" \
+            '.workflow_runs[]? | select(.display_title == $title and (.conclusion // "") != "failure" and (.conclusion // "") != "cancelled" and (.conclusion // "") != "timed_out") | .id' | head -n1)
+          if [ -n "$existing_id" ]; then
+            printf '::notice::brew-bump already dispatched for %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$existing_id"
+            printf 'disposition=duplicate-skipped\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf 'Dispatching brew-bump for %s\n' "$RELEASE_TAG"
+          gh workflow run brew-bump.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field "tag=$RELEASE_TAG"
+          printf 'disposition=dispatched\n' >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch scoop-bump workflow
+        if: needs.release-metadata.outputs.prerelease != 'true'
+        id: dispatch-scoop
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # #15460: match the prior dispatch by its durable release identity:
+          # the child's run-name carries the tag, unlike head_sha, which is the
+          # default-branch tip at dispatch time and moves during a long release.
+          # Fail closed: unavailable idempotency evidence is not proof that no
+          # prior run exists. A prior run that failed, was cancelled, or timed
+          # out does not count: this workflow is the retry path for it.
+          if ! response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/workflows/scoop-bump.yml/runs?event=workflow_dispatch&per_page=100"); then
+            printf '::error::scoop-bump duplicate lookup failed; failing this channel closed\n'
+            exit 1
+          fi
+          if ! printf '%s' "$response" | jq -e . >/dev/null; then
+            printf '::error::scoop-bump duplicate lookup response unparseable; failing this channel closed\n'
+            exit 1
+          fi
+          existing_id=$(printf '%s' "$response" | jq -r --arg title "Scoop Manifest Refresh $RELEASE_TAG" \
+            '.workflow_runs[]? | select(.display_title == $title and (.conclusion // "") != "failure" and (.conclusion // "") != "cancelled" and (.conclusion // "") != "timed_out") | .id' | head -n1)
+          if [ -n "$existing_id" ]; then
+            printf '::notice::scoop-bump already dispatched for %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$existing_id"
+            printf 'disposition=duplicate-skipped\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf 'Dispatching scoop-bump for %s\n' "$RELEASE_TAG"
+          gh workflow run scoop-bump.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field "tag=$RELEASE_TAG"
+          printf 'disposition=dispatched\n' >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch chocolatey-bump workflow
+        if: needs.release-metadata.outputs.prerelease != 'true'
+        id: dispatch-chocolatey
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # #15460: match the prior dispatch by its durable release identity:
+          # the child's run-name carries the tag, unlike head_sha, which is the
+          # default-branch tip at dispatch time and moves during a long release.
+          # Fail closed: unavailable idempotency evidence is not proof that no
+          # prior run exists. A prior run that failed, was cancelled, or timed
+          # out does not count: this workflow is the retry path for it.
+          if ! response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/workflows/chocolatey-bump.yml/runs?event=workflow_dispatch&per_page=100"); then
+            printf '::error::chocolatey-bump duplicate lookup failed; failing this channel closed\n'
+            exit 1
+          fi
+          if ! printf '%s' "$response" | jq -e . >/dev/null; then
+            printf '::error::chocolatey-bump duplicate lookup response unparseable; failing this channel closed\n'
+            exit 1
+          fi
+          existing_id=$(printf '%s' "$response" | jq -r --arg title "Chocolatey Manifest Refresh $RELEASE_TAG" \
+            '.workflow_runs[]? | select(.display_title == $title and (.conclusion // "") != "failure" and (.conclusion // "") != "cancelled" and (.conclusion // "") != "timed_out") | .id' | head -n1)
+          if [ -n "$existing_id" ]; then
+            printf '::notice::chocolatey-bump already dispatched for %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$existing_id"
+            printf 'disposition=duplicate-skipped\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf 'Dispatching chocolatey-bump for %s\n' "$RELEASE_TAG"
+          gh workflow run chocolatey-bump.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field "tag=$RELEASE_TAG"
+          printf 'disposition=dispatched\n' >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch winget-bump workflow
+        if: needs.release-metadata.outputs.prerelease != 'true'
+        id: dispatch-winget
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # #15460: match the prior dispatch by its durable release identity:
+          # the child's run-name carries the tag, unlike head_sha, which is the
+          # default-branch tip at dispatch time and moves during a long release.
+          # Fail closed: unavailable idempotency evidence is not proof that no
+          # prior run exists. A prior run that failed, was cancelled, or timed
+          # out does not count: this workflow is the retry path for it.
+          if ! response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/workflows/winget-bump.yml/runs?event=workflow_dispatch&per_page=100"); then
+            printf '::error::winget-bump duplicate lookup failed; failing this channel closed\n'
+            exit 1
+          fi
+          if ! printf '%s' "$response" | jq -e . >/dev/null; then
+            printf '::error::winget-bump duplicate lookup response unparseable; failing this channel closed\n'
+            exit 1
+          fi
+          existing_id=$(printf '%s' "$response" | jq -r --arg title "Winget Manifest Refresh $RELEASE_TAG" \
+            '.workflow_runs[]? | select(.display_title == $title and (.conclusion // "") != "failure" and (.conclusion // "") != "cancelled" and (.conclusion // "") != "timed_out") | .id' | head -n1)
+          if [ -n "$existing_id" ]; then
+            printf '::notice::winget-bump already dispatched for %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$existing_id"
+            printf 'disposition=duplicate-skipped\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf 'Dispatching winget-bump for %s\n' "$RELEASE_TAG"
+          gh workflow run winget-bump.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field "tag=$RELEASE_TAG"
+          printf 'disposition=dispatched\n' >> "$GITHUB_OUTPUT"
+
+      - name: Summarize package-channel fan-out disposition
+        # #15460: report which channels dispatched, which were skipped as
+        # duplicates, and which failed, instead of leaving partial fan-out to
+        # be inferred from the Actions history.
+        if: always() && needs.release-metadata.outputs.prerelease != 'true'
+        env:
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          DISPATCH_BREW_OUTCOME: ${{ steps['dispatch-brew'].outcome }}
+          DISPATCH_BREW_DISPOSITION: ${{ steps['dispatch-brew'].outputs.disposition }}
+          DISPATCH_SCOOP_OUTCOME: ${{ steps['dispatch-scoop'].outcome }}
+          DISPATCH_SCOOP_DISPOSITION: ${{ steps['dispatch-scoop'].outputs.disposition }}
+          DISPATCH_CHOCOLATEY_OUTCOME: ${{ steps['dispatch-chocolatey'].outcome }}
+          DISPATCH_CHOCOLATEY_DISPOSITION: ${{ steps['dispatch-chocolatey'].outputs.disposition }}
+          DISPATCH_WINGET_OUTCOME: ${{ steps['dispatch-winget'].outcome }}
+          DISPATCH_WINGET_DISPOSITION: ${{ steps['dispatch-winget'].outputs.disposition }}
+        run: |
+          printf 'Package-channel fan-out disposition for %s:\n' "$RELEASE_TAG"
+          # outcome is the pre-continue-on-error result, so a failed dispatch
+          # is never masked as success; disposition separates a fresh dispatch
+          # from a duplicate skip.
+          printf '  brew:       %s\n' "$([ "${DISPATCH_BREW_OUTCOME:-}" = "failure" ] && printf 'failed' || printf '%s' "${DISPATCH_BREW_DISPOSITION:-${DISPATCH_BREW_OUTCOME:-skipped}}")"
+          printf '  scoop:      %s\n' "$([ "${DISPATCH_SCOOP_OUTCOME:-}" = "failure" ] && printf 'failed' || printf '%s' "${DISPATCH_SCOOP_DISPOSITION:-${DISPATCH_SCOOP_OUTCOME:-skipped}}")"
+          printf '  chocolatey: %s\n' "$([ "${DISPATCH_CHOCOLATEY_OUTCOME:-}" = "failure" ] && printf 'failed' || printf '%s' "${DISPATCH_CHOCOLATEY_DISPOSITION:-${DISPATCH_CHOCOLATEY_OUTCOME:-skipped}}")"
+          printf '  winget:     %s\n' "$([ "${DISPATCH_WINGET_OUTCOME:-}" = "failure" ] && printf 'failed' || printf '%s' "${DISPATCH_WINGET_DISPOSITION:-${DISPATCH_WINGET_OUTCOME:-skipped}}")"
 
       - name: Record prerelease package refresh disposition
         if: needs.release-metadata.outputs.prerelease == 'true'

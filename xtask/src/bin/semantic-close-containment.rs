@@ -37,14 +37,14 @@ use std::{
 
 const REPORT_SCHEMA: &str = "semantic_close_containment_report.v1";
 const FIXTURE_SCHEMA: &str = "semantic_close_containment_fixture.v1";
+/// Typed exit contract (#16214): the check surface must be able to tell a
+/// verdict about the PR apart from a crashed instrument. 0 = pass; 2 = at
+/// least one contradiction row (definitive bad); 3 = a produced report whose
+/// worst row is not-proven (a real verdict, carrying `posture: "NOT_PROVEN"`
+/// in the receipt plus per-relation annotations); 4 = the instrument failed
+/// before producing any verdict (`INSTRUMENT_FAILURE` on the error channel).
 const EXIT_CONTRADICTION: i32 = 2;
 const EXIT_NOT_PROVEN: i32 = 3;
-/// #16214: exit 3 used to mean both "a relation could not be proven" — a
-/// verdict about the pull request — and "this validator failed" — a statement
-/// about the instrument, carrying no verdict at all. A consumer reading only
-/// the exit code or the check-run annotation could not tell which, so every
-/// instrument failure was indistinguishable from a finding against the PR.
-/// They now exit differently.
 const EXIT_INSTRUMENT_FAILURE: i32 = 4;
 const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FIXTURE_BYTES: usize = 512 * 1024;
@@ -291,6 +291,11 @@ struct Report {
     pull_request_number: u64,
     pull_request_title: String,
     aggregate_code: ResultCode,
+    /// #16214: coarse typed outcome class mirroring the exit contract:
+    /// `PASS` (exit 0), `CONTRADICTION` (exit 2), or `NOT_PROVEN` (exit 3).
+    /// A crash never produces a receipt at all; it exits 4 with
+    /// `INSTRUMENT_FAILURE` on the error channel.
+    posture: &'static str,
     semantic_completion_proven: bool,
     rows: Vec<RelationResult>,
     /// Present only for live evaluation (#15640): the captured
@@ -315,6 +320,23 @@ impl Report {
         } else {
             0
         }
+    }
+
+    fn posture(&self) -> &'static str {
+        posture_for_rows(&self.rows)
+    }
+}
+
+/// #16214: the coarse posture of a produced report. A contradiction row is
+/// a definitive bad verdict about the PR; otherwise any not-proven row means
+/// completion was not established; otherwise the report passes.
+fn posture_for_rows(rows: &[RelationResult]) -> &'static str {
+    if rows.iter().any(|row| row.code.is_failure()) {
+        "CONTRADICTION"
+    } else if rows.iter().any(|row| row.code.is_not_proven()) {
+        "NOT_PROVEN"
+    } else {
+        "PASS"
     }
 }
 
@@ -431,8 +453,17 @@ struct FixturePullRequest {
 struct FixtureIssue {
     repository: String,
     number: u64,
+    #[serde(default)]
     title: String,
+    #[serde(default)]
     body: String,
+    /// Offline stand-in for a lookup that ran and found nothing: the live
+    /// path maps that to IssueEvidence::Unavailable (a NOT_PROVEN_GITHUB
+    /// verdict), while an omitted issue is a fixture that never tried
+    /// (LookupFailed, an instrument failure). Without this, no fixture can
+    /// express a real not-proven verdict.
+    #[serde(default)]
+    unavailable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -452,11 +483,49 @@ struct FixtureExpectedRow {
 
 fn main() {
     if let Err(error) = run_cli() {
-        eprintln!(
-            "INSTRUMENT_FAILURE semantic-close-containment: {}",
-            sanitize_for_output(&error.to_string(), 1_024)
+        instrument_failure_exit(&error.to_string());
+    }
+}
+
+/// #16214: an instrument failure is the opposite of a not-proven verdict —
+/// nothing was evaluated, so no semantic claim about the PR is possible. It
+/// exits with the dedicated `EXIT_INSTRUMENT_FAILURE` code and carries the
+/// `INSTRUMENT_FAILURE` reason on the error channel as a GitHub annotation,
+/// so the check surface can tell a crashed validator from a real
+/// `NOT_PROVEN` verdict (exit 3 + postured receipt) without opening the run
+/// in a browser.
+fn instrument_failure_exit(detail: &str) -> ! {
+    let detail = sanitize_for_output(detail, 1_024);
+    let message = format!("INSTRUMENT_FAILURE semantic-close-containment: {detail}");
+    eprintln!("{message}");
+    eprintln!("{}", github_annotation("error", &message));
+    exit(EXIT_INSTRUMENT_FAILURE)
+}
+
+/// Render a GitHub Actions workflow-command annotation. The message is
+/// escaped for the single-line annotation grammar (`%` → `%25`, CR → `%0D`,
+/// LF → `%0A`); it goes to stderr, which the runner scans alongside stdout,
+/// so the report on stdout stays a clean machine-readable receipt (#16214).
+fn github_annotation(kind: &str, message: &str) -> String {
+    let escaped = message.replace('%', "%25").replace('\r', "%0D").replace('\n', "%0A");
+    format!("::{kind}::{escaped}")
+}
+
+/// #16214: every not-proven relation reaches the annotations channel as a
+/// typed receipt, not only the rendered step summary, so scripts and agents
+/// can distinguish a real `NOT_PROVEN` verdict (exit 3, postured receipt,
+/// per-relation annotations) from an instrument crash (exit 4,
+/// `INSTRUMENT_FAILURE`) through the API surface alone.
+fn emit_not_proven_annotations(report: &Report) {
+    for row in report.rows.iter().filter(|row| row.code.is_not_proven()) {
+        let message = format!(
+            "NOT_PROVEN {}#{}: {} [{}]",
+            row.repository,
+            row.issue_number,
+            sanitize_for_output(&row.reason, 512),
+            row.code.as_str(),
         );
-        exit(EXIT_INSTRUMENT_FAILURE);
+        eprintln!("{}", github_annotation("error", &message));
     }
 }
 
@@ -483,6 +552,8 @@ fn run_cli() -> Result<()> {
     if let Some(expected) = fixture_expected {
         verify_expected(&report, &expected)?;
     }
+
+    emit_not_proven_annotations(&report);
 
     match args.format {
         OutputFormat::Human => print_human(&report),
@@ -589,7 +660,7 @@ struct LivePullRequest {
 /// Validate the fetched snapshot against the event locator, apply the
 /// subject bounds, and derive the snapshot receipt. Locator mismatch,
 /// malformed data, and oversized title/body fail closed as instrument
-/// failures (exit 3) — they are never semantic verdicts.
+/// failures (exit 4) — they are never semantic verdicts.
 fn validate_live_snapshot(
     raw: &[u8],
     locator: &EventLocator,
@@ -701,14 +772,16 @@ fn evaluate_fixture_with_rules(fixture: &Fixture, rules: RuleGate) -> Result<Rep
     for issue in &fixture.issues {
         let key =
             IssueKey { repository: canonical_repository(&issue.repository)?, number: issue.number };
-        issues.insert(
-            key,
+        let evidence = if issue.unavailable {
+            IssueEvidence::Unavailable("fixture marks the issue unavailable".to_string())
+        } else {
             IssueEvidence::Available(IssueSubject {
                 number: issue.number,
                 title: issue.title.clone(),
                 body: issue.body.clone(),
-            }),
-        );
+            })
+        };
+        issues.insert(key, evidence);
     }
     evaluate_with_rules(
         &pull,
@@ -779,6 +852,7 @@ where
             pull_request_number: pull.number,
             pull_request_title: pull.title.clone(),
             aggregate_code: ResultCode::PassNotApplicable,
+            posture: posture_for_rows(&[]),
             semantic_completion_proven: false,
             rows: Vec::new(),
             subject_snapshot: None,
@@ -801,6 +875,7 @@ where
         pull_request_number: pull.number,
         pull_request_title: pull.title.clone(),
         aggregate_code,
+        posture: posture_for_rows(&rows),
         semantic_completion_proven: false,
         rows,
         subject_snapshot: None,
@@ -2505,8 +2580,9 @@ fn sanitize_for_output(value: &str, max_bytes: usize) -> String {
 
 fn print_human(report: &Report) {
     println!(
-        "{}   {}#{}   {}",
+        "{}   posture={}   {}#{}   {}",
         report.aggregate_code.as_str(),
+        report.posture(),
         report.repository,
         report.pull_request_number,
         sanitize_for_output(&report.pull_request_title, 512)
@@ -2795,6 +2871,7 @@ mod tests {
             // Through the production helper, not a literal: a report whose
             // headline is hardcoded cannot falsify the headline.
             aggregate_code: aggregate_code(&rows),
+            posture: posture_for_rows(&rows),
             semantic_completion_proven: false,
             rows,
             subject_snapshot: None,
@@ -5120,5 +5197,68 @@ mod tests {
         );
         assert!(validate_live_snapshot(oversized_title.as_bytes(), &locator).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn exit_contract_and_posture_separate_verdicts_from_crashes() {
+        let row = |code: ResultCode| RelationResult {
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            issue_number: 7,
+            keyword: "closes".to_string(),
+            source_line: "Closes #7".to_string(),
+            line_number: 1,
+            code,
+            rule_id: None,
+            reason: "unit".to_string(),
+            suggested_relation: None,
+            retirement_mapping: None,
+        };
+        let report = |rows: Vec<RelationResult>| {
+            let aggregate_code = rows
+                .iter()
+                .find(|row| row.code.is_failure())
+                .map(|row| row.code)
+                .or_else(|| rows.iter().find(|row| row.code.is_not_proven()).map(|row| row.code))
+                .unwrap_or(ResultCode::PassNoHighConfidenceContradiction);
+            Report {
+                schema_version: REPORT_SCHEMA,
+                repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+                pull_request_number: 1,
+                pull_request_title: "exit contract".to_string(),
+                aggregate_code,
+                posture: posture_for_rows(&rows),
+                semantic_completion_proven: false,
+                rows,
+                subject_snapshot: None,
+            }
+        };
+
+        let pass = report(vec![row(ResultCode::PassNoHighConfidenceContradiction)]);
+        assert_eq!(pass.exit_code(), 0);
+        assert_eq!(pass.posture(), "PASS");
+
+        let contradiction = report(vec![row(ResultCode::FailPhaseTerminalRelation)]);
+        assert_eq!(contradiction.exit_code(), EXIT_CONTRADICTION);
+        assert_eq!(contradiction.posture(), "CONTRADICTION");
+
+        let not_proven = report(vec![row(ResultCode::NotProvenGithub)]);
+        assert_eq!(not_proven.exit_code(), EXIT_NOT_PROVEN);
+        assert_eq!(not_proven.posture(), "NOT_PROVEN");
+
+        // Row-level instrument trouble is not a verdict about the subject:
+        // the landed #16233 contract lets it outrank a not-proven verdict, so
+        // the run exits as an instrument failure, never as exit 3.
+        let row_instrument = report(vec![row(ResultCode::InstrumentFailure)]);
+        assert_eq!(row_instrument.exit_code(), EXIT_INSTRUMENT_FAILURE);
+
+        assert_eq!(EXIT_INSTRUMENT_FAILURE, 4);
+        assert_ne!(EXIT_INSTRUMENT_FAILURE, EXIT_NOT_PROVEN);
+        assert_ne!(EXIT_INSTRUMENT_FAILURE, EXIT_CONTRADICTION);
+    }
+
+    #[test]
+    fn annotations_escape_workflow_command_metacharacters() {
+        let annotation = github_annotation("error", "NOT_PROVEN r#1: line one\r\nline two 100%");
+        assert_eq!(annotation, "::error::NOT_PROVEN r#1: line one%0D%0Aline two 100%25");
     }
 }

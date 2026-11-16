@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -38,6 +39,30 @@ def shard_summary(*, sha: str = SUBJECT) -> dict[str, object]:
 
 
 class VerifyGateReceiptFreshnessTests(unittest.TestCase):
+    def test_summary_cannot_borrow_gate_receipt_binding_at_upload_cli(self) -> None:
+        for subject in (None, 7, [], {}, "", "b" * 40):
+            with self.subTest(subject=subject), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                payload = shard_summary()
+                payload["subject_sha"] = subject
+                payload["metadata"] = {"git_sha": SUBJECT}
+                (root / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), "--subject-sha", SUBJECT,
+                     "--summary-dir", str(root), "--receipt-dir", str(root / "absent")],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+                self.assertIn("summary.json", result.stderr)
+
+    def test_summary_binding_is_authoritative_even_with_receipt_metadata(self) -> None:
+        payload = shard_summary()
+        payload["metadata"] = {"git_sha": "b" * 40}
+        self.assertEqual(SUBJECT, verifier.bound_subject(payload))
+        del payload["subject_sha"]
+        payload["metadata"] = {"git_sha": SUBJECT}
+        self.assertIsNone(verifier.bound_subject(payload))
+
     def test_fresh_gate_receipt_and_summary_pass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

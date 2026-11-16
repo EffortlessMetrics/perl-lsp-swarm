@@ -134,7 +134,7 @@ semantics, and it does **not** authorize deleting the published package.
 | successor | wake |
 |---|---|
 | #8844 | **May start now.** This ruling is its start condition. |
-| #8845 | After #8844 lands. The migration set is this manifest's gating rows: 4 production, 5 re-export, 5 package-dependency, 8 test-fixture. |
+| #8845 | After #8844 lands. The migration set is this manifest's gating rows: 4 production, 5 re-export, 4 package-dependency, 8 test-fixture. |
 | #8847 | After #8845 **and** the window closes on **re-observed** registry evidence. #8847 must re-run the reverse-dependency observation; it may not inherit this snapshot. |
 
 **Reversal condition.** Move to `RETAIN` only on a third-party reverse dependency,

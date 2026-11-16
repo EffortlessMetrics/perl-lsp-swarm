@@ -326,7 +326,10 @@ mod tests {
     use super::*;
 
     fn fixture_git(repository: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").current_dir(repository).args(args).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .current_dir(repository)
+            .args(args)
+            .output()?;
         color_eyre::eyre::ensure!(output.status.success(), "git {args:?}: {:?}", output);
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
@@ -585,7 +588,9 @@ mod tests {
 
     #[test]
     fn test_current_head_is_ancestor_of_itself() -> Result<()> {
-        let output = Command::new("git").args(["rev-parse", "--verify", "HEAD^{commit}"]).output();
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(["rev-parse", "--verify", "HEAD^{commit}"])
+            .output();
         let Ok(output) = output else {
             // git not available — skip
             return Ok(());
@@ -702,7 +707,7 @@ mod tests {
     /// Resolve `refname` to a full SHA, returning `None` when git or the ref
     /// is unavailable (tests degrade to skip in that case).
     fn resolve_ref(refname: &str) -> Option<String> {
-        let output = Command::new("git")
+        let output = xtask::git_environment::isolate(Command::new("git"))
             .args(["rev-parse", "--verify", &format!("{refname}^{{commit}}")])
             .output()
             .ok()?;
@@ -715,8 +720,10 @@ mod tests {
 
     /// First root commit reachable from HEAD, `None` when unavailable.
     fn root_commit() -> Option<String> {
-        let output =
-            Command::new("git").args(["rev-list", "--max-parents=0", "HEAD"]).output().ok()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(["rev-list", "--max-parents=0", "HEAD"])
+            .output()
+            .ok()?;
         if !output.status.success() {
             return None;
         }

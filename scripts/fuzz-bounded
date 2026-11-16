@@ -9,7 +9,9 @@ usage() {
 Usage: scripts/fuzz-bounded [--list] [--duration SECONDS] [-- TARGET...]
 
 Runs every cargo-fuzz binary declared in fuzz/Cargo.toml with a bounded time
-budget. Set FUZZ_MAX_LEN and FUZZ_TIMEOUT to override libFuzzer limits.
+budget. Set FUZZ_MAX_LEN, FUZZ_TIMEOUT, and FUZZ_RSS_LIMIT_MB to override
+libFuzzer limits. FUZZ_RSS_LIMIT_MB defaults to 2048, matching libFuzzer's
+implicit ceiling (#18144); do not raise it to hide unbounded growth.
 USAGE
 }
 
@@ -145,13 +147,15 @@ reject_unknown_fuzz_targets
 
 max_len=${FUZZ_MAX_LEN:-1000}
 timeout=${FUZZ_TIMEOUT:-25}
+rss_limit_mb=${FUZZ_RSS_LIMIT_MB:-2048}
 
 echo "🔥 Running ${#targets[@]} fuzz target(s) for ${duration}s each"
 for target in "${targets[@]}"; do
-    echo ">>> cargo +nightly fuzz run $target -- -max_total_time=$duration -max_len=$max_len -timeout=$timeout"
+    echo ">>> cargo +nightly fuzz run $target -- -max_total_time=$duration -max_len=$max_len -timeout=$timeout -rss_limit_mb=$rss_limit_mb"
     cargo +nightly fuzz run "$target" -- \
-        -max_total_time="$duration" \
-        -max_len="$max_len" \
-        -timeout="$timeout"
+      -max_total_time="$duration" \
+      -max_len="$max_len" \
+      -timeout="$timeout" \
+      -rss_limit_mb="$rss_limit_mb"
 done
 echo "✅ Bounded fuzz testing complete"

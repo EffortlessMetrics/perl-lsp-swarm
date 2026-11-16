@@ -20,7 +20,9 @@ import {
 
 function makeConfig(values: Record<string, unknown>, explicit = Object.keys(values)) {
   return {
-    get: jest.fn((key: string, defaultValue?: unknown) => values[key] ?? defaultValue),
+    get: jest.fn((key: string, defaultValue?: unknown) =>
+      values[key] === undefined ? defaultValue : values[key],
+    ),
     inspect: jest.fn((key: string) =>
       explicit.includes(key) ? { workspaceValue: values[key] } : undefined,
     ),
@@ -334,6 +336,55 @@ describe('language client configuration', () => {
       'lsp.formatting',
     ]);
     expect(disabledFeatures).toEqual(['lsp.hover']);
+  });
+
+  test.each([null, true, false, 0, 42, {}, 'lsp.hover'])(
+    'ignores non-array disabledFeatures %p and retains boolean aliases',
+    (disabledFeatures) => {
+      expect(buildDisabledFeaturesFromConfig(makeConfig({ disabledFeatures }))).toEqual([]);
+      expect(
+        buildDisabledFeaturesFromConfig(
+          makeConfig({ disabledFeatures, enableSemanticTokens: false, enableFormatting: false }),
+        ),
+      ).toEqual(['lsp.semantic_tokens', 'lsp.formatting']);
+    },
+  );
+
+  test('filters non-string disabled features while preserving strings and the input array', () => {
+    const disabledFeatures = Object.freeze(['lsp.hover', null, 42, false, {}, 'lsp.formatting']);
+
+    expect(
+      buildDisabledFeaturesFromConfig(
+        makeConfig({ disabledFeatures, enableSemanticTokens: false, enableFormatting: false }),
+      ),
+    ).toEqual(['lsp.hover', 'lsp.formatting', 'lsp.semantic_tokens']);
+    expect(disabledFeatures).toEqual(['lsp.hover', null, 42, false, {}, 'lsp.formatting']);
+  });
+
+  test.each([null, undefined, 0, 1, '', 'false', [], {}, true])(
+    'does not treat malformed or enabled boolean settings %p as false',
+    (value) => {
+      expect(
+        buildDisabledFeaturesFromConfig(
+          makeConfig({ enableSemanticTokens: value, enableFormatting: false }),
+        ),
+      ).toEqual(['lsp.formatting']);
+      expect(
+        buildDisabledFeaturesFromConfig(
+          makeConfig({ enableSemanticTokens: false, enableFormatting: value }),
+        ),
+      ).toEqual(['lsp.semantic_tokens']);
+    },
+  );
+
+  test('preserves an empty default and avoids appending existing aliases', () => {
+    expect(buildDisabledFeaturesFromConfig(makeConfig({}))).toEqual([]);
+    const disabledFeatures = Object.freeze(['lsp.semantic_tokens', 'lsp.formatting']);
+    expect(
+      buildDisabledFeaturesFromConfig(
+        makeConfig({ disabledFeatures, enableSemanticTokens: false, enableFormatting: false }),
+      ),
+    ).toEqual(disabledFeatures);
   });
 
   test.each([

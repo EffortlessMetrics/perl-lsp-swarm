@@ -3,9 +3,9 @@
 `perl-lsp-swarm` is the active development source of truth.
 It owns active product implementation, proof, release preparation, and the
 current sync protocol.
-`perl-lsp` is the release, history, and canonical package-lineage repo.
-It is the publication repository and owns public release lineage and
-publication-specific governance.
+`perl-lsp` is the release, history, and canonical package-lineage repo. It is also the
+public pull-request surface. It is the publication repository and owns public release
+lineage and publication-specific governance.
 
 This document is the canonical stable contract for history-preserving
 `perl-lsp-swarm` → `perl-lsp` release syncs. The copy of this document present
@@ -24,16 +24,35 @@ stable protocol.
 | Repository | Authority |
 | --- | --- |
 | `perl-lsp-swarm/main` | Active development; product implementation, tests, compiler/LSP/DAP work, proof, freeze, release preparation, and current sync protocol |
-| `perl-lsp/master` | Release lineage; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
+| `perl-lsp/master` | Release lineage; public pull-request ingress; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
 
-Normal product work starts and converges in swarm. Do not maintain parallel
-implementation queues in both repositories.
+Normal product work starts and converges in swarm. Development issues remain in swarm,
+including issues that an external contributor may choose to implement. Do not maintain
+parallel implementation queues in both repositories. That development authority does not
+make swarm the public PR ingress: external implementation pull requests target
+`perl-lsp/master`.
 
-An emergency product fix may begin in `perl-lsp` only when release safety
-requires it. Mirror or supersede the product/test effect in swarm immediately
-and invalidate any affected prepared-release evidence. Publication-repository
-history may legitimately contain release-lineage-only changes that do not
-belong in swarm.
+Before integrating a shared-product external pull request, maintainers first establish
+that the public source base contains the accepted swarm state and reconcile the pull
+request against that current base. After the public merge, its shared-product effect must
+be preserved back in swarm before a later complete-tree projection can overwrite it.
+
+This is currently a maintainer-owned integration policy, not an automated bridge contract.
+The frozen-release publication runbook below is not the operator procedure for ordinary
+external pull requests. Until a dedicated source-convergence procedure lands, the
+pre-integration and reverse-convergence steps are performed and reviewed explicitly. This
+boundary does not itself cut a release or publish a channel.
+
+Maintainer-originated product work begins in swarm by default. A maintainer may begin a
+direct product fix in `perl-lsp` only when release safety requires it. External
+contributor pull requests are a separate ingress route: they are reconciled against
+current swarm state before integration and their shared-product effect is
+reverse-converged after merge.
+
+Any direct public-repository product/test effect that belongs to the shared product must
+be mirrored, reverse-converged, or superseded in swarm immediately, and any affected
+prepared-release evidence must be invalidated. Publication-repository history may
+legitimately contain release-lineage-only changes that do not belong in swarm.
 
 ## Sync-boundary invariant
 

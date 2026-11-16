@@ -559,12 +559,13 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
         ),
         fixture!(
             NodeKind::Regex {
+                form: crate::ast::RegexSurfaceForm::BarePattern,
                 pattern: text(),
                 replacement: Some(text()),
                 modifiers: text(),
                 has_embedded_code: false,
             },
-            &["pattern", "replacement", "modifiers"],
+            &["pattern", "replacement", "modifiers", "form"],
             &["has_embedded_code"]
         ),
         fixture!(

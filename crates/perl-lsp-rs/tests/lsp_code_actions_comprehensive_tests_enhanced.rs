@@ -295,7 +295,7 @@ fn test_enhanced_extract_variable_refactoring() -> Result<(), Box<dyn std::error
     if let Some(action) = extract_var_action {
         // AC3: Validate action properties
         assert!(
-            action["kind"].as_str() == Some("refactor.extract"),
+            action["kind"].as_str() == Some("refactor.extract.variable"),
             "Extract variable action should have correct kind"
         );
 

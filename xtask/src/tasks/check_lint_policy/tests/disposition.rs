@@ -17,6 +17,8 @@ const REQUIRED: &[&str] = &[
     "rust::let_underscore_lock",
     "clippy::let_underscore_lock",
     "clippy::decimal_bitwise_operands",
+    "clippy::path_buf_push_overwrite",
+    "clippy::join_absolute_paths",
 ];
 
 fn required_ledger() -> super::super::model::LintLedger {
@@ -32,6 +34,8 @@ fn required_ledger() -> super::super::model::LintLedger {
     ledger.lint.push(lint_entry(REQUIRED[7], "active"));
     ledger.lint.push(lint_entry(REQUIRED[8], "active"));
     ledger.lint.push(lint_entry(REQUIRED[9], "active"));
+    ledger.lint.push(lint_entry(REQUIRED[10], "active"));
+    ledger.lint.push(lint_entry(REQUIRED[11], "active"));
     ledger
 }
 

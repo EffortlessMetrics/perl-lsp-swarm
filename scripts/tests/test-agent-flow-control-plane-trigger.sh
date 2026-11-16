@@ -39,6 +39,7 @@ REQUIRED_PATHS = {
     "xtask/tests/agent_shift_left_mutation_admission_contract.rs",
     "xtask/tests/pr_convergence_contract.rs",
     "xtask/tests/shift_left_publication_contract.rs",
+    "xtask/tests/verify_live_ci_currentness_contract.rs",
     "scripts/tests/test-agent-flow-control-plane-trigger.sh",
     ".github/workflows/agent-flow-control-plane.yml",
 }

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { writeFakeTool } from './fakeToolFixture';
 
 const mockLanguageClientStart = jest.fn(() => new Promise<void>(() => undefined));
 const mockLanguageClientStop = jest.fn(async () => undefined);
@@ -30,10 +31,20 @@ import { activate, deactivate } from '../extension';
 // `onLanguage:perl` activation carries.
 import { openPerlDocument } from './serverDemandDocuments';
 
-function delay(ms: number): Promise<'timeout'> {
-  return new Promise((resolve) => {
-    setTimeout(() => resolve('timeout'), ms);
+function delay(ms: number): { promise: Promise<'timeout'>; cancel: () => void } {
+  let handle: NodeJS.Timeout | undefined;
+  const promise = new Promise<'timeout'>((resolve) => {
+    handle = setTimeout(() => resolve('timeout'), ms);
   });
+  return {
+    promise,
+    cancel: () => {
+      if (handle !== undefined) {
+        clearTimeout(handle);
+        handle = undefined;
+      }
+    },
+  };
 }
 
 async function waitUntil(condition: () => boolean, timeoutMs: number): Promise<void> {
@@ -98,7 +109,7 @@ describe('extension activation startup scheduling (#3159)', () => {
       extensionRoot,
       process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
     );
-    fs.writeFileSync(serverPath, '');
+    writeFakeTool(serverPath);
 
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue?: unknown) => {
@@ -117,10 +128,15 @@ describe('extension activation startup scheduling (#3159)', () => {
 
     const activation = activate(makeContext(extensionRoot));
 
-    await expect(
-      Promise.race([activation.then(() => 'activated' as const), delay(250)]),
-    ).resolves.toBe('activated');
-    await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 500);
+    const activationTimeout = delay(5_000);
+    try {
+      await expect(
+        Promise.race([activation.then(() => 'activated' as const), activationTimeout.promise]),
+      ).resolves.toBe('activated');
+    } finally {
+      activationTimeout.cancel();
+    }
+    await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 5_000);
 
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
 

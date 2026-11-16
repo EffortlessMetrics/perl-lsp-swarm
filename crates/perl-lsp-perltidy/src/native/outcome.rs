@@ -4,9 +4,9 @@ use super::implementation::counters::{self, NativePipelineCounters, PipelineColl
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
-    TextRange, TrailingComma, format_simple_line, indent_unit, is_rendered_block_boundary_line,
-    literal_preserve_region, preserve_region_lines, range_includes_line, rendered_boundary_role,
-    split_trailing_comment,
+    TextRange, TrailingComma, format_simple_line, indent_unit, is_perl_line_directive,
+    is_rendered_block_boundary_line, literal_preserve_region, preserve_region_lines,
+    range_includes_line, rendered_boundary_role, split_trailing_comment,
 };
 use serde::{Deserialize, Serialize};
 
@@ -142,6 +142,58 @@ pub enum FormatRequestTarget {
     },
 }
 
+/// Engine path actually executed for one formatting computation.
+///
+/// This is independent from [`FormatRequestTarget`]: a range request may still
+/// execute whole-document external logic, and a document request must not be
+/// inferred from returned edit shape (#7581).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormatExecutionStrategy {
+    /// Native formatter rendered the complete document.
+    NativeDocument,
+    /// Native formatter rendered one admitted range or syntax island.
+    NativeRangeOrIsland,
+    /// Native formatter executed a canonical multi-range plan.
+    NativeMultiRangePlan,
+    /// Bounded on-type indentation adjustment.
+    BoundedOnTypeIndentation,
+    /// External Perl::Tidy compatibility adapter ran whole-document logic.
+    ExternalWholeDocument,
+    /// External adapter cannot honor a partial range safely.
+    ExternalPartialUnsupported,
+    /// Formatting was disabled before an engine ran.
+    Disabled,
+    /// No engine started for this terminal outcome.
+    NotStarted,
+}
+
+/// Derive the native execution strategy from the immutable requested target.
+#[must_use]
+pub const fn execution_for_requested_native_target(
+    target: &FormatRequestTarget,
+) -> FormatExecutionStrategy {
+    match target {
+        FormatRequestTarget::Document => FormatExecutionStrategy::NativeDocument,
+        FormatRequestTarget::Range { .. } => FormatExecutionStrategy::NativeRangeOrIsland,
+    }
+}
+
+fn execution_for_classified_native_outcome(
+    config: &FormatConfig,
+    target: &FormatRequestTarget,
+    reason: FormatReasonCode,
+    range_admission_passed: Option<bool>,
+) -> FormatExecutionStrategy {
+    if matches!(config.mode, FormatterMode::Off) {
+        return FormatExecutionStrategy::Disabled;
+    }
+    if matches!(reason, FormatReasonCode::UnsafeRange) && range_admission_passed == Some(false) {
+        return FormatExecutionStrategy::NotStarted;
+    }
+    execution_for_requested_native_target(target)
+}
+
 /// Stable subject, implementation, and configuration identity for one computation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatIdentity {
@@ -196,8 +248,10 @@ pub struct FormatOutcome {
     pub reason: FormatReasonCode,
     /// Source, implementation, mode, and configuration identity.
     pub identity: FormatIdentity,
-    /// Requested document or range target.
+    /// Immutable caller request target.
     pub target: FormatRequestTarget,
+    /// Engine path actually executed, recorded independently from `target`.
+    pub execution: FormatExecutionStrategy,
     /// Bounded edit and changed-source summary.
     pub change: FormatChangeSummary,
     /// Safety evidence used to authorize or refuse edits.
@@ -233,7 +287,7 @@ impl NativeFormatter {
         context: &FormatContext,
     ) -> TypedFormatResult {
         let result = <Self as PerlFormatter>::format_document(self, source, config);
-        classify_native_result(source, config, context, FormatRequestTarget::Document, result)
+        classify_native_result(source, config, context, FormatRequestTarget::Document, result, None)
     }
 
     /// Format a complete document recording deterministic pipeline work
@@ -252,8 +306,14 @@ impl NativeFormatter {
         let result = <Self as PerlFormatter>::format_document(self, source, config);
         scope.merge_into(counters);
         observe_edits_derived(counters, &result);
-        let typed =
-            classify_native_result(source, config, context, FormatRequestTarget::Document, result);
+        let typed = classify_native_result(
+            source,
+            config,
+            context,
+            FormatRequestTarget::Document,
+            result,
+            None,
+        );
         observe_elapsed(counters, started.elapsed());
         typed
     }
@@ -267,7 +327,8 @@ impl NativeFormatter {
         config: &FormatConfig,
         context: &FormatContext,
     ) -> TypedFormatResult {
-        let result = if valid_range(source, range) {
+        let admission_passed = valid_range(source, range);
+        let result = if admission_passed {
             <Self as PerlFormatter>::format_range(self, source, range, config)
         } else {
             FormatResult::unsafe_to_format(
@@ -282,6 +343,7 @@ impl NativeFormatter {
             context,
             FormatRequestTarget::Range { range },
             result,
+            Some(admission_passed),
         )
     }
 
@@ -298,7 +360,8 @@ impl NativeFormatter {
     ) -> TypedFormatResult {
         let scope = PipelineCollectorScope::install();
         let started = std::time::Instant::now();
-        let result = if valid_range(source, range) {
+        let admission_passed = valid_range(source, range);
+        let result = if admission_passed {
             <Self as PerlFormatter>::format_range(self, source, range, config)
         } else {
             FormatResult::unsafe_to_format(
@@ -315,6 +378,7 @@ impl NativeFormatter {
             context,
             FormatRequestTarget::Range { range },
             result,
+            Some(admission_passed),
         );
         observe_elapsed(counters, started.elapsed());
         typed
@@ -343,6 +407,7 @@ fn classify_native_result(
     context: &FormatContext,
     target: FormatRequestTarget,
     result: FormatResult,
+    range_admission_passed: Option<bool>,
 ) -> TypedFormatResult {
     let mut result = result;
     // The rendered bytes are the formatting authority. A result whose render
@@ -352,6 +417,24 @@ fn classify_native_result(
     // (#7585). Refusals and failures already render the source unchanged with
     // no edits, so this leaves their diagnostics-driven classification intact.
     if result.formatted == source && !result.edits.is_empty() {
+        result.edits.clear();
+        result.changed = false;
+    }
+    // Typed range admission is aligned with the enclosing block context
+    // (#17728): the engine's range walk reindents selected lines relative to
+    // their enclosing hand-written block (#17664), but a selection that would
+    // move a line at the wrong depth is not admitted — selection format must
+    // not reindent a line relative to hand-written surroundings. The same
+    // walk that adjudicates no-change targets
+    // (`target_has_only_supported_lines`) decides: a changed range result
+    // whose target it refuses is normalized back to unchanged so the
+    // classifier below reports `Refused`/`UnsupportedSyntax` instead of
+    // `Applied`. Document targets keep the full-document reindent contract.
+    if result.changed
+        && matches!(target, FormatRequestTarget::Range { .. })
+        && !target_has_only_supported_lines(source, config, target)
+    {
+        result.formatted = source.to_string();
         result.edits.clear();
         result.changed = false;
     }
@@ -373,6 +456,12 @@ fn classify_native_result(
             requested_mode: config.mode,
             config_fingerprint: config_fingerprint(config),
         },
+        execution: execution_for_classified_native_outcome(
+            config,
+            &target,
+            classification.reason,
+            range_admission_passed,
+        ),
         target,
         change: change_summary(source, &result.formatted, &result.edits),
         safety,
@@ -419,7 +508,14 @@ fn classify(
     }
 
     let Some(diagnostic) = result.diagnostics.first() else {
-        return if target_has_only_supported_lines(source, config, target) {
+        // A document target that spans a preserved-literal region (#17708) is
+        // admitted on the preservation contract itself: the formatter emits
+        // literal lines byte-exact, so an unchanged result over a preserve
+        // region is already formatted preserving literals — even when an
+        // opener line (`my $m = <<'EOF';`, bare `write;`) is not a
+        // `format_simple_line` candidate and fails the rendered-layout walk
+        // (#18465).
+        return if preserving || target_has_only_supported_lines(source, config, target) {
             Classification {
                 disposition: FormatDisposition::NoChange,
                 reason: if preserving {
@@ -521,6 +617,38 @@ fn split_lines_for_range_validation(source: &str) -> Vec<&str> {
 }
 
 #[cfg(test)]
+mod supported_lines_comment_tests {
+    use super::{FormatConfig, FormatRequestTarget, target_has_only_supported_lines};
+
+    fn supported(source: &str) -> bool {
+        target_has_only_supported_lines(
+            source,
+            &FormatConfig::default(),
+            FormatRequestTarget::Document,
+        )
+    }
+
+    #[test]
+    fn comment_layout_inside_blocks_is_part_of_the_support_check() {
+        // A comment left at the enclosing statement indent inside a block is
+        // not in rendered form: the formatter would reindent it, so the
+        // support check must not certify the document as already formatted.
+        assert!(!supported("sub f {\n# explain\n    my $x = 1;\n}\n"));
+        assert!(supported("sub f {\n    # explain\n    my $x = 1;\n}\n"));
+        // Comments outside any block impose no layout constraint.
+        assert!(supported("# top level\nmy $x = 1;\n"));
+    }
+
+    #[test]
+    fn preserved_lines_are_exempt_from_comment_layout() {
+        // Column-zero Perl line directives are preserved byte-for-byte by
+        // the formatter wherever they appear, so they certify as-is.
+        assert!(supported("sub f {\n#line 100 \"generated.pl\"\n    my $x = 1;\n}\n"));
+        assert!(supported("sub f {\n# line 42 \"other.pl\"\n    my $x = 1;\n}\n"));
+    }
+}
+
+#[cfg(test)]
 mod line_geometry_tests {
     use super::split_lines_for_range_validation;
 
@@ -568,12 +696,21 @@ fn utf16_len(source: &str) -> u32 {
 /// - the walked lines end with every opened block closed. Document targets
 ///   always balance (this walk runs only after a clean parse).
 ///
+/// Blank lines impose no indent constraint. Comment lines follow the layout
+/// the formatter emits: inside a tracked block a comment must sit at least
+/// one [`indent_unit`] past that block's indent, matching the body-line
+/// evidence below. Comments outside any tracked block, Perl line directives,
+/// and lines inside multiline literals are preserved byte-for-byte by the
+/// formatter, so they impose no constraint.
+///
 /// A range target is judged with its enclosing block context (#17713): the
 /// walk covers the whole document with an opener stack like the document
-/// formatter's `format_safe_subset` walk — the range formatter's
-/// `format_safe_subset_range` keeps no opener stack and only rewrites
-/// selected lines with `format_simple_line` — so blocks opened before the
-/// range seed the stack and blocks closed after it balance it. Only lines
+/// formatter's `format_safe_subset` walk, so blocks opened before the
+/// range seed the stack and blocks closed after it balance it. The engine's
+/// range walk may reindent selected lines relative to that stack (#17664),
+/// but the typed admission refuses a changed range result when this walk
+/// refuses its target (#17728): selection format must not reindent a line
+/// relative to a hand-written enclosing block. Only lines
 /// inside the range are adjudicated: an out-of-range line can neither
 /// refuse the range nor be excused by it, it only moves the stack. Before
 /// this, a range was judged on its selected lines alone, so a no-change
@@ -608,11 +745,28 @@ fn target_has_only_supported_lines(
             FormatRequestTarget::Range { range } => range_includes_line(range, line as u32),
         };
         let trimmed = text.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
             continue;
         }
         let indent_len = text.len() - text.trim_start_matches([' ', '\t']).len();
         let indent = &text[..indent_len];
+        if trimmed.starts_with('#') {
+            // Comment layout inside a tracked block is part of the rendered
+            // form (PR #17704 review): the formatter reindents comment-only
+            // lines to the block body indent, so a comment at or above its
+            // header's indent is hand-written, not rendered. Preserved
+            // lines (directives, literal content) and comments outside any
+            // tracked block certify at whatever indent they carry.
+            let preserved = is_perl_line_directive(text) || literal_lines.contains(&line);
+            if !preserved
+                && open_blocks
+                    .last()
+                    .is_some_and(|open| !indent.starts_with(&format!("{open}{body_indent}")))
+            {
+                return false;
+            }
+            continue;
+        }
         // Block boundaries the renderers own. Without this a block the
         // formatter itself rendered refused on the second pass, because no
         // header or tail line is a `format_simple_line` candidate.
@@ -944,6 +1098,7 @@ mod tests {
             &FormatContext::default(),
             FormatRequestTarget::Document,
             result,
+            None,
         );
 
         assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
@@ -977,6 +1132,7 @@ mod tests {
             &FormatContext::default(),
             FormatRequestTarget::Document,
             result,
+            None,
         );
 
         assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
@@ -1064,8 +1220,51 @@ mod tests {
             );
             assert_eq!(result.outcome.disposition, FormatDisposition::Refused);
             assert_eq!(result.outcome.reason, FormatReasonCode::UnsafeRange);
+            assert_eq!(result.outcome.execution, FormatExecutionStrategy::NotStarted);
             assert!(!result.result.changed);
         }
+    }
+
+    #[test]
+    fn disabled_typed_calls_record_disabled_execution() {
+        let config = FormatConfig { mode: FormatterMode::Off, ..FormatConfig::default() };
+        let document = NativeFormatter::new().format_document_typed(
+            "my$x=1;\n",
+            &config,
+            &FormatContext::default(),
+        );
+        assert_eq!(document.outcome.reason, FormatReasonCode::FormatterDisabled);
+        assert_eq!(document.outcome.execution, FormatExecutionStrategy::Disabled);
+        assert_eq!(document.outcome.identity.actual_engine, FormatEngine::Disabled);
+
+        let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 4));
+        let range_result = NativeFormatter::new().format_range_typed(
+            "my$x=1;\n",
+            range,
+            &config,
+            &FormatContext::default(),
+        );
+        assert_eq!(range_result.outcome.reason, FormatReasonCode::FormatterDisabled);
+        assert_eq!(range_result.outcome.execution, FormatExecutionStrategy::Disabled);
+    }
+
+    #[test]
+    fn successful_native_calls_record_target_matched_execution() {
+        let document = NativeFormatter::new().format_document_typed(
+            "my$x=1;\n",
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(document.outcome.execution, FormatExecutionStrategy::NativeDocument);
+
+        let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 4));
+        let range_result = NativeFormatter::new().format_range_typed(
+            "my$x=1;\n",
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(range_result.outcome.execution, FormatExecutionStrategy::NativeRangeOrIsland);
     }
 
     #[test]

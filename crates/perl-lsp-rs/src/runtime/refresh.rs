@@ -245,13 +245,26 @@ impl RefreshController {
     /// # Errors
     /// Returns first IO error encountered. Subsequent refresh attempts are skipped.
     pub(crate) fn refresh_all(&self, server: &super::LspServer) -> io::Result<()> {
+        self.refresh_non_diagnostic_providers(server)?;
+        self.refresh_diagnostics(server)
+    }
+
+    /// Refresh the other providers when a mutation owns its diagnostic tail.
+    ///
+    /// Retains their capability checks, debounce timers and first-error order.
+    ///
+    /// # Errors
+    /// Returns the first IO error and skips subsequent refresh attempts.
+    pub(crate) fn refresh_non_diagnostic_providers(
+        &self,
+        server: &super::LspServer,
+    ) -> io::Result<()> {
         // Refresh in dependency order (least to most expensive)
         self.refresh_folding_ranges(server)?;
         self.refresh_inlay_hints(server)?;
         self.refresh_inline_values(server)?;
         self.refresh_code_lens(server)?;
         self.refresh_semantic_tokens(server)?;
-        self.refresh_diagnostics(server)?;
         Ok(())
     }
 

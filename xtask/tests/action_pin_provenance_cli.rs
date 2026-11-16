@@ -367,7 +367,10 @@ fn run_cli(
 }
 
 fn git(repository: &Path, arguments: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(arguments).current_dir(repository).output()?;
+    let output = xtask::git_environment::isolate(Command::new("git"))
+        .args(arguments)
+        .current_dir(repository)
+        .output()?;
     if !output.status.success() {
         bail!(
             "git {} failed with status {}\nstderr:\n{}",

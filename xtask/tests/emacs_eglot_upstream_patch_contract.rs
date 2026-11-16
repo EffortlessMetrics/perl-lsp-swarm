@@ -335,7 +335,7 @@ fn unified_diff_applies_with_ordinary_git_apply_without_unidiff_zero() {
         .expect("write zero-context control diff");
 
     let run_git = |args: &[&str]| {
-        let output = Command::new("git")
+        let output = xtask::git_environment::isolate(Command::new("git"))
             .args(["-c", "core.autocrlf=false"])
             .args(args)
             .current_dir(&repo)

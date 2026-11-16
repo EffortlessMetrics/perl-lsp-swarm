@@ -507,6 +507,7 @@ mod source_boundary_tests {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -535,8 +536,15 @@ mod source_boundary_tests {
             "a nonresponding engine must not install breakpoints",
         )?;
         require(installed.ambiguous, "a nonresponding engine must invalidate the session")?;
+        // The aggregate installation deadline is 5s, but each framed
+        // acknowledgement window rides `debugger_timeout_budget_ms`, which
+        // coverage instrumentation clamps to >=15s (#18348). Keep the
+        // one-budget ceiling relative to that effective window: plain runs
+        // stay tight (5s window + 3s slack = 8s), instrumented runs assert
+        // against their clamped budget with the same slack.
+        let ceiling = DebugAdapter::framed_query_window_for_test(5_000) + Duration::from_secs(3);
         require(
-            elapsed < Duration::from_secs(8),
+            elapsed < ceiling,
             &format!("aggregate installation exceeded one budget: {elapsed:?}"),
         )?;
         let state = adapter

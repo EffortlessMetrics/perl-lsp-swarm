@@ -1,64 +1,29 @@
---- a/.github/workflows/ci.yml
-+++ b/.github/workflows/ci.yml
-@@ -6,16 +6,6 @@
- # Cost: ~$0.05 per PR (smoke + merge gate; see #4675 for rationale)
- 
- on:
--  pull_request:
--    branches: [ main, master ]
--    # Deliberately exclude `labeled` / `unlabeled` — labels are navigation and
--    # classification metadata, not CI authority. `ready_for_review` and
--    # `converted_to_draft` are kept because they change the draft-pr-check guard
--    # behavior and must trigger CI.
--    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
--  merge_group: {}
--  push:
--    branches: [ main, master ]
-   workflow_dispatch:
-     inputs:
-       base_sha:
---- a/.github/workflows/ripr.yml
-+++ b/.github/workflows/ripr.yml
-@@ -25,17 +25,6 @@
- name: ripr
- 
- on:
--  pull_request:
--    branches: [master, main]
--    types: [opened, synchronize, reopened, ready_for_review]
--  merge_group:
--  push:
--    branches: [master, main]
--  # #12563: seed the ripr rust caches from a main-ref run so hosted PR runs
--  # restore warm artifacts instead of cold-building into the runner-eviction
--  # window. Pull_request runs stay restore-only (docs/ci/cache-policy.md):
--  # PR-created caches are scoped to the PR merge ref and cannot warm other
--  # PRs, they only burn the 10 GB quota.
-   schedule:
-     - cron: '23 11 * * *'
-   workflow_dispatch:
---- a/.github/workflows/em-ci-routed-rust.yml
-+++ b/.github/workflows/em-ci-routed-rust.yml
-@@ -13,16 +13,6 @@
-           - cx53
-           - cx43
-           - github
--  pull_request:
--    branches: [main]
--    types: [opened, synchronize, reopened, ready_for_review]
--  merge_group:
--  # #16168: the required `Perl LSP Rust Small Result` context previously reported only
--  # on PR and merge-queue heads and never on a landed commit, so no run ever verified
--  # what actually sits on main. Landed main commits now carry their own baseline run.
--  push:
--    branches: [main, master]
--
- permissions:
-   actions: read
-   checks: read
+diff --git a/.ci/policies/required-checks.toml b/.ci/policies/required-checks.toml
+index ba38737..fa493f7 100644
 --- a/.ci/policies/required-checks.toml
 +++ b/.ci/policies/required-checks.toml
-@@ -129,7 +129,7 @@
+@@ -58,20 +58,6 @@ events = ["pull_request_target", "workflow_dispatch"]
+   reason = "A five-minute metadata job with no runner cost worth cancelling; the clause exists to stop long candidate builds stacking up."
+   tracking = "16164"
+
+-[[check]]
+-name = "validate-title"
+-workflow = ".github/workflows/merge-group-title-check.yml"
+-required = true
+-contract_role = "required-workflow-shape"
+-events = ["merge_group"]
+-
+-  # Queue title validation is read-only and emitted by exactly one job.
+-  [[check.exemption]]
+-  clause = "event-aware-concurrency"
+-  status = "accepted"
+-  reason = "A five-minute read-only queue metadata job must not be cancelled into a false red required context; no long candidate build runs here."
+-  tracking = "18255"
+-
+ [[check]]
+ name = "Methodology Gate"
+ workflow = ".github/workflows/methodology-gate.yml"
+@@ -130,7 +116,7 @@ producer = "repository-job"
  workflow = ".github/workflows/em-ci-routed-rust.yml"
  job = "rust-small-result"
  workflow_result = "propagate"
@@ -67,7 +32,7 @@
  required = true
  policy_role = "required"
  applicability = "always-or-scoped-noop"
-@@ -143,7 +143,7 @@
+@@ -144,7 +130,7 @@ producer = "repository-job"
  workflow = ".github/workflows/ripr.yml"
  job = "ripr"
  workflow_result = "propagate"
@@ -76,7 +41,7 @@
  required = true
  policy_role = "required"
  applicability = "always-or-scoped-noop"
-@@ -157,7 +157,7 @@
+@@ -158,7 +144,7 @@ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
  job = "check-all-targets"
  workflow_result = "propagate"
@@ -85,7 +50,7 @@
  required = true
  policy_role = "required"
  applicability = "conditional"
-@@ -171,7 +171,7 @@
+@@ -172,7 +158,7 @@ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
  job = "conflict-markers"
  workflow_result = "propagate"
@@ -94,7 +59,27 @@
  required = true
  policy_role = "required"
  applicability = "conditional"
-@@ -199,7 +199,7 @@
+@@ -194,27 +180,13 @@ enforcement = "github-ruleset"
+ ruleset_integration_id = 15368
+ reason = "Live main ruleset (id 16664791) requires PR title validation before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context) (#15348)."
+
+-[[checks]]
+-name = "validate-title"
+-producer = "repository-job"
+-workflow = ".github/workflows/merge-group-title-check.yml"
+-job = "validate-title"
+-workflow_result = "propagate"
+-events = ["merge_group"]
+-required = true
+-policy_role = "required"
+-applicability = "always-or-scoped-noop"
+-enforcement = "github-ruleset"
+-ruleset_integration_id = 15368
+-reason = "The same required context on merge_group has a separate read-only producer while the pull_request_target/workflow_dispatch producer preserves comment and label writes. Cross-event registration does not weaken same-event uniqueness (#18255)."
+-
+ [[checks]]
+ name = "Rust formatting"
+ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
  job = "rust-formatting"
  workflow_result = "propagate"
@@ -103,7 +88,7 @@
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
-@@ -248,7 +248,7 @@
+@@ -263,7 +235,7 @@ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
  job = "pr-smoke"
  workflow_result = "continue"
@@ -112,7 +97,7 @@
  required = false
  policy_role = "advisory"
  applicability = "conditional"
-@@ -261,7 +261,7 @@
+@@ -276,7 +248,7 @@ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
  job = "ux-tests"
  workflow_result = "propagate"
@@ -121,7 +106,7 @@
  required = false
  policy_role = "advisory"
  applicability = "conditional"
-@@ -274,7 +274,7 @@
+@@ -289,7 +261,7 @@ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
  job = "merge-gate"
  workflow_result = "propagate"
@@ -130,7 +115,7 @@
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
-@@ -326,7 +326,7 @@
+@@ -355,7 +327,7 @@ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
  job = "public-api-pr"
  workflow_result = "propagate"
@@ -139,10 +124,10 @@
  required = false
  policy_role = "advisory"
  applicability = "conditional"
-@@ -339,7 +339,7 @@
+@@ -368,7 +340,7 @@ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
  job = "semver-pr"
- workflow_result = "continue"
+ workflow_result = "propagate"
 -events = ["pull_request"]
 +events = ["workflow_dispatch"]
  required = false
@@ -189,7 +174,7 @@ index 8b5998e32c..774c72856f 100644
 -            echo "::error::Generated PR head moved between creation and dispatch (created=$CREATED_HEAD_SHA current=$head_sha); refusing to prove a different subject"
 +            echo "::error::Generated PR head moved between creation and dispatch (created=$CREATED_HEAD_SHA current=$head_sha); refusing metadata freshness for a different subject"
 @@ -420,11 +401,2 @@ jobs:
--          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml; do
+-          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml gate-enforcement-contract.yml; do
 -            if [ "$workflow" = ci.yml ]; then
 -              if [ "$identity_ok" = 1 ] \
 -                && resolve_identity \
@@ -200,11 +185,227 @@ index 8b5998e32c..774c72856f 100644
 -                continue
 -              fi
 -            elif gh workflow run "$workflow" --ref "$BRANCH"; then
-+          for workflow in pr-title-check.yml validate-ci-lane-history.yml; do
++          for workflow in pr-title-check.yml validate-ci-lane-history.yml gate-enforcement-contract.yml; do
 +            if gh workflow run "$workflow" --ref "$BRANCH"; then
 @@ -438 +410 @@ jobs:
 -              echo "::error::Generated PR head moved during the dispatch loop; raised checks may name different subjects"
 +              echo "::error::Generated PR head moved during the dispatch loop; metadata checks may name different subjects"
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index ae43fc4..383573c 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -6,16 +6,6 @@ name: CI
+ # Cost: ~$0.05 per PR (smoke + merge gate; see #4675 for rationale)
+
+ on:
+-  pull_request:
+-    branches: [ main, master ]
+-    # Deliberately exclude `labeled` / `unlabeled` — labels are navigation and
+-    # classification metadata, not CI authority. `ready_for_review` and
+-    # `converted_to_draft` are kept because they change the draft-pr-check guard
+-    # behavior and must trigger CI.
+-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+-  merge_group: {}
+-  push:
+-    branches: [ main, master ]
+   workflow_dispatch:
+     inputs:
+       base_sha:
+diff --git a/.github/workflows/em-ci-routed-rust.yml b/.github/workflows/em-ci-routed-rust.yml
+index 9c9bcc3..a986515 100644
+--- a/.github/workflows/em-ci-routed-rust.yml
++++ b/.github/workflows/em-ci-routed-rust.yml
+@@ -13,16 +13,6 @@ on:
+           - cx53
+           - cx43
+           - github
+-  pull_request:
+-    branches: [main]
+-    types: [opened, synchronize, reopened, ready_for_review]
+-  merge_group:
+-  # #16168: the required `Perl LSP Rust Small Result` context previously reported only
+-  # on PR and merge-queue heads and never on a landed commit, so no run ever verified
+-  # what actually sits on main. Landed main commits now carry their own baseline run.
+-  push:
+-    branches: [main, master]
+-
+ permissions:
+   actions: read
+   checks: read
+diff --git a/.github/workflows/merge-group-title-check.yml b/.github/workflows/merge-group-title-check.yml
+deleted file mode 100644
+index f6b41b4..0000000
+--- a/.github/workflows/merge-group-title-check.yml
++++ /dev/null
+@@ -1,168 +0,0 @@
+-name: Merge Queue Title Check
+-
+-on:
+-  # #18255: one read-only validate-title producer for the merge-group ref.
+-  merge_group: {}
+-
+-permissions:
+-  checks: read
+-  contents: read
+-  issues: read
+-  pull-requests: read
+-
+-jobs:
+-  validate-title:
+-    # The merge-group ref carries candidate workflow steps, so this producer is
+-    # deliberately read-only. It never checks out candidate contents or mutates
+-    # GitHub state; the adjacent PR workflow owns comment/label reconciliation.
+-    name: validate-title
+-    runs-on: ubuntu-24.04
+-    timeout-minutes: 5
+-    steps:
+-      - name: Validate merge-group title
+-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+-        with:
+-          script: |
+-            'use strict';
+-
+-            // Shared title policy, byte-identical to pr-title-check.yml so the
+-            // queue path and PR path cannot drift. Pure: never mutates state.
+-            const RELEASE_STAMP = /^v?\d+\.\d+\.\d+$/;
+-            const ISSUE_REFERENCE = /\B#(\d+)\b/g;
+-
+-            const labelsOf = (pr) => {
+-              const labels = pr.labels || [];
+-              return labels.map((label) => (typeof label === 'string' ? label : label.name));
+-            };
+-            const loginOf = (pr) =>
+-              (pr.user && pr.user.login) || (pr.author && pr.author.login) || '';
+-
+-            const validateTitle = (pr) => {
+-              const title = pr.title || '';
+-              const login = loginOf(pr);
+-              const labels = labelsOf(pr);
+-
+-              if (login === 'dependabot[bot]') {
+-                return { ok: true, kind: 'exempt', reason: 'dependabot' };
+-              }
+-              if (labels.includes('skip-title-check')) {
+-                return { ok: true, kind: 'exempt', reason: 'skip-title-check' };
+-              }
+-              if (RELEASE_STAMP.test(title.trim())) {
+-                return { ok: true, kind: 'exempt', reason: 'release stamp' };
+-              }
+-
+-              const matches = [...title.matchAll(ISSUE_REFERENCE)];
+-              if (matches.length === 0) {
+-                return { ok: false, kind: 'missing-issue', reason: 'no issue reference' };
+-              }
+-
+-              const nonZero = matches.find((match) => parseInt(match[1], 10) !== 0);
+-              if (!nonZero) {
+-                const placeholder = matches.find((match) => parseInt(match[1], 10) === 0);
+-                return {
+-                  ok: true,
+-                  kind: 'placeholder',
+-                  reason: 'placeholder issue reference',
+-                  placeholder: placeholder[0],
+-                };
+-              }
+-
+-              const issueNumber = parseInt(nonZero[1], 10);
+-              return { ok: true, kind: 'issue', reason: `issue #${issueNumber}`, issueNumber };
+-            };
+-
+-            // ---------------------------------------------------------------
+-            // Queue path (#18255). A native squash group commit has no PR
+-            // association, so the authoritative queue ref names the PR instead.
+-            // Re-read that PR's CURRENT title and metadata. Malformed, absent,
+-            // or contradictory identity fails closed. The event does not carry
+-            // the admitted PR head or a complete member list, so this validates
+-            // current named-PR metadata rather than claiming an exact-head or
+-            // complete-group proof. This branch never mutates PR state.
+-            // ---------------------------------------------------------------
+-            if (context.eventName === 'merge_group') {
+-              const mergeGroup = context.payload.merge_group || {};
+-              const headSha = mergeGroup.head_sha;
+-              const baseSha = mergeGroup.base_sha;
+-              const headRef = mergeGroup.head_ref;
+-              const baseRef = mergeGroup.base_ref;
+-              const shaPattern = /^[0-9a-f]{40}$/;
+-
+-              if (
+-                typeof headSha !== 'string' || !shaPattern.test(headSha) ||
+-                typeof baseSha !== 'string' || !shaPattern.test(baseSha) ||
+-                typeof headRef !== 'string' || typeof baseRef !== 'string'
+-              ) {
+-                core.setFailed(
+-                  'merge_group payload is missing or has malformed head_ref, base_ref, head_sha, or base_sha'
+-                );
+-                return;
+-              }
+-
+-              const groupBaseRef = baseRef.replace(/^refs\/heads\//, '');
+-              const queueRef = headRef.replace(/^refs\/heads\//, '');
+-              if (!groupBaseRef) {
+-                core.setFailed('merge_group payload is missing base_ref');
+-                return;
+-              }
+-
+-              // Match the entire native ref. The suffix is the group BASE, not
+-              // the PR head or synthetic group head. Escaping the base branch
+-              // keeps its characters literal and prevents partial or multiple
+-              // PR components from being accepted as a singleton identity.
+-              const escapedBase = groupBaseRef.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+-              const match = queueRef.match(
+-                new RegExp(`^gh-readonly-queue/${escapedBase}/pr-([1-9]\\d*)-${baseSha}$`)
+-              );
+-              const member = match ? Number(match[1]) : NaN;
+-              if (!Number.isSafeInteger(member) || member <= 0) {
+-                core.setFailed(
+-                  `merge_group head_ref ${headRef} does not name exactly one PR on ` +
+-                  `base ${groupBaseRef} with base SHA ${baseSha}`
+-                );
+-                return;
+-              }
+-
+-              let current;
+-              try {
+-                const { data } = await github.rest.pulls.get({
+-                  owner: context.repo.owner,
+-                  repo: context.repo.repo,
+-                  pull_number: member,
+-                });
+-                current = data;
+-              } catch (e) {
+-                core.setFailed(
+-                  `merge group title validation failed: #${member}: ` +
+-                  `could not re-read current title (${e.message})`
+-                );
+-                return;
+-              }
+-
+-              // The group base may be an earlier synthetic commit. A PR's
+-              // recorded base SHA is not required to equal that queue base.
+-              if (
+-                current.number !== member ||
+-                current.state !== 'open' ||
+-                current.base?.ref?.replace(/^refs\/heads\//, '') !== groupBaseRef ||
+-                typeof current.head?.sha !== 'string' ||
+-                !shaPattern.test(current.head.sha)
+-              ) {
+-                core.setFailed(
+-                  `merge group title validation failed: #${member} changed state, base, ` +
+-                  'or identity while queued; refusing to validate a different admission'
+-                );
+-                return;
+-              }
+-
+-              const verdict = validateTitle(current);
+-              if (!verdict.ok) {
+-                core.setFailed(`merge group title validation failed: #${member}: ${verdict.reason}`);
+-                return;
+-              }
+-              core.info(
+-                `merge group title validation passed for PR #${member} named by ${headRef}`
+-              );
+-              return;
+-            }
 diff --git a/.github/workflows/post-merge-status.yml b/.github/workflows/post-merge-status.yml
 index 6666ca9a68..2a4b61d191 100644
 --- a/.github/workflows/post-merge-status.yml
@@ -228,35 +429,62 @@ index 6666ca9a68..2a4b61d191 100644
 @@ -559,2 +551,0 @@ jobs:
 -          BASE_SHA: ${{ github.sha }}
 -          GENERATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
-@@ -562,12 +552,0 @@ jobs:
+@@ -562,14 +552,0 @@ jobs:
 -          # ci.yml's workflow_dispatch declares required inputs (since #13019):
 -          # the dispatched subject's exact base and head SHAs. Dispatching it
 -          # bare fails with HTTP 422 "Required input 'base_sha' not provided",
 -          # so the generated PR's required checks never populate (#13355).
+-          # ripr.yml declares the same optional inputs and must not evaluate an
+-          # empty RIPR_BASE_SHA on the generated head (#13709).
 -          # base_sha is this run's event SHA — the freshness gate above proved
 -          # it equals the live default-branch tip, i.e. the generated PR's
 -          # base. head_sha is the automation branch head the create-pr step
 -          # just wrote, which is the same commit the --ref below dispatches.
--          # The other three workflows declare no dispatch inputs and stay bare.
+-          # Only ci.yml and ripr.yml receive these subject identities.
 -          # Keep attempting every required workflow so one transient dispatch
 -          # failure cannot strand the later required checks. The final status
 -          # remains failing when any dispatch failed.
 @@ -576,8 +555,2 @@ jobs:
--          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
--            if [ "$workflow" = ci.yml ]; then
+-          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml gate-enforcement-contract.yml; do
+-            if [ "$workflow" = ci.yml ] || [ "$workflow" = ripr.yml ]; then
 -              if gh workflow run "$workflow" --ref "$BRANCH" \
 -                -f "base_sha=$BASE_SHA" \
 -                -f "head_sha=$GENERATED_HEAD_SHA"; then
 -                continue
 -              fi
 -            elif gh workflow run "$workflow" --ref "$BRANCH"; then
-+          for workflow in pr-title-check.yml; do
++          for workflow in pr-title-check.yml gate-enforcement-contract.yml; do
 +            if gh workflow run "$workflow" --ref "$BRANCH"; then
+diff --git a/.github/workflows/ripr.yml b/.github/workflows/ripr.yml
+index 53dd173..4b47e1f 100644
+--- a/.github/workflows/ripr.yml
++++ b/.github/workflows/ripr.yml
+@@ -25,17 +25,6 @@
+ name: ripr
+
+ on:
+-  pull_request:
+-    branches: [master, main]
+-    types: [opened, synchronize, reopened, ready_for_review]
+-  merge_group:
+-  push:
+-    branches: [master, main]
+-  # #12563: seed the ripr rust caches from a main-ref run so hosted PR runs
+-  # restore warm artifacts instead of cold-building into the runner-eviction
+-  # window. Pull_request runs stay restore-only (docs/ci/cache-policy.md):
+-  # PR-created caches are scoped to the PR merge ref and cannot warm other
+-  # PRs, they only burn the 10 GB quota.
+   schedule:
+     - cron: '23 11 * * *'
+   workflow_dispatch:
 diff --git a/xtask/tests/lane_history_ci_dispatch_contract.rs b/xtask/tests/lane_history_ci_dispatch_contract.rs
-index 8699131fae..c8aa1a8297 100644
+index 9209c8c..e8deee2 100644
 --- a/xtask/tests/lane_history_ci_dispatch_contract.rs
 +++ b/xtask/tests/lane_history_ci_dispatch_contract.rs
-@@ -8,5 +8,3 @@
+@@ -5,11 +5,9 @@
+ //! ci.yml's `workflow_dispatch` declares required `base_sha`/`head_sha`
+ //! inputs (#13019). The lane-history producer dispatched it bare, every
+ //! scheduled run failed with HTTP 422, and the generated refresh PR's
 -//! required checks never populated. These tests pin the repaired contract:
 -//! the step resolves the created PR's recorded base/head identity, refuses
 -//! to prove a moved subject, passes both SHAs to ci.yml only, keeps the
@@ -265,44 +493,80 @@ index 8699131fae..c8aa1a8297 100644
 +//! required checks never populated. The #17903 staged cutover preserves
 +//! metadata dispatch and freshness/failure behavior, while product qualification
 +//! is requested separately for the selected candidate through #17900.
-@@ -159,2 +157 @@ fn test_dispatch_step_declares_subject_identity_env() -> Result<(), Box<dyn std:
+
+ use std::collections::BTreeSet;
+ use std::fs;
+@@ -165,10 +163,9 @@ fn test_dispatch_step_declares_subject_identity_env() -> Result<(), Box<dyn std:
+     Ok(())
+ }
+
 -/// The step must resolve the PR's recorded base/head through gh, pass both
 -/// to ci.yml, and refuse to dispatch ci.yml for a moved subject (#15100).
 +/// Retain generated-subject freshness while forbidding implicit product proof.
-@@ -162 +159 @@ fn test_dispatch_step_declares_subject_identity_env() -> Result<(), Box<dyn std:
+ #[test]
 -fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error::Error>> {
 +fn test_metadata_step_preserves_subject_identity() -> Result<(), Box<dyn std::error::Error>> {
-@@ -170,3 +167,3 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
+     let step = dispatch_step()?;
+     assert!(
+         step.run.contains("gh pr view \"$PR_NUMBER\" --json baseRefOid,headRefOid"),
+@@ -176,9 +173,9 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
+         step.run
+     );
+     assert!(
 -        step.run.contains("-f \"base_sha=$base_sha\"")
 -            && step.run.contains("-f \"head_sha=$head_sha\""),
 -        "ci.yml dispatch must pass the resolved base_sha/head_sha inputs (#13019):\n{}",
 +        !step.run.contains("-f \"base_sha=$base_sha\"")
 +            && !step.run.contains("-f \"head_sha=$head_sha\""),
 +        "publication must not request product qualification (#17903):\n{}",
-@@ -189,2 +186 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
--/// Every required-check workflow must be raised on the generated PR, plus
--/// the lane-history validator, and each must accept workflow_dispatch.
+         step.run
+     );
+     assert!(
+@@ -195,24 +192,34 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
+     Ok(())
+ }
+
+-/// Every required dispatch registration's workflow must be raised on the
+-/// generated PR, plus the lane-history validator. Merge-group-only producers
+-/// are outside this event's scope and must not acquire a manual trigger merely
+-/// to satisfy this inventory.
 +/// Publication raises only title and payload metadata, never product proof.
-@@ -192 +188 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
+ #[test]
 -fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::Error>> {
 +fn test_dispatch_set_contains_only_metadata() -> Result<(), Box<dyn std::error::Error>> {
-@@ -199 +195,5 @@ fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::
+     let step = dispatch_step()?;
+     let order = dispatch_order(&step.run)?;
+     let dispatched: BTreeSet<String> = order.iter().cloned().collect();
+
+     let policy_path = project_root().join(".ci/policies/required-checks.toml");
+     let policy: TomlValue = toml::from_str(&fs::read_to_string(policy_path)?)?;
 -    let required = required_workflows(&policy)?;
 +    let mut required = required_workflows(&policy)?;
 +    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
 +        required.remove(product);
 +        assert!(!dispatched.contains(product), "publication cannot dispatch {product}");
 +    }
-@@ -204,0 +205,8 @@ fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::
+     assert!(
+         required.is_subset(&dispatched),
+         "generated-PR dispatch set must cover every required-check workflow; missing: {:?}",
+         required.difference(&dispatched).collect::<Vec<_>>()
+     );
 +    assert_eq!(
 +        dispatched,
 +        BTreeSet::from([
 +            "pr-title-check.yml".to_string(),
 +            "validate-ci-lane-history.yml".to_string(),
++            "gate-enforcement-contract.yml".to_string(),
 +        ]),
 +        "publication may dispatch only the retained metadata set"
 +    );
-@@ -371,9 +379 @@ mod simulation {
+     assert!(
+         dispatched.contains("validate-ci-lane-history.yml"),
+         "the reader-side payload oracle must also run on the refresh PR (#11731)"
+@@ -339,20 +346,11 @@ mod simulation {
+     fn expected_calls(order: &[String]) -> Vec<String> {
+         order
+             .iter()
 -            .map(|workflow| {
 -                if workflow == "ci.yml" {
 -                    format!(
@@ -313,21 +577,37 @@ index 8699131fae..c8aa1a8297 100644
 -                }
 -            })
 +            .map(|workflow| format!("workflow run {workflow} --ref {DISPATCH_BRANCH}"))
-@@ -383,2 +383 @@ mod simulation {
+             .collect()
+     }
+
 -    /// A healthy run dispatches ci.yml with the resolved PR identity and the
 -    /// remaining workflows bare, in loop order (#15100).
 +    /// Healthy publication dispatches only metadata, in loop order.
-@@ -397 +396 @@ mod simulation {
+     #[test]
+     fn test_all_success_dispatch_passes_subject_identity() -> Result<(), Box<dyn std::error::Error>>
+     {
+@@ -369,14 +367,13 @@ mod simulation {
+             "all-success dispatch run failed: {}",
+             String::from_utf8_lossy(&output.stderr)
+         );
 -        assert_eq!(calls, expected_calls(&order), "ci.yml must receive the exact PR identity");
 +        assert_eq!(calls, expected_calls(&order), "metadata dispatch must retain exact arguments");
-@@ -401,2 +400 @@ mod simulation {
+         Ok(())
+     }
+
 -    /// A failed identity lookup must fail the step, skip the ci.yml
 -    /// dispatch, and still attempt the other workflows (#15100).
 +    /// Failed identity lookup stays red while metadata checks remain independent.
-@@ -404 +402 @@ mod simulation {
+     #[test]
 -    fn test_failed_identity_lookup_skips_ci_dispatch() -> Result<(), Box<dyn std::error::Error>> {
 +    fn test_failed_identity_lookup_stays_red() -> Result<(), Box<dyn std::error::Error>> {
-@@ -461,5 +459,2 @@ mod simulation {
+         let step = dispatch_step()?;
+         let order = dispatch_order(&step.run)?;
+         let (output, calls) = run_scenario(DispatchScenario {
+@@ -445,13 +442,10 @@ mod simulation {
+         Ok(())
+     }
+
 -    /// A head that moves after the initial lookup but before the ci.yml
 -    /// dispatch must be caught by the per-dispatch re-resolution: ci.yml is
 -    /// skipped and the step fails rather than proving the moved subject
@@ -335,10 +615,16 @@ index 8699131fae..c8aa1a8297 100644
 -    /// (1), ci.yml pre-dispatch re-resolve (2), post-loop re-resolve (3).
 +    /// A generated head moving during metadata dispatch must fail the step.
 +    /// Lookup order is initial resolve, then post-loop re-resolve.
-@@ -467 +462 @@ mod simulation {
+     #[test]
 -    fn test_head_moving_before_ci_dispatch_is_caught() -> Result<(), Box<dyn std::error::Error>> {
 +    fn test_head_moving_during_metadata_dispatch_is_caught() -> Result<(), Box<dyn std::error::Error>> {
-@@ -487,22 +481,0 @@ mod simulation {
+         let step = dispatch_step()?;
+         let order = dispatch_order(&step.run)?;
+         let moved = "fedcba9876543210fedcba9876543210fedcba98";
+@@ -475,30 +469,4 @@ mod simulation {
+         assert_eq!(calls, bare, "the other workflows must still be attempted");
+         Ok(())
+     }
 -
 -    /// A head that moves after the ci.yml dispatch is caught by the
 -    /// post-loop re-resolution: the dispatch already landed on the
@@ -349,10 +635,14 @@ index 8699131fae..c8aa1a8297 100644
 -    {
 -        let step = dispatch_step()?;
 -        let order = dispatch_order(&step.run)?;
--        let stub = stubbed_step()?;
 -        let moved = "fedcba9876543210fedcba9876543210fedcba98";
--        let (output, calls) =
--            stub.run_moving(&pr_json(BASE_SHA, HEAD_SHA), 3, &pr_json(BASE_SHA, moved))?;
+-        let after = pr_json(BASE_SHA, moved);
+-        let (output, calls) = run_scenario(DispatchScenario {
+-            pr_json: &pr_json(BASE_SHA, HEAD_SHA),
+-            fail_pr_view: false,
+-            fail_workflow: None,
+-            move_after_call: Some((3, after.as_str())),
+-        })?;
 -        assert!(!output.status.success(), "a post-dispatch head move must fail the step");
 -        assert_eq!(
 -            calls,
@@ -361,33 +651,48 @@ index 8699131fae..c8aa1a8297 100644
 -        );
 -        Ok(())
 -    }
+ }
+diff --git a/xtask/tests/post_merge_status_regen_tests.rs b/xtask/tests/post_merge_status_regen_tests.rs
+index 820b222..acb2000 100644
 --- a/xtask/tests/post_merge_status_regen_tests.rs
 +++ b/xtask/tests/post_merge_status_regen_tests.rs
-@@ -73,2 +72,0 @@
+@@ -80,8 +80,6 @@ fn assert_dispatch_loop_behavior(
+     dispatch_run: &str,
+     dispatch_order: &[String],
+     branch: &str,
 -    base_sha: &str,
 -    head_sha: &str,
-@@ -82,4 +80 @@
--    // Record the full argument vector for every call and tolerate any arity:
--    // ci.yml's workflow_dispatch requires `-f base_sha=… -f head_sha=…`
--    // (#13019), so a five-arg stub would reject exactly the call this fixture
--    // must admit — and did, leaving this test red on main unobserved (#15100).
-+    // Record every metadata dispatch with its complete argument vector.
-@@ -96,4 +91 @@
--    // Stub every dispatch call, not just the first: the ci.yml special case
--    // precedes the bare `elif` dispatch, and an unstubbed suffix would invoke
--    // the real gh — failing hermeticity and, on an authenticated machine,
--    // dispatching real workflows.
-+    // Stub every dispatch call: no fixture may reach authenticated GitHub.
-@@ -116,2 +107,0 @@
--            .env("BASE_SHA", base_sha)
--            .env("GENERATED_HEAD_SHA", head_sha)
-@@ -148,3 +137,0 @@
--    // ci.yml's workflow_dispatch requires the dispatched subject's exact
--    // base/head SHAs (#13019); every other required workflow declares no
--    // dispatch inputs and stays bare (#13355).
-@@ -153,9 +140 @@
+ ) -> Result<(), Box<dyn std::error::Error>> {
+     use external_command::{
+         ExpectedExternalCommand, ExternalCommandFixture, HermeticCommandEnv,
+@@ -91,8 +89,6 @@ fn assert_dispatch_loop_behavior(
+     fn workflow_spec(
+         workflow: &str,
+         branch: &str,
+-        base_sha: &str,
+-        head_sha: &str,
+         fail: bool,
+     ) -> ExpectedExternalCommand {
+         let mut argv = vec![
+@@ -102,12 +98,6 @@ fn assert_dispatch_loop_behavior(
+             "--ref".to_string(),
+             branch.to_string(),
+         ];
+-        if (workflow == "ci.yml" || workflow == "ripr.yml") {
+-            argv.push("-f".into());
+-            argv.push(format!("base_sha={base_sha}"));
+-            argv.push("-f".into());
+-            argv.push(format!("head_sha={head_sha}"));
+-        }
+         let spec = ExpectedExternalCommand::exact("gh", argv);
+         if fail { spec.error("dispatch failed") } else { spec.stdout("") }
+     }
+@@ -118,25 +108,17 @@ fn assert_dispatch_loop_behavior(
+
+     let expected_calls = dispatch_order
+         .iter()
 -        .map(|workflow| {
--            if workflow == "ci.yml" {
+-            if (workflow == "ci.yml" || workflow == "ripr.yml") {
 -                format!(
 -                    "workflow run {workflow} --ref {branch} -f base_sha={base_sha} -f head_sha={head_sha}"
 -                )
@@ -396,24 +701,74 @@ index 8699131fae..c8aa1a8297 100644
 -            }
 -        })
 +        .map(|workflow| format!("workflow run {workflow} --ref {branch}"))
-@@ -379,5 +358,4 @@
+         .collect::<Vec<_>>();
+
+     let mut success = ExternalCommandFixture::new();
+     for workflow in dispatch_order {
+-        success = success.expect(workflow_spec(workflow, branch, base_sha, head_sha, false));
++        success = success.expect(workflow_spec(workflow, branch, false));
+     }
+     let success_env = HermeticCommandEnv::install("gh", &success)?;
+     let success_output = success_env.run_bash(
+         dispatch_run,
+-        &[("BRANCH", branch), ("BASE_SHA", base_sha), ("GENERATED_HEAD_SHA", head_sha)],
++        &[("BRANCH", branch)],
+     )?;
+     assert!(
+         success_output.status.success(),
+@@ -155,18 +137,12 @@ fn assert_dispatch_loop_behavior(
+     let first_workflow = dispatch_order.first().ok_or("required workflow set must not be empty")?;
+     let mut failure = ExternalCommandFixture::new();
+     for workflow in dispatch_order {
+-        failure = failure.expect(workflow_spec(
+-            workflow,
+-            branch,
+-            base_sha,
+-            head_sha,
+-            workflow == first_workflow,
+-        ));
++        failure = failure.expect(workflow_spec(workflow, branch, workflow == first_workflow));
+     }
+     let failure_env = HermeticCommandEnv::install("gh", &failure)?;
+     let failure_output = failure_env.run_bash(
+         dispatch_run,
+-        &[("BRANCH", branch), ("BASE_SHA", base_sha), ("GENERATED_HEAD_SHA", head_sha)],
++        &[("BRANCH", branch)],
+     )?;
+     assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
+     if failure_env.sentinel_hit() {
+@@ -391,11 +367,10 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
+     Ok(())
+ }
+
 -/// The generated-PR workflow must dispatch every workflow that owns a required
 -/// check and retain a failing step result when any individual dispatch fails
 -/// (#11731).
--#[test]
--fn test_post_merge_workflow_dispatches_all_required_checks()
 +/// Publication wakes title metadata only, preserving failure propagation.
 +/// Product proof is a separate explicit request in the staged #17903 generation.
-+#[test]
+ #[test]
+-fn test_post_merge_workflow_dispatches_all_required_checks()
 +fn test_post_merge_workflow_dispatches_metadata_only()
-@@ -423 +401,4 @@
+ -> Result<(), Box<dyn std::error::Error>> {
+     let root = project_root();
+     let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+@@ -435,7 +410,10 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
+     let policy_path = root.join(".ci/policies/required-checks.toml");
+     let policy_text = fs::read_to_string(policy_path)?;
+     let policy: TomlValue = toml::from_str(&policy_text)?;
 -    let required_workflows = required_workflows(&policy)?;
-+    let mut required_workflows = required_workflows(&policy)?;
-+    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
-+        required_workflows.remove(product);
-+    }
-@@ -459,8 +440 @@
--    // The ci.yml dispatch arm reads its subject identity from step env
++    let required_workflows = BTreeSet::from([
++        "gate-enforcement-contract.yml".to_owned(),
++        "pr-title-check.yml".to_owned(),
++    ]);
+     assert!(
+         !required_workflows.is_empty(),
+         "required-checks.toml must declare at least one required workflow"
+@@ -471,35 +449,19 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
+         "generated-PR dispatch step must continue after an individual failure and fail overall"
+     );
+
+-    // The ci.yml and ripr.yml dispatch arms read their subject identity from env
 -    // (#13355); both names must be declared so the simulated invocation is
 -    // the one the workflow really makes.
 -    let step_env = dispatch_step
@@ -422,11 +777,251 @@ index 8699131fae..c8aa1a8297 100644
 -        .ok_or("generated-PR dispatch step must declare env")?;
 -    for required_env in ["BASE_SHA", "GENERATED_HEAD_SHA"] {
 +    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
-@@ -468,2 +442,2 @@
+         assert!(
 -            step_env.keys().any(|key| key.as_str() == Some(required_env)),
 -            "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
 +            !dispatched_workflows.contains(product),
 +            "publication must not request product qualification: {product}"
-@@ -478,2 +451,0 @@
+         );
+     }
+
+-    assert!(
+-        dispatch_run
+-            .contains("if [ \"$workflow\" = ci.yml ] || [ \"$workflow\" = ripr.yml ]; then")
+-            && dispatch_run.contains("-f \"base_sha=$BASE_SHA\"")
+-            && dispatch_run.contains("-f \"head_sha=$GENERATED_HEAD_SHA\""),
+-        "ripr.yml must receive the generated PR's base and head SHAs instead of running bare"
+-    );
+
+     #[cfg(unix)]
+     assert_dispatch_loop_behavior(
+         dispatch_run,
+         &dispatch_order,
+         dispatch_branch,
 -        "0123456789abcdef0123456789abcdef01234567",
 -        "89abcdef0123456789abcdef0123456789abcdef",
+     )?;
+
+     Ok(())
+diff --git a/scripts/ci/test_merge_group_title_workflow.js b/scripts/ci/test_merge_group_title_workflow.js
+--- a/scripts/ci/test_merge_group_title_workflow.js
++++ b/scripts/ci/test_merge_group_title_workflow.js
+@@ -31,6 +31,17 @@
+   return body.join('\n');
+ }
+
++const mergeGroupWorkflowPath = path.join(
++  __dirname, '..', '..', '.github', 'workflows', 'merge-group-title-check.yml',
++);
++const queueTest = (name, body) => test(name, {
++  skip: fs.existsSync(mergeGroupWorkflowPath) ? false : 'merge-group producer retired by staged cutover',
++}, body);
++
++test('the staged cutover retires the merge-group workflow and its dedicated queue scenarios', () => {
++  assert.equal(fs.existsSync(mergeGroupWorkflowPath), false);
++});
++
+ // Captured from native squash-queue run 43158183620. PR #19295 was open when
+ // this event ran; its current merged state is deliberately not replayed here.
+ const BASE_SHA = '5dfecf1602bbcd83494893840c0f8795dba492e0';
+@@ -162,7 +173,7 @@
+   return { failures, warnings, created, updated, addedLabels, removedLabels };
+ }
+
+-test('the captured native squash group passes even when its synthetic commit has no associated PR', async () => {
++queueTest('the captured native squash group passes even when its synthetic commit has no associated PR', async () => {
+   assert.notEqual(PR_HEAD_SHA, GROUP_SHA, 'the native PR head and synthetic group head differ');
+   const result = await runQueue({
+     mergeGroup: { head_ref: HEAD_REF.replace(/^refs\/heads\//, '') },
+@@ -175,14 +186,14 @@
+   assert.match(passed, /#19295/);
+ });
+
+-test('the canonical full queue ref form is accepted', async () => {
++queueTest('the canonical full queue ref form is accepted', async () => {
+   const result = await runQueue();
+   assert.deepEqual(result.failures, []);
+   assert.deepEqual(result.readPrs, [PR_NUMBER]);
+   assert.deepEqual(result.legacyCalls, []);
+ });
+
+-test('a queued PR keeps its recorded base SHA when the group builds on an earlier synthetic commit', async () => {
++queueTest('a queued PR keeps its recorded base SHA when the group builds on an earlier synthetic commit', async () => {
+   const result = await runQueue({
+     mergeGroup: {
+       base_sha: GROUP_SHA,
+@@ -195,7 +206,7 @@
+   assert.deepEqual(result.legacyCalls, []);
+ });
+
+-test('a base branch with regex metacharacters is matched literally', async () => {
++queueTest('a base branch with regex metacharacters is matched literally', async () => {
+   const baseRef = 'release/1.0';
+   const result = await runQueue({
+     mergeGroup: {
+@@ -208,7 +219,7 @@
+   assert.deepEqual(result.readPrs, [PR_NUMBER]);
+ });
+
+-test('missing, malformed, ambiguous, and contradictory queue identities fail before a PR read', async (t) => {
++queueTest('missing, malformed, ambiguous, and contradictory queue identities fail before a PR read', async (t) => {
+   const queuePrefix = 'refs/heads/gh-readonly-queue/main';
+   const cases = [
+     ['missing head_ref', { head_ref: null }],
+@@ -241,7 +252,7 @@
+   }
+ });
+
+-test('an absent PR fails closed instead of producing a zero-member success', async () => {
++queueTest('an absent PR fails closed instead of producing a zero-member success', async () => {
+   const result = await runQueue({ currentPr: null });
+   assert.equal(result.failures.length, 1);
+   assert.match(result.failures[0], /#19295.*could not re-read current title/);
+@@ -249,7 +260,7 @@
+   assert.deepEqual(result.legacyCalls, []);
+ });
+
+-test('contradictory current PR identity fails closed', async (t) => {
++queueTest('contradictory current PR identity fails closed', async (t) => {
+   const cases = [
+     ['wrong number', queuePr({ number: PR_NUMBER + 1 })],
+     ['closed state', queuePr({ state: 'closed' })],
+@@ -268,7 +279,7 @@
+   }
+ });
+
+-test('a title edited after an earlier green validation fails the next run', async () => {
++queueTest('a title edited after an earlier green validation fails the next run', async () => {
+   const beforeEdit = await runQueue();
+   assert.deepEqual(beforeEdit.failures, []);
+
+@@ -280,7 +291,7 @@
+   assert.deepEqual(afterEdit.readPrs, [PR_NUMBER]);
+ });
+
+-test('a dependabot lookalike author gets no exemption', async () => {
++queueTest('a dependabot lookalike author gets no exemption', async () => {
+   const result = await runQueue({
+     currentPr: queuePr(title('no issue reference', 'not-dependabot-person')),
+   });
+@@ -289,7 +300,7 @@
+   assert.deepEqual(result.readPrs, [PR_NUMBER]);
+ });
+
+-test('the exact dependabot identity remains exempt', async () => {
++queueTest('the exact dependabot identity remains exempt', async () => {
+   const result = await runQueue({
+     currentPr: queuePr(title('dependency: automated update', 'dependabot[bot]')),
+   });
+diff --git a/xtask/tests/merge_group_title_producer.rs b/xtask/tests/merge_group_title_producer.rs
+--- a/xtask/tests/merge_group_title_producer.rs
++++ b/xtask/tests/merge_group_title_producer.rs
+@@ -31,6 +31,28 @@
+     Ok(project_root()?.join(".github/workflows/merge-group-title-check.yml"))
+ }
+
++fn merge_group_producer_retired() -> ValueResult<bool> {
++    if workflow_path()?.exists() {
++        return Ok(false);
++    }
++    let path = project_root()?.join(".ci/policies/required-checks.toml");
++    let raw =
++        fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
++    let policy: toml::Value =
++        toml::from_str(&raw).map_err(|error| format!("parse required-checks.toml: {error}"))?;
++    for table in ["check", "checks"] {
++        let rows = policy.get(table).and_then(toml::Value::as_array).ok_or(table)?;
++        assert!(
++            rows.iter().all(|row| {
++                row.get("workflow").and_then(toml::Value::as_str)
++                    != Some(".github/workflows/merge-group-title-check.yml")
++            }),
++            "the retired merge-group producer must be absent from {table}"
++        );
++    }
++    Ok(true)
++}
++
+ fn workflow_raw() -> ValueResult<String> {
+     let path = workflow_path()?;
+     fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()).into())
+@@ -64,6 +86,7 @@
+
+ #[test]
+ fn merge_group_trigger_is_present() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let workflow = workflow()?;
+     let on = workflow.get("on").ok_or("on block")?;
+     assert!(
+@@ -75,6 +98,7 @@
+
+ #[test]
+ fn exactly_one_static_producer_owns_the_context() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let workflow = workflow()?;
+     let jobs = workflow.get("jobs").and_then(Value::as_mapping).ok_or("jobs")?;
+     let producers: Vec<&str> = jobs
+@@ -92,6 +116,7 @@
+
+ #[test]
+ fn producer_job_is_unconditionally_reachable() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let workflow = workflow()?;
+     let job = job(&workflow, "validate-title")?;
+     assert!(
+@@ -103,6 +128,7 @@
+
+ #[test]
+ fn job_never_checks_out_candidate_contents() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let raw = workflow_raw()?;
+     assert!(
+         !raw.contains("actions/checkout"),
+@@ -113,6 +139,7 @@
+
+ #[test]
+ fn policy_is_defined_once_in_the_workflow() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let raw = workflow_raw()?;
+     assert_eq!(
+         raw.matches("const validateTitle =").count(),
+@@ -133,6 +160,7 @@
+
+ #[test]
+ fn queue_branch_resolves_the_ref_named_pr_and_fails_closed() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let queue = queue_branch()?;
+     for needle in [
+         "mergeGroup.head_sha",
+@@ -156,6 +184,7 @@
+
+ #[test]
+ fn queue_branch_never_mutates_pr_state() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let queue = queue_branch()?;
+     for forbidden in [
+         "createComment",
+@@ -181,6 +210,7 @@
+
+ #[test]
+ fn merge_group_producer_is_read_only() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let workflow = workflow()?;
+     let perms = workflow.get("permissions").ok_or("workflow permissions")?;
+     for scope in ["checks", "contents", "issues", "pull-requests"] {
+@@ -207,6 +237,7 @@
+
+ #[test]
+ fn policy_records_merge_group_as_a_real_producer() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let path = project_root()?.join(".ci/policies/required-checks.toml");
+     let raw =
+         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+@@ -259,6 +290,7 @@
+
+ #[test]
+ fn queue_membership_executes_actual_workflow_behavior() -> TestResult {
++    if merge_group_producer_retired()? { return Ok(()); }
+     let root = project_root()?;
+     let output = Command::new("node")
+         .arg(root.join("scripts/ci/test_merge_group_title_workflow.js"))

@@ -1125,7 +1125,7 @@ fn write_receipt(path: &Path, receipt: &SemanticInlineNextEditReceipt) -> Result
 mod tests {
     use super::*;
     use perl_lsp_rs_core::providers::inline_completion::NextEditSuggestion;
-    use perl_tdd_support::{must_err, must_some};
+    use perl_tdd_support::{must_err, must_err_with, must_some};
     use serde_json::Value;
     use tempfile::TempDir;
 
@@ -1490,8 +1490,10 @@ mod tests {
         let provider = NextEditProvider;
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.reachable_candidate.candidate = None;
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("missing reachable candidate must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "missing reachable candidate must fail validation",
+        );
         assert!(
             error.to_string().contains("prepare a receipt-only candidate"),
             "error should identify missing reachable candidate, got {error}"
@@ -1504,8 +1506,10 @@ mod tests {
             .as_mut()
             .ok_or_else(|| color_eyre::eyre::eyre!("valid receipt omitted candidate"))?;
         candidate.editor_visible = true;
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("editor-visible reachable candidate must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "editor-visible reachable candidate must fail validation",
+        );
         assert!(
             error.to_string().contains("receipt-only contract"),
             "error should identify reachable candidate contract drift, got {error}"
@@ -1513,8 +1517,10 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.parse_stable = false;
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("parse-unstable missing-import action must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "parse-unstable missing-import action must fail validation",
+        );
         assert!(
             error.to_string().contains("parse state stable"),
             "error should identify parse-stability drift, got {error}"
@@ -1522,8 +1528,10 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.project_shape.project_candidate.candidate = None;
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("missing project-shaped candidate must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "missing project-shaped candidate must fail validation",
+        );
         assert!(
             error.to_string().contains("project-shaped"),
             "error should identify project-shaped candidate drift, got {error}"
@@ -1535,8 +1543,10 @@ mod tests {
                 color_eyre::eyre::eyre!("valid project receipt omitted candidate")
             })?;
         candidate.editor_visible = true;
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("editor-visible project-shaped candidate must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "editor-visible project-shaped candidate must fail validation",
+        );
         assert!(
             error.to_string().contains("receipt-only contract"),
             "error should identify project-shaped candidate contract drift, got {error}"
@@ -1546,8 +1556,10 @@ mod tests {
         receipt.project_shape.accepted_document_text =
             "package App::Script;\nuse strict;\nuse warnings;\nuse lib 'lib';\nmy $app = My::App->new;\n"
                 .to_string();
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("project-shaped accepted text without import must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "project-shaped accepted text without import must fail validation",
+        );
         assert!(
             error.to_string().contains("accepted text"),
             "error should identify project-shaped accepted-text drift, got {error}"
@@ -1555,8 +1567,10 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.project_shape.parse_stable = false;
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("parse-unstable project-shaped action must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "parse-unstable project-shaped action must fail validation",
+        );
         assert!(
             error.to_string().contains("parse state stable"),
             "error should identify project-shaped parse-stability drift, got {error}"
@@ -1564,8 +1578,10 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.line_endings_preserved = false;
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("line-ending drift must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "line-ending drift must fail validation",
+        );
         assert!(
             error.to_string().contains("line endings"),
             "error should identify line-ending drift, got {error}"
@@ -1579,8 +1595,10 @@ mod tests {
         let provider = NextEditProvider;
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.duplicate_import.rejection_reasons.clear();
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("duplicate import without rejection reason must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "duplicate import without rejection reason must fail validation",
+        );
         assert!(
             error.to_string().contains("reject duplicate imports"),
             "error should identify duplicate-import drift, got {error}"
@@ -1588,8 +1606,10 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.unreachable_module.rejection_reasons.clear();
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("unreachable module without rejection reason must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "unreachable module without rejection reason must fail validation",
+        );
         assert!(
             error.to_string().contains("reject unreachable modules"),
             "error should identify unreachable-module drift, got {error}"
@@ -1597,8 +1617,10 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.project_shape.duplicate_project_import.rejection_reasons.clear();
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("project duplicate import without rejection reason must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "project duplicate import without rejection reason must fail validation",
+        );
         assert!(
             error.to_string().contains("reject duplicate imports"),
             "error should identify project duplicate-import drift, got {error}"
@@ -1606,7 +1628,8 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.project_shape.root_only_module.rejection_reasons.clear();
-        let error = validate_missing_import_next_action(&receipt).expect_err(
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
             "project effective-INC omitted module without rejection reason must fail validation",
         );
         assert!(
@@ -1616,7 +1639,8 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.project_shape.cancelled_lib_module.rejection_reasons.clear();
-        let error = validate_missing_import_next_action(&receipt).expect_err(
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
             "project effective-INC removed module without rejection reason must fail validation",
         );
         assert!(
@@ -1626,8 +1650,10 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.default_gate.rejection_reasons.clear();
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("default gate without rejection reason must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "default gate without rejection reason must fail validation",
+        );
         assert!(
             error.to_string().contains("disabled by default"),
             "error should identify default-gate drift, got {error}"
@@ -1635,8 +1661,10 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.explicit_gate.rejection_reasons.clear();
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("explicit gate without runtime rejection reason must fail validation");
+        let error = must_err_with(
+            validate_missing_import_next_action(&receipt),
+            "explicit gate without runtime rejection reason must fail validation",
+        );
         assert!(
             error.to_string().contains("unregistered runtime provider"),
             "error should identify explicit-gate drift, got {error}"

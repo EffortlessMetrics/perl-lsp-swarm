@@ -232,6 +232,7 @@ pub const PL406_DISPOSITIONS: &[Pl406Disposition] = &[
     disposition!("Return", Sequential, &["value"], &[], &[], Inherited, None, ExactLocalTransfer, None),
     disposition!("LoopControl", Leaf, &[], &[], &[], Inherited, None, ExactLocalTransfer, Some("no executable children; the statement itself is the exact transfer")),
     disposition!("Goto", ExpressionContainer, &["target"], &[], &[], Inherited, None, ExactLocalTransfer, None),
+    disposition!("TargetlessGoto", Leaf, &[], &[], &[], Inherited, None, ExactLocalTransfer, Some("honest omitted goto target; no executable child")),
     // Call expressions ----------------------------------------------------------
     disposition!("MethodCall", ExpressionContainer, &["object", "args"], &[], &[], Inherited, None, ConservativeFallthrough, None),
     // Exact terminators (die/exit/exec/croak/confess) are selected by the

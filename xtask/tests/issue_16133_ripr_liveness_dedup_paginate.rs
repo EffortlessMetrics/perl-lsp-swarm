@@ -21,15 +21,40 @@
 //! contract here rather than paying the full `ripr+ New Gap Gate` cycle for it
 //! was the deliberate trade-off, and the gate row that ultimately executes
 //! this binary is the same one that runs the other issue_NNNN contract tests.
+//!
+//! #16567: where the read lives, and what it selects
+//! ------------------------------------------------
+//!
+//! The read used to sit in the `Post advisory check runs` step, inside a local
+//! `already_posted` helper that answered "has this id been posted". Two changes
+//! moved it, and this file is re-anchored rather than rewritten:
+//!
+//! * It now runs in the `Snapshot ripr runs` step and writes
+//!   `target/ripr/liveness/posted.json`, because the reporter's memory has to
+//!   reach `classify_snapshot` -- the step that runs *before* the post loop --
+//!   for a stall that cleared to be withdrawn rather than contradicted.
+//! * It selects `{external_id, id}` rather than a bare `external_id`, because
+//!   withdrawing a stall means *updating* the check run that carries the red,
+//!   and the check-runs API addresses a write by that run's numeric id. A
+//!   membership answer is enough to suppress a duplicate and useless for a
+//!   retraction.
+//!
+//! What did **not** change is the property this file exists to hold: the read is
+//! still paginated, still scoped over every check, still keyed on
+//! `external_id`, and still must not be keyed on `name`. The decision that
+//! consumes the read now lives in `scripts/ci/ripr_liveness.py`, where
+//! `scripts/ci/test_ripr_liveness.py` proves it; this file keeps guarding the
+//! transport flags that no other test can see.
 
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 
 const WORKFLOW: &str = ".github/workflows/ripr-liveness.yml";
-const ALREADY_POSTED_DEF: &str = "def already_posted(";
-const CHECK_RUNS_INVOCATION_OPEN: &str = "[\"gh\", \"api\",";
+const CHECK_RUNS_URL: &str = "check-runs?";
+const GH_API_INVOCATION_OPEN: &str = "[\"gh\", \"api\",";
+const POSTED_FIELDS: &str = "{external_id, id, conclusion, title: .output.title}";
 
 fn project_root() -> Result<PathBuf> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -50,33 +75,36 @@ fn read_workflow() -> Result<String> {
 
 /// The single `gh api` Python-list literal that performs the check-runs read.
 ///
-/// `already_posted` lives inside the inline Python of the
-/// `Post advisory check runs` step, so a textual slice is the closest unit we
-/// can target without re-parsing the embedded Python. The slice is the single
-/// Python list passed to `subprocess.run([...])` whose first element is the
-/// string `"gh"` and which targets the check-runs endpoint — that is the only
-/// call whose `--paginate`, `filter=all`, `per_page`, and `--jq` properties
-/// matter for the dedup. Including the surrounding docstring or the post step
-/// body would let the docstring's prose carry the contract and leave a real
-/// regression unobserved.
+/// That call lives inside the inline Python of the `Snapshot ripr runs` step,
+/// so a textual slice is the closest unit we can target without re-parsing the
+/// embedded Python. The slice is the single Python list passed to
+/// `subprocess.run([...])` that targets the check-runs endpoint.
 ///
-/// The same workflow contains other `["gh", "api", ...]` calls (one per run
-/// for the snapshot's job count, one per head for fork pulls); the dedup
-/// call is the one AFTER `def already_posted(`, so anchor on the def first
-/// and take the first `["gh", "api",` that follows.
+/// The same workflow contains other `["gh", "api", ...]` calls -- one per run
+/// for the snapshot's job count, one per in-flight run for its step detail, one
+/// per run for fork-pull identity -- and none of them mentions `check-runs`, so
+/// the URL fragment is the discriminator. Anchoring on a step name or a helper
+/// name instead would re-break the day either is renamed, which is the wrong
+/// moment for a guard on the check-runs API to go quiet.
 fn check_runs_invocation(workflow: &str) -> Result<&str> {
-    let def_pos = workflow
-        .find(ALREADY_POSTED_DEF)
-        .ok_or_else(|| anyhow!("{WORKFLOW} has no `def already_posted(`"))?;
-    let after_def = &workflow[def_pos..];
-    let open_idx = after_def
-        .find(CHECK_RUNS_INVOCATION_OPEN)
-        .ok_or_else(|| anyhow!("{WORKFLOW} has no `gh api` invocation inside `already_posted`"))?;
-    let rest = &after_def[open_idx..];
+    let url_pos = workflow
+        .find(CHECK_RUNS_URL)
+        .ok_or_else(|| anyhow!("{WORKFLOW} has no check-runs read"))?;
+    // Walk back to the start of the list literal carrying the URL, so the slice
+    // is the whole call and not whatever precedes it in the step.
+    let open_idx = workflow
+        .get(..url_pos)
+        .ok_or_else(|| anyhow!("check-runs URL is not at a UTF-8 boundary"))?
+        .rfind(GH_API_INVOCATION_OPEN)
+        .ok_or_else(|| anyhow!("{WORKFLOW} check-runs read is not a `gh api` list literal"))?;
+    let rest = workflow
+        .get(open_idx..)
+        .ok_or_else(|| anyhow!("gh api invocation is not at a UTF-8 boundary"))?;
     let close_idx = rest
         .find("],\n")
         .ok_or_else(|| anyhow!("{WORKFLOW} `gh api` invocation is not closed by `],`"))?;
-    Ok(&rest[..=close_idx + 1])
+    let end = close_idx.checked_add(2).ok_or_else(|| anyhow!("invocation end overflow"))?;
+    rest.get(..end).ok_or_else(|| anyhow!("gh api invocation end is not a UTF-8 boundary"))
 }
 
 #[test]
@@ -85,14 +113,14 @@ fn ripr_liveness_dedup_read_uses_paginate_and_external_id() -> Result<()> {
     let call = check_runs_invocation(&workflow)?;
 
     // The four properties the dedup read needs to exist.
-    assert!(
+    ensure!(
         call.contains("--paginate"),
         "the dedup `gh api` call must pass `--paginate` so every page of check \
          runs on this head contributes to the seen-id set; without it the cron \
          re-posts an identical check run for every tick past page one. \
          Call:\n{call}"
     );
-    assert!(
+    ensure!(
         call.contains("check-runs?filter=all"),
         "the dedup `gh api` call must request `filter=all` so the dedup sees \
          every check run on the head rather than only the most recent per \
@@ -101,15 +129,15 @@ fn ripr_liveness_dedup_read_uses_paginate_and_external_id() -> Result<()> {
          when the question is \"has this id been posted at all\". \
          Call:\n{call}"
     );
-    assert!(
+    ensure!(
         call.contains("per_page="),
         "the dedup `gh api` call must set `per_page` on the check-runs URL; \
          the default is 30, and this repository's heads carry 83 check-run \
          rows on the busiest measured case. Call:\n{call}"
     );
-    assert!(
-        call.contains("\".check_runs[].external_id\""),
-        "the dedup `gh api` call must read `external_id`, not `name` — every \
+    ensure!(
+        call.contains("external_id"),
+        "the dedup `gh api` call must read `external_id`, not `name` - every \
          post here carries the single name `ripr+ liveness` and the same name \
          can carry more than one id as the predecessor starts and finishes. \
          Call:\n{call}"
@@ -130,18 +158,25 @@ fn ripr_liveness_dedup_read_rejects_each_load_bearing_regression() -> Result<()>
         ("dropped --paginate", "[\"gh\", \"api\", \"--paginate\",", "[\"gh\", \"api\","),
         ("filter=all dropped", "check-runs?filter=all&per_page=100", "check-runs?per_page=100"),
         ("per_page dropped", "check-runs?filter=all&per_page=100", "check-runs?filter=all"),
-        ("external_id switched to name", "\".check_runs[].external_id\"", "\".check_runs[].name\""),
+        (
+            "external_id selector switched to name while preserving the projection",
+            "select(.external_id != null)",
+            "select(.name)",
+        ),
+        ("numeric id dropped", "external_id, id, conclusion", "external_id, conclusion"),
+        ("conclusion dropped", "id, conclusion, title:", "id, title:"),
+        ("progress title dropped", ", title: .output.title", ""),
     ];
 
     for (name, needle, replacement) in mutations {
-        assert!(
+        ensure!(
             call.contains(needle),
             "{name}: the dedup call does not contain the literal `{needle}`; the \
              mutation fixture is stale. Call:\n{call}"
         );
         let mutated = call.replace(needle, replacement);
-        assert!(mutated != *call, "{name}: mutation did not change the dedup call");
-        assert!(
+        ensure!(mutated != *call, "{name}: mutation did not change the dedup call");
+        ensure!(
             dedup_call_holds_the_contract(&mutated).is_err(),
             "{name}: the regressed dedup call was accepted"
         );
@@ -160,29 +195,48 @@ fn dedup_call_holds_the_contract(call: &str) -> Result<()> {
     if !call.contains("per_page=") {
         bail!("the dedup `gh api` call must set `per_page`");
     }
-    if !call.contains("\".check_runs[].external_id\"") {
-        bail!("the dedup `gh api` call must read `external_id`");
+    if !call.contains("select(.external_id != null)") {
+        bail!("the dedup `gh api` call must select rows by `external_id`");
+    }
+    if !call.contains(POSTED_FIELDS) {
+        bail!("the check-runs read must retain external id, numeric id, conclusion and title");
+    }
+    if call.contains("select(.name != null)") || call.contains("{name, id}") {
+        bail!("the dedup `gh api` call must not key the identity on `name`");
     }
     Ok(())
 }
 
 #[test]
-fn ripr_liveness_dedup_read_is_paired_with_the_post_step() -> Result<()> {
-    // The dedup read only matters while the post step that consumes its verdict
-    // is still wired up. A future refactor that moves `already_posted` into a
-    // helper module without keeping the post step would silently lose the
-    // contract, so pin both halves of the loop together.
+fn ripr_liveness_dedup_read_is_paired_with_its_consumer() -> Result<()> {
+    // The read only matters while something consumes the map it produces. It
+    // used to feed `already_posted` inside the post step; it now feeds
+    // `classify_snapshot`, which is why the map has to be written to a file and
+    // handed to the classify step explicitly. A refactor that moved the read
+    // without moving its consumer would silently lose both the dedup and the
+    // retraction that depends on it, so pin all three halves together: the
+    // read, the file that carries it forward, and the step that consumes it.
     let workflow = read_workflow()?;
 
-    assert!(
+    ensure!(
         workflow.contains("- name: Post advisory check runs"),
         "{WORKFLOW} has no `Post advisory check runs` step; the dedup read has \
          no consumer to guard"
     );
-    assert!(
-        workflow.contains(ALREADY_POSTED_DEF),
-        "{WORKFLOW} no longer carries `already_posted`; the dedup contract has \
-         no subject"
+    ensure!(
+        workflow.contains("target/ripr/liveness/posted.json"),
+        "{WORKFLOW} never writes `posted.json`; the read has nowhere to put the \
+         map its consumer needs"
+    );
+    ensure!(
+        workflow.contains("--posted target/ripr/liveness/posted.json"),
+        "{WORKFLOW} never passes `posted.json` to the classifier; the reporter's \
+         memory across cron fires is read and then discarded"
+    );
+    ensure!(
+        workflow.contains("posted_checks_from_api"),
+        "{WORKFLOW} no longer hands the read to the tested module; a parsing \
+         decision has moved back into untested inline Python"
     );
 
     Ok(())
@@ -193,19 +247,56 @@ fn ripr_liveness_dedup_read_is_paired_with_the_post_step() -> Result<()> {
 /// Every post under this workflow carries the same name (`ripr+ liveness`),
 /// and the same name can carry more than one id as the predecessor starts
 /// and finishes. The dedup verdict is therefore `external_id in <seen>` and
-/// the selector must be `.check_runs[].external_id`. Reading `.name` would
-/// collapse every id into the single one and re-post on every flip.
+/// the selector must carry `external_id`. Reading `name` would collapse every
+/// id into the single one and re-post on every flip.
 #[test]
 fn ripr_liveness_dedup_read_selects_external_id_not_name() -> Result<()> {
     let workflow = read_workflow()?;
     let call = check_runs_invocation(&workflow)?;
 
-    assert!(
+    ensure!(
         !call.contains(".check_runs[].name"),
         "the dedup `gh api` call must NOT select `name`; every post here \
          carries the single name `ripr+ liveness` and reading `name` would \
          collapse every id into the one name and re-post on every flip. \
          Call:\n{call}"
+    );
+    ensure!(
+        !call.contains("select(.name != null)"),
+        "the dedup `gh api` call must not select rows by `name`; the reporter's \
+         own `external_id` is the identity. Call:\n{call}"
+    );
+    ensure!(
+        !call.contains("{name, id}"),
+        "the dedup `gh api` call must not project `name` into the parsed row; a \
+         retraction is addressed by the numeric `id` and keyed to the \
+         `external_id`. Call:\n{call}"
+    );
+
+    Ok(())
+}
+
+/// #16567: the numeric `id` has to survive the read.
+///
+/// A retraction is a write against one specific check run, addressed by that
+/// run's numeric id. A selector returning `external_id` alone would still dedup
+/// correctly -- so this regression would pass every assertion above -- and
+/// would leave the reporter unable to withdraw anything it ever wrote.
+#[test]
+fn ripr_liveness_dedup_read_selects_the_numeric_id_too() -> Result<()> {
+    let workflow = read_workflow()?;
+    let call = check_runs_invocation(&workflow)?;
+
+    ensure!(
+        call.contains("| @json"),
+        "the dedup `gh api` call must emit one JSON object per line under \
+         `--paginate`, not one document for the whole page; the reader parses a \
+         row per line. Call:\n{call}"
+    );
+    ensure!(
+        call.contains(POSTED_FIELDS),
+        "the dedup `gh api` call must project both the identity and the numeric \
+         id; a retraction is addressed by the id. Call:\n{call}"
     );
 
     Ok(())

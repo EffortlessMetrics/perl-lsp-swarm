@@ -188,42 +188,6 @@ fn parse_name_status_z(stdout: &str) -> Result<Vec<DeltaPath>, String> {
     Ok(paths)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_rename_and_copy_entries() {
-        assert_eq!(
-            parse_name_status_z("R100\0old\0new"),
-            Ok(vec![DeltaPath {
-                status: DeltaStatus::Renamed,
-                path: "new".to_string(),
-                renamed_from: Some("old".to_string()),
-            }])
-        );
-        assert_eq!(
-            parse_name_status_z("C75\0old\0new"),
-            Ok(vec![DeltaPath {
-                status: DeltaStatus::Renamed,
-                path: "new".to_string(),
-                renamed_from: Some("old".to_string()),
-            }])
-        );
-    }
-
-    #[test]
-    fn refuses_empty_status_token() {
-        let error = parse_name_status_z("\0");
-
-        assert!(matches!(
-            error,
-            Err(error)
-                if error.contains("malformed diff-tree status token") && error.contains("\"\"")
-        ));
-    }
-}
-
 /// Refuse any delta row outside the declared edge scope. Scope entries are
 /// literal prefixes ending in `/` (whole subtrees) or full paths. An empty
 /// scope therefore admits only an empty delta: silently contained sibling or
@@ -263,4 +227,40 @@ pub fn check_declared_scope(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rename_and_copy_entries() {
+        assert_eq!(
+            parse_name_status_z("R100\0old\0new"),
+            Ok(vec![DeltaPath {
+                status: DeltaStatus::Renamed,
+                path: "new".to_string(),
+                renamed_from: Some("old".to_string()),
+            }])
+        );
+        assert_eq!(
+            parse_name_status_z("C75\0old\0new"),
+            Ok(vec![DeltaPath {
+                status: DeltaStatus::Renamed,
+                path: "new".to_string(),
+                renamed_from: Some("old".to_string()),
+            }])
+        );
+    }
+
+    #[test]
+    fn refuses_empty_status_token() {
+        let error = parse_name_status_z("\0");
+
+        assert!(matches!(
+            error,
+            Err(error)
+                if error.contains("malformed diff-tree status token") && error.contains("\"\"")
+        ));
+    }
 }

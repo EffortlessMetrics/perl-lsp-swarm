@@ -1277,7 +1277,9 @@ fn the_prose_report_summary_cannot_drift_from_the_inventory() -> Result<()> {
     //
     // The wake text no longer restates counts at all; a duplicate that cannot
     // drift is better than one that is checked. The report's table is a genuine
-    // human summary and stays, so it is pinned here instead.
+    // human summary and stays, so it is pinned here instead. The #8845
+    // successor row in the same file still restates the gating role mix and is
+    // pinned the same way — that sentence is what #8845 reads to size migration.
     let value = real_value()?;
     let report = std::fs::read_to_string(
         repo_root_for_tests()?.join(".spec/8843-ast-v2-lifecycle-audit/decision.md"),
@@ -1305,6 +1307,26 @@ fn the_prose_report_summary_cannot_drift_from_the_inventory() -> Result<()> {
              the manifest holds {expected} `{key}` entries"
         );
     }
+
+    let consumers = value["consumers"]
+        .as_array()
+        .ok_or_else(|| color_eyre::eyre::eyre!("`consumers` is not an array"))?;
+    let gating_count = |role: &str| -> usize {
+        consumers.iter().filter(|row| row["role"].as_str() == Some(role)).count()
+    };
+    let expected_gating_sentence = format!(
+        "The migration set is this manifest's gating rows: {} production, {} re-export, {} \
+         package-dependency, {} test-fixture.",
+        gating_count("production_implementation"),
+        gating_count("public_reexport"),
+        gating_count("package_dependency"),
+        gating_count("test_fixture"),
+    );
+    assert!(
+        report.contains(&expected_gating_sentence),
+        "the #8845 successor row in decision.md has drifted from the manifest's gating role \
+         mix.\n  expected substring: {expected_gating_sentence}"
+    );
 
     // And the wake text must not reintroduce a hardcoded count.
     for wake in value["successor_wake_conditions"]

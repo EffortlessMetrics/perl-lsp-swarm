@@ -226,6 +226,8 @@ impl LspServer {
                     // No static callable fact: LSP 3.17 defines a null
                     // result when no signatures are available (#17582).
                     // Never fabricate a `name(...)` signature.
+                    // A call's spelling alone does not establish a signature.
+                    // Complete the request without inventing a callable contract.
                     return Ok(Some(Value::Null));
                 }
             }
@@ -525,7 +527,9 @@ impl LspServer {
     }
 
     /// Walk the AST to find a `tie` statement whose variable matches `sigil` and `var_name`.
-    /// Returns the class string if the package argument is a string literal, `None` otherwise.
+    /// Returns the class string only for a non-interpolating string literal.
+    /// Interpolating and command strings do not prove a class name from source;
+    /// this conservatively includes constant double-quoted strings (#18304).
     /// Handles the first tie encountered for the given name; retie sequences are a known limitation.
     pub(super) fn find_tied_class(node: &Node, sigil: &str, var_name: &str) -> Option<String> {
         match &node.kind {
@@ -537,7 +541,7 @@ impl LspServer {
                     }
                     _ => false,
                 };
-                if matched && let NodeKind::String { value, .. } = &package.kind {
+                if matched && let NodeKind::String { value, interpolated: false } = &package.kind {
                     return Some(value.trim_matches(|c| c == '\'' || c == '"').to_string());
                 }
                 None

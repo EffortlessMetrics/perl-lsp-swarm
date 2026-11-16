@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Bind validated build outputs to the exact post-strip archive members."""
+"""Validate declared build evidence and observe exact post-strip archive bytes.
+
+Receipt consistency and byte observations do not authenticate the builder or
+prove that stripping produced the packaged bytes. The terminal manifest and
+publication admission retain their separate obligations.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from release_archive_members import ArchiveMemberError, selected_member_digest
+from release_build_identity import BuildIdentityError, ReleaseBuildIdentity
+from release_terminal_manifest import ManifestError, validate_receipt
 
 SCHEMA = "perl_lsp.release_package_evidence.v1"
 HEX40 = __import__("re").compile(r"^[0-9a-f]{40}$")
@@ -69,6 +76,22 @@ def build(
         raise PackageEvidenceError("build receipt is not passing")
     if identity.get("source_revision") != source_sha or identity.get("release_version") != version or identity.get("target") != target:
         raise PackageEvidenceError("build receipt names another package subject")
+    try:
+        validated_identity = ReleaseBuildIdentity.from_mapping(identity)
+        if validated_identity.artifact_role != "archive":
+            raise PackageEvidenceError("build receipt identity is not archive-shaped")
+        # Reuse the terminal consumer's receipt/packet contract. Both existing
+        # producer routes remain supported here; final release admission may
+        # require the narrower external-workflow execution class.
+        if not isinstance(receipt.get("runner"), str) or not isinstance(receipt.get("build_execution"), str):
+            raise PackageEvidenceError("build receipt execution fields must be strings")
+        validate_receipt(
+            receipt,
+            validated_identity.as_dict(),
+            allowed_build_executions={"adapter", "external_release_workflow"},
+        )
+    except (BuildIdentityError, ManifestError) as error:
+        raise PackageEvidenceError(f"build receipt is invalid: {error}") from error
     rows = receipt.get("binaries")
     if not isinstance(rows, list) or len(rows) != 2:
         raise PackageEvidenceError("build receipt requires two binary records")

@@ -357,6 +357,15 @@ describe('extension-owned resource measurements', () => {
   });
 
   test('records through the recorder so the closed resource-id set stays authoritative', () => {
+    const census: ActivationResourceCensus = {
+      live_total: 2,
+      live_by_class: {
+        mandatory_for_activation: 2,
+        optional_degradable: 0,
+        lazy_user_triggered: 0,
+        support_surface_allowed_after_failure: 0,
+      },
+    };
     const recorder = new VscodeClientMeasurementRecorder(
       {
         candidate: 'vsix-test',
@@ -371,23 +380,8 @@ describe('extension-owned resource measurements', () => {
       },
       0,
     );
-    recordExtensionOwnedResources(recorder, {
-      live_total: 2,
-      live_by_class: {
-        mandatory_for_activation: 2,
-        optional_degradable: 0,
-        lazy_user_triggered: 0,
-        support_surface_allowed_after_failure: 0,
-      },
-    });
+    recordExtensionOwnedResources(recorder, census);
 
-    const ids = recorder.snapshot().resources.map((row) => row.id);
-    expect(ids).toEqual([
-      'extension_host_rss_bytes',
-      'extension_owned_activation_resources',
-      'extension_owned_disposables',
-      'extension_owned_event_listeners',
-      'extension_owned_timers',
-    ]);
+    expect(recorder.snapshot().resources).toEqual(extensionOwnedResourceMeasurements(census));
   });
 });

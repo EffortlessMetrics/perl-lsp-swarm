@@ -527,7 +527,6 @@ mod tests {
     use super::*;
     use anyhow::{Context, Result, bail};
     use std::fs;
-    use std::process::Command;
 
     const ZERO: &str = "0000000000000000000000000000000000000000";
 
@@ -896,7 +895,8 @@ mod tests {
     }
 
     fn git(repository: &Path, arguments: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(arguments).current_dir(repository).output()?;
+        let output =
+            crate::git_environment::command().args(arguments).current_dir(repository).output()?;
         if !output.status.success() {
             bail!(
                 "git {} failed with status {}\nstderr:\n{}",

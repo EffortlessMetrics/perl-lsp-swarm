@@ -1,5 +1,12 @@
 # Manual New-Crate Publish Procedure
 
+> **Retired unsafe procedure (#16802).** The commands below are historical evidence,
+> not supported instructions. The script and `just publish-new-crates` now refuse
+> for every argument/environment setting. Do not supply local publisher credentials
+> or bypass the controller for rate limits. Follow the reviewed
+> [release transaction](../release/RUNBOOK.md) (#13768 / #6055).
+
+
 This document explains how to manually publish new (first-ever) crates to
 crates.io when the automated publish workflow is blocked by crates.io's
 account-level new-crate creation rate limit.

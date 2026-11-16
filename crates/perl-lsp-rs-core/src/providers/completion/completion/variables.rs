@@ -68,9 +68,45 @@ pub fn add_variable_completions(
     context: &CompletionContext,
     kind: SymbolKind,
     symbol_table: &SymbolTable,
+    source: &str,
 ) {
     let sigil = kind.sigil().unwrap_or("");
     let prefix_without_sigil = context.prefix.trim_start_matches(sigil);
+    // Accepting a name in the middle of a variable replaces the remaining
+    // identifier too. Keep punctuation and adjacent expressions outside the edit,
+    // and leave the non-sigil inventory's insertion geometry unchanged.
+    //
+    // #18462: the extension must stop exactly where the lexer's variable token
+    // ends. `is_perl_identifier_continue` accepts `'` unconditionally (it
+    // serves bareword identifiers), but the lexer folds an apostrophe into a
+    // name only as an old-style package separator with a further name segment
+    // behind it (`consume_qualified_identifier_in_string`), matching real
+    // perl, where `print $dog'9` fails to parse because the apostrophe opens
+    // a string instead of joining the name. So `$dog'9` and `$dog'` end the
+    // token at `$dog` and the apostrophe stays outside the edit, while
+    // `$dog's` and `$Foo'Bar` are one variable token (perl interpolates
+    // `"$dog's"` as `$dog::s`) and the extension covers them whole.
+    let edit_end = if context.prefix.starts_with(['$', '@', '%']) {
+        let rest = source.get(context.position..).unwrap_or_default();
+        let mut extension = 0usize;
+        for (offset, ch) in rest.char_indices() {
+            let continues = if ch == '\'' {
+                rest[offset + ch.len_utf8()..]
+                    .chars()
+                    .next()
+                    .is_some_and(perl_lexer::is_perl_identifier_start)
+            } else {
+                perl_lexer::is_perl_identifier_continue(ch)
+            };
+            if !continues {
+                break;
+            }
+            extension += ch.len_utf8();
+        }
+        context.position + extension
+    } else {
+        context.position
+    };
 
     for (name, symbols) in &symbol_table.symbols {
         if !name.starts_with(prefix_without_sigil) {
@@ -92,15 +128,9 @@ pub fn add_variable_completions(
                 format!("{} {}{}", symbol.declaration.as_deref().unwrap_or(""), sigil, name)
                     .trim()
                     .to_string();
-            completions.push(variable_item(
-                context,
-                symbol_table,
-                symbol,
-                name,
-                sigil,
-                '1',
-                detail,
-            ));
+            let mut item = variable_item(context, symbol_table, symbol, name, sigil, '1', detail);
+            item.text_edit_range = Some((context.prefix_start, edit_end));
+            completions.push(item);
         }
     }
 }

@@ -14,10 +14,33 @@ fn is_windows_drive_path(path: &str) -> bool {
     bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
 }
 
-fn append_literal_file_segments(mut base: url::Url, path: &str) -> Option<String> {
+fn append_literal_file_segments(
+    mut base: url::Url,
+    path: &str,
+    root_components: usize,
+) -> Option<String> {
+    // PathSegmentsMut skips both dot components instead of resolving parents.
+    // Normalize literal components first, keeping the base (including a drive
+    // root) outside the stack. UNC paths also retain their share component.
+    let mut components = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "." => {}
+            ".." => {
+                if components.len() > root_components {
+                    let _ = components.pop();
+                }
+            }
+            _ => components.push(component),
+        }
+    }
+    if matches!(path.rsplit('/').next(), Some("." | "..")) {
+        components.push("");
+    }
+
     // PathSegmentsMut encodes `%` as well as URI delimiters in each filename
     // component. Url::parse would treat an already-looking escape as encoded.
-    base.path_segments_mut().ok()?.pop_if_empty().extend(path.split('/'));
+    base.path_segments_mut().ok()?.pop_if_empty().extend(components);
     Some(base.to_string())
 }
 
@@ -25,12 +48,12 @@ fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
     if let Some(unc_path) = file_path.strip_prefix("//") {
         let (host, path) = unc_path.split_once('/').unwrap_or((unc_path, ""));
         let base = url::Url::parse(&format!("file://{host}/")).ok()?;
-        return append_literal_file_segments(base, path);
+        return append_literal_file_segments(base, path, 1);
     }
 
     if is_windows_drive_path(file_path) {
         let base = url::Url::parse(&format!("file:///{}/", &file_path[..2])).ok()?;
-        return append_literal_file_segments(base, &file_path[3..]);
+        return append_literal_file_segments(base, &file_path[3..], 0);
     }
 
     if Path::new(file_path).is_absolute()

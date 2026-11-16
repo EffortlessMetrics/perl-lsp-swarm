@@ -1,6 +1,20 @@
 use super::{BuildFlags, completion_trigger_characters, get_supported_commands};
-#[allow(clippy::wildcard_imports)]
-use lsp_types::*;
+// Capability field types are imported explicitly (#2895); avoid `lsp_types::*`.
+use lsp_types::{
+    CallHierarchyServerCapability, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
+    CodeLensOptions, ColorProviderCapability, CompletionOptions, CompletionOptionsCompletionItem,
+    DeclarationCapability, DiagnosticOptions, DiagnosticServerCapabilities, DocumentLinkOptions,
+    DocumentOnTypeFormattingOptions, ExecuteCommandOptions, FoldingRangeProviderCapability,
+    HoverProviderCapability, ImplementationProviderCapability, InlayHintOptions,
+    InlayHintServerCapabilities, LinkedEditingRangeServerCapabilities, Notebook,
+    NotebookCellSelector, NotebookDocumentSyncOptions, NotebookSelector, OneOf, RenameOptions,
+    SelectionRangeProviderCapability, SemanticTokenModifier, SemanticTokenType,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, TypeDefinitionProviderCapability, WorkDoneProgressOptions,
+    WorkspaceSymbolOptions,
+};
 
 pub(super) fn apply_document_sync(caps: &mut ServerCapabilities) {
     // Use Options instead of Kind to comply with LSP 3.18 shape requirements.
@@ -115,7 +129,8 @@ pub(super) fn apply_symbol_and_workspace_features(
         caps.workspace_symbol_provider = Some(OneOf::Left(true));
     }
 
-    if build.workspace_symbol_resolve {
+    // Resolve options cannot advertise a disabled parent request again.
+    if build.workspace_symbol && build.workspace_symbol_resolve {
         caps.workspace_symbol_provider = Some(OneOf::Right(WorkspaceSymbolOptions {
             resolve_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -292,6 +307,8 @@ fn code_action_kinds(_build: &BuildFlags) -> Vec<CodeActionKind> {
     // REFACTOR_EXTRACT is implemented in code_actions_enhanced.rs.
     // Tests verified in lsp_code_actions_tests.rs (Issue #181).
     kinds.push(CodeActionKind::REFACTOR_EXTRACT);
+    kinds.push(CodeActionKind::new("refactor.extract.variable"));
+    kinds.push(CodeActionKind::new("refactor.extract.subroutine"));
     // Note: refactor.inline is NOT advertised because no inline action
     // is currently implemented.
     kinds.push(CodeActionKind::REFACTOR_REWRITE);

@@ -48,7 +48,7 @@ fn legacy_command(
     let scope = tempfile::tempdir()?;
     let empty_system = scope.path().join("system-config");
     fs::write(&empty_system, "")?;
-    let mut cmd = StdCommand::new("git");
+    let mut cmd = xtask::git_environment::isolate(StdCommand::new("git"));
     cmd.args(args).current_dir(repo);
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") {
@@ -226,7 +226,8 @@ fn free_git_command_blocks_home_and_xdg_attributes() -> Result<()> {
 #[test]
 fn relocated_git_system_attributes_are_scrubbed() -> Result<()> {
     let tmp = tempfile::tempdir()?;
-    let exec_path = StdCommand::new("git").arg("--exec-path").output()?;
+    let exec_path =
+        xtask::git_environment::isolate(StdCommand::new("git")).arg("--exec-path").output()?;
     ensure!(exec_path.status.success(), "installed Git --exec-path probe failed");
     let installed_exec = String::from_utf8(exec_path.stdout)?.trim().replace('/', "\\");
     let installed_exec = Path::new(&installed_exec);
@@ -263,7 +264,8 @@ fn relocated_git_system_attributes_are_scrubbed() -> Result<()> {
     fs::write(&empty_config, "")?;
 
     let command = |args: &[&str]| {
-        let mut command = StdCommand::new(relocated_exec.join("git.exe"));
+        let mut command =
+            xtask::git_environment::isolate(StdCommand::new(relocated_exec.join("git.exe")));
         command.args(args).current_dir(&repo);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") {
@@ -464,7 +466,7 @@ fn ambient_config_search_paths_and_redirects_are_blocked() -> Result<()> {
     let redirected = tmp.path().join("redirected-config");
     fs::write(&redirected, "[fixture]\n\tredirected = leaked\n")?;
 
-    let mut cmd = StdCommand::new("git");
+    let mut cmd = xtask::git_environment::isolate(StdCommand::new("git"));
     cmd.args(["config", "--show-origin", "--get-regexp", "^(fixture\\.|safe\\.directory)"])
         .current_dir(&repo)
         .env("HOME", &fake_home)
@@ -717,7 +719,7 @@ fn hostile_command_scoped_config_injection_is_scrubbed() -> Result<()> {
     hermetic.init_repo(&hermetic_repo)?;
     fs::write(hermetic_repo.join("tracked.txt"), "content\n")?;
     hermetic.git(&hermetic_repo, &["add", "tracked.txt"])?;
-    let mut protected = StdCommand::new("git");
+    let mut protected = xtask::git_environment::isolate(StdCommand::new("git"));
     protected
         .args(["commit", "-m", "hostile control subject"])
         .current_dir(&hermetic_repo)

@@ -1,5 +1,6 @@
 //! Prefix admission and method-token edits through the exact public server.
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 #[path = "support/real_process.rs"]
 mod real_process;
 
@@ -202,13 +203,67 @@ fn generic_prefix_is_leading_and_case_sensitive() -> Result<()> {
 }
 
 #[test]
-fn mid_token_method_prefix_preserves_existing_prefix_edit_range() -> Result<()> {
+fn mid_token_method_edit_stops_before_existing_parentheses() -> Result<()> {
     let mut client = start(&format!("{DOG}my $answer = $dog->speak();"))?;
-    // Cursor after 'sp' inside 'speak'. This pins existing prefix-only geometry;
-    // it does not claim to repair replacement of the suffix after the cursor.
+    // Geometry only: existing-parentheses normalization remains unresolved.
     let items = complete(&mut client, json!("mid-token"), 6, 21)?;
-    assert_edit(item(&items, "speak")?, 6, 19, 21, "speak()")?;
-    ensure!(items.len() == 1, "mid-token admission must exclude unrelated generics: {items:?}");
+    assert_edit(item(&items, "speak")?, 6, 19, 24, "speak()")?;
+    ensure!(items.len() == 1, "expected only the speak result in this fixture: {items:?}");
+    finish(client)
+}
+
+#[test]
+fn method_completion_applies_whole_token_at_midpoint_and_end() -> Result<()> {
+    let source = format!("{DOG}my $answer = $dog->speak;");
+    let expected = format!("{DOG}my $answer = $dog->speak();");
+    ensure!(source.is_ascii(), "this fixture maps UTF-16 columns directly to bytes");
+    for (id, cursor) in [("mid-token-apply", 21), ("end-token-apply", 24)] {
+        let mut client = start(&source)?;
+        let items = complete(&mut client, json!(id), 6, cursor)?;
+        let completion = item(&items, "speak")?;
+        assert_edit(completion, 6, 19, 24, "speak()")?;
+        ensure!(items.len() == 1, "expected only the speak result in this fixture: {items:?}");
+
+        // assert_edit pins both returned lines to 6; DOG is exactly those six lines.
+        // Read the actual returned edit rather than reconstructing expected bytes.
+        let edit = &completion["textEdit"];
+        let start = usize::try_from(
+            edit["range"]["start"]["character"].as_u64().ok_or_else(|| anyhow!("missing start"))?,
+        )?;
+        let end = usize::try_from(
+            edit["range"]["end"]["character"].as_u64().ok_or_else(|| anyhow!("missing end"))?,
+        )?;
+        let text = edit["newText"].as_str().ok_or_else(|| anyhow!("missing newText"))?;
+        ensure!(start <= end && end <= source.len() - DOG.len(), "edit outside call line");
+        let applied =
+            format!("{}{}{}", &source[..DOG.len() + start], text, &source[DOG.len() + end..]);
+        ensure!(applied == expected, "completion must preserve the full document: {applied}");
+        finish(client)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn variable_completion_edit_matches_lexer_token_at_apostrophe() -> Result<()> {
+    // #18462: the completion replacement range must stop where the lexer's
+    // variable token stops. Real perl (5.42.2) folds `'` into a name only as
+    // an old-style package separator with a further name segment behind it —
+    // `"$dog's bowl"` interpolates `$dog::s`, while `print $dog'9` fails to
+    // parse because the apostrophe opens a string. So the edit for
+    // `$count'9` ends before the apostrophe and leaves the suffix in place.
+    let source =
+        "my $count = 42;\nmy $t = \"the $count'9 bowl\";\nmy $u = \"the $count's bowl\";\n";
+    let mut client = start(source)?;
+    // Line 1: `my $t = "the $count'9 bowl";` — cursor after `$co` (char 16).
+    // The lexer's Variable part is `$count` [13..19]; `'9` stays literal, so
+    // the edit is 13..19 and the client keeps `'9 bowl`.
+    let items = complete(&mut client, json!("apostrophe-digit"), 1, 16)?;
+    assert_edit(item(&items, "$count")?, 1, 13, 19, "$count")?;
+    // Line 2: `my $u = "the $count's bowl";` — `$count's` is one lexer token
+    // (perl interpolates `$dog::s`), so the edit covers the folded segment
+    // whole: 13..21.
+    let items = complete(&mut client, json!("apostrophe-fold"), 2, 16)?;
+    assert_edit(item(&items, "$count")?, 2, 13, 21, "$count")?;
     finish(client)
 }
 

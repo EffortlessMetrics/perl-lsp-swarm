@@ -2,9 +2,13 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location('signature_conformance', Path(__file__).with_name('signature_conformance.py'))
 oracle = importlib.util.module_from_spec(spec)
@@ -128,5 +132,70 @@ class SignatureConformanceTests(unittest.TestCase):
         import sys
         self.assertEqual('timeout', oracle.execute([sys.executable, '-c', 'import time; time.sleep(3)'], timeout=0.05)['status'])
         self.assertEqual('spawn_error', oracle.execute(['no-such-signature-conformance-executable'])['status'])
+
+    def test_interrupted_fixture_is_reaped_before_evidence_closes(self):
+        real_popen = subprocess.Popen
+        real_wait = real_popen.wait
+        for during_timeout in (False, True):
+            for interruption in (KeyboardInterrupt(), SystemExit(7)):
+                with self.subTest(during_timeout=during_timeout, error=type(interruption).__name__):
+                    children, streams = [], []
+                    calls = 0
+
+                    def spawn(*args, **kwargs):
+                        child = real_popen(*args, **kwargs)
+                        children.append(child)
+                        streams.extend((kwargs['stdout'], kwargs['stderr']))
+
+                        def interrupted_wait(timeout=None):
+                            nonlocal calls
+                            calls += 1
+                            # Every production wait, including cleanup, must precede
+                            # closing the temporary evidence files.
+                            self.assertTrue(all(not stream.closed for stream in streams))
+                            if calls == (2 if during_timeout else 1):
+                                raise interruption
+                            return real_wait(child, timeout=timeout)
+
+                        child.wait = interrupted_wait
+                        return child
+
+                    try:
+                        with mock.patch.object(oracle.subprocess, 'Popen', side_effect=spawn):
+                            with self.assertRaises(type(interruption)) as raised:
+                                oracle.execute([sys.executable, '-c', 'import time; time.sleep(60)'], timeout=0.01)
+                        self.assertIs(interruption, raised.exception)
+                        self.assertEqual(1, len(children))
+                        # Do not poll here: polling could reap a kill-only repair
+                        # and hide the missing production wait.
+                        self.assertIsNotNone(children[0].returncode)
+                        if os.name == 'posix':
+                            with self.assertRaises(ChildProcessError):
+                                os.waitpid(children[0].pid, os.WNOHANG)
+                        self.assertTrue(all(stream.closed for stream in streams))
+                    finally:
+                        # Keep the regression safe against the leaking old runner.
+                        for child in children:
+                            if child.returncode is None:
+                                child.kill()
+                            real_wait(child, timeout=5)
+
+    def test_real_process_outcomes_and_bounded_evidence(self):
+        result = oracle.execute([sys.executable, '-c', 'import sys; print("out"); print("err", file=sys.stderr); sys.exit(7)'])
+        # execute() returns the child's raw decoded bytes with no newline
+        # translation, and a Windows child's print() emits CRLF.
+        normalized = {
+            'status': result['status'],
+            'exit': result['exit'],
+            'stdout': result['stdout'].replace('\r\n', '\n'),
+            'stderr': result['stderr'].replace('\r\n', '\n'),
+        }
+        self.assertEqual({'status': 'completed', 'exit': 7, 'stdout': 'out\n', 'stderr': 'err\n'}, normalized)
+        for stream in ('stdout', 'stderr'):
+            with self.subTest(stream=stream):
+                result = oracle.execute([sys.executable, '-c', f'import sys; sys.{stream}.write("x" * {oracle.LIMIT + 1})'])
+                self.assertEqual('output_limit', result['status'])
+                self.assertEqual(0, result['exit'])
+                self.assertEqual('x' * oracle.LIMIT, result[stream])
 
 if __name__ == '__main__': unittest.main()

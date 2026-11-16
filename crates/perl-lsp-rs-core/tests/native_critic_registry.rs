@@ -136,6 +136,16 @@ fn registry_built_in_profiles_have_unique_rule_ids() {
 }
 
 #[test]
+fn registry_strict_contains_too_many_branches_but_recommended_does_not() {
+    let recommended = NativeCriticRegistry::for_profile(NativeCriticProfile::Recommended);
+    let strict = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict);
+    assert!(!recommended.rule_ids().contains(&"native.maintainability.too_many_branches"));
+    assert!(strict.rule_ids().contains(&"native.maintainability.too_many_branches"));
+    assert_eq!(strict.len(), 32);
+    assert_eq!(recommended.len(), 16);
+}
+
+#[test]
 fn registry_recommended_helper_matches_recommended_profile() {
     let recommended_helper = NativeCriticRegistry::recommended().rule_ids();
     let recommended_profile =

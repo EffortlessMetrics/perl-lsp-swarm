@@ -859,7 +859,7 @@ impl SymbolExtractor {
                 }
             }
 
-            NodeKind::While { condition, body, continue_block: _, .. } => {
+            NodeKind::While { condition, body, .. } => {
                 self.visit_node(condition);
 
                 self.table.push_scope(ScopeKind::Block, body.location);
@@ -1071,7 +1071,7 @@ impl SymbolExtractor {
                 }
             }
 
-            NodeKind::No { module: _, args: _, .. } => {
+            NodeKind::No { .. } => {
                 // We don't currently track framework deactivation via `no`.
             }
 
@@ -1185,7 +1185,7 @@ impl SymbolExtractor {
                 self.table.pop_scope();
             }
 
-            NodeKind::Format { name, body: _, .. } => {
+            NodeKind::Format { name, .. } => {
                 let symbol = Symbol {
                     name: name.clone(),
                     qualified_name: format!("{}::{}", self.table.current_package, name),
@@ -3837,6 +3837,24 @@ mod tests {
             vec!["name".to_string(), "age".to_string()],
             "the normalized qw(...) form keeps working"
         );
+    }
+
+    /// Issue #18029 cross-seam probe: the inverted-slice inputs that panicked
+    /// `arg_contains_exporter` (see export_analyzer.rs) must not panic this
+    /// seam either. This seam's `start < end` guard compares same-frame
+    /// absolute offsets: for an ASCII delimiter the slice starts one byte
+    /// later, and a multi-byte self-delimited `qw` cannot overlap itself in
+    /// UTF-8, so the guard already implies `start + open.len_utf8() <= end`.
+    /// Unterminated or degenerate args fall back to the whole-arg name.
+    #[test]
+    fn class_tiny_qw_issue_18029_inverted_slice_inputs_do_not_panic() {
+        assert_eq!(expand_class_tiny_arg_to_names("qw\u{2022}"), vec!["qw\u{2022}".to_string()]);
+        assert_eq!(expand_class_tiny_arg_to_names("qw/"), vec!["qw/".to_string()]);
+        assert_eq!(
+            expand_class_tiny_arg_to_names("qw\u{ab}Exporter\u{bb}"),
+            vec!["qw\u{ab}Exporter\u{bb}".to_string()]
+        );
+        assert_eq!(expand_class_tiny_arg_to_names("qw x"), vec!["qw x".to_string()]);
     }
 
     /// DESTROY/AUTOLOAD are interpreter special-method hooks (perlobj), not

@@ -478,7 +478,10 @@ fn dap_attach_e2e_tcp_attach_timeout_returns_actionable_message() -> TestResult 
 fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
     let cases = [
         (json!({"host": "", "port": 13603}), "Set the 'host' field"),
-        (json!({"host": "localhost", "port": 0}), "Set the 'port' field"),
+        (
+            json!({"host": "localhost", "port": 0}),
+            "Invalid port: expected an integer in range 1-65535",
+        ),
         (
             json!({"host": "127.0.0.1", "port": 13603, "timeout": 0}),
             "Timeout must be greater than 0 milliseconds",

@@ -64,6 +64,7 @@ pub struct Detection {
     pub line: u32,
 }
 
+#[cfg(test)]
 pub fn classify_assert_condition(expr: &Expr) -> Option<Detection> {
     classify_assert_condition_in(expr, &TypeEnv::new())
 }

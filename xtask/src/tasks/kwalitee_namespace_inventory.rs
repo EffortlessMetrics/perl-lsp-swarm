@@ -151,6 +151,7 @@ fn reference_hash(trimmed: &str) -> String {
     hex
 }
 
+#[cfg(test)]
 fn is_reference(line_lower: &str) -> bool {
     TOKENS_LOWER.iter().any(|token| line_lower.contains(token))
 }

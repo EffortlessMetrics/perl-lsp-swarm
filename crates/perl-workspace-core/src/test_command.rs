@@ -25,7 +25,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::Digest;
 use crate::environment::{
@@ -36,7 +36,8 @@ use crate::environment::{
 };
 
 /// Schema version for [`TestCommandPlan`].
-pub const TEST_COMMAND_PLAN_SCHEMA_VERSION: u32 = 1;
+// Version 2 binds authority and public identities as well as command content.
+pub const TEST_COMMAND_PLAN_SCHEMA_VERSION: u32 = 2;
 
 const TEST_COMMAND_ID_DOMAIN: &str = "project_environment.test_command.v1";
 
@@ -389,7 +390,14 @@ pub struct TestCommandCandidate {
 }
 
 /// A deterministic set of independent test-command candidates.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Deserialize` is implemented through a wire form that calls
+/// [`TestCommandPlan::validate`] before returning the typed value. A deserialized
+/// plan has passed internal consistency checks before a consumer can consult
+/// its candidates. The fingerprint is not authentication: a sender can compute
+/// it, and validation does not re-observe the environment or authorize execution.
+/// Consumers must still establish the source and freshness of the plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestCommandPlan {
     /// Plan schema version.
@@ -408,7 +416,127 @@ pub struct TestCommandPlan {
     pub fingerprint: Digest,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestCommandPlanWire {
+    schema_version: u32,
+    workspace_id: String,
+    environment_fingerprint: EnvironmentFingerprint,
+    configuration_generation: u64,
+    candidates: Vec<TestCommandCandidate>,
+    limitations: Vec<EnvironmentLimitation>,
+    fingerprint: Digest,
+}
+
+impl<'de> Deserialize<'de> for TestCommandPlan {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = TestCommandPlanWire::deserialize(deserializer)?;
+        let plan = Self {
+            schema_version: wire.schema_version,
+            workspace_id: wire.workspace_id,
+            environment_fingerprint: wire.environment_fingerprint,
+            configuration_generation: wire.configuration_generation,
+            candidates: wire.candidates,
+            limitations: wire.limitations,
+            fingerprint: wire.fingerprint,
+        };
+        plan.validate().map_err(serde::de::Error::custom)?;
+        Ok(plan)
+    }
+}
+
 impl TestCommandPlan {
+    /// Re-check builder invariants for a deserialized or reconstructed plan.
+    ///
+    /// Transport and cache consumers must treat a failed validation as
+    /// non-authoritative: do not consult `ready_candidates` or
+    /// `public_receipt` on an invalid value, and do not rely on its
+    /// `fingerprint` as evidence of the snapshot it claims to describe.
+    ///
+    /// The checks are symmetric with what
+    /// [`ProjectEnvironmentSnapshot::validate`] does for snapshots, scaled
+    /// down to the fields a plan carries: schema compatibility with the
+    /// reader, fingerprint honesty against current content, candidate binding
+    /// to the snapshot the plan claims to describe, admission consistency
+    /// with the requirements a candidate lists, and an argv guard re-checked
+    /// at the boundary rather than assumed from construction.
+    pub fn validate(&self) -> Result<(), TestCommandPlanValidationError> {
+        if self.schema_version != TEST_COMMAND_PLAN_SCHEMA_VERSION {
+            return Err(TestCommandPlanValidationError::UnsupportedSchemaVersion {
+                schema_version: self.schema_version,
+            });
+        }
+        if self.workspace_id.is_empty() {
+            return Err(TestCommandPlanValidationError::EmptyWorkspaceId);
+        }
+
+        let recomputed = compute_plan_fingerprint(
+            self.workspace_id.as_str(),
+            &self.environment_fingerprint,
+            self.configuration_generation,
+            &self.candidates,
+            &self.limitations,
+        );
+        if recomputed != self.fingerprint {
+            return Err(TestCommandPlanValidationError::FingerprintMismatch);
+        }
+
+        for (index, candidate) in self.candidates.iter().enumerate() {
+            if candidate.environment_fingerprint != self.environment_fingerprint {
+                return Err(
+                    TestCommandPlanValidationError::CandidateEnvironmentFingerprintMismatch {
+                        candidate_index: index,
+                        candidate_id: candidate.id.clone(),
+                        plan_fingerprint: self.environment_fingerprint.clone(),
+                        candidate_fingerprint: candidate.environment_fingerprint.clone(),
+                    },
+                );
+            }
+            if candidate.configuration_generation != self.configuration_generation {
+                return Err(
+                    TestCommandPlanValidationError::CandidateConfigurationGenerationMismatch {
+                        candidate_index: index,
+                        candidate_id: candidate.id.clone(),
+                        plan_generation: self.configuration_generation,
+                        candidate_generation: candidate.configuration_generation,
+                    },
+                );
+            }
+            let expected_id = compute_candidate_id(candidate);
+            if candidate.id != expected_id {
+                return Err(TestCommandPlanValidationError::CandidateIdMismatch {
+                    candidate_index: index,
+                    candidate_id: candidate.id.clone(),
+                    expected_id,
+                });
+            }
+            if candidate.admission == TestCommandAdmission::Ready {
+                for requirement in &candidate.required_generated_state {
+                    if requirement.state != GeneratedStateFreshness::Current {
+                        return Err(TestCommandPlanValidationError::AdmissionExceedsRequirements {
+                            candidate_index: index,
+                            candidate_id: candidate.id.clone(),
+                            artifact: requirement.artifact,
+                            observed_state: requirement.state,
+                        });
+                    }
+                }
+            }
+            for argument in &candidate.argv {
+                if is_absolute_path(argument) {
+                    return Err(TestCommandPlanValidationError::AbsolutePathInCandidateArgv {
+                        candidate_index: index,
+                        candidate_id: candidate.id.clone(),
+                        kind: candidate.kind,
+                        argument: argument.clone(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Candidates whose generated-state preconditions hold.
     ///
     /// Readiness is not authorization; the caller still owns policy.
@@ -585,6 +713,179 @@ impl std::fmt::Display for TestCommandPlanError {
 }
 
 impl std::error::Error for TestCommandPlanError {}
+
+/// Error returned while re-validating a [`TestCommandPlan`].
+///
+/// Symmetric with [`EnvironmentBuildError`] but scoped to the fields a plan
+/// carries. Each variant names the predicate that failed and the inputs that
+/// disagreed, so a cache or transport consumer can log a precise diagnosis
+/// instead of guessing why the deserialized bytes were refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestCommandPlanValidationError {
+    /// The plan's `schema_version` does not match [`TEST_COMMAND_PLAN_SCHEMA_VERSION`].
+    UnsupportedSchemaVersion {
+        /// The version stamped on the decoded plan.
+        schema_version: u32,
+    },
+    /// The plan's `workspace_id` is empty.
+    ///
+    /// A plan that does not name a workspace cannot be tied back to a snapshot,
+    /// so its fingerprint is not meaningful authority.
+    EmptyWorkspaceId,
+    /// The plan's stored fingerprint does not match the value recomputed from
+    /// its current content.
+    ///
+    /// The most common cause is a tampered plan; a plan rebuilt through
+    /// [`plan_test_commands`] never produces this mismatch. Cache and transport
+    /// consumers must treat the bytes as non-authoritative on this finding.
+    FingerprintMismatch,
+    /// A candidate carries a snapshot identity that differs from the plan's.
+    ///
+    /// The candidate's `admission` decision was made against a snapshot it no
+    /// longer claims to belong to; trusting it would let a Ready verdict
+    /// outlive the inputs that justified it.
+    CandidateEnvironmentFingerprintMismatch {
+        /// Position of the offending candidate in [`TestCommandPlan::candidates`].
+        candidate_index: usize,
+        /// Candidate identity copied from [`TestCommandCandidate::id`].
+        candidate_id: String,
+        /// Environment fingerprint the plan claims.
+        plan_fingerprint: EnvironmentFingerprint,
+        /// Environment fingerprint stamped on the candidate.
+        candidate_fingerprint: EnvironmentFingerprint,
+    },
+    /// A candidate carries a configuration generation that differs from the plan's.
+    CandidateConfigurationGenerationMismatch {
+        /// Position of the offending candidate in [`TestCommandPlan::candidates`].
+        candidate_index: usize,
+        /// Candidate identity copied from [`TestCommandCandidate::id`].
+        candidate_id: String,
+        /// Configuration generation the plan claims.
+        plan_generation: u64,
+        /// Configuration generation stamped on the candidate.
+        candidate_generation: u64,
+    },
+    /// A candidate identity does not describe its current command and provenance.
+    CandidateIdMismatch {
+        /// Position of the offending candidate in [`TestCommandPlan::candidates`].
+        candidate_index: usize,
+        /// Identity supplied by the decoded candidate.
+        candidate_id: String,
+        /// Identity derived by the same helper used during construction.
+        expected_id: String,
+    },
+    /// A candidate is marked [`TestCommandAdmission::Ready`] while one of its
+    /// `required_generated_state` entries is not
+    /// [`GeneratedStateFreshness::Current`].
+    ///
+    /// A decoded Ready whose requirements do not all read `Current` is
+    /// rejected rather than trusted: the admission verdict must be the
+    /// conclusion of the listed requirements, not a parallel claim that
+    /// disagrees with them.
+    AdmissionExceedsRequirements {
+        /// Position of the offending candidate in [`TestCommandPlan::candidates`].
+        candidate_index: usize,
+        /// Candidate identity copied from [`TestCommandCandidate::id`].
+        candidate_id: String,
+        /// Artifact whose state did not match the admission verdict.
+        artifact: GeneratedArtifact,
+        /// State recorded for that artifact.
+        observed_state: GeneratedStateFreshness,
+    },
+    /// A candidate's `argv` contains an absolute path.
+    ///
+    /// The construction path refuses absolute arguments before they reach a
+    /// receipt; the validator re-checks at the boundary so a tampered wire
+    /// form cannot reintroduce one and leak it into a public projection.
+    ///
+    /// The validator does not re-check for option-shaped arguments: a
+    /// candidate's argv legitimately contains runner flags like `prove -l`
+    /// or `prove -b`, so distinguishing a path argument from a flag would
+    /// require coupling to the construction's layout. The construction path
+    /// keeps option-shaped names out of path positions by design (see
+    /// [`TestRootArguments`]), and the absolute-path check is the
+    /// load-bearing boundary guard — it is what a tampered wire form could
+    /// reintroduce to leak host filesystem information into a public receipt.
+    AbsolutePathInCandidateArgv {
+        /// Position of the offending candidate in [`TestCommandPlan::candidates`].
+        candidate_index: usize,
+        /// Candidate identity copied from [`TestCommandCandidate::id`].
+        candidate_id: String,
+        /// Runner family that would receive the offending argument.
+        kind: TestRunnerKind,
+        /// The offending argument.
+        argument: String,
+    },
+}
+
+impl std::fmt::Display for TestCommandPlanValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedSchemaVersion { schema_version } => write!(
+                formatter,
+                "test command plan schema_version {schema_version} does not match reader \
+                 version {TEST_COMMAND_PLAN_SCHEMA_VERSION}"
+            ),
+            Self::EmptyWorkspaceId => {
+                formatter.write_str("test command plan workspace_id is empty")
+            }
+            Self::FingerprintMismatch => formatter.write_str(
+                "test command plan fingerprint does not match the value recomputed from \
+                 current content",
+            ),
+            Self::CandidateEnvironmentFingerprintMismatch {
+                candidate_index,
+                candidate_id,
+                plan_fingerprint,
+                candidate_fingerprint,
+            } => write!(
+                formatter,
+                "candidate {candidate_id} at index {candidate_index} carries environment \
+                 fingerprint {candidate_fingerprint} but the plan describes \
+                 {plan_fingerprint}"
+            ),
+            Self::CandidateConfigurationGenerationMismatch {
+                candidate_index,
+                candidate_id,
+                plan_generation,
+                candidate_generation,
+            } => write!(
+                formatter,
+                "candidate {candidate_id} at index {candidate_index} carries configuration \
+                 generation {candidate_generation} but the plan describes \
+                 {plan_generation}"
+            ),
+            Self::CandidateIdMismatch { candidate_index, candidate_id, expected_id } => write!(
+                formatter,
+                "candidate {candidate_id} at index {candidate_index} does not match \
+                 command identity {expected_id}"
+            ),
+            Self::AdmissionExceedsRequirements {
+                candidate_index,
+                candidate_id,
+                artifact,
+                observed_state,
+            } => write!(
+                formatter,
+                "candidate {candidate_id} at index {candidate_index} is marked Ready while \
+                 {} requirement {} is {}",
+                artifact.producer(),
+                artifact.identity_tag(),
+                observed_state.identity_tag(),
+            ),
+            Self::AbsolutePathInCandidateArgv { candidate_index, candidate_id, kind, argument } => {
+                write!(
+                    formatter,
+                    "candidate {candidate_id} at index {candidate_index} carries an absolute-path \
+                 argument for {} runner: `{argument}`",
+                    kind.identity_tag(),
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TestCommandPlanValidationError {}
 
 /// Plan every independent test command the environment supports.
 ///
@@ -1275,27 +1576,8 @@ fn build_candidate(
 
     let (admission, reason_code) = admit(&required_generated_state, test_root_coverage);
 
-    // Provenance is part of identity, not decoration hung off it. Two build
-    // facts can justify the same command shape; if the tool and build-fact
-    // identities were excluded here the two candidates would share an id and
-    // one would be silently dropped by the dedup below, discarding a provenance
-    // chain a consumer needs to explain the offer. This follows the sibling
-    // model in `environment.rs`, where the same physical path may still be
-    // several materially distinct occurrences.
-    let mut identity_fields: Vec<&str> = vec![
-        kind.identity_tag(),
-        include_mode.identity_tag(),
-        program.normalized.as_str(),
-        working_dir.normalized.as_str(),
-        input_id.as_str(),
-        tool_candidate_id.as_deref().unwrap_or(""),
-        build_system_id.as_deref().unwrap_or(""),
-    ];
-    identity_fields.extend(argv.iter().map(String::as_str));
-    let id = stable_id(TEST_COMMAND_ID_DOMAIN, &identity_fields);
-
-    Ok(TestCommandCandidate {
-        id,
+    let mut candidate = TestCommandCandidate {
+        id: String::new(),
         kind,
         include_mode,
         program,
@@ -1311,7 +1593,26 @@ fn build_candidate(
         required_generated_state,
         admission,
         reason_code,
-    })
+    };
+    candidate.id = compute_candidate_id(&candidate);
+    Ok(candidate)
+}
+
+/// Derive command identity once for construction and decoded-plan validation.
+/// Provenance remains part of the identity so distinct supplying facts are not
+/// silently deduplicated merely because they produce the same command shape.
+fn compute_candidate_id(candidate: &TestCommandCandidate) -> String {
+    let mut identity_fields = vec![
+        candidate.kind.identity_tag(),
+        candidate.include_mode.identity_tag(),
+        candidate.program.normalized.as_str(),
+        candidate.working_dir.normalized.as_str(),
+        candidate.input_id.as_str(),
+        candidate.tool_candidate_id.as_deref().unwrap_or(""),
+        candidate.build_system_id.as_deref().unwrap_or(""),
+    ];
+    identity_fields.extend(candidate.argv.iter().map(String::as_str));
+    stable_id(TEST_COMMAND_ID_DOMAIN, &identity_fields)
 }
 
 /// Re-bind an observed artifact to the command that will actually consume it.
@@ -1481,7 +1782,14 @@ fn is_absolute_path(value: &str) -> bool {
         && (bytes[2] == b'/' || bytes[2] == b'\\')
 }
 
-fn compute_plan_fingerprint(
+/// Recompute the fingerprint the [`TestCommandPlan`] constructor stamps on a
+/// freshly built plan.
+///
+/// Exposed at `pub(crate)` so [`TestCommandPlan::validate`] can re-derive the
+/// plan fingerprint from current content and compare it against the stored
+/// value. This is an internal consistency check, not sender authentication
+/// or independent evidence that the environment is current.
+pub(crate) fn compute_plan_fingerprint(
     workspace_id: &str,
     environment_fingerprint: &EnvironmentFingerprint,
     configuration_generation: u64,
@@ -1499,16 +1807,29 @@ fn compute_plan_fingerprint(
         push_field(&mut material, "candidate.kind", candidate.kind.identity_tag());
         push_field(&mut material, "candidate.include", candidate.include_mode.identity_tag());
         push_field(&mut material, "candidate.program", candidate.program.normalized.as_str());
+        push_field(&mut material, "candidate.program.public", candidate.program.public_id.as_str());
         for argument in &candidate.argv {
             push_field(&mut material, "candidate.arg", argument.as_str());
         }
         push_field(&mut material, "candidate.cwd", candidate.working_dir.normalized.as_str());
+        push_field(&mut material, "candidate.cwd.public", candidate.working_dir.public_id.as_str());
+        push_field(&mut material, "candidate.authority", candidate.authority.identity_tag());
         push_field(&mut material, "candidate.trust", trust_tag(candidate.trust));
         push_field(&mut material, "candidate.input", candidate.input_id.as_str());
         push_field(
             &mut material,
+            "candidate.tool.present",
+            if candidate.tool_candidate_id.is_some() { "some" } else { "none" },
+        );
+        push_field(
+            &mut material,
             "candidate.tool",
             candidate.tool_candidate_id.as_deref().unwrap_or(""),
+        );
+        push_field(
+            &mut material,
+            "candidate.build.present",
+            if candidate.build_system_id.is_some() { "some" } else { "none" },
         );
         push_field(
             &mut material,
@@ -1518,6 +1839,11 @@ fn compute_plan_fingerprint(
         for requirement in &candidate.required_generated_state {
             push_field(&mut material, "candidate.need", requirement.artifact.identity_tag());
             push_field(&mut material, "candidate.need.state", requirement.state.identity_tag());
+            push_field(
+                &mut material,
+                "candidate.need.path.present",
+                if requirement.path.is_some() { "some" } else { "none" },
+            );
             push_field(
                 &mut material,
                 "candidate.need.path",
@@ -1537,6 +1863,16 @@ fn compute_plan_fingerprint(
     for limitation in limitations {
         push_field(&mut material, "limitation.code", limitation.code.as_str());
         push_field(&mut material, "limitation.detail", limitation.detail.as_str());
+        push_field(
+            &mut material,
+            "limitation.input.present",
+            if limitation.input_id.is_some() { "some" } else { "none" },
+        );
+        push_field(
+            &mut material,
+            "limitation.input",
+            limitation.input_id.as_ref().map_or("", EnvironmentInputId::as_str),
+        );
     }
 
     Digest::of(&material)
@@ -1573,8 +1909,239 @@ fn stable_id(domain: &str, fields: &[&str]) -> String {
 mod tests {
     use super::*;
     use crate::environment::{
-        EnvironmentInput, ProjectEnvironmentSnapshotBuilder, ProjectRoot, ToolCandidateRole,
+        EnvironmentInput, ProjectEnvironmentSnapshotBuilder, ProjectRoot, ToolCandidate,
+        ToolCandidateRole,
     };
+
+    fn validation_fixture() -> Result<TestCommandPlan, String> {
+        let input = EnvironmentInput::new(
+            "tool.prove",
+            EnvironmentInputAuthority::WorkspaceConvention,
+            EnvironmentInputState::Accepted,
+            "fixture",
+            None,
+            "fixture",
+        );
+        let root = ProjectRoot::new(
+            ProjectRootRole::Workspace,
+            EnvironmentPathRef::new("/ws", "public:ws"),
+            input.id.clone(),
+        );
+        let tool = ToolCandidate::new(
+            ToolCandidateRole::TestRunner,
+            "prove",
+            EnvironmentPathRef::new("/usr/bin/prove", "public:prove"),
+            input.id.clone(),
+        );
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(input)
+                .with_project_root(root)
+                .with_tool_candidate(tool)
+                .build()
+                .map_err(|error| format!("{error:?}"))?;
+        let mut plan =
+            plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))
+                .map_err(|error| error.to_string())?;
+        plan.limitations.push(EnvironmentLimitation {
+            code: "fixture.limitation".to_string(),
+            detail: "fixture".to_string(),
+            input_id: None,
+        });
+        refresh_fingerprint(&mut plan);
+        assert_eq!(plan.candidates.len(), 1, "the fixture must exercise a candidate");
+        assert_eq!(plan.validate(), Ok(()));
+        Ok(plan)
+    }
+
+    fn refresh_fingerprint(plan: &mut TestCommandPlan) {
+        plan.fingerprint = compute_plan_fingerprint(
+            &plan.workspace_id,
+            &plan.environment_fingerprint,
+            plan.configuration_generation,
+            &plan.candidates,
+            &plan.limitations,
+        );
+    }
+
+    fn assert_wire_error(plan: &TestCommandPlan, expected: &str) -> Result<(), String> {
+        let encoded = serde_json::to_string(plan).map_err(|error| error.to_string())?;
+        match serde_json::from_str::<TestCommandPlan>(&encoded) {
+            Err(error) => {
+                assert!(error.to_string().contains(expected), "{error}");
+                Ok(())
+            }
+            Ok(_) => Err(format!("wire boundary accepted a plan with {expected}")),
+        }
+    }
+
+    #[test]
+    fn fingerprint_binds_authority_public_paths_and_limitation_input() -> Result<(), String> {
+        let mutations: [(&str, fn(&mut TestCommandPlan)); 4] = [
+            ("authority", |plan| {
+                plan.candidates[0].authority = EnvironmentInputAuthority::UserConfiguration;
+            }),
+            ("program public id", |plan| {
+                plan.candidates[0].program.public_id.push_str(":changed");
+            }),
+            ("working-directory public id", |plan| {
+                plan.candidates[0].working_dir.public_id.push_str(":changed");
+            }),
+            ("limitation input", |plan| {
+                plan.limitations[0].input_id = Some(plan.candidates[0].input_id.clone());
+            }),
+        ];
+        for (field, mutate) in mutations {
+            let mut plan = validation_fixture()?;
+            let original_fingerprint = plan.fingerprint.clone();
+            let original_receipt = plan.public_receipt();
+            mutate(&mut plan);
+            if field != "limitation input" {
+                assert_ne!(plan.public_receipt(), original_receipt, "{field}");
+            }
+            assert_eq!(
+                plan.validate(),
+                Err(TestCommandPlanValidationError::FingerprintMismatch),
+                "{field} must not be an unbound claim"
+            );
+            assert_wire_error(&plan, "fingerprint does not match")?;
+            refresh_fingerprint(&mut plan);
+            assert_ne!(plan.fingerprint, original_fingerprint, "{field}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn changed_command_cannot_keep_its_id_after_plan_fingerprint_refresh() -> Result<(), String> {
+        let mut plan = validation_fixture()?;
+        plan.candidates[0].argv.push("xt".to_string());
+        refresh_fingerprint(&mut plan);
+        assert!(matches!(
+            plan.validate(),
+            Err(TestCommandPlanValidationError::CandidateIdMismatch { .. })
+        ));
+        assert_wire_error(&plan, "does not match command identity")?;
+
+        // Control: the shared constructor identity derivation accepts this
+        // relative command once both derived identities describe its content.
+        plan.candidates[0].id = compute_candidate_id(&plan.candidates[0]);
+        refresh_fingerprint(&mut plan);
+        assert_eq!(plan.validate(), Ok(()));
+        Ok(())
+    }
+
+    #[test]
+    fn absolute_argv_is_rejected_after_both_identities_are_recomputed() -> Result<(), String> {
+        for absolute in ["/ws/t", "C:\\ws\\t"] {
+            let mut plan = validation_fixture()?;
+            plan.candidates[0].argv.push(absolute.to_string());
+            plan.candidates[0].id = compute_candidate_id(&plan.candidates[0]);
+            refresh_fingerprint(&mut plan);
+            assert!(matches!(
+                plan.validate(),
+                Err(TestCommandPlanValidationError::AbsolutePathInCandidateArgv { .. })
+            ));
+            let error = match plan.validate() {
+                Err(error) => error.to_string(),
+                Ok(()) => return Err("absolute argv was accepted".to_string()),
+            };
+            assert_wire_error(&plan, &error)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ready_admission_is_rejected_after_fingerprint_refresh() -> Result<(), String> {
+        for state in [
+            GeneratedStateFreshness::Missing,
+            GeneratedStateFreshness::Stale,
+            GeneratedStateFreshness::NotProven,
+        ] {
+            let mut plan = validation_fixture()?;
+            plan.candidates[0].required_generated_state.push(GeneratedStateRequirement {
+                artifact: GeneratedArtifact::Makefile,
+                state,
+                path: None,
+                reason_code: "fixture".to_string(),
+            });
+            plan.candidates[0].admission = TestCommandAdmission::Ready;
+            refresh_fingerprint(&mut plan);
+            assert!(matches!(
+                plan.validate(),
+                Err(TestCommandPlanValidationError::AdmissionExceedsRequirements { .. })
+            ));
+            assert_wire_error(&plan, "marked Ready")?;
+
+            // Non-current requirements are legitimate in blocked offers.
+            plan.candidates[0].admission = TestCommandAdmission::BlockedMissingGeneratedState;
+            refresh_fingerprint(&mut plan);
+            assert_eq!(plan.validate(), Ok(()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn optional_fingerprint_fields_distinguish_absent_from_present_empty() -> Result<(), String> {
+        for field in ["tool", "build", "requirement path", "limitation input"] {
+            let mut absent = validation_fixture()?;
+            absent.candidates[0].tool_candidate_id = None;
+            absent.candidates[0].build_system_id = None;
+            absent.candidates[0].required_generated_state.push(GeneratedStateRequirement {
+                artifact: GeneratedArtifact::Makefile,
+                state: GeneratedStateFreshness::Current,
+                path: None,
+                reason_code: "fixture".to_string(),
+            });
+            absent.candidates[0].id = compute_candidate_id(&absent.candidates[0]);
+            refresh_fingerprint(&mut absent);
+            assert_eq!(absent.validate(), Ok(()));
+            let mut present = absent.clone();
+            match field {
+                "tool" => present.candidates[0].tool_candidate_id = Some(String::new()),
+                "build" => present.candidates[0].build_system_id = Some(String::new()),
+                "requirement path" => {
+                    present.candidates[0].required_generated_state[0].path =
+                        Some(EnvironmentPathRef::new("", ""));
+                }
+                _ => {
+                    present.limitations[0].input_id =
+                        Some(serde_json::from_str(r#""""#).map_err(|error| error.to_string())?);
+                }
+            }
+            assert_eq!(
+                present.validate(),
+                Err(TestCommandPlanValidationError::FingerprintMismatch)
+            );
+            assert_wire_error(&present, "fingerprint does not match")?;
+            refresh_fingerprint(&mut present);
+            assert_ne!(present.fingerprint, absent.fingerprint, "{field}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_id_tamper_is_rejected_after_fingerprint_refresh() -> Result<(), String> {
+        let mut plan = validation_fixture()?;
+        plan.candidates[0].id.push_str(":changed");
+        refresh_fingerprint(&mut plan);
+        assert!(matches!(
+            plan.validate(),
+            Err(TestCommandPlanValidationError::CandidateIdMismatch { .. })
+        ));
+        assert_wire_error(&plan, "does not match command identity")
+    }
+
+    #[test]
+    fn prior_fingerprint_schema_is_rejected() -> Result<(), String> {
+        let mut plan = validation_fixture()?;
+        plan.schema_version = 1;
+        assert_eq!(
+            plan.validate(),
+            Err(TestCommandPlanValidationError::UnsupportedSchemaVersion { schema_version: 1 })
+        );
+        assert_wire_error(&plan, "schema_version 1")?;
+        Ok(())
+    }
 
     #[test]
     fn absolute_paths_are_recognized_on_both_platform_shapes() {

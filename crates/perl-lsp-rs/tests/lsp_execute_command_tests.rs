@@ -1,49 +1,88 @@
 //! Tests for LSP execute command functionality
-use perl_lsp::{JsonRpcRequest, LspServer};
+mod support;
+
+use perl_lsp::{JsonRpcRequest, JsonRpcResponse, protocol::JsonRpcError};
 use serde_json::{Value, json};
 use std::fs;
+use std::time::Duration;
 use tempfile::TempDir;
 use url::Url;
 
-fn setup_server(root_path: Option<String>) -> LspServer {
+use support::lsp_harness::LspHarness;
+
+fn setup_server(root_path: Option<String>) -> Result<LspHarness, String> {
     setup_server_with_initialization_options(root_path, None)
 }
 
 fn setup_server_with_initialization_options(
     root_path: Option<String>,
     initialization_options: Option<Value>,
-) -> LspServer {
-    let server = LspServer::new();
+) -> Result<LspHarness, String> {
+    let mut harness = LspHarness::new_raw();
+    let root_uri = match root_path {
+        Some(path) => Url::from_directory_path(&path)
+            .map_err(|()| format!("failed to convert workspace path to file URI: {path}"))?
+            .to_string(),
+        None => "file:///test".to_string(),
+    };
 
-    let mut init_params = json!({
-        "processId": null,
-        "rootPath": root_path,
-        "capabilities": {}
-    });
     if let Some(options) = initialization_options {
-        init_params["initializationOptions"] = options;
+        harness.initialize_with_root_and_init_options(&root_uri, None, options)?;
+    } else {
+        harness.initialize_ready(&root_uri, None)?;
     }
 
-    // Initialize the server
-    let init_request = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-    };
+    Ok(harness)
+}
 
-    let _response = server.handle_request(init_request);
+fn json_rpc_id_to_value(id: &perl_lsp::protocol::JsonRpcId) -> Value {
+    match id {
+        perl_lsp::protocol::JsonRpcId::Integer(value) => json!(*value),
+        perl_lsp::protocol::JsonRpcId::String(value) => json!(value),
+        _ => json!(null),
+    }
+}
 
-    // Send the initialized notification to complete the handshake
-    let initialized_request = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        method: "initialized".to_string(),
-        params: Some(json!({})),
-        id: None,
-    };
+fn harness_handle_request(
+    harness: &mut LspHarness,
+    req: JsonRpcRequest,
+) -> Option<JsonRpcResponse> {
+    let params = req.params.unwrap_or(json!({}));
+    if req.id.is_none() {
+        harness.notify(&req.method, params);
+        return None;
+    }
 
-    let _initialized_response = server.handle_request(initialized_request);
-    server
+    let request_id = req.id.clone();
+    let envelope = harness.request_raw_preserving_id_with_timeout(
+        json!({
+            "jsonrpc": "2.0",
+            "id": json_rpc_id_to_value(request_id.as_ref()?),
+            "method": req.method,
+            "params": params,
+        }),
+        Duration::from_secs(30),
+    );
+
+    if let Some(error) = envelope.get("error") {
+        let code = error.get("code").and_then(Value::as_i64).unwrap_or(-32603) as i32;
+        let message =
+            error.get("message").and_then(Value::as_str).unwrap_or("unknown error").to_string();
+        let data = error.get("data").cloned();
+        return Some(JsonRpcResponse {
+            jsonrpc: perl_lsp::protocol::JSONRPC_VERSION,
+            id: request_id,
+            result: None,
+            error: Some(JsonRpcError { code, message, data }),
+        });
+    }
+
+    Some(JsonRpcResponse {
+        jsonrpc: perl_lsp::protocol::JSONRPC_VERSION,
+        id: request_id,
+        result: envelope.get("result").cloned(),
+        error: None,
+    })
 }
 
 fn test_error(message: impl Into<String>) -> std::io::Error {
@@ -279,7 +318,7 @@ fn assert_agent_context_schema(
 fn test_execute_command_run_file() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
-    let server = setup_server(Some(root_path.clone()));
+    let mut harness = setup_server(Some(root_path.clone()))?;
 
     // Create a test file
     let test_content = r#"#!/usr/bin/perl
@@ -309,7 +348,7 @@ print "Hello, World!\n";
     };
 
     // Send the notification
-    let _ = server.handle_request(open_request);
+    let _ = harness_handle_request(&mut harness, open_request);
 
     // Execute the run file command
     let execute_request = JsonRpcRequest {
@@ -322,8 +361,8 @@ print "Hello, World!\n";
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
     };
 
-    let response =
-        server.handle_request(execute_request).ok_or("No response from execute command")?;
+    let response = harness_handle_request(&mut harness, execute_request)
+        .ok_or("No response from execute command")?;
     let result = response.result.ok_or("No result in response")?;
 
     // Check that we got a response (even if the command might fail due to perl not installed/env issues)
@@ -339,7 +378,7 @@ print "Hello, World!\n";
 fn test_execute_command_run_tests() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
-    let server = setup_server(Some(root_path.clone()));
+    let mut harness = setup_server(Some(root_path.clone()))?;
 
     // Create a test file with Test::More
     let test_content = r#"#!/usr/bin/perl
@@ -371,7 +410,7 @@ is(1 + 1, 2, "Math works");
     };
 
     // Send the notification
-    let _ = server.handle_request(open_request);
+    let _ = harness_handle_request(&mut harness, open_request);
 
     // Execute the run tests command
     let execute_request = JsonRpcRequest {
@@ -384,8 +423,8 @@ is(1 + 1, 2, "Math works");
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
     };
 
-    let response =
-        server.handle_request(execute_request).ok_or("No response from execute command")?;
+    let response = harness_handle_request(&mut harness, execute_request)
+        .ok_or("No response from execute command")?;
     let result = response.result.ok_or("No result in response")?;
 
     // Check response structure
@@ -409,7 +448,7 @@ is(1 + 1, 2, "Math works");
 
 #[test]
 fn test_execute_command_unknown() -> Result<(), Box<dyn std::error::Error>> {
-    let server = setup_server(None);
+    let mut harness = setup_server(None)?;
 
     // Try an unknown command
     let execute_request = JsonRpcRequest {
@@ -422,7 +461,7 @@ fn test_execute_command_unknown() -> Result<(), Box<dyn std::error::Error>> {
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
     };
 
-    let response = server.handle_request(execute_request);
+    let response = harness_handle_request(&mut harness, execute_request);
 
     // Should return an error
     assert!(response.is_some());
@@ -434,23 +473,10 @@ fn test_execute_command_unknown() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_execute_command_capabilities() -> Result<(), Box<dyn std::error::Error>> {
-    let server = LspServer::new();
-
-    // Initialize and check capabilities
-    let init_request = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "processId": null,
-            "rootPath": "/test",
-            "capabilities": {}
-        })),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(10_i64)),
-    };
-
-    let response = server.handle_request(init_request).ok_or("No response from initialize")?;
-    let result = response.result.ok_or("No result in initialize response")?;
-    let capabilities = result.get("capabilities").ok_or("No capabilities in result")?;
+    let mut harness = LspHarness::new_raw();
+    let init_response = harness.initialize_ready("file:///test", None)?;
+    let capabilities =
+        init_response.get("capabilities").ok_or("No capabilities in initialize response")?;
     let execute_command = capabilities
         .get("executeCommandProvider")
         .ok_or("No executeCommandProvider in capabilities")?;
@@ -483,7 +509,7 @@ fn test_execute_command_agent_context_is_read_only_and_actionable()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
-    let server = setup_server(Some(root_path));
+    let mut harness = setup_server(Some(root_path))?;
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -500,8 +526,8 @@ fn test_execute_command_agent_context_is_read_only_and_actionable()
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
     };
 
-    let response =
-        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let response = harness_handle_request(&mut harness, execute_request)
+        .ok_or("No response from agent-context command")?;
     let result = response.result.ok_or("No result in agent-context response")?;
     let schema = agent_context_schema()?;
     let trust_report_schema = workspace_trust_report_schema()?;
@@ -541,7 +567,7 @@ fn test_execute_command_agent_context_accepts_empty_arguments()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
-    let server = setup_server(Some(root_path));
+    let mut harness = setup_server(Some(root_path))?;
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -553,8 +579,8 @@ fn test_execute_command_agent_context_accepts_empty_arguments()
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(4_i64)),
     };
 
-    let response =
-        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let response = harness_handle_request(&mut harness, execute_request)
+        .ok_or("No response from agent-context command")?;
     let result = response.result.ok_or("No result in agent-context response")?;
     let schema = agent_context_schema()?;
     let trust_report_schema = workspace_trust_report_schema()?;
@@ -573,7 +599,7 @@ fn test_execute_command_agent_context_accepts_omitted_arguments()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
-    let server = setup_server(Some(root_path));
+    let mut harness = setup_server(Some(root_path))?;
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -582,8 +608,8 @@ fn test_execute_command_agent_context_accepts_omitted_arguments()
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(5_i64)),
     };
 
-    let response =
-        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let response = harness_handle_request(&mut harness, execute_request)
+        .ok_or("No response from agent-context command")?;
     let result = response.result.ok_or("No result in agent-context response")?;
     let schema = agent_context_schema()?;
     let trust_report_schema = workspace_trust_report_schema()?;
@@ -598,10 +624,10 @@ fn test_execute_command_agent_context_honors_disabled_execute_command_feature()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
-    let server = setup_server_with_initialization_options(
+    let mut harness = setup_server_with_initialization_options(
         Some(root_path),
         Some(json!({"disabledFeatures": ["lsp.execute_command"]})),
-    );
+    )?;
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -610,8 +636,8 @@ fn test_execute_command_agent_context_honors_disabled_execute_command_feature()
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(6_i64)),
     };
 
-    let response =
-        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let response = harness_handle_request(&mut harness, execute_request)
+        .ok_or("No response from agent-context command")?;
     let result = response.result.ok_or("No result in agent-context response")?;
     let schema = agent_context_schema()?;
     let trust_report_schema = workspace_trust_report_schema()?;
@@ -632,7 +658,7 @@ fn test_execute_command_agent_context_honors_disabled_execute_command_feature()
 fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
-    let server = setup_server(Some(root_path));
+    let mut harness = setup_server(Some(root_path))?;
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -691,8 +717,7 @@ fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::erro
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
     };
 
-    let response = server
-        .handle_request(execute_request)
+    let response = harness_handle_request(&mut harness, execute_request)
         .ok_or("No response from workspace-trust-report command")?;
     let result = response.result.ok_or("No result in workspace-trust-report response")?;
 
@@ -726,6 +751,43 @@ fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::erro
         result.pointer("/setup_hints/perl_binary/version_status").and_then(|value| value.as_str()),
         Some("not_probed_by_report")
     );
+    let resolution_status =
+        result.pointer("/setup_hints/perl_binary/resolution_status").and_then(Value::as_str);
+    if resolution_status
+        != Some("module_probe_uses_toolchain_resolution_when_needed_not_probed_by_report")
+    {
+        return Err(format!("unexpected Perl resolution status: {resolution_status:?}").into());
+    }
+    let perl_hint = result
+        .pointer("/setup_hints/hints")
+        .and_then(Value::as_array)
+        .and_then(|hints| {
+            hints.iter().find(|hint| {
+                hint.get("code").and_then(Value::as_str)
+                    == Some("perl_module_probe_uses_toolchain_resolution")
+            })
+        })
+        .ok_or("missing Perl resolution hint")?;
+    for field in ["message", "action"] {
+        let advice = perl_hint.get(field).and_then(Value::as_str).ok_or("missing Perl advice")?;
+        let perlbrew = advice.find("perlbrew").ok_or("perlbrew missing from advice")?;
+        let plenv = advice.find("plenv").ok_or("plenv missing from advice")?;
+        let path = advice.find("PATH").ok_or("PATH missing from advice")?;
+        if !(perlbrew < plenv && plenv < path) {
+            return Err(format!("{field} must follow perlbrew, plenv, PATH order: {advice}").into());
+        }
+    }
+    let action = perl_hint.get("action").and_then(Value::as_str).ok_or("missing Perl action")?;
+    if !action.contains("prefers Strawberry or ActiveState over MSYS") {
+        return Err("Windows startup selection difference missing from Perl advice".into());
+    }
+    if !perl_hint
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| message.contains("This report does not probe Perl"))
+    {
+        return Err("Perl advice implies the trust report resolved an interpreter".into());
+    }
     assert!(
         result
             .pointer("/setup_hints/claim_boundary")
@@ -816,7 +878,7 @@ fn test_execute_command_workspace_trust_report_schema_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
-    let server = setup_server(Some(root_path.clone()));
+    let mut harness = setup_server(Some(root_path.clone()))?;
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -877,8 +939,7 @@ fn test_execute_command_workspace_trust_report_schema_snapshot()
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
     };
 
-    let response = server
-        .handle_request(execute_request)
+    let response = harness_handle_request(&mut harness, execute_request)
         .ok_or("No response from workspace-trust-report command")?;
     let result = response.result.ok_or("No result in workspace-trust-report response")?;
     let schema = workspace_trust_report_schema()?;
@@ -1262,7 +1323,7 @@ fn test_execute_command_workspace_trust_report_schema_snapshot()
 fn test_execute_command_explain_missing_module_lookup() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
-    let server = setup_server(Some(root_path));
+    let mut harness = setup_server(Some(root_path))?;
 
     let script_path = temp_dir.path().join("script.pl");
     let script_content = "use Missing::Payload;\n";
@@ -1284,7 +1345,7 @@ fn test_execute_command_explain_missing_module_lookup() -> Result<(), Box<dyn st
         })),
         id: None,
     };
-    let _ = server.handle_request(open_request);
+    let _ = harness_handle_request(&mut harness, open_request);
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -1300,8 +1361,7 @@ fn test_execute_command_explain_missing_module_lookup() -> Result<(), Box<dyn st
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
     };
 
-    let response = server
-        .handle_request(execute_request)
+    let response = harness_handle_request(&mut harness, execute_request)
         .ok_or("No response from explain-missing-module-lookup command")?;
     let result = response.result.ok_or("No result in explain-missing-module-lookup response")?;
 
@@ -1379,7 +1439,7 @@ fn test_execute_command_explain_missing_module_lookup() -> Result<(), Box<dyn st
 
 #[test]
 fn test_execute_command_explain_provider_decision() -> Result<(), Box<dyn std::error::Error>> {
-    let server = setup_server(None);
+    let mut harness = setup_server(None)?;
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -1407,8 +1467,7 @@ fn test_execute_command_explain_provider_decision() -> Result<(), Box<dyn std::e
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
     };
 
-    let response = server
-        .handle_request(execute_request)
+    let response = harness_handle_request(&mut harness, execute_request)
         .ok_or("No response from explain-provider-decision command")?;
     let result = response.result.ok_or("No result in explain-provider-decision response")?;
 
@@ -1477,7 +1536,7 @@ fn test_execute_command_explain_provider_decision() -> Result<(), Box<dyn std::e
 #[test]
 fn test_execute_command_explain_provider_decision_accepts_type_definition()
 -> Result<(), Box<dyn std::error::Error>> {
-    let server = setup_server(None);
+    let mut harness = setup_server(None)?;
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -1501,8 +1560,7 @@ fn test_execute_command_explain_provider_decision_accepts_type_definition()
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(3)),
     };
 
-    let response = server
-        .handle_request(execute_request)
+    let response = harness_handle_request(&mut harness, execute_request)
         .ok_or("No response from explain-provider-decision command")?;
     let result = response.result.ok_or("No result in explain-provider-decision response")?;
 
@@ -1534,7 +1592,7 @@ fn test_execute_command_explain_provider_decision_accepts_type_definition()
 #[test]
 fn test_execute_command_explain_provider_decision_accepts_workspace_trust_report()
 -> Result<(), Box<dyn std::error::Error>> {
-    let server = setup_server(None);
+    let mut harness = setup_server(None)?;
 
     let execute_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
@@ -1548,8 +1606,7 @@ fn test_execute_command_explain_provider_decision_accepts_workspace_trust_report
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(4)),
     };
 
-    let response = server
-        .handle_request(execute_request)
+    let response = harness_handle_request(&mut harness, execute_request)
         .ok_or("No response from explain-provider-decision command")?;
     let result = response.result.ok_or("No result in explain-provider-decision response")?;
 

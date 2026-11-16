@@ -312,8 +312,8 @@ fn decode_string_line(line: &str) -> Option<String> {
 #[derive(Debug)]
 enum StrictJson {
     Null,
-    Bool(bool),
-    Number(serde_json::Number),
+    Bool,
+    Number,
     String(String),
     Array(Vec<StrictJson>),
     Object(Vec<(String, StrictJson)>),
@@ -337,22 +337,22 @@ impl<'de> serde::Deserialize<'de> for StrictJson {
                 Ok(StrictJson::Null)
             }
 
-            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
-                Ok(StrictJson::Bool(value))
+            fn visit_bool<E: serde::de::Error>(self, _value: bool) -> Result<Self::Value, E> {
+                Ok(StrictJson::Bool)
             }
 
-            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
-                Ok(StrictJson::Number(value.into()))
+            fn visit_i64<E: serde::de::Error>(self, _value: i64) -> Result<Self::Value, E> {
+                Ok(StrictJson::Number)
             }
 
-            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
-                Ok(StrictJson::Number(value.into()))
+            fn visit_u64<E: serde::de::Error>(self, _value: u64) -> Result<Self::Value, E> {
+                Ok(StrictJson::Number)
             }
 
             fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
                 serde_json::Number::from_f64(value)
-                    .map(StrictJson::Number)
-                    .ok_or_else(|| serde::de::Error::custom("non-finite JSON number"))
+                    .ok_or_else(|| serde::de::Error::custom("non-finite JSON number"))?;
+                Ok(StrictJson::Number)
             }
 
             fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {

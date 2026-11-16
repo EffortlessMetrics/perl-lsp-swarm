@@ -1,5 +1,5 @@
 schema = 2
-msrv = "1.95"
+msrv = "1.100"
 
 [policy]
 panic_free_tests = true
@@ -10,21 +10,27 @@ blanket_categories = false
 # Lint entries are sharded by class under policy/clippy-lints.d. The checker loads
 # those fragments in sorted path order and validates them as one logical ledger.
 
-# This lint belongs to the Rust/Clippy 1.96 rail and must remain absent from the
-# Rust 1.95 product policy until the synchronized product toolchain bump lands.
-[[planned]]
+# These lints are available on the selected compiler. Keep their activation
+# separate from the toolchain migration until their semantic owners finish review.
+[[deferred_due]]
 name = "clippy::manual_pop_if"
 level = "deny"
 activate_when_msrv = "1.96"
 class = "reviewability"
-reason = "Activate after #9864 moves the product workspace to Rust 1.97.1 and #1803 proves predicate, mutation, ownership, and drop-order equivalence."
+owner = "#1803"
+reason = "Rust 1.100 provides the lint; #1803 must prove predicate, mutation, ownership, and drop-order equivalence before activation. The toolchain migration preserves current lint levels."
+review_after = "2026-12-01"
+next_status = "active"
 
-[[planned]]
+[[deferred_due]]
 name = "clippy::manual_clear"
 level = "deny"
 activate_when_msrv = "1.97"
 class = "reviewability"
-reason = "Activate after the selected product toolchain provides the lint; #9913 records the current buffer-reuse dispositions without changing the pinned Rust 1.95 product gate."
+owner = "#9913"
+reason = "Rust 1.100 provides the lint; #9913 owns buffer-reuse and semantic-equivalence review before activation. The toolchain migration preserves current lint levels."
+review_after = "2026-12-01"
+next_status = "active"
 
 # These lints are already available at or below the current product MSRV. They
 # retain named, review-dated owners instead of remaining silently planned.

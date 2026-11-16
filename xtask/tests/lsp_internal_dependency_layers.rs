@@ -76,6 +76,7 @@ const LAYERS: &[LayerRow] = &[
     layer!("timing", ObservabilityTest),
     layer!("types", ModelTypes),
     layer!("v0_18_text_sync_envelope", ApplicationServices),
+    layer!("watched_delete_republish_tests", ObservabilityTest),
     layer!("window", AdapterPolicy),
     layer!("workspace", ApplicationServices),
     layer!("workspace_folder", ApplicationServices),
@@ -341,4 +342,116 @@ fn a_new_back_edge_without_an_exception_is_rejected() {
         unregistered_forbidden_tokens("synthetic/generic.rs", source),
         BTreeSet::from(["crate::providers".to_string()])
     );
+}
+
+const CORE_FACADE_TESTS: &[&str] = &[
+    "test_lsp_initialization_facade_shape",
+    "test_mixed_facade_and_core_consumption",
+    "test_capability_map_dual_access_complete",
+    "test_perl_lsp_facade_has_all_reexports",
+    "test_facade_reexports_from_perl_lsp",
+    "test_type_identity_facade_vs_core",
+    "test_capability_map_reexport_from_perl_lsp",
+    "test_facade_no_conflicting_reexports",
+    "test_capability_map_dual_access_paths",
+    "test_facade_reexports_preserve_type_identity",
+];
+
+fn unconditional_tests(source: &str) -> BTreeSet<String> {
+    fn gated(attributes: &[syn::Attribute]) -> bool {
+        attributes.iter().any(|attribute| {
+            ["cfg", "cfg_attr", "ignore"].iter().any(|name| attribute.path().is_ident(name))
+        })
+    }
+    let file = syn::parse_file(source).expect("parse facade contract tests");
+    if gated(&file.attrs) {
+        return BTreeSet::new();
+    }
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function)
+                if !gated(&function.attrs)
+                    && function.attrs.iter().any(|attribute| attribute.path().is_ident("test")) =>
+            {
+                Some(function.sig.ident.to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn facade_contract_uses_libtest(manifest: &str) -> bool {
+    let manifest: toml::Value = toml::from_str(manifest).expect("parse facade manifest");
+    manifest.get("test").and_then(toml::Value::as_array).is_none_or(|targets| {
+        targets.iter().all(|target| {
+            target.get("name").and_then(toml::Value::as_str) != Some("core_facade_contract")
+                || target.get("harness").and_then(toml::Value::as_bool) != Some(false)
+        })
+    })
+}
+
+#[test]
+fn moved_core_facade_tests_remain_unconditionally_selected() {
+    let root = repo_root();
+    let path = root.join("crates/perl-lsp-rs/tests/core_facade_contract.rs");
+    let source = fs::read_to_string(&path).expect("read facade-owned contract");
+    let expected: BTreeSet<_> = CORE_FACADE_TESTS.iter().map(|name| name.to_string()).collect();
+    assert!(expected.is_subset(&unconditional_tests(&source)), "all ten migrated tests must run");
+    // Cargo metadata's `test: true` does not mean libtest is enabled:
+    // harness=false can run an empty main while ignoring every #[test].
+    let manifest = fs::read_to_string(root.join("crates/perl-lsp-rs/Cargo.toml"))
+        .expect("read facade manifest");
+    assert!(facade_contract_uses_libtest(&manifest), "the moved tests require the libtest harness");
+
+    // Cargo discovery is the selection authority used by the existing required
+    // unit_routed_full `cargo test --tests` gate. No feature opt-in is allowed.
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--no-deps", "--locked", "--format-version=1"])
+        .current_dir(&root)
+        .output()
+        .expect("run Cargo target discovery");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Cargo metadata");
+    let package = metadata["packages"]
+        .as_array()
+        .expect("packages")
+        .iter()
+        .find(|package| package["name"] == "perl-lsp-rs")
+        .expect("facade package");
+    let target = package["targets"]
+        .as_array()
+        .expect("targets")
+        .iter()
+        .find(|target| target["name"] == "core_facade_contract")
+        .expect("automatically discovered facade integration target");
+    assert_eq!(target["kind"], serde_json::json!(["test"]));
+    assert_eq!(target["test"], true);
+    assert_eq!(
+        Path::new(target["src_path"].as_str().expect("test source")).canonicalize().unwrap(),
+        path.canonicalize().unwrap()
+    );
+    assert!(target["required-features"].as_array().is_none_or(Vec::is_empty));
+}
+
+#[test]
+fn migrated_test_selection_guard_rejects_disabled_proof() {
+    let test = "#[test]\nfn facade_contract() {}\n";
+    assert_eq!(unconditional_tests(test), BTreeSet::from(["facade_contract".into()]));
+    for attribute in ["#[ignore]", "#[cfg(feature = \"hidden\")]", "#[cfg_attr(test, ignore)]"] {
+        assert!(unconditional_tests(&format!("{attribute}\n{test}")).is_empty());
+    }
+    assert!(unconditional_tests(&format!("#![cfg(feature = \"hidden\")]\n{test}")).is_empty());
+    assert!(unconditional_tests("fn facade_contract() {}\n").is_empty());
+}
+
+#[test]
+fn migrated_test_selection_guard_rejects_disabled_harness() {
+    assert!(facade_contract_uses_libtest("[package]\nname = 'perl-lsp-rs'\n"));
+    let target = "[[test]]\nname = 'core_facade_contract'\n";
+    assert!(facade_contract_uses_libtest(target));
+    assert!(facade_contract_uses_libtest(&format!("{target}harness = true\n")));
+    assert!(!facade_contract_uses_libtest(&format!("{target}harness = false\n")));
+    assert!(facade_contract_uses_libtest("[[test]]\nname = 'unrelated'\nharness = false\n"));
 }

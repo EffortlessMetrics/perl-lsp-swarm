@@ -522,7 +522,7 @@ fn bounded_history_fetch(root: &Path, base: &str, head: &str) -> SubjectResult<(
 }
 
 fn bounded_git_fetch(root: &Path, args: &[&str]) -> SubjectResult<()> {
-    let mut child = Command::new("git")
+    let mut child = xtask::git_environment::isolate(Command::new("git"))
         .args(args)
         .current_dir(root)
         .stdin(Stdio::null())
@@ -574,12 +574,16 @@ fn tree_sha(root: &Path, commit: &str) -> SubjectResult<String> {
 }
 
 pub(crate) fn git_stdout(root: &Path, args: &[&str]) -> SubjectResult<String> {
-    let output = Command::new("git").args(args).current_dir(root).output().map_err(|error| {
-        subject_error(
-            SubjectErrorCode::ObjectUnavailable,
-            format!("git {}: {error}", args.join(" ")),
-        )
-    })?;
+    let output = xtask::git_environment::isolate(Command::new("git"))
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|error| {
+            subject_error(
+                SubjectErrorCode::ObjectUnavailable,
+                format!("git {}: {error}", args.join(" ")),
+            )
+        })?;
     if !output.status.success() {
         return Err(subject_error(
             SubjectErrorCode::ObjectUnavailable,

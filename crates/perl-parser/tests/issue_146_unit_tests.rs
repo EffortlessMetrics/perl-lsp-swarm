@@ -71,66 +71,6 @@ mod tdd_workflow_unit_tests {
 }
 
 #[cfg(test)]
-mod refactoring_module_tests {
-    use std::path::Path;
-
-    // Path to the actual refactoring implementation (absorbed from perl-refactoring)
-    const REFACTORING_PATH: &str = "src/refactor/refactoring.rs";
-
-    /// Test that refactoring.rs file exists after implementation
-    #[test]
-    fn test_refactoring_module_exists() {
-        assert!(
-            Path::new(REFACTORING_PATH).exists(),
-            "refactoring.rs module file does not exist at {}",
-            REFACTORING_PATH
-        );
-    }
-
-    /// Test refactoring module structure after implementation
-    #[test]
-    fn test_refactoring_module_structure() -> Result<(), Box<dyn std::error::Error>> {
-        let content = std::fs::read_to_string(REFACTORING_PATH)?;
-
-        // Should contain the main RefactoringEngine struct
-        assert!(
-            content.contains("pub struct RefactoringEngine"),
-            "RefactoringEngine struct not found in refactoring.rs"
-        );
-
-        // Should contain RefactoringType enum
-        assert!(
-            content.contains("pub enum RefactoringType"),
-            "RefactoringType enum not found in refactoring.rs"
-        );
-
-        // Should contain RefactoringResult struct
-        assert!(
-            content.contains("pub struct RefactoringResult"),
-            "RefactoringResult struct not found in refactoring.rs"
-        );
-
-        Ok(())
-    }
-
-    /// Test refactoring module API compatibility
-    #[test]
-    fn test_refactoring_api_compatibility() {
-        // This test will validate that the refactoring module can be imported
-        // and used correctly once it's implemented
-
-        // Test imports - these should compile if the API is correct
-        // Core parser functionality validation
-        use perl_parser::error::ParseResult;
-
-        // Basic API types should be available
-        let _result: ParseResult<()> = Ok(());
-
-        // Refactoring API is compatible with parser infrastructure (verified by compilation)
-    }
-}
-
-#[cfg(test)]
 mod lib_integration_tests {
     /// Test that lib.rs module declarations are correct
     ///
@@ -167,11 +107,13 @@ mod lib_integration_tests {
             "TDD workflow is not exported from lib.rs"
         );
 
-        // Check for refactoring exports (re-exported from refactor submodule)
+        // The unified refactoring engine export was retired (#5231); the
+        // operation-specific refactor submodules remain the exported surface.
         assert!(
-            content.contains("pub use refactor::refactoring")
-                || content.contains("pub use refactoring"),
-            "Refactoring is not exported from lib.rs"
+            content.contains("pub use refactor::import_optimizer")
+                && content.contains("pub use refactor::modernize")
+                && content.contains("pub use refactor::workspace_refactor"),
+            "Operation-specific refactor exports are missing from lib.rs"
         );
 
         Ok(())

@@ -1,0 +1,10 @@
+use Test::More;
+use Test::Exception;
+throws_ok { die "x" } 'My::Error', 'class pins the error';
+throws_ok { die "x" } qr/boom/, 'regex pins the error';
+throws_ok { die "x" } $re, 'variable matcher is not guessed';
+dies_ok { die "x" } 'bare dies_ok pins nothing';
+like(dies { die "x" }, qr/boom/, 'nested block is one pinned oracle');
+like(dies { die "x" }, $re, 'nested block with a variable matcher is one broad oracle');
+like($got, qr/x/, 'value like stays broad');
+done_testing;

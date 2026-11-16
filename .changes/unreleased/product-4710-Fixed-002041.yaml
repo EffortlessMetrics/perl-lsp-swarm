@@ -1,9 +1,0 @@
-project: product
-component: Compatibility
-kind: Fixed
-body: ".perl-lsp.toml is now discovered by walking parent directories from the workspace root, matching how .perlcriticrc is already found; opening a monorepo at a subdirectory no longer silently falls back to default formatting/inlay-hints/AI-completion settings."
-time: 2026-07-23T00:20:41Z
-custom:
-  PR: "4710"
-  Slug: toml-parent-dir-discovery
-  Breaking: "no"

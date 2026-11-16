@@ -83,3 +83,5 @@ archive/legacy-crates/perl-parser-pest/src/lib/*.js linguist-vendored
 *.eot    binary
 *.woff   binary
 *.woff2  binary
+
+.github/workflows/*.lock.yml linguist-generated=true

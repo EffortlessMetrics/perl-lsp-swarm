@@ -233,3 +233,108 @@ fn snapshot_provider_decision_schema_unknown_provider_fallback()
     );
     Ok(())
 }
+
+#[test]
+fn provider_decision_popups_are_self_contained() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server();
+    for (index, provider) in [
+        "completion",
+        "goto_definition",
+        "type_definition",
+        "references",
+        "hover",
+        "diagnostics",
+        "rename",
+        "safe_delete",
+        "workspace_symbols",
+        "document_symbols",
+        "semantic_tokens",
+        "module_resolution",
+        "dap_module_paths",
+        "perl_subprocess",
+        "workspace_trust_report",
+        "unknown",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = execute_command(
+            &server,
+            "perl.explainProviderDecision",
+            json!([{
+                "provider": provider
+            }]),
+            index as i64 + 10,
+        )?;
+        let message =
+            result.get("user_message").and_then(Value::as_str).ok_or("missing user_message")?;
+        assert!(message.contains("No request evidence is attached."), "{message}");
+        assert!(message.contains("Provider policy summary:"), "{message}");
+        assert!(!message.contains("docs/"), "{provider}: {message}");
+        assert!(!message.contains("Receipt:"), "{provider}: {message}");
+        assert!(!message.contains("Scenario:"), "{provider}: {message}");
+        if provider != "unknown" {
+            assert!(result.get("receipt_id").and_then(Value::as_str).is_some(), "{result}");
+        }
+        assert_eq!(result["copyable_payload"]["user_message"], result["user_message"]);
+    }
+    Ok(())
+}
+
+#[test]
+fn provider_decision_popups_preserve_stale_and_blocked_caller_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server();
+    for (provider, decision, reason, freshness, fallback, detail) in [
+        (
+            "hover",
+            "fallback",
+            "stale_fact",
+            "stale",
+            "no_result",
+            "The available fact was stale and could not authorize this request.",
+        ),
+        (
+            "safe_delete",
+            "blocked",
+            "unsafe_edit_blocked",
+            "fresh",
+            "no_edit",
+            "Safe delete refused. No edits were applied.",
+        ),
+    ] {
+        let result = execute_command(
+            &server,
+            "perl.explainProviderDecision",
+            json!([{
+                "provider": provider,
+                "receipt_id": "docs/project/status/provider_confidence_matrix.md#caller",
+                "scenario": "caller-proof-scenario",
+                "request_receipt": {
+                    "provider": provider, "decision": decision, "reason": reason,
+                    "freshness": freshness, "fallback": fallback, "confidence": "low",
+                    "fact_source": "unknown", "user_message": detail
+                }
+            }]),
+            100,
+        )?;
+        let message =
+            result.get("user_message").and_then(Value::as_str).ok_or("missing user_message")?;
+        assert!(message.contains(detail), "{message}");
+        assert!(
+            message.contains(&format!("Attached request freshness: {freshness}.")),
+            "{message}"
+        );
+        assert!(!message.contains("docs/"), "{message}");
+        assert!(!message.contains("caller-proof-scenario"), "{message}");
+        assert_eq!(result["request_receipt"]["decision"], decision);
+        assert_eq!(result["request_receipt"]["freshness"], freshness);
+        assert_eq!(result["copyable_payload"]["request_receipt"], result["request_receipt"]);
+        assert_eq!(
+            result["receipt_id"],
+            "docs/project/status/provider_confidence_matrix.md#caller"
+        );
+        assert_eq!(result["scenario"], "caller-proof-scenario");
+    }
+    Ok(())
+}

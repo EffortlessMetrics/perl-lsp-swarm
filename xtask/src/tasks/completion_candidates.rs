@@ -1486,7 +1486,7 @@ where
     T: Clone,
     P: Clone,
 {
-    if !items.iter().any(|item| gated(item)) {
+    if !items.iter().any(&gated) {
         return;
     }
     let original = std::mem::take(items);

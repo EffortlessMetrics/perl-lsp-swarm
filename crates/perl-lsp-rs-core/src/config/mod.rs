@@ -29,6 +29,7 @@ pub mod toolchain_profile;
 
 pub(crate) use critic_state::CriticSettingsCandidate;
 pub use critic_state::{AcceptedCriticSnapshot, EffectiveCriticState, EffectiveNativeCriticConfig};
+use dependency_detection::{DependencyIncludeDetection, detect_dependency_include_paths_result};
 pub use dependency_detection::{
     detect_dependency_include_paths, detect_dependency_include_paths_with_declaration,
 };
@@ -1843,6 +1844,11 @@ impl WorkspaceConfig {
     /// include root behind. Ownership is tracked in
     /// [`Self::detected_dependency_include_paths`], so a path the user
     /// configured is never removed even when the detector also reports it.
+    ///
+    /// A marker probe that fails with an error other than `NotFound` is not
+    /// absence (#15087). When that uncertainty can change the current root
+    /// decision, reconciliation keeps both the prior detector-owned include
+    /// paths and their ownership records until a later determinate refresh.
     pub fn refresh_dependency_include_paths(&mut self, workspace_root: &Path) {
         self.refresh_dependency_include_paths_with_declaration(workspace_root, None);
     }
@@ -1859,7 +1865,10 @@ impl WorkspaceConfig {
         declaration_present: Option<bool>,
     ) {
         let detected =
-            detect_dependency_include_paths_with_declaration(workspace_root, declaration_present);
+            match detect_dependency_include_paths_result(workspace_root, declaration_present) {
+                DependencyIncludeDetection::Indeterminate => return,
+                DependencyIncludeDetection::Detected(paths) => paths,
+            };
         let detected_normalized: Vec<String> =
             detected.iter().filter_map(|path| normalize_include_path(path)).collect();
 
@@ -5245,6 +5254,134 @@ profile = "recommended"
         explicit.refresh_dependency_include_paths(workspace.path());
         if !explicit.include_paths.contains(&"local/lib/perl5".to_string()) {
             return Err("explicit user root was removed during marker reconciliation".into());
+        }
+        Ok(())
+    }
+
+    fn detector_owned_config(
+        workspace: &std::path::Path,
+    ) -> Result<WorkspaceConfig, Box<dyn std::error::Error>> {
+        let mut config = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        config.refresh_dependency_include_paths(workspace);
+        Ok(config)
+    }
+
+    fn detected_local_root() -> Result<String, Box<dyn std::error::Error>> {
+        normalize_include_path("local/lib/perl5")
+            .ok_or_else(|| "detected root should normalize".into())
+    }
+
+    /// A parent directory that cannot be searched (`EACCES`) must not retire
+    /// detector-owned roots. Permission bits do not constrain a `root`
+    /// runner, so this test falls back to the Unix `ENOTDIR` construction
+    /// from #14812 when `chmod 0o000` still lets `stat` succeed.
+    #[cfg(unix)]
+    #[test]
+    fn permission_denied_parent_keeps_detector_owned_roots() -> TestResult {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        let mut config = detector_owned_config(workspace.path())?;
+        let detected_root = detected_local_root()?;
+        if !config.include_paths.contains(&"local/lib/perl5".to_string())
+            || !config.detected_dependency_include_paths.contains(&detected_root)
+        {
+            return Err("detector did not own local/lib/perl5 at baseline".into());
+        }
+
+        let original = std::fs::metadata(workspace.path())?.permissions();
+        struct RestorePermissions<'a> {
+            path: &'a std::path::Path,
+            mode: u32,
+        }
+        impl Drop for RestorePermissions<'_> {
+            fn drop(&mut self) {
+                let _ =
+                    std::fs::set_permissions(self.path, std::fs::Permissions::from_mode(self.mode));
+            }
+        }
+        let _restore = RestorePermissions { path: workspace.path(), mode: original.mode() };
+        std::fs::set_permissions(workspace.path(), std::fs::Permissions::from_mode(0o000))?;
+
+        let probe = workspace.path().join("cpanfile").metadata();
+        let blocked_parent =
+            probe.as_ref().err().is_some_and(|error| error.kind() != std::io::ErrorKind::NotFound);
+
+        let decoy = tempfile::tempdir()?;
+        let not_a_directory = decoy.path().join("regular-file");
+        std::fs::write(&not_a_directory, "")?;
+        let refresh_root =
+            if blocked_parent { workspace.path() } else { not_a_directory.as_path() };
+
+        config.refresh_dependency_include_paths(refresh_root);
+        if !config.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("a non-NotFound marker probe retired the include root".into());
+        }
+        if !config.detected_dependency_include_paths.contains(&detected_root) {
+            return Err("a non-NotFound marker probe dropped detector ownership".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn genuine_not_found_still_retires_detector_owned_roots() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        let mut config = detector_owned_config(workspace.path())?;
+        let detected_root = detected_local_root()?;
+        if !config.detected_dependency_include_paths.contains(&detected_root) {
+            return Err("detector did not own local/lib/perl5 at baseline".into());
+        }
+
+        std::fs::remove_file(workspace.path().join("carton.lock"))?;
+        std::fs::remove_file(workspace.path().join("cpanfile"))?;
+        config.refresh_dependency_include_paths(workspace.path());
+        if config.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("a genuine NotFound must still retire the detected include root".into());
+        }
+        if !config.detected_dependency_include_paths.is_empty() {
+            return Err("a genuine NotFound must drop detector ownership".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_aware_declaration_override_is_not_replaced_by_disk() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        let mut config = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        config.refresh_dependency_include_paths_with_declaration(workspace.path(), Some(true));
+        let detected_root = detected_local_root()?;
+        if !config.detected_dependency_include_paths.contains(&detected_root) {
+            return Err("Some(true) should establish the Carton root".into());
+        }
+
+        std::fs::remove_file(workspace.path().join("cpanfile"))?;
+        config.refresh_dependency_include_paths_with_declaration(workspace.path(), Some(true));
+        if !config.include_paths.contains(&"local/lib/perl5".to_string())
+            || !config.detected_dependency_include_paths.contains(&detected_root)
+        {
+            return Err(
+                "Some(true) must keep the root after the on-disk cpanfile is deleted".into()
+            );
+        }
+
+        config.refresh_dependency_include_paths_with_declaration(workspace.path(), None);
+        if config.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("None must follow disk and retire once the closed cpanfile is gone".into());
         }
         Ok(())
     }

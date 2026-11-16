@@ -8,14 +8,16 @@ use std::time::Duration;
 use color_eyre::eyre::{Result, bail};
 use regex::Regex;
 
-use super::run_cmd_merged;
+use super::cmd::run_cmd_merged_with_failure_tail;
 
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static ANSI_ESCAPE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").expect("ANSI escape regex is valid"));
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"Running unittests[^\(]*\([^\)]*deps[/\\]([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\.exe)?\)")
+    // Cargo reports the hashed executable basename in both layouts. Its
+    // parent directories are not stable: 1.100 uses build/<pkg>/<hash>/out.
+    Regex::new(r"^Running unittests\s+.*\((?:.*[/\\])?([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\.exe)?\)\s*$")
         .expect("running-test regex is valid")
 });
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
@@ -49,15 +51,31 @@ pub(super) fn collect_for_selection<T>(
 }
 
 pub(super) fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
-    let output = run_cmd_merged(
+    inventory_from_merged_result(run_cmd_merged_with_failure_tail(
         root,
         &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
         Duration::from_mins(12),
-    );
-    if output.is_empty() {
-        bail!("test inventory discovery failed or returned no output");
+    ))
+}
+
+fn inventory_from_merged_result(
+    merged: std::result::Result<String, String>,
+) -> Result<PerCrateTestCounts> {
+    match merged {
+        Ok(output) if !output.is_empty() => {
+            validate_per_crate_test_counts(parse_per_crate_test_counts(&output))
+        }
+        Ok(_) => bail!("{}", discovery_failure_message("")),
+        Err(tail) => bail!("{}", discovery_failure_message(&tail)),
     }
-    validate_per_crate_test_counts(parse_per_crate_test_counts(&output))
+}
+
+fn discovery_failure_message(failure_tail: &str) -> String {
+    if failure_tail.is_empty() {
+        "test inventory discovery failed or returned no output".to_string()
+    } else {
+        format!("test inventory discovery failed or returned no output\n{failure_tail}")
+    }
 }
 
 fn validate_per_crate_test_counts(counts: PerCrateTestCounts) -> Result<PerCrateTestCounts> {
@@ -74,9 +92,13 @@ fn parse_per_crate_test_counts(output: &str) -> PerCrateTestCounts {
     let mut discovered = 0usize;
     for line in output.lines() {
         let plain_line = ANSI_ESCAPE_RE.replace_all(line, "");
-        if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(plain_line.as_ref()) {
-            current_crate = Some(caps[1].replace('_', "-"));
-        } else if TEST_LIST_LINE_RE.is_match(plain_line.as_ref()) {
+        let plain_line = plain_line.trim_start();
+        if plain_line.starts_with("Running unittests") {
+            // An unknown header starts a new attribution scope too. Keeping
+            // the prior crate would silently credit it with another binary's tests.
+            current_crate =
+                RUNNING_TEST_BINARY_RE.captures(plain_line).map(|caps| caps[1].replace('_', "-"));
+        } else if TEST_LIST_LINE_RE.is_match(plain_line) {
             discovered += 1;
             if let Some(krate) = &current_crate {
                 *counts.by_crate.entry(krate.clone()).or_default() += 1;
@@ -158,6 +180,51 @@ mod tests {
     }
 
     #[test]
+    fn parser_handles_cargo_1_100_layout_with_custom_and_windows_build_paths() {
+        let output = "Running unittests src/lib.rs \
+            (target/debug/build/perl-parser-core/0123456789abcdef/out/perl_parser_core-abc123)\n\
+            parser_smoke: test\n\
+            Running unittests src/lib.rs \
+            (/work/build artifacts (shared)/agent/build/perl-workspace/1234567890abcdef/out/perl_workspace-123def)\n\
+            workspace_smoke: test\n\
+            Running unittests src/lib.rs \
+            (C:\\build cache\\x86_64-pc-windows-msvc\\custom\\build\\perl-lsp-rs\\fedcba9876543210\\out\\perl_lsp_rs-feed456.exe)\n\
+            lsp_smoke: test\n";
+        let counts = parse_per_crate_test_counts(output);
+        assert_eq!(counts.by_crate.get("perl-parser-core"), Some(&1));
+        assert_eq!(counts.by_crate.get("perl-workspace"), Some(&1));
+        assert_eq!(counts.by_crate.get("perl-lsp-rs"), Some(&1));
+        assert_eq!(counts.unattributed, 0);
+        assert_eq!(counts.total(), 3);
+    }
+
+    #[test]
+    fn parser_handles_mixed_layouts_and_resets_attribution_at_unknown_headers() {
+        let output = "Running unittests src/lib.rs \
+            (target/debug/deps/perl_parser_core-abc123)\nlegacy_test: test\n\
+            Running unittests src/lib.rs (unrecognized executable)\nunknown_test: test\n\
+            Running unittests src/lib.rs \
+            (/external/build/agent/build/perl-workspace/0123456789abcdef/out/perl_workspace-123def)\n\
+            current_test: test\n\
+            Running unittests\nmissing_executable_test: test\n";
+        let counts = parse_per_crate_test_counts(output);
+        assert_eq!(counts.by_crate.get("perl-parser-core"), Some(&1));
+        assert_eq!(counts.by_crate.get("perl-workspace"), Some(&1));
+        assert_eq!(counts.unattributed, 2);
+        assert_eq!(counts.total(), 4);
+    }
+
+    #[test]
+    fn parser_does_not_treat_embedded_header_text_as_cargo_attribution() {
+        let output = "warning: Running unittests src/lib.rs \
+            (target/debug/deps/perl_parser_core-abc123)\norphan: test\n";
+        let counts = parse_per_crate_test_counts(output);
+        assert!(counts.by_crate.is_empty());
+        assert_eq!(counts.unattributed, 1);
+        assert_eq!(counts.total(), 1);
+    }
+
+    #[test]
     fn parser_distinguishes_unattributed_tests_from_a_named_package() {
         let output = "orphan: test\n\
             Running unittests src/lib.rs (target/debug/deps/unattributed-abc123)\n\
@@ -172,6 +239,35 @@ mod tests {
         assert!(
             validate_per_crate_test_counts(PerCrateTestCounts::default()).is_err(),
             "zero discovered tests must be rejected rather than overwriting status with zeros"
+        );
+    }
+
+    #[test]
+    fn empty_failure_tail_keeps_the_original_discovery_error() {
+        let message = match inventory_from_merged_result(Err(String::new())) {
+            Ok(counts) => format!("unexpected success: {counts:?}"),
+            Err(err) => err.to_string(),
+        };
+        assert_eq!(message, "test inventory discovery failed or returned no output");
+    }
+
+    #[test]
+    fn failing_command_output_reaches_the_inventory_error() {
+        let merged = run_cmd_merged_with_failure_tail(
+            Path::new("."),
+            &["rustc", "--definitely-invalid-update-status-option"],
+            Duration::from_secs(10),
+        );
+        let result = inventory_from_merged_result(merged);
+        let message = result.as_ref().err().map(ToString::to_string).unwrap_or_default();
+        assert!(
+            message.contains("test inventory discovery failed or returned no output"),
+            "inventory error must keep the discovery prefix, got: {result:?}"
+        );
+        assert!(
+            message.contains("Unrecognized option")
+                && message.contains("definitely-invalid-update-status-option"),
+            "failing-command rustc diagnostic must reach the inventory error, not just argv, got: {result:?}"
         );
     }
 }

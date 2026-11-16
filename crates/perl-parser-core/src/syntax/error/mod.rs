@@ -181,6 +181,13 @@ pub struct ParseBudget {
     /// Default: 64 MiB. Collection is monotone within a drain, so ordinary
     /// files charge on the order of their own size; the default exists to bound
     /// pathological inputs, not to constrain real Perl.
+    ///
+    /// This is the sole heredoc-specific budget dimension in parser-core (#7291,
+    /// residue #13786). Queue admission, terminator comparisons, retained body
+    /// segments, and attachment walks are bounded incidentally by scan bytes,
+    /// `MAX_HEREDOC_DEPTH`, and the enclosing statement subtree — not by separate
+    /// counters — so #7085 / #7112 can consume `budget_usage.heredoc_scan_bytes`
+    /// without a second heredoc model.
     pub max_heredoc_scan_bytes: usize,
 
     /// Maximum number of non-EOF tokens the parser may consume in one
@@ -957,8 +964,16 @@ impl ErrorClass for ParseError {
 
 /// Error classification and diagnostic generation for parsed Perl code.
 pub mod classifier;
+/// Typed parser-operation completion, distinct from diagnostics.
+pub mod completion;
 /// Error recovery strategies and traits for the Perl parser.
 pub mod recovery;
+
+pub use completion::{
+    ParseBudgetExhaustionDimension, ParseCancellationIdentity, ParseCatastrophicCause,
+    ParseCompletion, ParseCompletionClass, ParseCompletionRange, ParseCompletionStage,
+    ParseCompletionValidationError,
+};
 
 use perl_ast::Node;
 
@@ -1253,6 +1268,20 @@ impl ParseOutput {
     /// enforced by construction (private storage + derived projection).
     pub fn stop_cause(&self) -> Option<ParseStopCause> {
         self.stop_cause
+    }
+
+    /// Typed completion of the parser operation that produced this output.
+    ///
+    /// This is a projection of the stored [`ParseOutput::stop_cause`],
+    /// [`ParseOutput::recovered_count`], and AST — the same construction
+    /// pattern as [`ParseOutput::terminated_early`]. Completing the operation
+    /// records those fields; `completion()` does not scan diagnostics, and
+    /// storing a duplicate completion field would be a second authority that
+    /// `set_stop_cause` could leave stale. The snapshot copies this projection
+    /// so snapshot consumers never reclassify.
+    #[must_use]
+    pub fn completion(&self) -> ParseCompletion {
+        ParseCompletion::from_parser_terminal(self.stop_cause, self.recovered_count, &self.ast)
     }
 
     /// Replace the terminal stop cause (checked compatibility mutation).

@@ -78,6 +78,9 @@ refuses the new mode instead of accepting H as S. The central owner must wire it
 actual producer/importer to this bridge. This branch's exporter additionally
 compares an optional trusted process status to the exact receipt outcome before
 writing custody bytes, so a contradictory producer cannot leave a success packet.
+and Git overrides. The current central context/importer does not yet supply this
+capture/dual identity; legacy custody refuses the new mode instead of accepting
+H as S. The central owner must wire its actual producer/importer to this bridge.
 No existing carrier workflow or approved pin is silently replaced.
 
 ## Exact permission request (pending approval)

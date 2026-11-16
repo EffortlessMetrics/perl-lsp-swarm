@@ -143,6 +143,10 @@ fn process_fixture_child() -> TestResult {
             emit_fixture_output(None)?;
             std::process::exit(7);
         }
+        "abort-after-output" => {
+            emit_fixture_output(None)?;
+            std::process::abort();
+        }
         "quiet-success" => Ok(()),
         "quiet-exit-7" => std::process::exit(7),
         "echo-args" => {
@@ -361,6 +365,43 @@ fn allow_empty_match_accepts_zero_and_one_and_rejects_other_nonzero_status() -> 
     let message = error.to_string();
     assert!(message.contains("exit 2"));
     assert!(message.contains(STDERR_MARKER));
+
+    let error =
+        command_with_output_allow_empty_match(temp.path(), &command, &args, &fixture_env("exit-7"))
+            .err()
+            .ok_or_else(|| io::Error::other("expected exit 7 to be rejected"))?;
+    let message = error.to_string();
+    assert!(message.contains("exit 7"));
+    assert!(message.contains(STDERR_MARKER));
+    assert!(!message.contains("terminated without an exit code"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn allow_empty_match_rejects_child_termination_without_exit_code() -> TestResult {
+    let temp = TempDir::new("allow-empty-no-exit")?;
+    let command = fixture_command()?;
+    let args = fixture_args();
+    let error = command_with_output_allow_empty_match(
+        temp.path(),
+        &command,
+        &args,
+        &fixture_env("abort-after-output"),
+    )
+    .err()
+    .ok_or_else(|| {
+        io::Error::other(
+            "expected abort/signal termination to be rejected (would pass if coerced to exit 1)",
+        )
+    })?;
+    let message = error.to_string();
+    assert!(
+        message.contains("terminated without an exit code"),
+        "no-exit failure must not masquerade as exit 1, got {message}"
+    );
+    assert!(!message.contains("exit 1"), "must not report fabricated exit 1, got {message}");
+    assert!(message.contains(STDERR_MARKER), "stderr evidence must be retained, got {message}");
     Ok(())
 }
 

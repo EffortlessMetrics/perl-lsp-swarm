@@ -39,7 +39,7 @@ global:
   # Toolchain requirements
   toolchain:
     # MSRV for the project (per rust-toolchain.toml)
-    msrv: "1.95.0"
+    msrv: "1.100.0"
     # Required components
     components:
       - rustfmt
@@ -363,32 +363,39 @@ gates:
     description: "Validate release-history surfaces"
     required: true
     command: just ci-release-history
-    # 480s/420000ms: #16419 appended scripts.tests.test_domain6_fragment to the
-    # `ci-release-history` recipe; its final two tests each shell out to
-    # `generate_domain6_fragment.py --check`, which re-renders the pinned
-    # f6b7b2c..10297415 range via `git log --full-history` — candidate-
-    # independent git grind that scales with history, not with the change
-    # under review. Pre-#16419 receipts ran the whole gate in 2.5s (run
-    # 36172362426 job 108194853240); after that merge every required meta
-    # shard kills the gate at the old 120s watchdog with the first traversal
-    # complete and the second in flight (first main-red run 36174358018 job
-    # 108207415263 at 120116ms; PR-family run 36186745952 job 108242179458 at
-    # 120084ms). A local Windows traversal measured 213s, bounding
-    # slow-runner checkout variance. The suite content is clean — the
-    # byte-identical re-render passes — so the envelope was the binding
-    # constraint. Sibling release_history_check (script only) still passes in
-    # ~1.4s and keeps its own bound. max_duration_ms is a declarative soft
-    # budget, not the enforced watchdog.
-    timeout_seconds: 480
+    # Candidate-independent deterministic re-rendering moved to the required
+    # release_history_domain6_rerender merge gate below. This pr_fast gate
+    # keeps the cheap checked-artifact and release-history validations.
+    timeout_seconds: 120
     retry_count: 0
     budgets:
-      max_duration_ms: 420000
+      max_duration_ms: 90000
     quarantine: false
     tags:
       - release
       - hygiene
     planning:
       role: always_on
+
+  - name: release_history_domain6_rerender
+    tier: merge_gate
+    description: "Re-render the pinned Domain-6 release-history range and reject drift"
+    required: true
+    command: python3 scripts/tests/test_domain6_fragment.py Domain6RerenderTest -v
+    # The tested evidence is candidate-independent but remains a required
+    # pre-merge admission check: both CRLF and deterministic re-render drift
+    # fail. It is deliberately outside the affected/cheap pr_fast loop.
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 480000
+    quarantine: false
+    tags:
+      - release
+      - hygiene
+      - expensive
+    planning:
+      role: static
 
   - name: readme_heading_check
     tier: pr_fast
@@ -491,6 +498,54 @@ gates:
     tags:
       - policy
       - tests
+      - ratchet
+    planning:
+      role: always_on
+
+  # Issue #16260: this ratchet was the one unwired checker that was green,
+  # and the issue blocked wiring it because it decided production scope with
+  # first_cfg_test_line_number, the classifier behind #13838. #16251 moved
+  # the production/test decision to test_scope module-graph reachability at
+  # the shared walk seam, so the checker is sound to require now. Baseline is
+  # the measured current-main census (9, b4e4001fa).
+  - name: regex_static_ratchet
+    tier: pr_fast
+    description: "Ratchet regex constructors outside lazy_static in production source (#16260)"
+    required: true
+    command: just ci-regex-static-ratchet
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - hygiene
+      - ratchet
+    planning:
+      role: always_on
+
+  # Issue #18736: the canonical-form half of public-api-check, extracted to a
+  # pure grep/sed/awk gate (~4 s, no Rust toolchain) so the merge-gate meta
+  # shard reds on a hand-edited or corrupted baseline. `required: true` here
+  # means the gate fails its shard; ruleset-level merge blocking additionally
+  # needs the shard's own context promoted (#17193 / #18736 Step 2). The full
+  # instrument lane (`Public API Surface (facade PR)`) stays the owner of
+  # additive-drift detection; this gate only proves the committed baselines
+  # are filter-stable canonical form.
+  - name: public_api_baseline_canonical
+    tier: pr_fast
+    description: "Committed .ci/public-api-baselines/*.txt are filter-stable canonical form (#18736)"
+    required: true
+    command: just public-api-baselines-canonical
+    timeout_seconds: 60
+    retry_count: 0
+    budgets:
+      max_duration_ms: 30000
+    quarantine: false
+    tags:
+      - public-api
+      - baseline
       - ratchet
     planning:
       role: always_on
@@ -1092,6 +1147,27 @@ gates:
       role: rust_package_scoped
       packages:
         - xtask
+  # Compilation has its own receipt; --no-run never proves runtime assertions.
+  # PR Smoke prepares these exact targets before its runtime watchdog (#17459).
+  - name: unit_routed_full_build
+    tier: pr_fast
+    description: "Compile the routed integration-test targets without executing assertions"
+    required: true
+    command: cargo build -p perllsp --locked && env PERL_LSP_BIN="$PWD/target/debug/perllsp" cargo test --locked --tests {package_args} --no-run
+    # The retained main artifact spent 45s on perllsp plus 21m45s compiling
+    # test targets. Reuse the existing 25m gate bound, not a larger job budget.
+    timeout_seconds: 1500
+    retry_count: 0
+    budgets:
+      max_duration_ms: 1320000
+    quarantine: false
+    tags:
+      - compile
+      - integration
+      - routed
+    planning:
+      role: rust_scoped
+
   - name: unit_routed_full
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
@@ -1435,11 +1511,12 @@ gates:
     tier: merge_gate
     description: "LSP core library tests (heaviest single crate in the LSP surface)"
     required: true
-    # `--lib` excludes tests/. 82 integration targets in these crates are
+    # `--lib` excludes tests/. 114 integration targets in these crates are
     # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
-    #   perl-lsp-rs-core             82
+    # to touch the crate, via unit_routed_full. Expanding these gates to
+    # `--tests` is owned by #6054; #11694 closed the per-gate inventory audit
+    # and #11708 closed the red-suite debt it tracked (both 2026-08-19).
+    #   perl-lsp-rs-core            114
     command: >-
       cargo test --locked --lib
       -p perl-lsp-rs-core
@@ -1458,15 +1535,16 @@ gates:
     tier: merge_gate
     description: "LSP server, editor UX, perltidy, and subprocess library tests"
     required: true
-    # `--lib` excludes tests/. 356 integration targets in these crates are
+    # `--lib` excludes tests/. 492 integration targets in these crates are
     # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
-    #   perl-lsp-perltidy            10
-    #   perl-lsp-rs                 253  (19 covered by explicit --test elsewhere)
-    #   perl-lsp-ux-tests            82
-    #   perl-subprocess-runtime       3
-    #   perllsp                       8  (1 covered by explicit --test elsewhere)
+    # to touch the crate, via unit_routed_full. Expanding these gates to
+    # `--tests` is owned by #6054; #11694 closed the per-gate inventory audit
+    # and #11708 closed the red-suite debt it tracked (both 2026-08-19).
+    #   perl-lsp-perltidy            17
+    #   perl-lsp-rs                 337
+    #   perl-lsp-ux-tests           101
+    #   perl-subprocess-runtime       4
+    #   perllsp                      33
     command: >-
       cargo test --locked --lib
       -p perl-lsp-perltidy -p perl-lsp-rs
@@ -1493,9 +1571,17 @@ gates:
     # `cargo test --tests` otherwise skips them silently when the feature is off
     # (#14333). Recorded per #11694; flipping the broad support-crate portion to
     # --tests is blocked on the red suites in #11708.
+    # The fifth target, dap_entry_stop_stack_trace_18491, is not
+    # feature-gated; it executes the #18491 entry-stop stackTrace regression
+    # proof against a real `perl -d` session on this required lane (PR #18536
+    # review F1: the proof previously ran in no required lane). The strict
+    # PERL_LSP_DAP_REQUIRE_PERL=1 prefix is mandatory: if the pipe-capability
+    # probe cannot resolve the interpreter, the test fails instead of returning
+    # a vacuous success without running the session. The typed SKIP helper
+    # remains available to non-required local suites, but cannot relax this gate.
     # pr_fast residual: unit_routed_full still runs the perl-dap leg without
-    # `--features test-helpers`, so these four targets stay absent from the
-    # pr_fast lane; closing that leg is tracked in #14458.
+    # `--features test-helpers`, so the four test-helpers targets stay absent
+    # from the pr_fast lane; closing that leg is tracked in #14458.
     #   perl-ci-hygiene               6
     #   perl-dap                    115
     #   perl-tdd-support              4
@@ -1518,11 +1604,13 @@ gates:
       -p perl-tdd-support -p perl-test-generators -p perl-test-must
       -p tree-sitter-perl-c -p tree-sitter-perl-rs
       -- --test-threads=4 &&
+      env PERL_LSP_DAP_REQUIRE_PERL=1
       cargo test --locked --features test-helpers -p perl-dap
       --test eval_ref_cache_miss_resume_tests
       --test dap_evaluate_comprehensive_tests
       --test dap_variable_reference_hardening_tests
       --test pause_signal_delivery_tests
+      --test dap_entry_stop_stack_trace_18491
       -- --test-threads=4
     timeout_seconds: 450
     retry_count: 1
@@ -2366,7 +2454,7 @@ gates:
         - macos-latest
       toolchain:
         - stable
-        - "1.95.0"  # MSRV
+        - "1.100.0"  # MSRV
         - beta
     tags:
       - matrix
