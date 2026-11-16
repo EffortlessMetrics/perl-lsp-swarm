@@ -3425,13 +3425,16 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         "ripr-fallback must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {hosted_cap:?}.          Without the pin the lane inherits the CLI's built-in default, which ripr 0.10.0          silently tightened from 1600 to 800 (#15498)"
     );
     // #19499: admission and partial-selection budgets must select the whole
-    // admitted diff, and the findings array must remain complete. An env entry
-    // without the matching Docker transport would be inert on the hosted lane.
+    // admitted diff, and the findings array must remain complete. The
+    // advisory-guidance ceiling stays explicit because raising it produces a
+    // time-unbounded canonical analysis, not a bounded completed pass. An env
+    // entry without the matching Docker transport would be inert on the lane.
     for (key, value) in [
         ("RIPR_MAX_DIFF_CHANGED_RUST_LINES", "16000"),
         ("RIPR_PARTIAL_DIFF_LINE_BUDGET", "16000"),
         ("RIPR_PARTIAL_DIFF_FILE_BUDGET", "2560"),
         ("RIPR_CHECK_FINDINGS_BYTES", "0"),
+        ("RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES", "1200"),
     ] {
         let actual = workflow_job_env_value("ripr-github", key)?;
         ensure!(actual == value, "ripr-github must pin {key}={value} explicitly; found {actual:?}");
@@ -3452,6 +3455,7 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         "-e RIPR_PARTIAL_DIFF_LINE_BUDGET=16000",
         "-e RIPR_PARTIAL_DIFF_FILE_BUDGET=2560",
         "-e RIPR_CHECK_FINDINGS_BYTES=0",
+        "-e RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES=1200",
         "--memory=14g",
         "--memory-swap=14g",
         "docker_memory=14g",
@@ -3465,6 +3469,19 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         !script.contains("--memory=6g") && !script.contains("RIPR_MAX_DIFF_INDEX_FILES=1600"),
         "stale 6g/1600 hosted budgets must not survive beside the measured 14g/2560 pair"
     );
+    for measurement_key in [
+        "index_limit",
+        "changed_rust_line_limit",
+        "partial_line_budget",
+        "partial_file_budget",
+        "findings_byte_budget",
+        "review_guidance_max_index_files",
+    ] {
+        ensure!(
+            script.contains(&format!("{measurement_key}=")),
+            "ripr-measurement-config.txt must record {measurement_key}"
+        );
+    }
 
     // #15082/#15028: the review-guidance pass on a new-crate diff no longer
     // completes in 600s on the hosted lane, so the gate failed closed on an
@@ -3503,5 +3520,69 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         count == 2,
         "exactly the two hosted lanes must carry the 3600s guidance bound; found {count}"
     );
+    Ok(())
+}
+
+#[test]
+fn hosted_raw_check_completeness_fails_closed() -> Result<()> {
+    require_real_jq()?;
+    let root = project_root()?;
+    let producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    let guard = "bash scripts/ci/require-complete-ripr-check.sh target/ripr/pr/raw-check.json";
+    let guard_offset = producer
+        .find(guard)
+        .ok_or_else(|| anyhow!("hosted producer must guard the raw-check document"))?;
+    let validation_offset = producer
+        .find("cargo xtask ripr-pr --base \"$base_arg\" --head \"$RIPR_EVALUATED_SHA\" --pr-head \"$PR_HEAD_SHA\" --check")
+        .ok_or_else(|| anyhow!("hosted receipt validation is missing"))?;
+    ensure!(
+        guard_offset < validation_offset,
+        "raw-check completeness must precede receipt validation"
+    );
+
+    let sandbox = tempfile::tempdir()?;
+    let raw_check = sandbox.path().join("raw-check.json");
+    let controls = [
+        ("optional completeness fields absent", r#"{"summary":{}}"#, true),
+        (
+            "explicit complete evidence",
+            r#"{"run_limitations":[],"analysis_scope":{"gate_eligibility":"eligible","downstream_consumable":true},"analysis_outcome":{"document_complete":true}}"#,
+            true,
+        ),
+        (
+            "unconsumable findings document",
+            r#"{"run_limitations":[{"kind":"limited_findings_bound","downstream_consumable":false}]}"#,
+            false,
+        ),
+        ("malformed run limitations", r#"{"run_limitations":false}"#, false),
+        (
+            "unconsumable analysed scope",
+            r#"{"analysis_scope":{"downstream_consumable":false}}"#,
+            false,
+        ),
+        (
+            "ineligible analysed scope",
+            r#"{"analysis_scope":{"gate_eligibility":"ineligible"}}"#,
+            false,
+        ),
+        ("incomplete document", r#"{"analysis_outcome":{"document_complete":false}}"#, false),
+        ("malformed raw check", r#"{"summary":"#, false),
+    ];
+    for (label, contents, expected_success) in controls {
+        fs::write(&raw_check, contents)?;
+        let output = Command::new(bash_executable())
+            .args(["--noprofile", "--norc"])
+            .arg(root.join("scripts/ci/require-complete-ripr-check.sh"))
+            .arg(&raw_check)
+            .output()
+            .with_context(|| format!("running raw-check control: {label}"))?;
+        ensure!(
+            output.status.success() == expected_success,
+            "{label}: expected success={expected_success}, got {output:?}"
+        );
+        if !expected_success {
+            ensure!(output.status.code() == Some(1), "{label}: must fail closed with exit 1");
+        }
+    }
     Ok(())
 }

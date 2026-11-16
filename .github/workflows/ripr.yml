@@ -653,12 +653,14 @@ jobs:
       RIPR_VERSION: "0.11.0"
       RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
       RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
-      # #19499: select the complete measured diff and retain every finding.
-      # All four pins must also be forwarded to the Docker container explicitly.
+      # #19499: select the complete measured diff, retain every finding, and
+      # make the time-bounded advisory-guidance ceiling explicit.
+      # All five pins must also be forwarded to the Docker container explicitly.
       RIPR_MAX_DIFF_CHANGED_RUST_LINES: "16000"
       RIPR_PARTIAL_DIFF_LINE_BUDGET: "16000"
       RIPR_PARTIAL_DIFF_FILE_BUDGET: "2560"
       RIPR_CHECK_FINDINGS_BYTES: "0"
+      RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES: "1200"
       RIPR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.base_sha }}
       RIPR_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha) || inputs.head_sha }}
       RIPR_EVALUATED_SHA: ${{ github.sha }}
@@ -816,6 +818,7 @@ jobs:
             -e RIPR_PARTIAL_DIFF_LINE_BUDGET=16000 \
             -e RIPR_PARTIAL_DIFF_FILE_BUDGET=2560 \
             -e RIPR_CHECK_FINDINGS_BYTES=0 \
+            -e RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES=1200 \
             -e RIPR_FRESHNESS_HANDOFF=/freshness -e RIPR_FRESHNESS_TOKEN \
             -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT \
             -e MEASUREMENT_IMAGE_ID="$image_id" -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
@@ -835,6 +838,7 @@ jobs:
               {
                 printf "docker_memory=14g\ndocker_memory_swap=14g\nsource_head_sha=%s\nsource_base_ref=%s\n" "$(git rev-parse HEAD)" "$base_arg"
                 printf "head=%s\nbase=%s\nripr_version=%s\nripr_sha256=%s\nindex_limit=%s\n" "$(git rev-parse HEAD)" "$base_arg" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
+                printf "changed_rust_line_limit=%s\npartial_line_budget=%s\npartial_file_budget=%s\nfindings_byte_budget=%s\nreview_guidance_max_index_files=%s\n" "$RIPR_MAX_DIFF_CHANGED_RUST_LINES" "$RIPR_PARTIAL_DIFF_LINE_BUDGET" "$RIPR_PARTIAL_DIFF_FILE_BUDGET" "$RIPR_CHECK_FINDINGS_BYTES" "$RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES"
                 printf "%s\n%s\n" "$rustc_version" "$cargo_version"
               } >> target/ripr/pr/ripr-measurement-config.txt
               bash scripts/ci/observe-xtask-build.sh container "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --locked
@@ -846,6 +850,7 @@ jobs:
               printf "analysis_exit=%s\n" "$analysis_status" >> target/ripr/pr/ripr-measurement-config.txt
               if [ "$analysis_status" -ne 0 ]; then exit "$analysis_status"; fi
               test -s target/ripr/pr/repo-exposure.json
+              bash scripts/ci/require-complete-ripr-check.sh target/ripr/pr/raw-check.json
               cargo xtask ripr-pr --base "$base_arg" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
               marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
               test -f "$marker" && test "$(cat "$marker")" = "$RIPR_FRESHNESS_TOKEN"
