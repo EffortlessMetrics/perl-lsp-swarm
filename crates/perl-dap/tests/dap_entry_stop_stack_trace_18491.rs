@@ -47,6 +47,20 @@ fn wait_for_event(
     common::wait_for_event(rx, event_name, bound)
 }
 
+/// Wait for the next `stopped` event, naming the phase in any failure.
+///
+/// The entry stop and the follow-up breakpoint stop are two separate waits for
+/// the same event name, so without a phase label their failures are
+/// indistinguishable in the log (#19536).
+fn await_stop(
+    rx: &Receiver<DapMessageWithEpoch>,
+    bound: Duration,
+    phase: &str,
+) -> Result<DapMessage, String> {
+    wait_for_event(rx, "stopped", bound)
+        .map_err(|error| format!("{phase} stop never arrived: {error}"))
+}
+
 fn response_success(response: DapMessage, command: &str) -> Result<Option<Value>, String> {
     match response {
         DapMessage::Response { success, command: actual, body, message, .. } => {
@@ -160,7 +174,7 @@ print "$x\n";
 
     response_success(adapter.handle_request(4, "configurationDone", None), "configurationDone")?;
 
-    let entry_stop = wait_for_event(&rx, "stopped", bound)?;
+    let entry_stop = await_stop(&rx, bound, "ENTRY")?;
     let entry_body = event_body(&entry_stop, "stopped")?;
     let entry_reason = entry_body.get("reason").and_then(Value::as_str).unwrap_or("");
     assert!(
@@ -223,7 +237,7 @@ print "$x\n";
         adapter.handle_request(6, "continue", Some(json!({ "threadId": thread_id }))),
         "continue",
     )?;
-    let breakpoint_stop = wait_for_event(&rx, "stopped", bound)?;
+    let breakpoint_stop = await_stop(&rx, bound, "BREAKPOINT")?;
     let breakpoint_body = event_body(&breakpoint_stop, "stopped")?;
     assert_eq!(
         breakpoint_body.get("reason").and_then(Value::as_str),
@@ -253,6 +267,10 @@ print "$x\n";
 /// The success path is asserted too: the awaited event's matching semantics are
 /// unchanged by the diagnostic, and a wait that sees the awaited event still
 /// returns it rather than reporting a timeout.
+///
+/// The phase label is asserted as well: the entry stop and the follow-up
+/// breakpoint stop are two waits for the same event name, so their failures
+/// must not be indistinguishable in the log.
 #[test]
 fn wait_for_event_reports_observed_events_and_classifies_the_stall() {
     use perl_dap::debug_adapter::DrainEpoch;
@@ -332,4 +350,19 @@ fn wait_for_event_reports_observed_events_and_classifies_the_stall() {
         "the awaited event must still be returned",
     );
     assert!(matches!(message, DapMessage::Event { event, .. } if event == "stopped"));
+
+    // (f) The two `stopped` waits are distinguishable: the phase label is in
+    // the failure, so a stalled entry stop cannot be read as a stalled
+    // breakpoint stop.
+    let (_entry_tx, entry_rx) = sync_channel(64);
+    let error =
+        must_err_with(await_stop(&entry_rx, BOUND, "ENTRY"), "a stalled entry stop must time out");
+    assert!(error.starts_with("ENTRY stop never arrived:"), "{error}");
+
+    let (_breakpoint_tx, breakpoint_rx) = sync_channel(64);
+    let error = must_err_with(
+        await_stop(&breakpoint_rx, BOUND, "BREAKPOINT"),
+        "a stalled breakpoint stop must time out",
+    );
+    assert!(error.starts_with("BREAKPOINT stop never arrived:"), "{error}");
 }
