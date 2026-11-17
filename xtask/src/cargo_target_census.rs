@@ -187,10 +187,8 @@ fn classify_cargo_target_line(line: &str) -> Option<(bool, String, bool)> {
     let trimmed = line.trim();
     let (rest, built) = if let Some(rest) = trimmed.strip_prefix("Executable ") {
         (rest, true)
-    } else if let Some(rest) = trimmed.strip_prefix("Running ") {
-        (rest, false)
     } else {
-        return None;
+        (trimmed.strip_prefix("Running ")?, false)
     };
     if !rest.trim_end().ends_with(')') {
         return None;
