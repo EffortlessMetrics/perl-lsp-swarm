@@ -111,6 +111,16 @@ on:
       - 'scripts/tests/test_warn_stale_checkout.py'
       - 'scripts/agent-preflight.sh'
       - 'scripts/test-agent-preflight.sh'
+      # Shell self-tests that had no execution surface at all (issue #19148).
+      # Each of these four top-level scripts/tests/*.sh files was present in the
+      # tree but named by no workflow, so a regression in the surface it guards
+      # merged green. Both halves are required: a paths: trigger and a run:
+      # step. Note that scripts/tests/test-agent-preflight.sh is a DIFFERENT
+      # file from the scripts/test-agent-preflight.sh wired above.
+      - 'scripts/tests/test-agent-preflight.sh'
+      - 'scripts/tests/test-install-release-version.sh'
+      - 'scripts/tests/test-render-docs.sh'
+      - 'scripts/tests/test-xtask-quiet-wrapper.sh'
       # Per-worktree core.hooksPath isolation (issue #17414 rule C).
       - 'scripts/tests/test-hookspath-isolation.sh'
       # Ci-gate evaluation, disk-guard, and receipt-freshness oracles
@@ -1021,3 +1031,95 @@ jobs:
 
       - name: Run flake extractor typed-verdict self-test
         run: python3 -B .ci/scripts/test_extract_failed_tests.py
+
+  agent-preflight-recovery-self-test:
+    name: Agent preflight check-4 recovery self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run agent preflight recovery self-test
+        run: bash scripts/tests/test-agent-preflight.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Agent preflight check-4 recovery self-test passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Agent preflight check-4 recovery self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  install-release-version-self-test:
+    name: Installer release-version resolution self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run installer release-version self-test
+        run: bash scripts/tests/test-install-release-version.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Installer release-version resolution self-test passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Installer release-version resolution self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  render-docs-self-test:
+    name: Documentation renderer self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run documentation renderer self-test
+        run: bash scripts/tests/test-render-docs.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Documentation renderer self-test passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Documentation renderer self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  xtask-quiet-wrapper-self-test:
+    name: xtask quiet wrapper self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run xtask quiet wrapper self-test
+        run: bash scripts/tests/test-xtask-quiet-wrapper.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## xtask quiet wrapper self-test passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## xtask quiet wrapper self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+          fi
