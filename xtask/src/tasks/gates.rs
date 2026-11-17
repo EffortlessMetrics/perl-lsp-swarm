@@ -7322,7 +7322,7 @@ gates:
             )?;
             let receipt = super::build_agent_receipt_for_subject(
                 &root,
-                &[result.clone()],
+                std::slice::from_ref(&result),
                 &plan,
                 Some(&head),
             )?;
