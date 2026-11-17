@@ -257,7 +257,7 @@ mod tests {
                 .skipped
                 .iter()
                 .find(|row| row.name == gate.name)
-                .expect("retained disposition");
+                .context("retained disposition")?;
             assert!(deferred.reason.starts_with("DEFERRED:"));
             assert!(deferred.reason.contains(&gate.command));
         }
@@ -384,7 +384,12 @@ mod tests {
         let mut filtered = config(&base, &head);
         filtered.gate_filter = Some("whitespace_check".into());
         assert!(validate_config(dir.path(), &filtered).is_err());
-        policy.gates.iter_mut().find(|gate| is_mechanical_gate(gate)).unwrap().required = false;
+        policy
+            .gates
+            .iter_mut()
+            .find(|gate| is_mechanical_gate(gate))
+            .context("mechanical gate present")?
+            .required = false;
         assert!(plan(dir.path(), &policy, &config(&base, &head)).is_err());
         Ok(())
     }

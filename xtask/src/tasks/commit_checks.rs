@@ -368,6 +368,11 @@ fn whitespace_check_against(
             "no whitespace/conflict-marker issues in the staged diff".to_string(),
         ));
     }
+    if output.status.code() != Some(2) {
+        let diagnostic: String =
+            String::from_utf8_lossy(&output.stderr).chars().take(2048).collect();
+        bail!("git diff --check failed with status {}: {}", output.status, diagnostic.trim());
+    }
     let raw = String::from_utf8_lossy(&output.stdout);
     let affected: Vec<String> = raw.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
     Ok(CommitCheckOutcome::Flagged(CheckReport {
@@ -685,11 +690,6 @@ fn evaluate_forbidden_paths<'a>(
         }
     }
     affected
-}
-
-#[cfg(test)]
-fn forbidden_machine_paths_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
-    forbidden_machine_paths_against(root, tree_oid, None)
 }
 
 fn forbidden_machine_paths_against(
@@ -1947,6 +1947,27 @@ mod tests {
                 bail!("expected the raw_exit() adapter form to pass: {report:?}")
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn whitespace_check_unknown_object_is_not_a_whitespace_finding() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("foo.rs", "fn main() {}\n")?;
+        repo.add("foo.rs")?;
+        repo.commit("initial")?;
+        let result = whitespace_check_against(repo.root(), Some(&"f".repeat(40)), Some("HEAD"));
+        let err = result.err().context("unknown object must fail the instrument")?;
+        let report = instrument_failure_report("whitespace_check", &err);
+        assert_eq!(report.posture, Posture::NotProven);
+        assert!(report.affected.is_empty());
+        assert!(
+            report
+                .fix
+                .as_deref()
+                .context("missing diagnostic")?
+                .contains("git diff --check failed")
+        );
         Ok(())
     }
 

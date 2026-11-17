@@ -6,6 +6,7 @@ All Git fixtures strip inherited selectors and use isolated configuration.
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -270,8 +271,21 @@ class PublicationHookTests(unittest.TestCase):
     def test_missing_cargo_does_not_pass_publication(self):
         head = self.change("scripts/example.py")
         (self.tools / "cargo").unlink()
+        # Keep the real commands used before the Cargo guard, but expose no
+        # system directories that might contain another Cargo installation.
+        for name in ("git", "diff", "awk", "bash"):
+            executable = shutil.which(name, path=self.env["PATH"])
+            self.assertIsNotNone(executable, name)
+            script = self.tools / name
+            script.write_text("#!/bin/sh\nexec " + shlex.quote(Path(executable).as_posix())
+                              + ' "$@"\n', encoding="utf-8", newline="\n")
+            script.chmod(0o755)
+        self.env["PATH"] = str(self.tools)
+        self.assertIsNone(shutil.which("cargo", path=self.env["PATH"]))
         result, calls = self.invoke([(head, "refs/heads/topic", self.base)])
         self.assertNotEqual(result.returncode, 0, calls)
+        self.assertEqual(calls, [])
+        self.assertIn("NOT PROVEN: Cargo is unavailable", result.stderr)
 
 
 class PublicationReceiptSchemaTests(unittest.TestCase):

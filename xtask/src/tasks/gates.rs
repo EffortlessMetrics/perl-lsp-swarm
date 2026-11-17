@@ -1946,9 +1946,13 @@ fn emit_gate_end(gate: &GateDefinition, result: &GateResult) {
 /// Phase-1 agent-facing receipt shape contract (Issue #5020):
 /// keep this as a stable, minimal JSON slice consumed by CI artifacts.
 #[cfg(test)]
-fn build_agent_receipt(root: &Path, results: &[GateResult], plan: &GatePlan) -> AgentReceipt {
+fn build_agent_receipt(
+    root: &Path,
+    results: &[GateResult],
+    plan: &GatePlan,
+) -> Result<AgentReceipt> {
     build_agent_receipt_for_subject(root, results, plan, None)
-        .expect("legacy non-publication receipt fixture")
+        .context("legacy non-publication receipt fixture")
 }
 
 fn build_agent_receipt_for_subject(
@@ -3838,7 +3842,7 @@ mod tests {
     use serde::de::DeserializeOwned;
     use tempfile::{TempDir, tempdir};
 
-    use color_eyre::eyre::{Context, Result, bail};
+    use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 
     use super::{
         DiffResult, FirstFailure, GateDefinition, GateMetrics, GatePlanningConfig,
@@ -7215,7 +7219,7 @@ gates:
             &root,
             &[gate_result("fmt", "pass", true), gate_result("mutation_diff", "fail", false)],
             &plan,
-        );
+        )?;
 
         assert!(!receipt.sha.is_empty());
         assert_eq!(receipt.tier, "pr_fast");
@@ -7282,7 +7286,9 @@ gates:
             super::build_agent_receipt_for_subject(&root, &[], &plan, None).is_err(),
             "missing subject must not fall back to current HEAD"
         );
-        let guidance = empty["suggested_next_actions"][0].as_str().unwrap();
+        let guidance = empty["suggested_next_actions"][0]
+            .as_str()
+            .context("publication receipt missing suggested next action")?;
         assert!(
             guidance.contains("Behavioral proof, review and required late qualification remain")
         );
@@ -7325,17 +7331,24 @@ gates:
             assert_eq!(receipt.advisories.len(), usize::from(!failed));
             let json = serde_json::to_value(receipt)?;
             let rerun = if failed {
-                json["failures"][0]["repro"].as_str().unwrap()
+                json["failures"][0]["repro"]
+                    .as_str()
+                    .context("publication failure missing repro command")?
             } else {
-                json["advisories"][0]["rerun"].as_str().unwrap()
+                json["advisories"][0]["rerun"]
+                    .as_str()
+                    .context("publication advisory missing rerun command")?
             };
             assert_eq!(rerun, super::publication::rerun_command(&base, &head));
             assert!(!rerun.contains("--gate"));
             assert!(!rerun.contains("--staged"));
             let raw = crate::tasks::commit_checks::parse_report(
-                result.output_summary.as_deref().unwrap(),
+                result
+                    .output_summary
+                    .as_deref()
+                    .context("publication result missing raw report")?,
             )
-            .unwrap();
+            .context("publication result did not contain a valid raw report")?;
             assert_eq!(raw.rerun, rerun, "raw gate report must carry the same supported rerun");
         }
         Ok(())
@@ -7361,7 +7374,7 @@ gates:
         );
         let root = crate::utils::project_root()?;
 
-        let receipt = build_agent_receipt(&root, &[], &plan);
+        let receipt = build_agent_receipt(&root, &[], &plan)?;
 
         assert_eq!(receipt.tier, "commit");
         assert_eq!(receipt.staged_tree_oid.as_deref(), Some("deadbeefcafef00d"));
@@ -7374,7 +7387,7 @@ gates:
         let plan = static_gate_plan(GateTier::PrFast, "HEAD".to_string(), Vec::new(), None);
         let root = crate::utils::project_root()?;
 
-        let receipt = build_agent_receipt(&root, &[], &plan);
+        let receipt = build_agent_receipt(&root, &[], &plan)?;
 
         assert!(receipt.staged_tree_oid.is_none());
         Ok(())

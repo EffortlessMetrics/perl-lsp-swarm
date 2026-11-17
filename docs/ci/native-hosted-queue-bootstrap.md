@@ -12,9 +12,16 @@ It does not include or activate the held #19261 queue-only train. Publication
 must use the normal reviewed hooks and existing protection; this dependency is
 not permission to bypass either.
 
-Alongside the four additions below, this carrier changes only
-`xtask/src/tasks/file_policy.rs` relative to that merged prerequisite base. The
-live Non-Rust workflow stays byte-identical at v9. The trusted checker strictly
+Alongside the five additions below, this carrier changes the trusted checker
+`xtask/src/tasks/file_policy.rs` and repairs inherited publication tests in
+`scripts/tests/test_publication_consistency_hook.py`, `xtask/src/tasks/gates.rs`,
+`xtask/src/tasks/gates/publication.rs` and `xtask/src/tasks/commit_checks.rs`
+relative to that merged prerequisite base. The publication repairs strengthen
+test discrimination, replace test-only panic shortcuts with contextual errors
+and remove an unused test-only wrapper. The whitespace checker now distinguishes
+Git instrument failures (NOT_PROVEN) from actual whitespace findings (Blocked),
+so an unavailable diff subject cannot masquerade as a policy finding. The live
+Non-Rust workflow stays byte-identical at v9. The trusted checker strictly
 preapproves the exact reviewed queue-only/protected-main v10 carrier, including
 its bootstrap-compatible guard, before that workflow can be activated later.
 Candidate code or fixtures cannot authorize themselves. Unchanged v10 acceptance
@@ -34,7 +41,18 @@ existing protection and ordinary review:
 - .github/workflows/queue-admission.yml (workflow_call only)
 - scripts/ci/hosted_queue_admission.py
 - scripts/ci/test_hosted_queue_admission.py
+- scripts/ci/test_hosted_queue_admission_authority_race.py
 - this document
+
+Run both admission suites with:
+
+```bash
+python3 -m unittest discover -s scripts/ci -p 'test_hosted_queue_admission*.py'
+```
+
+Final permission rereads reject the observed requester/reviewer revocation cases.
+Each permission is valid at its final API observation, not atomically guaranteed
+through receipt creation or later consumption. Preserve downstream revalidation.
 
 Do not change existing workflow triggers, title policy, check names, protection
 requirements or queue routing in this first landing. The evaluator has no

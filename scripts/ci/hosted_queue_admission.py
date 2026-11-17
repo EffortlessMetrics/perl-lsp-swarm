@@ -161,6 +161,8 @@ def observe(api, event, env, root=ROOT, review=canonical_review):
     require(all(t.get("isResolved") is True for t in api.threads(number)), "thread changed during admission")
     current()
     source_current()
+    permission(sender.get("login"))
+    permission(result["reviewer"])
     require(re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ID", ""))
             and re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ATTEMPT", "")), "run identity")
     return {"schema": "native-actions-admission.v1", "phase": "admission_only",
