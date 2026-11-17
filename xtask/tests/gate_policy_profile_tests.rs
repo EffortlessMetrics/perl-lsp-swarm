@@ -207,8 +207,24 @@ fn routed_integration_test_gate_has_cold_ci_headroom() -> Result<(), Box<dyn std
     let command = &gate.command;
     assert!(
         command.contains("&& env PERL_LSP_BIN=")
-            && command.ends_with("cargo test --locked --tests {package_args}"),
+            && command.ends_with("cargo test --locked --tests {package_args} --no-fail-fast"),
         "unit_routed_full must export PERL_LSP_BIN to its cargo test step (#16194), got: {command}"
+    );
+    // #17151: the sweep must not stop at the first failing test executable.
+    // Cargo exits there by default, and the routed package list is ordered, so
+    // one red target in an earlier crate would silently skip every later
+    // crate's whole `tests/` suite while the receipt showed only that first
+    // failure. The flag must be a cargo flag (before any `--` separator that
+    // would pass arguments to the test binaries), not a trailing test-binary
+    // argument.
+    assert!(
+        command.contains("cargo test --locked --tests {package_args} --no-fail-fast"),
+        "unit_routed_full must run every selected test target (#17151), got: {command}"
+    );
+    assert!(
+        !command.contains(" -- "),
+        "unit_routed_full must not pass --no-fail-fast to the test binaries as a \
+         trailing argument (#17151), got: {command}"
     );
 
     Ok(())

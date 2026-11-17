@@ -184,10 +184,11 @@ _step_index=$((_step_index + 1))
 set -o pipefail
 cargo test -p xtask --test routed_test_preparation_contract --locked -- \
   --test-threads=1 --color never | tee "$RUNNER_TEMP/routed-test-preparation-contract.log"
-grep -Eq '^test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+grep -Eq '^test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
   "$RUNNER_TEMP/routed-test-preparation-contract.log"
 for test_name in \
   preparation_preserves_runtime_command_and_budget \
+  routed_sweep_runs_every_selected_target_after_an_early_failure \
   preparation_precedes_watchdog_and_has_separate_evidence; do
   grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/routed-test-preparation-contract.log"
 done
