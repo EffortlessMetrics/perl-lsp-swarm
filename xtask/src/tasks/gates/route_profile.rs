@@ -391,6 +391,12 @@ impl ProfileExpansion {
 // Expansion
 // ---------------------------------------------------------------------------
 
+/// Named runtime selection includes its census prerequisite; shared by runner
+/// planning and denominator expansion, never a bypass of profile membership.
+pub(super) fn named_gate_ids(gate: &str) -> Vec<&str> {
+    if gate == "unit_routed_full" { vec!["unit_routed_full_build", gate] } else { vec![gate] }
+}
+
 /// Expand the requested profile over the accepted policy into the governed
 /// denominator. Pure: same semantic inputs produce the same fingerprint in
 /// any source order.
@@ -481,7 +487,14 @@ pub fn expand(
                     ));
                 } else {
                     let narrowed: BTreeSet<String> =
-                        std::iter::once(filter.gate_id.clone()).collect();
+                        named_gate_ids(&filter.gate_id).into_iter().map(str::to_string).collect();
+                    if !narrowed.is_subset(&denominator) {
+                        resolution = ExpansionResolution::Invalid;
+                        detail = Some(
+                            "named gate prerequisite is missing or outside the expanded profile"
+                                .to_string(),
+                        );
+                    }
                     for gate_id in denominator.difference(&narrowed) {
                         excluded_gate_ids.push(ExcludedGate {
                             gate_id: gate_id.clone(),
@@ -489,7 +502,7 @@ pub fn expand(
                         });
                     }
                     excluded_gate_ids.sort_by(|left, right| left.gate_id.cmp(&right.gate_id));
-                    denominator = narrowed;
+                    denominator = narrowed.intersection(&denominator).cloned().collect();
                 }
             }
         }

@@ -228,10 +228,31 @@ fn classify_cargo_target_line(line: &str) -> Option<(bool, String, bool)> {
     if !rest.trim_end().ends_with(')') {
         return None;
     }
-    let spec_end = rest
-        .match_indices(" (")
-        .find_map(|(index, _)| rest[..index].trim_end().ends_with(".rs").then_some(index))?;
-    if rest[spec_end + 2..rest.len() - 1].trim().is_empty() {
+    // Cargo's text has no escaping. Find a source-ending delimiter whose
+    // entire executable suffix is one balanced, nonempty parenthesized group.
+    // Do not guess when malformed/ambiguous text admits no unique boundary.
+    let mut candidates = rest.match_indices(" (").filter_map(|(index, _)| {
+        if !rest[..index].trim_end().ends_with(".rs") {
+            return None;
+        }
+        let suffix = &rest[index + 1..];
+        let mut depth = 0usize;
+        for (offset, ch) in suffix.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 && offset + 1 != suffix.len() {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        (depth == 0 && !suffix[1..suffix.len() - 1].trim().is_empty()).then_some(index)
+    });
+    let spec_end = candidates.next()?;
+    if candidates.next().is_some() {
         return None;
     }
     let spec = rest[..spec_end].trim().replace('\\', "/");
@@ -324,6 +345,25 @@ error: test failed, to rerun pass `-p xtask --bin xtask`
             must_some_with(account_selected_targets(build, run), "valid paired targets");
         assert!(accounting.complete);
         assert_eq!(accounting.executed, 1);
+    }
+
+    #[test]
+    fn source_and_binary_rs_parentheses_have_an_unambiguous_boundary() {
+        let source = "tests/a.rs (local).rs";
+        let build = format!("Executable {source} (target/a.rs (local))\n");
+        let reports = test_target_reports(&build);
+        assert_eq!(reports[0].target, source);
+        assert!(
+            account_selected_targets(
+                census_test_targets(&build),
+                census_test_targets(&build.replace("Executable", "Running"))
+            )
+            .is_some_and(|a| a.complete)
+        );
+        assert!(
+            census_test_targets_from_reader(b"Running tests/a.rs (target/(broken)\n".as_slice())
+                .is_err()
+        );
     }
 
     #[test]

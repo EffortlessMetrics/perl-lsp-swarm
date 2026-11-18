@@ -738,6 +738,17 @@ struct GateInvocationLease {
 
 impl GateInvocationLease {
     fn acquire(root: &Path) -> Result<Self> {
+        Self::acquire_initialized(root, |file, token| {
+            std::io::Write::write_all(file, token.as_bytes())?;
+            file.as_file().sync_all()?;
+            Ok(())
+        })
+    }
+
+    fn acquire_initialized(
+        root: &Path,
+        initialize: impl FnOnce(&mut tempfile::NamedTempFile, &str) -> Result<()>,
+    ) -> Result<Self> {
         fs::create_dir_all(root.join("target"))?;
         let path = root.join("target/.gate-invocation-active");
         let token = format!(
@@ -745,15 +756,12 @@ impl GateInvocationLease {
             std::process::id(),
             Utc::now().timestamp_nanos_opt().unwrap_or_default()
         );
-        let mut file =
-            fs::OpenOptions::new().write(true).create_new(true).open(&path).with_context(|| {
-                format!(
-                    "Gate invocation already active or retained for owner verification: {}",
-                    path.display()
-                )
-            })?;
-        std::io::Write::write_all(&mut file, token.as_bytes())?;
-        file.sync_all()?;
+        // Initialize under tempfile's owned identity before atomically claiming
+        // the sentinel. An initialization failure cannot strand an active lease.
+        let mut file = tempfile::NamedTempFile::new_in(root.join("target"))?;
+        initialize(&mut file, &token)?;
+        file.persist_noclobber(&path).map_err(|error| eyre!(
+            "Gate invocation already active or retained for owner verification: {}: {}. Before manual recovery verify ALL owned writers have settled, verify retained owner identity and preserve logs/receipts; PID absence alone is insufficient.", path.display(), error.error))?;
         Ok(Self { path, token })
     }
 }
@@ -898,7 +906,14 @@ fn filter_gates(policy: &GatePolicy, config: &GateRunnerConfig) -> Result<Vec<Ga
 
     // Filter by specific gate name
     if let Some(gate_name) = &config.gate_filter {
-        gates.retain(|g| g.name == *gate_name);
+        if !gates.iter().any(|gate| gate.name == *gate_name) {
+            bail!("No gate found with name '{}'", gate_name);
+        }
+        let selected = route_profile::named_gate_ids(gate_name);
+        if selected.iter().any(|name| !gates.iter().any(|gate| gate.name == *name)) {
+            bail!("Named gate prerequisite missing for '{}'", gate_name);
+        }
+        gates.retain(|g| selected.contains(&g.name.as_str()));
         if gates.is_empty() {
             bail!("No gate found with name '{}'", gate_name);
         }
@@ -1077,13 +1092,10 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
             // {package_args} unresolved, even with an immutable subject.
             let mut plan =
                 plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base, subject_scope)?;
-            let requested = config.gate_filter.as_deref();
-            let selected_name = |name: &str| {
-                Some(name) == requested
-                    || (requested == Some("unit_routed_full") && name == "unit_routed_full_build")
-            };
-            plan.selected.retain(|row| selected_name(&row.gate.name));
-            plan.skipped.retain(|row| selected_name(&row.name));
+            let selected =
+                route_profile::named_gate_ids(config.gate_filter.as_deref().unwrap_or_default());
+            plan.selected.retain(|row| selected.contains(&row.gate.name.as_str()));
+            plan.skipped.retain(|row| selected.contains(&row.name.as_str()));
             plan.tier = config.tier.clone();
             plan.staged_tree_oid = staged_tree_oid;
             return Ok(plan);
@@ -2771,13 +2783,7 @@ fn run_shell_command_with_retries(
             let retryable = attempt < total_attempts
                 && (!is_cargo_test_command(command)
                     || read_complete_gate_log(log_path).is_some_and(|output| {
-                        parse_first_failure(&output, execution.exit_code).is_none()
-                            && !output.lines().any(|line| {
-                                let plain = console::strip_ansi_codes(line);
-                                plain.trim_start().starts_with("test result:")
-                                    && extract_number(&plain, "failed")
-                                        .is_some_and(|count| count > 0)
-                            })
+                        !observed_test_failure(&output, execution.exit_code)
                     }));
             if attempt < total_attempts && retryable {
                 eprintln!(
@@ -2813,6 +2819,18 @@ fn run_shell_command_with_retries(
         execution.test_execution_reached_attempts = test_execution_reached_attempts;
         return Ok(execution);
     }
+}
+
+fn observed_test_failure(output: &str, exit_code: i32) -> bool {
+    parse_first_failure(output, exit_code).is_some()
+        || output.lines().any(|line| {
+            let plain = console::strip_ansi_codes(line);
+            let line = plain.trim_start();
+            line.starts_with("error: test failed, to rerun pass")
+                || line.starts_with("error: process didn't exit successfully")
+                || (line.starts_with("test result:")
+                    && extract_number(line, "failed").is_some_and(|count| count > 0))
+        })
 }
 
 fn attempt_reach_evidence(
@@ -5249,6 +5267,25 @@ gates:
             assert_eq!(filtered.scope_ok, full.scope_ok, "{scenario}");
             config.gate_filter = Some("unit_routed_full".to_string());
             let runtime = plan_gates(root, &policy, &config)?;
+            let expansion = super::route_profile::expand(
+                &policy,
+                super::route_profile::RequestedProfile::PrFast,
+                Some("unit_routed_full"),
+            );
+            assert_eq!(
+                expansion.denominator,
+                vec!["unit_routed_full".to_string(), "unit_routed_full_build".to_string()]
+            );
+            let mut missing = policy.clone();
+            missing.gates.retain(|gate| gate.name != "unit_routed_full_build");
+            assert!(plan_gates(root, &missing, &config).is_err());
+            let invalid = super::route_profile::expand(
+                &missing,
+                super::route_profile::RequestedProfile::PrFast,
+                Some("unit_routed_full"),
+            );
+            assert_eq!(invalid.resolution, super::route_profile::ExpansionResolution::Invalid);
+
             let expected_pair: Vec<_> = full
                 .selected
                 .iter()
@@ -8972,13 +9009,65 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     }
 
     #[test]
+    fn lease_initialization_failure_leaves_no_sentinel_or_temporary_owner() -> Result<()> {
+        let root = tempdir()?;
+        let failed = super::GateInvocationLease::acquire_initialized(root.path(), |file, _| {
+            std::io::Write::write_all(file, b"partial")?;
+            bail!("injected initialization failure")
+        });
+        assert!(failed.is_err());
+        assert_eq!(fs::read_dir(root.path().join("target"))?.count(), 0);
+        let _owner = super::GateInvocationLease::acquire(root.path())?;
+        assert!(super::GateInvocationLease::acquire(root.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cargo_target_failure_timeout_is_not_retried_but_clean_timeout_is() -> Result<()> {
+        for failure in [
+            "error: test failed, to rerun pass `-p example --test a`",
+            "\x1b[31merror:\x1b[0m process didn't exit successfully: target/a (signal: 6, SIGABRT)",
+            "",
+        ] {
+            let dir = tempdir()?;
+            let marker = dir.path().join("attempted");
+            // `exit 124` makes the trailing recognized Cargo segment unreachable
+            // even if the watchdog fails; this fixture never builds repository code.
+            let command = format!(
+                r#"if test -f '{}'; then exit 0; fi; touch '{}'; printf '%s\n' "{}"; sleep 3; exit 124; true && cargo test --lib"#,
+                marker.display(),
+                marker.display(),
+                failure.replace('`', "")
+            );
+            assert!(is_cargo_test_command(&command));
+            let execution = run_shell_command_with_retries(
+                &command,
+                &dir.path().join("attempt.log"),
+                1,
+                1,
+                1,
+                "target-timeout",
+            )
+            .map_err(|error| color_eyre::eyre::eyre!("retry probe: {}", error.message))?;
+            assert_eq!(execution.timed_out, !failure.is_empty());
+            assert_eq!(execution.exit_code, if failure.is_empty() { 0 } else { 124 });
+            assert_eq!(
+                execution.test_execution_reached_attempts.len(),
+                if failure.is_empty() { 2 } else { 1 }
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     #[cfg(unix)]
     fn assertion_failure_before_timeout_is_not_retried_into_green() -> color_eyre::eyre::Result<()>
     {
         let dir = tempdir()?;
         let marker = dir.path().join("attempted");
         let command = format!(
-            "if test -f '{}'; then exit 0; fi; touch '{}'; printf 'running 1 test\ntest example ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n'; sleep 3 && cargo test --lib",
+            "if test -f '{}'; then exit 0; fi; touch '{}'; printf 'running 1 test\ntest example ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n'; sleep 3; exit 124; true && cargo test --lib",
             marker.display(),
             marker.display()
         );

@@ -136,6 +136,28 @@ fn the_sweep_control_is_wired_into_the_required_merge_surface()
     let mut disabled = document.clone();
     disabled["jobs"]["check-all-targets"]["if"] = Value::Bool(false);
     assert!(!required_context_executes_producer(&serde_yaml_ng::to_string(&disabled)?)?);
+    let mut missing_need = document.clone();
+    missing_need["jobs"]["check-all-targets"]["needs"] =
+        Value::Sequence(vec![Value::String("draft-pr-check".into())]);
+    assert!(!required_context_executes_producer(&serde_yaml_ng::to_string(&missing_need)?)?);
+    for mask_job in [true, false] {
+        let mut masked = document.clone();
+        if mask_job {
+            masked["jobs"]["check-all-targets"]["continue-on-error"] = Value::Bool(true);
+        } else {
+            for step in
+                masked["jobs"]["check-all-targets"]["steps"].as_sequence_mut().ok_or("steps")?
+            {
+                if step["run"]
+                    .as_str()
+                    .is_some_and(|run| run.trim() == "bash scripts/ci/required-merge-surface.sh")
+                {
+                    step["continue-on-error"] = Value::Bool(true);
+                }
+            }
+        }
+        assert!(!required_context_executes_producer(&serde_yaml_ng::to_string(&masked)?)?);
+    }
     let mut disabled_step = document;
     let steps = disabled_step["jobs"]["check-all-targets"]["steps"]
         .as_sequence_mut()
@@ -156,20 +178,33 @@ fn required_context_executes_producer(workflow: &str) -> Result<bool, serde_yaml
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(workflow)?;
     let job = &document["jobs"]["check-all-targets"];
     let legitimate_condition = "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
+    let direct_needs = job["needs"].as_sequence().is_some_and(|needs| {
+        ["draft-pr-check", "preflight-latest-check"]
+            .iter()
+            .all(|required| needs.iter().any(|need| need.as_str() == Some(required)))
+    });
+    let not_masked = |value: &Value| {
+        value.is_null()
+            || value.as_bool() == Some(false)
+            || value.as_str().is_some_and(|text| matches!(text.trim(), "false" | "${{ false }}"))
+    };
     let job_enabled = job["if"].is_null()
         || job["if"].as_str().is_some_and(|condition| condition.trim() == legitimate_condition);
     Ok(job_enabled
+        && (job["if"].is_null() || direct_needs)
+        && not_masked(&job["continue-on-error"])
         && job["name"].as_str() == Some("Compile All Targets (bit-rot guard)")
         && job["steps"].as_sequence().is_some_and(|steps| {
             steps.iter().any(|step| {
-                (step["if"].is_null()
-                    || step["if"].as_bool() == Some(true)
-                    || step["if"].as_str().is_some_and(|condition| {
-                        matches!(
-                            condition.trim(),
-                            "true" | "${{ true }}" | "success()" | "${{ success() }}"
-                        )
-                    }))
+                not_masked(&step["continue-on-error"])
+                    && (step["if"].is_null()
+                        || step["if"].as_bool() == Some(true)
+                        || step["if"].as_str().is_some_and(|condition| {
+                            matches!(
+                                condition.trim(),
+                                "true" | "${{ true }}" | "success()" | "${{ success() }}"
+                            )
+                        }))
                     && step["run"].as_str().is_some_and(|run| {
                         run.trim() == "bash scripts/ci/required-merge-surface.sh"
                     })
