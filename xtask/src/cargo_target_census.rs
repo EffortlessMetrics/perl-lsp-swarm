@@ -142,9 +142,16 @@ pub fn census_test_targets_from_reader<R: BufRead>(
                     }
                 } else {
                     let plain = console::strip_ansi_codes(&line);
-                    if plain.trim().starts_with("Executable ")
-                        || plain.trim().starts_with("Running ")
-                    {
+                    let marker = plain
+                        .trim()
+                        .strip_prefix("Executable ")
+                        .or_else(|| plain.trim().strip_prefix("Running "));
+                    if marker.is_some_and(|rest| {
+                        let normalized = rest.replace('\\', "/");
+                        normalized.starts_with("tests/")
+                            || normalized.starts_with("unittests ")
+                            || normalized.contains(".rs")
+                    }) {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
                             "malformed cargo target marker",
@@ -221,7 +228,9 @@ fn classify_cargo_target_line(line: &str) -> Option<(bool, String, bool)> {
     if !rest.trim_end().ends_with(')') {
         return None;
     }
-    let spec_end = rest.rfind(" (")?;
+    let spec_end = rest
+        .match_indices(" (")
+        .find_map(|(index, _)| rest[..index].trim_end().ends_with(".rs").then_some(index))?;
     if rest[spec_end + 2..rest.len() - 1].trim().is_empty() {
         return None;
     }
@@ -303,6 +312,18 @@ error: test failed, to rerun pass `-p xtask --bin xtask`
         );
         assert_eq!(accounting.executed, 1);
         assert_eq!(accounting.skipped, 1);
+    }
+
+    #[test]
+    fn ordinary_running_noise_and_parenthesized_binary_paths_are_supported() {
+        let build = census_test_targets("Executable tests/a (local).rs (target (local)/a)\n");
+        let run = census_test_targets(
+            "Running fixture setup\nRunning tests/a (local).rs (target (local)/a)\n",
+        );
+        let accounting =
+            must_some_with(account_selected_targets(build, run), "valid paired targets");
+        assert!(accounting.complete);
+        assert_eq!(accounting.executed, 1);
     }
 
     #[test]

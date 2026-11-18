@@ -729,6 +729,44 @@ impl Default for GateRunnerConfig {
     }
 }
 
+/// Cooperative exclusion for gates invocations sharing fixed receipt/log paths.
+/// External cleanup tools do not participate; callers must order them separately.
+struct GateInvocationLease {
+    path: PathBuf,
+    token: String,
+}
+
+impl GateInvocationLease {
+    fn acquire(root: &Path) -> Result<Self> {
+        fs::create_dir_all(root.join("target"))?;
+        let path = root.join("target/.gate-invocation-active");
+        let token = format!(
+            "{}:{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let mut file =
+            fs::OpenOptions::new().write(true).create_new(true).open(&path).with_context(|| {
+                format!(
+                    "Gate invocation already active or retained for owner verification: {}",
+                    path.display()
+                )
+            })?;
+        std::io::Write::write_all(&mut file, token.as_bytes())?;
+        file.sync_all()?;
+        Ok(Self { path, token })
+    }
+}
+
+impl Drop for GateInvocationLease {
+    fn drop(&mut self) {
+        // Never reclaim a replacement or an unreadable/stale owner's sentinel.
+        if fs::read_to_string(&self.path).is_ok_and(|token| token == self.token) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Main entry point for gate execution
 pub fn run(config: GateRunnerConfig) -> Result<()> {
     let root = project_root()?;
@@ -785,6 +823,10 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     // ci-scope planning so local `just pr-fast` and CI execute the same lane
     // decisions instead of duplicating shell/YAML logic.
     let plan = plan_gates(&root, &policy, &config)?;
+
+    // Hold through paired census, output and receipt publication, including diff
+    // execution. Read-only list/explain paths above never acquire ownership.
+    let _invocation_lease = GateInvocationLease::acquire(&root)?;
 
     // Handle diff mode
     if let Some(baseline_path) = &config.diff_baseline {
@@ -1035,8 +1077,13 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
             // {package_args} unresolved, even with an immutable subject.
             let mut plan =
                 plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base, subject_scope)?;
-            plan.selected.retain(|row| Some(&row.gate.name) == config.gate_filter.as_ref());
-            plan.skipped.retain(|row| Some(&row.name) == config.gate_filter.as_ref());
+            let requested = config.gate_filter.as_deref();
+            let selected_name = |name: &str| {
+                Some(name) == requested
+                    || (requested == Some("unit_routed_full") && name == "unit_routed_full_build")
+            };
+            plan.selected.retain(|row| selected_name(&row.gate.name));
+            plan.skipped.retain(|row| selected_name(&row.name));
             plan.tier = config.tier.clone();
             plan.staged_tree_oid = staged_tree_oid;
             return Ok(plan);
@@ -2509,7 +2556,9 @@ fn run_single_gate(
             // the last 4 MiB, and a routed sweep's log grows with the number of
             // selected targets (#17151), so the tail can be missing the sweep's
             // first failure and most of its per-target summaries entirely.
-            let complete_log = if is_cargo_test_command(command) {
+            let complete_log = if (status == "pass" && gate.tags.contains(&"test".to_string()))
+                || (status == "fail" && is_cargo_test_command(command))
+            {
                 read_complete_gate_log(&log_path)
             } else {
                 None
@@ -2715,7 +2764,22 @@ fn run_shell_command_with_retries(
                 child_started: true,
             })?;
             execution.stdout.push_str(&trailer);
-            if attempt < total_attempts {
+            // A watchdog does not erase an assertion failure already emitted by
+            // this attempt. Preserve its timeout status/log instead of retrying
+            // into a misleading green receipt. Unreadable evidence also refuses
+            // a retry for Cargo test commands.
+            let retryable = attempt < total_attempts
+                && (!is_cargo_test_command(command)
+                    || read_complete_gate_log(log_path).is_some_and(|output| {
+                        parse_first_failure(&output, execution.exit_code).is_none()
+                            && !output.lines().any(|line| {
+                                let plain = console::strip_ansi_codes(line);
+                                plain.trim_start().starts_with("test result:")
+                                    && extract_number(&plain, "failed")
+                                        .is_some_and(|count| count > 0)
+                            })
+                    }));
+            if attempt < total_attempts && retryable {
                 eprintln!(
                     "gate {gate_name} timed out after {timeout_secs}s on attempt {attempt}; \
                      retrying ({}/{total_attempts})",
@@ -5183,6 +5247,37 @@ gates:
             assert_eq!(filtered.package_args, full.package_args, "{scenario}");
             assert_eq!(filtered.fallback_used, full.fallback_used, "{scenario}");
             assert_eq!(filtered.scope_ok, full.scope_ok, "{scenario}");
+            config.gate_filter = Some("unit_routed_full".to_string());
+            let runtime = plan_gates(root, &policy, &config)?;
+            let expected_pair: Vec<_> = full
+                .selected
+                .iter()
+                .filter(|row| {
+                    matches!(row.gate.name.as_str(), "unit_routed_full_build" | "unit_routed_full")
+                })
+                .map(|row| (&row.gate.name, &row.gate.command))
+                .collect();
+            assert_eq!(
+                runtime
+                    .selected
+                    .iter()
+                    .map(|row| (&row.gate.name, &row.gate.command))
+                    .collect::<Vec<_>>(),
+                expected_pair
+            );
+            assert_eq!(runtime.package_args, full.package_args);
+            if scenario == "code" {
+                assert_eq!(
+                    selected_gate_names(&runtime),
+                    vec!["unit_routed_full_build", "unit_routed_full"]
+                );
+            } else {
+                assert_eq!(
+                    skipped_gate_names(&runtime),
+                    vec!["unit_routed_full_build", "unit_routed_full"]
+                );
+            }
+
             if scenario == "code" {
                 assert_eq!(filtered.package_args, vec!["-p", "smoke-probe"]);
                 assert_eq!(selected_gate_names(&filtered), vec!["unit_routed_full_build"]);
@@ -8855,6 +8950,55 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let mut unrelated = accounting_gate_result("other", "cargo test --tests", "pass");
         attach_selected_target_accounting(&mut unrelated, &[], dir.path());
         assert_eq!(unrelated.status, "pass");
+        Ok(())
+    }
+
+    #[test]
+    fn invocation_lease_blocks_overlap_without_truncating_logs_and_releases() -> Result<()> {
+        let root = tempdir()?;
+        let logs = root.path().join("target/receipts/logs");
+        fs::create_dir_all(&logs)?;
+        let log = logs.join("unit_routed_full_build.log");
+        fs::write(&log, "owned build evidence")?;
+        {
+            let _owner = super::GateInvocationLease::acquire(root.path())?;
+            assert!(super::GateInvocationLease::acquire(root.path()).is_err());
+            assert_eq!(fs::read_to_string(&log)?, "owned build evidence");
+            fs::write(root.path().join("target/receipts/receipt.json"), "published")?;
+            assert!(super::GateInvocationLease::acquire(root.path()).is_err());
+        }
+        let _next_owner = super::GateInvocationLease::acquire(root.path())?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn assertion_failure_before_timeout_is_not_retried_into_green() -> color_eyre::eyre::Result<()>
+    {
+        let dir = tempdir()?;
+        let marker = dir.path().join("attempted");
+        let command = format!(
+            "if test -f '{}'; then exit 0; fi; touch '{}'; printf 'running 1 test\ntest example ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n'; sleep 3 && cargo test --lib",
+            marker.display(),
+            marker.display()
+        );
+        assert!(is_cargo_test_command(&command), "fixture must exercise Cargo retry policy");
+        let execution = run_shell_command_with_retries(
+            &command,
+            &dir.path().join("attempt.log"),
+            1,
+            1,
+            1,
+            "assertion-timeout",
+        )
+        .map_err(|error| color_eyre::eyre::eyre!("retry probe failed: {}", error.message))?;
+        assert!(execution.timed_out);
+        assert_ne!(execution.exit_code, 0);
+        assert_ne!(execution.exit_code, 101);
+        assert_eq!(execution.test_execution_reached_attempts.len(), 1);
+        assert!(
+            fs::read_to_string(dir.path().join("attempt.log"))?.contains("test example ... FAILED")
+        );
         Ok(())
     }
 

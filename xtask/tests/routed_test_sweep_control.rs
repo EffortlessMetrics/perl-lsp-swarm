@@ -129,24 +129,50 @@ fn the_sweep_control_is_wired_into_the_required_merge_surface()
         required_context_executes_producer(&workflow)?,
         "producer must belong to the required job"
     );
-    let moved =
-        workflow.replace("name: Compile All Targets (bit-rot guard)", "name: Advisory replacement");
-    assert!(
-        !required_context_executes_producer(&moved)?,
-        "renaming the owning context must fail the binding"
-    );
+    let document: Value = serde_yaml_ng::from_str(&workflow)?;
+    let mut moved = document.clone();
+    moved["jobs"]["check-all-targets"]["name"] = Value::String("Advisory replacement".into());
+    assert!(!required_context_executes_producer(&serde_yaml_ng::to_string(&moved)?)?);
+    let mut disabled = document.clone();
+    disabled["jobs"]["check-all-targets"]["if"] = Value::Bool(false);
+    assert!(!required_context_executes_producer(&serde_yaml_ng::to_string(&disabled)?)?);
+    let mut disabled_step = document;
+    let steps = disabled_step["jobs"]["check-all-targets"]["steps"]
+        .as_sequence_mut()
+        .ok_or("steps missing")?;
+    for step in steps {
+        if step["run"]
+            .as_str()
+            .is_some_and(|run| run.trim() == "bash scripts/ci/required-merge-surface.sh")
+        {
+            step["if"] = Value::String("${{ false }}".into());
+        }
+    }
+    assert!(!required_context_executes_producer(&serde_yaml_ng::to_string(&disabled_step)?)?);
     Ok(())
 }
 
 fn required_context_executes_producer(workflow: &str) -> Result<bool, serde_yaml_ng::Error> {
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(workflow)?;
     let job = &document["jobs"]["check-all-targets"];
-    Ok(job["name"].as_str() == Some("Compile All Targets (bit-rot guard)")
+    let legitimate_condition = "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
+    let job_enabled = job["if"].is_null()
+        || job["if"].as_str().is_some_and(|condition| condition.trim() == legitimate_condition);
+    Ok(job_enabled
+        && job["name"].as_str() == Some("Compile All Targets (bit-rot guard)")
         && job["steps"].as_sequence().is_some_and(|steps| {
             steps.iter().any(|step| {
-                step["run"]
-                    .as_str()
-                    .is_some_and(|run| run.trim() == "bash scripts/ci/required-merge-surface.sh")
+                (step["if"].is_null()
+                    || step["if"].as_bool() == Some(true)
+                    || step["if"].as_str().is_some_and(|condition| {
+                        matches!(
+                            condition.trim(),
+                            "true" | "${{ true }}" | "success()" | "${{ success() }}"
+                        )
+                    }))
+                    && step["run"].as_str().is_some_and(|run| {
+                        run.trim() == "bash scripts/ci/required-merge-surface.sh"
+                    })
             })
         }))
 }
