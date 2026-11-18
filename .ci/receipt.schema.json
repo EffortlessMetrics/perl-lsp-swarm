@@ -307,6 +307,64 @@
           "description": "Relative path to full log file",
           "examples": ["logs/clippy.log", null]
         },
+        "selected_target_accounting": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "selected",
+            "executed",
+            "skipped",
+            "selected_integration",
+            "executed_integration",
+            "complete"
+          ],
+          "properties": {
+            "selected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "selected_integration": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed_integration": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "complete": {
+              "type": "boolean"
+            }
+          }
+        },
+        "first_failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "test": {
+              "type": "string"
+            },
+            "site": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "exit_code": {
+              "type": "integer"
+            }
+          }
+        },
         "metrics": {
           "$ref": "#/$defs/gate_metrics"
         },

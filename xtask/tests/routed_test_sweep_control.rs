@@ -126,12 +126,29 @@ fn the_sweep_control_is_wired_into_the_required_merge_surface()
     );
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
     assert!(
-        workflow
-            .lines()
-            .any(|line| line.trim() == "run: bash scripts/ci/required-merge-surface.sh"),
-        "the required merge-surface producer must run in the required context"
+        required_context_executes_producer(&workflow)?,
+        "producer must belong to the required job"
+    );
+    let moved =
+        workflow.replace("name: Compile All Targets (bit-rot guard)", "name: Advisory replacement");
+    assert!(
+        !required_context_executes_producer(&moved)?,
+        "renaming the owning context must fail the binding"
     );
     Ok(())
+}
+
+fn required_context_executes_producer(workflow: &str) -> Result<bool, serde_yaml_ng::Error> {
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(workflow)?;
+    let job = &document["jobs"]["check-all-targets"];
+    Ok(job["name"].as_str() == Some("Compile All Targets (bit-rot guard)")
+        && job["steps"].as_sequence().is_some_and(|steps| {
+            steps.iter().any(|step| {
+                step["run"]
+                    .as_str()
+                    .is_some_and(|run| run.trim() == "bash scripts/ci/required-merge-surface.sh")
+            })
+        }))
 }
 
 /// The `cargo test` flags the policy's routed command carries.

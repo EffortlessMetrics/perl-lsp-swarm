@@ -15,7 +15,8 @@
 //! the accounting in its receipt, and the routed-sweep fixture control asserts
 //! against real cargo output through the same code path.
 
-use std::io::{BufRead, ErrorKind};
+use std::collections::BTreeSet;
+use std::io::BufRead;
 
 use serde::{Deserialize, Serialize};
 
@@ -33,8 +34,10 @@ pub struct TargetReport {
 }
 
 /// The two populations cargo reports for one `cargo test` invocation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TargetCensus {
+    built_targets: BTreeSet<String>,
+    executed_targets: BTreeSet<String>,
     /// Test targets cargo reported as built (`Executable` lines).
     pub built: u32,
     /// Test targets cargo reported as executed (`Running` lines).
@@ -90,17 +93,17 @@ impl SelectedTargetAccounting {
 
 /// Read the test-target census out of a cargo log held in memory.
 ///
-/// An in-memory log cannot fail to read: the only error a byte slice can
-/// produce is an undecodable line, which the streaming scanner skips. An empty
-/// census is therefore the honest result for a log the scanner cannot read.
+/// Malformed target markers invalidate the census and return an empty result.
+/// Production receipt accounting uses the fallible streaming scanner directly
+/// so invalid evidence remains distinguishable from a valid empty log.
 pub fn census_test_targets(log: &str) -> TargetCensus {
     census_test_targets_from_reader(log.as_bytes()).unwrap_or_default()
 }
 
 /// Read the test-target census by streaming a cargo log.
 ///
-/// Gate logs can contain arbitrary subprocess bytes. A line that is not valid
-/// UTF-8 is skipped without ending the scan; a real I/O failure is an error
+/// Gate logs can contain arbitrary subprocess bytes. Invalid UTF-8 or an I/O
+/// failure is an error
 /// rather than a partial census, because a truncated count would misreport the
 /// skipped population.
 pub fn census_test_targets_from_reader<R: BufRead>(
@@ -111,6 +114,20 @@ pub fn census_test_targets_from_reader<R: BufRead>(
         match line {
             Ok(line) => {
                 if let Some((built, _, integration)) = classify_cargo_target_line(&line) {
+                    let plain = console::strip_ansi_codes(&line);
+                    let identity = plain
+                        .trim()
+                        .split_once(' ')
+                        .map(|(_, rest)| rest.trim().replace('\\', "/"))
+                        .unwrap_or_default();
+                    let fresh = if built {
+                        census.built_targets.insert(identity)
+                    } else {
+                        census.executed_targets.insert(identity)
+                    };
+                    if !fresh {
+                        continue;
+                    }
                     if built {
                         census.built = census.built.saturating_add(1);
                         if integration {
@@ -123,9 +140,18 @@ pub fn census_test_targets_from_reader<R: BufRead>(
                                 census.executed_integration.saturating_add(1);
                         }
                     }
+                } else {
+                    let plain = console::strip_ansi_codes(&line);
+                    if plain.trim().starts_with("Executable ")
+                        || plain.trim().starts_with("Running ")
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "malformed cargo target marker",
+                        ));
+                    }
                 }
             }
-            Err(error) if error.kind() == ErrorKind::InvalidData => {}
             Err(error) => return Err(error),
         }
     }
@@ -163,10 +189,11 @@ pub fn account_selected_targets(
     Some(SelectedTargetAccounting {
         selected,
         executed,
-        skipped: selected.saturating_sub(executed),
+        skipped: u32::try_from(build.built_targets.difference(&run.executed_targets).count())
+            .ok()?,
         selected_integration: build.built_integration,
         executed_integration: run.executed_integration,
-        complete: executed == selected,
+        complete: build.built_targets == run.executed_targets,
     })
 }
 
@@ -184,7 +211,8 @@ pub fn account_selected_targets(
 /// separator, so an unnormalized spec would classify integration targets
 /// differently on Windows than on the Linux hosts that produce the receipts.
 fn classify_cargo_target_line(line: &str) -> Option<(bool, String, bool)> {
-    let trimmed = line.trim();
+    let plain = console::strip_ansi_codes(line);
+    let trimmed = plain.trim();
     let (rest, built) = if let Some(rest) = trimmed.strip_prefix("Executable ") {
         (rest, true)
     } else {
@@ -193,12 +221,15 @@ fn classify_cargo_target_line(line: &str) -> Option<(bool, String, bool)> {
     if !rest.trim_end().ends_with(')') {
         return None;
     }
-    let spec_end = rest.rfind(" (").unwrap_or(rest.len());
+    let spec_end = rest.rfind(" (")?;
+    if rest[spec_end + 2..rest.len() - 1].trim().is_empty() {
+        return None;
+    }
     let spec = rest[..spec_end].trim().replace('\\', "/");
     let first = spec.split_whitespace().next()?;
-    let integration = if spec.starts_with("tests/") {
+    let integration = if spec.starts_with("tests/") && spec.ends_with(".rs") {
         true
-    } else if first == "unittests" {
+    } else if first == "unittests" && spec.ends_with(".rs") {
         false
     } else if spec.ends_with(".rs") {
         // A test target outside `tests/` (an explicit `[[test]]` path). It is
@@ -240,6 +271,55 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 test result: FAILED. 4994 passed; 14 failed; 1 ignored; 0 measured; 0 filtered out; finished in 61.34s
 error: test failed, to rerun pass `-p xtask --bin xtask`
 ";
+
+    #[test]
+    fn colored_markers_match_real_cargo_and_reject_malformed_paths() {
+        let colored = BUILD_LOG.replace("Executable", "\x1b[1m\x1b[92mExecutable\x1b[0m");
+        assert_eq!(census_test_targets(&colored), census_test_targets(BUILD_LOG));
+        let colored_run = RUN_LOG_COMPLETE.replace("Running", "\x1b[1m\x1b[92mRunning\x1b[0m");
+        assert_eq!(census_test_targets(&colored_run), census_test_targets(RUN_LOG_COMPLETE));
+        assert!(
+            census_test_targets(
+                "Running tests/fake.rs)\nRunning tests/fake.rs ()\nRunning unittests (binary)\n"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn equal_counts_do_not_certify_different_targets_and_duplicates_do_not_hide_skips() {
+        let build = "Executable tests/a.rs (target/a)\nExecutable tests/b.rs (target/b)\n";
+        let wrong = "Running tests/a.rs (target/a)\nRunning tests/c.rs (target/c)\n";
+        let accounting = must_some_with(
+            account_selected_targets(census_test_targets(build), census_test_targets(wrong)),
+            "nonempty build",
+        );
+        assert!(!accounting.complete);
+        assert_eq!(accounting.skipped, 1);
+        let duplicated = "Running tests/a.rs (target/a)\nRunning tests/a.rs (target/a)\n";
+        let accounting = must_some_with(
+            account_selected_targets(census_test_targets(build), census_test_targets(duplicated)),
+            "nonempty build",
+        );
+        assert_eq!(accounting.executed, 1);
+        assert_eq!(accounting.skipped, 1);
+    }
+
+    #[test]
+    fn mixed_valid_and_malformed_markers_cannot_certify_a_partial_census() {
+        for marker in ["Executable", "Running"] {
+            let log = format!("{marker} tests/a.rs (target/a)\n{marker} tests/b.rs ()\n");
+            assert!(census_test_targets_from_reader(log.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn undecodable_logs_cannot_certify_a_partial_census() {
+        assert!(
+            census_test_targets_from_reader(&b"Executable tests/a.rs (target/a)\n\xff\n"[..])
+                .is_err()
+        );
+    }
 
     #[test]
     fn build_census_counts_every_executable_target() {

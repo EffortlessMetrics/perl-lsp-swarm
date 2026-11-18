@@ -1209,9 +1209,9 @@ gates:
     # `tests/` suite while the receipt still shows only that first failure.
     # The routed package list is a BTreeSet, so the skip is systematic, not
     # incidental. This flag makes the sweep report every selected target and
-    # every failure. It changes which assertions run, not the budget: the
-    # compile is already paid by `unit_routed_full_build` in the same lane, so
-    # the sweep's execution stays inside the 1500s gate bound.
+    # every failure. Compilation is prepared by the paired build gate, but
+    # whole-scope execution duration remains unqualified. Keep the existing
+    # 1500s bound; a timeout is red and does not establish a complete sweep.
     command: cargo build -p perllsp --locked && env PERL_LSP_BIN="$PWD/target/debug/perllsp" cargo test --locked --tests {package_args} --no-fail-fast
     # PR #1585 produced timeout-only receipts at 600s and 900s for the
     # perl-lsp-rs/perl-lsp-rs-core/xtask route. Keep the required --tests proof

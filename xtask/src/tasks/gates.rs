@@ -1934,25 +1934,46 @@ fn attach_selected_target_accounting(
     completed: &[GateResult],
     log_dir: &Path,
 ) {
-    // The compile-only sibling is the gate whose command is this gate's
-    // command plus the `--no-run` suffix: the same cargo invocation, built but
-    // not executed.
-    let Some(build) = completed.iter().find(|gate| {
-        gate.command.trim_end().strip_suffix(" --no-run") == Some(result.command.trim_end())
-    }) else {
+    // Only this routed gate declares the paired census contract. Missing
+    // evidence must not certify a healthy sweep, nor affect unrelated gates.
+    if result.gate_name != "unit_routed_full" || !result.command_started {
+        return;
+    }
+    let accounting = (|| {
+        let build = completed.iter().find(|gate| {
+            gate.gate_name == "unit_routed_full_build"
+                && gate.status == "pass"
+                && gate.command.trim_end().strip_suffix(" --no-run")
+                    == Some(result.command.trim_end())
+        })?;
+        let build_census = read_gate_target_census(log_dir, &build.gate_name)?;
+        let run_census = read_gate_target_census(log_dir, &result.gate_name)?;
+        account_selected_targets(build_census, run_census)
+    })();
+    let Some(accounting) = accounting else {
+        if result.status == "pass" {
+            result.status = "fail".to_string();
+            if let Some(metrics) = result.metrics.as_mut() {
+                metrics.tests_total = None;
+                metrics.tests_passed = None;
+                metrics.tests_failed = None;
+                metrics.tests_ignored = None;
+            }
+            result.output_summary = Some(
+                "selected-target accounting unavailable: missing or invalid paired census"
+                    .to_string(),
+            );
+        }
         return;
     };
-    let Some(build_census) = read_gate_target_census(log_dir, &build.gate_name) else {
-        return;
-    };
-    let Some(run_census) = read_gate_target_census(log_dir, &result.gate_name) else {
-        return;
-    };
-    let Some(accounting) = account_selected_targets(build_census, run_census) else {
-        return;
-    };
-    if !accounting.complete && accounting.skipped > 0 && result.status == "pass" {
+    if !accounting.complete && result.status == "pass" {
         result.status = "fail".to_string();
+        if let Some(metrics) = result.metrics.as_mut() {
+            metrics.tests_total = None;
+            metrics.tests_passed = None;
+            metrics.tests_failed = None;
+            metrics.tests_ignored = None;
+        }
         result.output_summary = Some(format!(
             "incomplete test sweep: {}; the gate reported a healthy sweep it did not perform",
             accounting.summary()
@@ -2495,7 +2516,7 @@ fn run_single_gate(
             };
             let parsed_output = complete_log.as_deref().unwrap_or(&execution.stdout);
             let mut metrics = if status == "pass" && gate.tags.contains(&"test".to_string()) {
-                parse_test_metrics(parsed_output)
+                complete_log.as_deref().and_then(parse_test_metrics)
             } else {
                 None
             };
@@ -3254,37 +3275,29 @@ fn extract_output_summary(output: &str, max_lines: usize) -> String {
 
 /// Parse test metrics from cargo test output
 fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
-    // Look for "test result: ok. X passed; Y failed; Z ignored"
+    let mut passed = 0u32;
+    let mut failed = 0u32;
+    let mut ignored = 0u32;
+    let mut found = false;
     for line in output.lines() {
-        if line.contains("test result:") {
-            let mut metrics = GateMetrics::default();
-
-            // Parse passed count
-            if let Some(passed) = extract_number(line, "passed") {
-                metrics.tests_passed = Some(passed);
-            }
-
-            // Parse failed count
-            if let Some(failed) = extract_number(line, "failed") {
-                metrics.tests_failed = Some(failed);
-            }
-
-            // Parse ignored count
-            if let Some(ignored) = extract_number(line, "ignored") {
-                metrics.tests_ignored = Some(ignored);
-            }
-
-            // Calculate total
-            let total = metrics.tests_passed.unwrap_or(0)
-                + metrics.tests_failed.unwrap_or(0)
-                + metrics.tests_ignored.unwrap_or(0);
-            if total > 0 {
-                metrics.tests_total = Some(total);
-                return Some(metrics);
-            }
+        let plain = console::strip_ansi_codes(line);
+        if plain.trim_start().starts_with("test result:") {
+            passed = passed.checked_add(extract_number(&plain, "passed")?)?;
+            failed = failed.checked_add(extract_number(&plain, "failed")?)?;
+            ignored = ignored.checked_add(extract_number(&plain, "ignored")?)?;
+            found = true;
         }
     }
-    None
+    if !found {
+        return None;
+    }
+    Some(GateMetrics {
+        tests_total: Some(passed.checked_add(failed)?.checked_add(ignored)?),
+        tests_passed: Some(passed),
+        tests_failed: Some(failed),
+        tests_ignored: Some(ignored),
+        ..GateMetrics::default()
+    })
 }
 
 /// For a `cargo test`-class gate, report whether the captured log ever
@@ -6052,6 +6065,22 @@ gates:
     }
 
     #[test]
+    fn test_metrics_aggregate_all_summaries_and_refuse_incomplete_or_overflow() {
+        let metrics = required_test_metrics(
+            "test result: ok. 2 passed; 0 failed; 0 ignored\ntest result: ok. 5 passed; 0 failed; 1 ignored\n",
+        );
+        assert_eq!(metrics.tests_total, Some(8));
+        assert_eq!(metrics.tests_passed, Some(7));
+        assert!(
+            parse_test_metrics(
+                "test result: ok. 2 passed; 0 failed; 0 ignored\ntest result: malformed\n"
+            )
+            .is_none()
+        );
+        assert!(parse_test_metrics("test result: ok. 4294967295 passed; 0 failed; 0 ignored\ntest result: ok. 1 passed; 0 failed; 0 ignored\n").is_none());
+    }
+
+    #[test]
     fn parse_test_metrics_reads_standard_cargo_summary() {
         let output =
             "test result: FAILED. 7 passed; 2 failed; 3 ignored; 0 measured; 0 filtered out";
@@ -8770,7 +8799,8 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     /// A gate with no compile-only sibling has no selected-target accounting:
     /// nothing selected the targets, so nothing may be claimed about them.
     #[test]
-    fn a_gate_without_a_compile_sibling_publishes_no_accounting() -> color_eyre::eyre::Result<()> {
+    fn routed_gate_without_a_compile_sibling_cannot_publish_success() -> color_eyre::eyre::Result<()>
+    {
         let log_dir = tempfile::tempdir()?;
         fs::write(
             log_dir.path().join("unit_routed_full.log"),
@@ -8785,7 +8815,46 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         attach_selected_target_accounting(&mut runtime, &[], log_dir.path());
 
         assert!(runtime.selected_target_accounting.is_none());
-        assert_eq!(runtime.status, "pass");
+        assert_eq!(runtime.status, "fail");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_census_fails_closed_without_rewriting_process_exit_or_red_status()
+    -> color_eyre::eyre::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let build =
+            accounting_gate_result("unit_routed_full_build", "cargo test --tests --no-run", "pass");
+        for status in ["pass", "fail", "timeout", "error"] {
+            let mut run = accounting_gate_result("unit_routed_full", "cargo test --tests", status);
+            run.exit_code = Some(if status == "pass" { 0 } else { 101 });
+            let exit = run.exit_code;
+            run.metrics = Some(GateMetrics {
+                tests_total: Some(7),
+                tests_passed: Some(7),
+                tests_failed: Some(0),
+                tests_ignored: Some(0),
+                test_execution_reached: Some(true),
+                ..GateMetrics::default()
+            });
+            attach_selected_target_accounting(&mut run, std::slice::from_ref(&build), dir.path());
+            assert_eq!(run.status, if status == "pass" { "fail" } else { status });
+            assert_eq!(run.exit_code, exit);
+            assert!(run.selected_target_accounting.is_none());
+            let metrics = run.metrics.as_ref().unwrap();
+            assert_eq!(metrics.test_execution_reached, Some(true));
+            if status == "pass" {
+                assert!(
+                    metrics.tests_total.is_none()
+                        && metrics.tests_passed.is_none()
+                        && metrics.tests_failed.is_none()
+                        && metrics.tests_ignored.is_none()
+                );
+            }
+        }
+        let mut unrelated = accounting_gate_result("other", "cargo test --tests", "pass");
+        attach_selected_target_accounting(&mut unrelated, &[], dir.path());
+        assert_eq!(unrelated.status, "pass");
         Ok(())
     }
 
