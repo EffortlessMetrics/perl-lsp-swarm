@@ -158,6 +158,20 @@ fn the_sweep_control_is_wired_into_the_required_merge_surface()
         }
         assert!(!required_context_executes_producer(&serde_yaml_ng::to_string(&masked)?)?);
     }
+    let mut extra_need = document.clone();
+    extra_need["jobs"]["check-all-targets"]["needs"]
+        .as_sequence_mut()
+        .ok_or("needs")?
+        .push(Value::String("unrelated".into()));
+    assert!(!required_context_executes_producer(&serde_yaml_ng::to_string(&extra_need)?)?);
+    extra_need["jobs"]["check-all-targets"]["if"] = Value::Null;
+    assert!(!required_context_executes_producer(&serde_yaml_ng::to_string(&extra_need)?)?);
+    let mut wrapped = document.clone();
+    let original = wrapped["jobs"]["check-all-targets"]["if"].as_str().ok_or("job condition")?;
+    wrapped["jobs"]["check-all-targets"]["if"] =
+        Value::String(format!("  ${{{{  {original}  }}}}  "));
+    wrapped["jobs"]["check-all-targets"]["needs"].as_sequence_mut().ok_or("needs")?.reverse();
+    assert!(required_context_executes_producer(&serde_yaml_ng::to_string(&wrapped)?)?);
     let mut disabled_step = document;
     let steps = disabled_step["jobs"]["check-all-targets"]["steps"]
         .as_sequence_mut()
@@ -174,24 +188,32 @@ fn the_sweep_control_is_wired_into_the_required_merge_surface()
     Ok(())
 }
 
+fn expression_body(text: &str) -> &str {
+    let text = text.trim();
+    text.strip_prefix("${{").and_then(|body| body.strip_suffix("}}")).unwrap_or(text).trim()
+}
+
 fn required_context_executes_producer(workflow: &str) -> Result<bool, serde_yaml_ng::Error> {
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(workflow)?;
     let job = &document["jobs"]["check-all-targets"];
     let legitimate_condition = "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
     let direct_needs = job["needs"].as_sequence().is_some_and(|needs| {
-        ["draft-pr-check", "preflight-latest-check"]
-            .iter()
-            .all(|required| needs.iter().any(|need| need.as_str() == Some(required)))
+        needs.len() == 2
+            && ["draft-pr-check", "preflight-latest-check"]
+                .iter()
+                .all(|required| needs.iter().any(|need| need.as_str() == Some(required)))
     });
     let not_masked = |value: &Value| {
         value.is_null()
             || value.as_bool() == Some(false)
-            || value.as_str().is_some_and(|text| matches!(text.trim(), "false" | "${{ false }}"))
+            || value.as_str().is_some_and(|text| expression_body(text) == "false")
     };
     let job_enabled = job["if"].is_null()
-        || job["if"].as_str().is_some_and(|condition| condition.trim() == legitimate_condition);
+        || job["if"]
+            .as_str()
+            .is_some_and(|condition| expression_body(condition) == legitimate_condition);
     Ok(job_enabled
-        && (job["if"].is_null() || direct_needs)
+        && direct_needs
         && not_masked(&job["continue-on-error"])
         && job["name"].as_str() == Some("Compile All Targets (bit-rot guard)")
         && job["steps"].as_sequence().is_some_and(|steps| {
@@ -200,10 +222,7 @@ fn required_context_executes_producer(workflow: &str) -> Result<bool, serde_yaml
                     && (step["if"].is_null()
                         || step["if"].as_bool() == Some(true)
                         || step["if"].as_str().is_some_and(|condition| {
-                            matches!(
-                                condition.trim(),
-                                "true" | "${{ true }}" | "success()" | "${{ success() }}"
-                            )
+                            matches!(expression_body(condition), "true" | "success()")
                         }))
                     && step["run"].as_str().is_some_and(|run| {
                         run.trim() == "bash scripts/ci/required-merge-surface.sh"

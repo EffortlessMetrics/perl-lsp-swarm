@@ -909,7 +909,8 @@ fn filter_gates(policy: &GatePolicy, config: &GateRunnerConfig) -> Result<Vec<Ga
         if !gates.iter().any(|gate| gate.name == *gate_name) {
             bail!("No gate found with name '{}'", gate_name);
         }
-        let selected = route_profile::named_gate_ids(gate_name);
+        let selected =
+            route_profile::named_gate_ids(policy, gate_name).map_err(|message| eyre!(message))?;
         if selected.iter().any(|name| !gates.iter().any(|gate| gate.name == *name)) {
             bail!("Named gate prerequisite missing for '{}'", gate_name);
         }
@@ -989,10 +990,12 @@ fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> R
     // guard's job is only "would this proceed against a commit-tier gate
     // without --staged", not gate-name validation.
     if let Some(gate_name) = &config.gate_filter {
+        let selected =
+            route_profile::named_gate_ids(policy, gate_name).map_err(|message| eyre!(message))?;
         return Ok(policy
             .gates
             .iter()
-            .any(|gate| gate.name == *gate_name && gate.tier == "commit"));
+            .any(|gate| selected.contains(&gate.name.as_str()) && gate.tier == "commit"));
     }
 
     Ok(match config.tier {
@@ -1092,8 +1095,11 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
             // {package_args} unresolved, even with an immutable subject.
             let mut plan =
                 plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base, subject_scope)?;
-            let selected =
-                route_profile::named_gate_ids(config.gate_filter.as_deref().unwrap_or_default());
+            let selected = route_profile::named_gate_ids(
+                policy,
+                config.gate_filter.as_deref().unwrap_or_default(),
+            )
+            .map_err(|message| eyre!(message))?;
             plan.selected.retain(|row| selected.contains(&row.gate.name.as_str()));
             plan.skipped.retain(|row| selected.contains(&row.name.as_str()));
             plan.tier = config.tier.clone();
@@ -5225,7 +5231,7 @@ gates:
             fs::write(root.join(changed), "// changed\n")?;
             run_git(root, &["add", "."])?;
             run_git(root, &["commit", "--quiet", "-m", "subject change"])?;
-            let policy = policy_with_gates(vec![
+            let mut policy = policy_with_gates(vec![
                 pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
                 pr_gate(
                     "unit_routed_full_build",
@@ -5243,6 +5249,15 @@ gates:
                     "cargo test --workspace --lib",
                 ),
             ]);
+            policy.tiers.insert(
+                "pr_fast".into(),
+                super::TierDefinition {
+                    description: "fixture".into(),
+                    target_duration_seconds: 30,
+                    enforcement: "required".into(),
+                    trigger: Vec::new(),
+                },
+            );
             let mut config = GateRunnerConfig {
                 tier: GateTier::PrFast,
                 base_ref: Some("origin/main".to_string()),
@@ -5272,6 +5287,7 @@ gates:
                 super::route_profile::RequestedProfile::PrFast,
                 Some("unit_routed_full"),
             );
+            assert_eq!(expansion.resolution, super::route_profile::ExpansionResolution::Complete);
             assert_eq!(
                 expansion.denominator,
                 vec!["unit_routed_full".to_string(), "unit_routed_full_build".to_string()]
@@ -5285,6 +5301,31 @@ gates:
                 Some("unit_routed_full"),
             );
             assert_eq!(invalid.resolution, super::route_profile::ExpansionResolution::Invalid);
+            assert!(
+                invalid
+                    .detail
+                    .as_deref()
+                    .is_some_and(|message| message.contains("unit_routed_full_build is missing"))
+            );
+            for case in ["cross-tier", "reversed"] {
+                let mut invalid_policy = policy.clone();
+                if case == "cross-tier" {
+                    invalid_policy.gates[1].tier = "commit".into();
+                } else {
+                    invalid_policy.gates.swap(1, 2);
+                }
+                assert!(plan_gates(root, &invalid_policy, &config).is_err());
+                assert!(super::staged_guard_violation(&invalid_policy, &config).is_err());
+                assert_eq!(
+                    super::route_profile::expand(
+                        &invalid_policy,
+                        super::route_profile::RequestedProfile::PrFast,
+                        Some("unit_routed_full")
+                    )
+                    .resolution,
+                    super::route_profile::ExpansionResolution::Invalid
+                );
+            }
 
             let expected_pair: Vec<_> = full
                 .selected

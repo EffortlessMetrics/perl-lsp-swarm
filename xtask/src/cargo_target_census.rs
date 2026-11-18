@@ -228,33 +228,47 @@ fn classify_cargo_target_line(line: &str) -> Option<(bool, String, bool)> {
     if !rest.trim_end().ends_with(')') {
         return None;
     }
-    // Cargo's text has no escaping. Find a source-ending delimiter whose
-    // entire executable suffix is one balanced, nonempty parenthesized group.
-    // Do not guess when malformed/ambiguous text admits no unique boundary.
-    let mut candidates = rest.match_indices(" (").filter_map(|(index, _)| {
-        if !rest[..index].trim_end().ends_with(".rs") {
+    // A unique source-valid delimiter leaves the executable path opaque:
+    // literal unmatched parentheses are legal path bytes. If multiple source
+    // boundaries are possible, balanced outer grouping may disambiguate them;
+    // otherwise refuse rather than invent a source identity.
+    let candidates: Vec<_> = rest
+        .match_indices(" (")
+        .filter_map(|(index, _)| {
+            (rest[..index].trim_end().ends_with(".rs")
+                && !rest[index + 2..rest.len() - 1].trim().is_empty())
+            .then_some(index)
+        })
+        .collect();
+    let spec_end = if candidates.len() == 1 {
+        candidates[0]
+    } else {
+        let mut balanced = candidates.into_iter().filter(|&index| {
+            let suffix = &rest[index + 1..];
+            let mut depth = 0usize;
+            for (offset, ch) in suffix.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        let Some(next) = depth.checked_sub(1) else {
+                            return false;
+                        };
+                        depth = next;
+                        if depth == 0 && offset + 1 != suffix.len() {
+                            return false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            depth == 0
+        });
+        let index = balanced.next()?;
+        if balanced.next().is_some() {
             return None;
         }
-        let suffix = &rest[index + 1..];
-        let mut depth = 0usize;
-        for (offset, ch) in suffix.char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    depth = depth.checked_sub(1)?;
-                    if depth == 0 && offset + 1 != suffix.len() {
-                        return None;
-                    }
-                }
-                _ => {}
-            }
-        }
-        (depth == 0 && !suffix[1..suffix.len() - 1].trim().is_empty()).then_some(index)
-    });
-    let spec_end = candidates.next()?;
-    if candidates.next().is_some() {
-        return None;
-    }
+        index
+    };
     let spec = rest[..spec_end].trim().replace('\\', "/");
     let first = spec.split_whitespace().next()?;
     let integration = if spec.starts_with("tests/") && spec.ends_with(".rs") {
@@ -362,6 +376,16 @@ error: test failed, to rerun pass `-p xtask --bin xtask`
         );
         assert!(
             census_test_targets_from_reader(b"Running tests/a.rs (target/(broken)\n".as_slice())
+                .is_ok()
+        );
+        assert!(
+            census_test_targets_from_reader(
+                b"Running tests/a.rs (target/literal)path)\n".as_slice()
+            )
+            .is_ok()
+        );
+        assert!(
+            census_test_targets_from_reader(b"Running tests/a.rs (target/missing\n".as_slice())
                 .is_err()
         );
     }
