@@ -1566,12 +1566,15 @@ gates:
     description: "DAP, CI hygiene, test support, and tree-sitter workspace tests; Linux does not prove Windows-only pause runtime"
     required: true
     # Keep the broad support-crate portion --lib-only because the remaining
-    # integration suites are tracked red debt (#11708). The four perl-dap
-    # test-helpers targets below are healthy and must be executed explicitly:
+    # integration suites are tracked red debt (#11708). The six perl-dap
+    # test-helpers targets below must be executed explicitly:
     # `cargo test --tests` otherwise skips them silently when the feature is off
-    # (#14333). Recorded per #11694; flipping the broad support-crate portion to
-    # --tests is blocked on the red suites in #11708.
-    # The fifth target, dap_entry_stop_stack_trace_18491, is not
+    # (#14333). The four recorded per #11694 are healthy;
+    # dap_capability_advertising_tests and dap_step_through_tests are named
+    # here because no lane executed them at all (#19540): this lane's receipt
+    # is the evidence of their state, not this comment. Flipping the broad
+    # support-crate portion to --tests is blocked on the red suites in #11708.
+    # The seventh target, dap_entry_stop_stack_trace_18491, is not
     # feature-gated; it executes the #18491 entry-stop stackTrace regression
     # proof against a real `perl -d` session on this required lane (PR #18536
     # review F1: the proof previously ran in no required lane). The strict
@@ -1580,7 +1583,7 @@ gates:
     # a vacuous success without running the session. The typed SKIP helper
     # remains available to non-required local suites, but cannot relax this gate.
     # pr_fast residual: unit_routed_full still runs the perl-dap leg without
-    # `--features test-helpers`, so the four test-helpers targets stay absent
+    # `--features test-helpers`, so the six test-helpers targets stay absent
     # from the pr_fast lane; closing that leg is tracked in #14458.
     #   perl-ci-hygiene               6
     #   perl-dap                    115
@@ -1610,6 +1613,8 @@ gates:
       --test dap_evaluate_comprehensive_tests
       --test dap_variable_reference_hardening_tests
       --test pause_signal_delivery_tests
+      --test dap_capability_advertising_tests
+      --test dap_step_through_tests
       --test dap_entry_stop_stack_trace_18491
       -- --test-threads=4
     timeout_seconds: 450
