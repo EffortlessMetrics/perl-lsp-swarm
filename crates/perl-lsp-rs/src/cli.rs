@@ -27,6 +27,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::process;
 use std::sync::{Arc, Weak};
+#[cfg(feature = "tcp")]
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::time::{Duration, sleep};
@@ -130,15 +131,26 @@ where
             ref fact_classes,
             ref out,
             ref diff_path,
-        } => perl_ripr_facts::run_ripr_facts_with_diff_path(
-            schema,
-            root,
-            base.as_deref(),
-            head.as_deref(),
-            fact_classes,
-            diff_path.as_deref(),
-            out,
-        ),
+        } => {
+            #[cfg(feature = "ripr-facts")]
+            {
+                perl_ripr_facts::run_ripr_facts_with_diff_path(
+                    schema,
+                    root,
+                    base.as_deref(),
+                    head.as_deref(),
+                    fact_classes,
+                    diff_path.as_deref(),
+                    out,
+                )
+            }
+            #[cfg(not(feature = "ripr-facts"))]
+            {
+                let _ = (schema, root, base, head, fact_classes, out, diff_path);
+                eprintln!("ripr-facts is not compiled into this slim perllsp build");
+                1
+            }
+        }
         LaunchAction::Help => {
             println!("{}", render_help_text(&command_name));
             0
@@ -479,6 +491,15 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 shutdown_logging();
             });
         }
+        #[cfg(not(feature = "tcp"))]
+        TransportMode::Socket { port } => {
+            eprintln!(
+                "Perl LSP: socket transport (port {port}) is not compiled into \
+                 this slim build; use stdio transport instead."
+            );
+            process::exit(1);
+        }
+        #[cfg(feature = "tcp")]
         TransportMode::Socket { port } => {
             let addr = format!("127.0.0.1:{port}");
             let feature_profile = launch_config.feature_profile;

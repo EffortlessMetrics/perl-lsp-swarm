@@ -160,6 +160,7 @@ pub mod prelude;
 /// Code refactoring, modernization, and import optimization.
 pub mod refactor;
 /// Test-driven development support and test generation.
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub mod tdd;
 /// Token stream, trivia, and token wrapper utilities.
 pub mod tokens;
@@ -255,13 +256,16 @@ pub use incremental::incremental_simple;
 pub use incremental::incremental_v2;
 
 /// Basic TDD utilities and test helpers.
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub use tdd::tdd_basic;
 #[cfg(test)]
 /// TDD workflow integration for Test-Driven Development support.
 pub use tdd::tdd_workflow;
 /// Intelligent test case generation from parsed Perl code.
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub use tdd::test_generator;
 /// Test execution and TDD support functionality.
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub use tdd::test_runner;
 
 /// In-memory document storage for open editor buffers.

@@ -176,7 +176,7 @@
       "owner": "#2477",
       "target_owner": "#7063",
       "contexts": [
-        "normal"
+        "dev"
       ],
       "optional": false,
       "exit_condition": "Move TDD product composition out of the minimal parser dependency set."

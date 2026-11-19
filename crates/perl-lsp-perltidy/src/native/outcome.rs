@@ -1,13 +1,17 @@
-#[cfg(test)]
-use super::implementation::TextPosition;
-use super::implementation::counters::{self, NativePipelineCounters, PipelineCollectorScope};
-use super::implementation::{
-    BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
-    FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
-    TextRange, TrailingComma, format_simple_line, indent_unit, is_perl_line_directive,
+use super::config::{
+    BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
+    TrailingComma,
+};
+use super::counters::{self, NativePipelineCounters, PipelineCollectorScope};
+use super::result::{FormatDiagnosticSeverity, FormatResult, TextEdit, TextRange};
+#[cfg(feature = "engine")]
+use super::{
+    NativeFormatter, PerlFormatter, format_simple_line, indent_unit, is_perl_line_directive,
     is_rendered_block_boundary_line, literal_preserve_region, preserve_region_lines,
     range_includes_line, rendered_boundary_role, split_trailing_comment,
 };
+#[cfg(test)]
+use super::result::TextPosition;
 use serde::{Deserialize, Serialize};
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -277,6 +281,7 @@ impl TypedFormatResult {
     }
 }
 
+#[cfg(feature = "engine")]
 impl NativeFormatter {
     /// Format a complete document and return an explicit typed terminal outcome.
     #[must_use]
@@ -401,6 +406,7 @@ fn observe_elapsed(counters: &mut NativePipelineCounters, elapsed: std::time::Du
     counters::record_with(|outer| outer.observe_elapsed(elapsed));
 }
 
+#[cfg(feature = "engine")]
 fn classify_native_result(
     source: &str,
     config: &FormatConfig,
@@ -477,6 +483,7 @@ struct Classification {
     reason: FormatReasonCode,
 }
 
+#[cfg(feature = "engine")]
 fn classify(
     source: &str,
     config: &FormatConfig,
@@ -569,7 +576,7 @@ fn valid_range(source: &str, range: TextRange) -> bool {
         return false;
     }
     let lines = split_lines_for_range_validation(source);
-    let position_is_valid = |position: super::implementation::TextPosition| {
+    let position_is_valid = |position: super::result::TextPosition| {
         lines.get(position.line as usize).is_some_and(|line| utf16_len(line) >= position.character)
     };
     position_is_valid(range.start) && position_is_valid(range.end)
@@ -724,6 +731,7 @@ fn utf16_len(source: &str) -> u32 {
 /// the stack with the same comment-stripped close/open shape
 /// `format_safe_subset` uses, so an inline `} else { ... }` tail closes its
 /// block instead of leaving a stale opener for a later range.
+#[cfg(feature = "engine")]
 fn target_has_only_supported_lines(
     source: &str,
     config: &FormatConfig,
@@ -825,6 +833,7 @@ fn target_has_only_supported_lines(
     open_blocks.is_empty()
 }
 
+#[cfg(feature = "engine")]
 fn safety_evidence(
     source: &str,
     result: &FormatResult,

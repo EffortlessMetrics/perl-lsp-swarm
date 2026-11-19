@@ -125,7 +125,7 @@ mod api_contract_validation_tests {
     /// Test TestGenerator API contract
     #[test]
     fn test_test_generator_api_contract() {
-        use perl_parser::test_generator::{TestFramework, TestGenerator};
+        use perl_tdd_support::tdd::test_generator::{TestFramework, TestGenerator};
 
         // Validate that TestGenerator can be instantiated with available frameworks
         let _generator = TestGenerator::new(TestFramework::Test2V0);

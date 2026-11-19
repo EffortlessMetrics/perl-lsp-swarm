@@ -47,10 +47,13 @@ pub use crate::refactor::import_optimizer;
 pub use crate::refactor::modernize;
 pub use crate::refactor::modernize_refactored;
 pub use crate::source_file;
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub use crate::tdd::tdd_basic;
 #[cfg(test)]
 pub use crate::tdd::tdd_workflow;
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub use crate::tdd::test_generator;
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub use crate::tdd::test_runner;
 pub use crate::text_line;
 pub use crate::tokens::token_stream;

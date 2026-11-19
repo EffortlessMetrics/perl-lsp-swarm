@@ -26,14 +26,19 @@ pub use crate::features::policy::{FeatureProfile, catalog_advertised_feature_ids
 use crate::features::profile_cli::{feature_profile_supported_tokens, parse_feature_profile_arg};
 use crate::runtime::tuning::{DiagnosticMode, RuntimeMode, RuntimeTuning};
 pub use timing::{StartupReport, StartupTimer};
+#[cfg(feature = "logging")]
 use tracing_subscriber::prelude::*;
+#[cfg(feature = "logging")]
 use tracing_subscriber::{EnvFilter, fmt as tracing_fmt};
 
+#[cfg(feature = "logging")]
 static LOGGING_INIT: Once = Once::new();
 /// Owns the non-blocking file writer until the server's shutdown path drains it.
+#[cfg(feature = "logging")]
 static LOG_FILE_GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> =
     Mutex::new(None);
 
+#[cfg(feature = "logging")]
 fn lock_log_file_guard() -> MutexGuard<'static, Option<tracing_appender::non_blocking::WorkerGuard>>
 {
     LOG_FILE_GUARD.lock().unwrap_or_else(PoisonError::into_inner)
@@ -88,6 +93,15 @@ fn process_env_var(key: &str) -> Result<String, std::env::VarError> {
     std::env::var(key)
 }
 
+#[cfg(not(feature = "logging"))]
+fn init_logging_with_env_lookup(
+    _default_filter: &str,
+    _get: fn(&str) -> Result<String, std::env::VarError>,
+) {
+    // Slim build: no subscriber is installed; tracing calls are no-ops.
+}
+
+#[cfg(feature = "logging")]
 fn init_logging_with_env_lookup(
     default_filter: &str,
     get: fn(&str) -> Result<String, std::env::VarError>,
@@ -95,6 +109,7 @@ fn init_logging_with_env_lookup(
     init_logging_with_log_path(default_filter, get("PERL_LSP_LOG_FILE").ok());
 }
 
+#[cfg(feature = "logging")]
 fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
     LOGGING_INIT.call_once(|| {
         let filter = EnvFilter::try_from_default_env()
@@ -154,8 +169,11 @@ fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
 /// exits. Call this from the server shutdown path so final diagnostics are not
 /// lost to process teardown.
 pub fn shutdown_logging() {
-    let writer_guard = lock_log_file_guard().take();
-    drop(writer_guard);
+    #[cfg(feature = "logging")]
+    {
+        let writer_guard = lock_log_file_guard().take();
+        drop(writer_guard);
+    }
 }
 
 fn env_truthy(var_name: &str) -> Option<bool> {

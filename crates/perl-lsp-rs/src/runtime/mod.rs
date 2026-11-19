@@ -106,6 +106,7 @@ pub(crate) struct WorkspaceTopologyTransitionGate {
     pub(crate) started: std::sync::mpsc::Sender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
 }
+#[cfg(feature = "legacy-runner")]
 use perl_tdd_support::test_runner::{TestKind, TestRunner};
 
 use crate::call_hierarchy_provider::CallHierarchyProvider;
@@ -862,6 +863,14 @@ impl LspServer {
     ///
     /// Called during initialization (after project config is loaded) and on every
     /// `didChangeConfiguration` notification that touches the `aiCompletion` section.
+    #[cfg(not(feature = "ai-provider"))]
+    pub(crate) fn refresh_ai_backend(&self) {
+        // Slim build: the AI provider stack (TLS closure) is not compiled in,
+        // so the backend stays disabled regardless of configuration.
+        *self.ai_inline_backend.lock() = None;
+    }
+
+    #[cfg(feature = "ai-provider")]
     pub(crate) fn refresh_ai_backend(&self) {
         let ai_config = self.config.lock().ai_completion.clone();
 
@@ -919,6 +928,7 @@ impl LspServer {
     /// not this function's concern — see [`Self::refresh_ai_backend`], which
     /// decides whether a provider may be constructed at all before calling
     /// this.
+    #[cfg(feature = "ai-provider")]
     pub(crate) fn ai_provider_config(
         ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
         api_key: String,
@@ -2733,6 +2743,7 @@ model = "gpt-4"
     /// credential) must still construct the backend. Without this companion,
     /// the hostile-input regressions could be green merely because remote
     /// construction is impossible in every direction.
+    #[cfg(feature = "ai-provider")]
     #[test]
     fn refresh_ai_backend_installs_connector_auth_backend() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -2771,6 +2782,7 @@ model = "gpt-4"
     /// that defect while every other test in the tree stays green, because the
     /// backend is installed behind `Arc<dyn InlineCompletionBackend>` and the
     /// gate cannot be read back through it. Hence a config-level assertion.
+    #[cfg(feature = "ai-provider")]
     #[test]
     fn ai_provider_config_carries_the_configured_inflight_ceiling()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2810,6 +2822,7 @@ model = "gpt-4"
     }
 
     /// The translation must not quietly drop the other transport fields either.
+    #[cfg(feature = "ai-provider")]
     #[test]
     fn ai_provider_config_carries_the_transport_fields() -> Result<(), Box<dyn std::error::Error>> {
         let ai_config = AiCompletionConfig {

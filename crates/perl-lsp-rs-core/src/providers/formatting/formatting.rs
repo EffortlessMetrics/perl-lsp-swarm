@@ -21,9 +21,11 @@ use crate::tooling::perltidy::native::{
     FormatReasonCode, FormatRequestTarget, FormatSafetyEvidence, NativePipelineCounters,
     TypedFormatResult, inferred_line_ending,
 };
+#[cfg(feature = "native-formatting")]
+use crate::tooling::perltidy::NativeFormatter;
 use crate::tooling::perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
-    NativeFormatter, TextPosition, TextRange, TrailingComma,
+    TextPosition, TextRange, TrailingComma,
 };
 use perl_subprocess_runtime::SubprocessRuntime;
 use serde::{Deserialize, Serialize};
@@ -194,9 +196,17 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         counters: Option<&mut NativePipelineCounters>,
     ) -> Result<FormattingDecision, FormattingError> {
         match self.mode {
+            #[cfg(feature = "native-formatting")]
             FormatterMode::Native => {
                 self.native_document_decision(content, options, context, counters)
             }
+            #[cfg(not(feature = "native-formatting"))]
+            FormatterMode::Native => self.external_document_decision(
+                content,
+                options,
+                context,
+                FormatRequestTarget::Document,
+            ),
             FormatterMode::ExternalLegacy => self.external_document_decision(
                 content,
                 options,
@@ -286,9 +296,25 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         };
 
         match self.mode {
+            #[cfg(feature = "native-formatting")]
             FormatterMode::Native => {
                 self.native_range_decision(content, &geometry, admitted, options, context, counters)
             }
+            #[cfg(not(feature = "native-formatting"))]
+            FormatterMode::Native if is_whole_document_range(content, range) => {
+                self.external_document_decision(content, options, context, target)
+            }
+            #[cfg(not(feature = "native-formatting"))]
+            FormatterMode::Native => Ok(refused_decision(
+                content,
+                self.mode,
+                FormatEngine::Unknown,
+                target,
+                FormatExecutionStrategy::ExternalPartialUnsupported,
+                context,
+                FormatReasonCode::UnsafeRange,
+                "external Perl::Tidy compatibility currently supports whole-document formatting only",
+            )),
             FormatterMode::ExternalLegacy if is_whole_document_range(content, range) => {
                 self.external_document_decision(content, options, context, target)
             }
@@ -315,6 +341,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         }
     }
 
+    #[cfg(feature = "native-formatting")]
     fn native_document_decision(
         &self,
         content: &str,
@@ -333,6 +360,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         project_native_document(content, options, typed)
     }
 
+    #[cfg(feature = "native-formatting")]
     fn native_range_decision(
         &self,
         content: &str,

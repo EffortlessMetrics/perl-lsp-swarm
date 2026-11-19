@@ -16,6 +16,19 @@ categories = ["development-tools", "text-editors"]
 [lib]
 doctest = false
 
+[features]
+default = ["engine"]
+# Native formatting engine (native/implementation.rs). Type-only consumers
+# (config, decision types) build with default-features = false so size-capped
+# binaries do not link the engine; the engine ships as the separate
+# `perllsp-perltidy` helper binary instead.
+engine = []
+
+[[bin]]
+name = "perllsp-perltidy"
+path = "src/bin/perllsp-perltidy.rs"
+required-features = ["engine"]
+
 [dependencies]
 perl-parser-core = { workspace = true }
 perl-subprocess-runtime = { workspace = true }
