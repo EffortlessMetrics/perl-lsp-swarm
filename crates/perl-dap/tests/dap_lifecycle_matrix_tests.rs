@@ -256,16 +256,22 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
     Ok(())
 }
 
-// ─── Test 3: scopes advertises the #10563 contract (Locals only) ─────────────
+// ─── Test 3: scopes advertises the #9057 contract (Locals, Package, Globals) ─────────────
 
-/// Validates that `scopes` advertises the current scope contract — Locals, with
-/// the retired Package/Globals scopes absent — and that the Locals scope
-/// contains a REAL named lexical variable from the user script.
+/// Validates that `scopes` advertises the current scope contract — Locals, plus
+/// Package and Globals for the exact current stopped frame — and that the Locals
+/// scope contains a REAL named lexical variable from the user script.
 ///
 /// The DAP spec requires a `scopes` response for each frame. #10563 retired
-/// Package/Globals from the advertised contract, so this journey asserts the
-/// Locals reference is positive and the retired scope names stay unadvertised
-/// at a live stopped frame.
+/// Package/Globals from the advertised contract; #9057 (implemented by #18912)
+/// re-enabled them for the exact current stopped frame once that frame's package
+/// identity is observed, and bound their perl5db `V` queries to the observed
+/// package identity instead of to the DAP frame integer. This journey stops in
+/// package `main`, so all three scopes are advertised.
+///
+/// A frame whose package identity cannot be observed omits Package; that
+/// negative case is covered by `package_scope_with_unknown_frame_package_performs_zero_queries`
+/// beside the adapter, not by this journey.
 ///
 /// Fixture layout (lifecycle_scopes.pl):
 ///   Line 1: use strict;
@@ -344,10 +350,17 @@ fn test_lifecycle_scopes_locals_contract() -> TestResult {
         frame_info.frame_id
     );
 
-    // #10563 scope contract: a live stopped frame advertises only Locals (plus
-    // Arguments when the frame has captured arguments). Package and Globals
-    // are intentionally not advertised, so this journey proves the retired
-    // scopes stay absent instead of expecting the pre-#10563 Globals entry.
+    // #9057 scope contract: the exact current stopped frame advertises Locals,
+    // plus Package and Globals once the frame's package identity is observed.
+    // #18912 re-enabled Package/Globals for the exact current stopped frame and
+    // bound their perl5db `V` queries to the observed package identity rather
+    // than to the DAP frame integer. This journey stops in package `main`, so
+    // the observed identity is `main` and all three scopes are advertised.
+    //
+    // The assertion discriminates in both directions: on the pre-#18912 tree,
+    // where Package and Globals were not advertised at all, it fails; on the
+    // current tree it passes. It therefore pins the re-enablement rather than
+    // merely restating whatever the adapter happens to return.
     let scopes_resp = session.request("scopes", Some(json!({"frameId": frame_info.frame_id})));
     let scopes_body = session.expect_success(&scopes_resp, "scopes")?;
     let advertised: Vec<&str> = scopes_body
@@ -359,8 +372,18 @@ fn test_lifecycle_scopes_locals_contract() -> TestResult {
         })
         .unwrap_or_default();
     assert!(
-        !advertised.iter().any(|name| *name == "Globals" || *name == "Package"),
-        "#10563: Package/Globals scopes must stay unadvertised at a live stopped frame; \
+        advertised.contains(&"Locals"),
+        "#9057: the exact current stopped frame must advertise the Locals scope; \
+         got {advertised:?}"
+    );
+    assert!(
+        advertised.contains(&"Package"),
+        "#9057: the exact current stopped frame must advertise the Package scope \
+         when its package identity is observed; got {advertised:?}"
+    );
+    assert!(
+        advertised.contains(&"Globals"),
+        "#9057: the exact current stopped frame must advertise the Globals scope; \
          got {advertised:?}"
     );
 
@@ -388,7 +411,8 @@ fn test_lifecycle_scopes_locals_contract() -> TestResult {
 
     // The Locals guards above are the part of this test that proves real
     // inspection. Globals enumeration returns nothing at a live breakpoint
-    // (#10162), and since #10563 the Globals scope is not advertised at all.
+    // (#10162), so the Globals scope being advertised is an advertisement
+    // contract, not a promise of non-empty global values.
 
     session.continue_exec(frame_info.thread_id)?;
     let _ = session.drain_until_event("terminated");
