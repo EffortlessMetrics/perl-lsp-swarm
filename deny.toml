@@ -44,13 +44,17 @@ ignore = [
     # report again -- not a [bans].deny entry. A [bans].deny on chrono would
     # be unsatisfiable, because it would ban chrono from the graph outright
     # and six workspace crates legitimately depend on it.
-    # `allow` is deliberately deferred to #19562. It needs cargo-deny >= 0.21.0
-    # and the CI tool is installed unpinned, currently resolving to 0.20.2,
-    # which rejects the field. And the current direct-dependent set includes
-    # procfs 0.18.0 and procfs-core 0.18.0 -- registry crates reached through
-    # xtask -> procfs -> procfs-core -> chrono that no repo decision can
-    # remove -- so an allow list would not yet constrain anything. `expiry` is
-    # likewise not set; whether dispositions expire is policy owned by #19551.
+    # `allow` is deliberately deferred to #19562. It requires cargo-deny
+    # >= 0.21.0, and CI installs the tool unpinned (taiki-e/install-action,
+    # no version), so the effective cargo-deny version is not chosen by this
+    # repository -- that unpinned-tool defect is owned by #17644. A run
+    # observed on 2026-11-19 resolved 0.20.2, which rejects the field.
+    # Independently of the tool version, the current direct-dependent set
+    # includes procfs 0.18.0 and procfs-core 0.18.0 -- registry crates reached
+    # through xtask -> procfs -> procfs-core -> chrono that no repo decision
+    # can remove -- so an allow list would not yet constrain anything.
+    # `expiry` is likewise not set; whether dispositions expire is policy
+    # owned by #19551.
     { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono; all versions affected and no safe upgrade exists; no CVE and no exploit path, so the risk is maintenance abandonment; no published crate other than crates/perl-corpus links chrono at runtime (one site there), plus two dev-target sites in crates/perl-lsp-rs; the remaining chrono use sites are in publish = false workspace tooling; durable fix tracked in #19562" },
 ]
 
