@@ -11,7 +11,7 @@ body: >-
   dev-target use sites in crates/perl-lsp-rs, and the remaining ~81 files with
   chrono use sites are in publish = false workspace tooling. The disposition
   records bounded maintenance-abandonment exposure rather than claiming no risk,
-  and the durable chrono migration to jiff or time is tracked separately (#19542)
+  and the durable chrono migration to jiff or time is tracked separately (#19562)
 time: 2026-11-19T16:24:10Z
 custom:
   PR: 19563
