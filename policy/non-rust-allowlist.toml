@@ -5980,3 +5980,29 @@ reason = "Disposable real Git negative-control fixture proves fetch maintenance 
 covered_by = ["python scripts/tests/test_cleanup_fetch_maintenance.py"]
 created = "2026-10-01"
 review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-ci-job-log-reader"
+path = "scripts/ci/job_log.py"
+kind = "ci_tooling"
+language = "python"
+surface = "ci"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "Reads a CI job log from the raw per-job Actions endpoint and reports how many lines it read, so a failing lane cannot be read as 'no failure found' after the silently truncated `gh run view --log` read (#19559). It also surfaces the per-step conclusions GitHub recorded, which is the surface that names the step that actually failed."
+covered_by = ["python3 -B -m unittest discover -s scripts/tests -p test_job_log.py -v", "cargo xtask check-file-policy"]
+created = "2026-11-19"
+review_after = "2027-02-19"
+
+[[allow]]
+id = "non-rust-ci-job-log-reader-proof"
+path = "scripts/tests/test_job_log.py"
+kind = "ci_tooling"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "tooling/agents"
+reason = "Falsifiers for the job-log reader. They assert that a full read surfaces a failing marker a truncated read omits, that an absent pattern is reported together with the number of lines actually read, and that the exit code separates 'pattern absent' from 'could not read' (#19559)."
+covered_by = ["python3 -B -m unittest discover -s scripts/tests -p test_job_log.py -v", "cargo xtask check-file-policy"]
+created = "2026-11-19"
+review_after = "2027-02-19"

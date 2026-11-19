@@ -243,6 +243,12 @@ on:
       - '.ci/scripts/extract-failed-tests.py'
       - '.ci/scripts/test_extract_failed_tests.py'
       - '.github/workflows/flake-detection.yml'
+      # Job-log reader contract (#19559). `gh run view --log` truncates a job
+      # log without saying so, so a failing lane can read as "no failure
+      # found". The reader's own fixture suite needs a lane that executes it,
+      # not only a path trigger.
+      - 'scripts/ci/job_log.py'
+      - 'scripts/tests/test_job_log.py'
   workflow_dispatch: {}
 
 concurrency:
@@ -1021,3 +1027,15 @@ jobs:
 
       - name: Run flake extractor typed-verdict self-test
         run: python3 -B .ci/scripts/test_extract_failed_tests.py
+
+  job-log-reader-self-test:
+    name: CI job-log reader self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run job-log reader self-test
+        run: python3 -B -m unittest discover -s scripts/tests -p test_job_log.py -v

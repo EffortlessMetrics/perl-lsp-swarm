@@ -33,6 +33,7 @@ artifact is grounds for the action to be reverted.
 |------------|-------------------|
 | **Merge claim** ("this is merged", "already landed") | Merge commit SHA. Verified by: `gh pr view NNN --json mergedAt,mergeCommit` or `git log origin/main --oneline | grep <sha>`. |
 | **CI claim** ("CI is green", "checks pass") | CI check run URL + conclusion field. Example: `gh pr checks NNN --json name,state,link`. |
+| **CI failure claim** ("this lane failed", "no failure found", "the failing test is X") | The raw job log plus the per-step conclusion GitHub recorded — `python3 scripts/ci/job_log.py --job <job_id> --steps`. **`gh run view --log` and `gh run view --job <id> --log-failed` truncate the log without saying so**, and the cut can omit the failing test entirely, so a truncated read cannot support a "no failure found" conclusion (#19559). |
 | **Superseded claim** ("superseded by PR N", "already fixed upstream") | Landing-proof receipt from `cargo xtask landing-proof --commit <sha> --canonical-main origin/main --format json` pasted verbatim, **plus** separate semantic completion evidence — landing proof alone is never sufficient. See [CLOSE_PROOF_POLICY.md](CLOSE_PROOF_POLICY.md) (Three Distinct Proof Layers). |
 | **Fix claim** ("this test now passes", "bug is fixed") | Test name + test run output (pass line from `cargo test` or CI log). |
 | **Release claim** ("shipped in v0.N.M", "available in latest release") | Receipt file path (e.g. `.receipts/v0.N.M-release.md`) or public channel URL (crates.io, GitHub Releases page). |
@@ -40,6 +41,42 @@ artifact is grounds for the action to be reverted.
 | **Duplicate claim** ("duplicate of #N") | Diff comparison showing the two PRs cover the same change, plus canonical PR number. |
 | **File path claim** ("file exists at docs/X") | Confirmation from `ls` or `git ls-tree` — not from another doc referencing the path. |
 | **Version claim** ("current version is 0.N.M") | `grep '^version' Cargo.toml` output, not README or docs. |
+
+---
+
+## Reading a CI Job Log
+
+`gh run view --log` returns a **prefix** of a job's log. The cut is not
+announced, it is not positional, and it does not always keep the failing test:
+a job whose `conclusion` is `failure` can come back with no failure text in
+it at all. `gh run view --job <id> --log-failed` inherits the same truncation
+and can additionally name a different step than the one GitHub marked
+`failure`. A triage read of a truncated log therefore concludes "no failure
+found" on a red job (#19559).
+
+The Actions API exposes the untruncated log at
+`GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs`. It is not paginated
+and returns the whole log — a zip archive when the job wrote more than one
+log file, plain text otherwise. `scripts/ci/job_log.py` reads that endpoint
+and reports how many lines it actually read, so a short read is never
+mistaken for a clean one:
+
+```bash
+# Which step did GitHub mark as failed, and why.
+python3 scripts/ci/job_log.py --job <job_id> --steps
+
+# The full log, filtered, with the read receipt on stderr.
+python3 scripts/ci/job_log.py --job <job_id> --grep 'test result: FAILED'
+
+# A saved payload, for offline triage.
+python3 scripts/ci/job_log.py --from-file job.log.zip --grep 'FAILED'
+```
+
+Exit codes separate the states that a truncated read conflates: `0` the log
+was read and the pattern was found, `1` the log was read in full and the
+pattern is genuinely absent, `2` the log could not be retrieved. The receipt
+(`--summary`, `--json`) reports `lines_read` for every read, so "the pattern
+is absent" and "the read was incomplete" are never the same statement.
 
 ---
 
