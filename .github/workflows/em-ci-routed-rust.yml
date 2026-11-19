@@ -667,7 +667,11 @@ jobs:
           # misclassification, or a second unowned hosted formatter producer
           # must fail this required check. Draft-skip stays in the evaluate
           # step (#10006), and so does the #16187 supersession discriminator,
-          # owned by scripts/ci/test_rust_small_supersession.py.
+          # owned by scripts/ci/test_rust_small_supersession.py. The #19565
+          # evidence-source contract, owned by
+          # scripts/ci/test_main_red_evidence_source.py, pins that the main-red
+          # probe reads the canonical ci.yml run's check suite instead of the
+          # truncated commit-level check-run census.
           python3 -m unittest \
             scripts/ci/test_rustfmt_check.py \
             scripts/ci/test_rustfmt_required_workflow.py \
@@ -675,6 +679,7 @@ jobs:
             scripts/ci/test_hosted_formatter_producers.py \
             scripts/ci/test_rust_small_probe_gate.py \
             scripts/ci/test_main_red_refusal.py \
+            scripts/ci/test_main_red_evidence_source.py \
             scripts/ci/test_rust_small_supersession.py
 
       - name: Probe main-red refusal
@@ -719,6 +724,284 @@ jobs:
               --jq '.sha' 2>"$probe_dir/workflow-$2.err"
           }
 
+          # #19565: the commit-level check-run census
+          # (GET /repos/{repo}/commits/{sha}/check-runs) returns only the most
+          # recent 1000 check suites for a commit and silently drops the rest.
+          # Its total_count counts check runs rather than suites, so the loss
+          # is invisible to anything that reads the count. A long-lived main
+          # HEAD therefore evicts its own push-time ci.yml suite -- the only
+          # producer of main's "CI Gate shard (...)" verdicts -- and the
+          # refusal then reads "no evidence" as non-blocking.
+          #
+          # Read the evidence from the canonical ci.yml run's own check suite
+          # instead (GET /repos/{repo}/check-suites/{suite_id}/check-runs),
+          # which is complete and uncapped. The suite id comes from the run
+          # object itself (check_suite_id), so no suite is scanned for or
+          # guessed, and a suite's check runs are kept only when they name
+          # the canonical run. The emitted payload keeps the check-run schema
+          # the trusted classifier already consumes, and every field is
+          # observed API output: no verdict is derived or synthesised.
+          #
+          # Every canonical ci.yml run for the subject SHA is read, and one
+          # unreadable or empty suite does not discard the others: a
+          # superseded run leaves an empty suite beside a current one. When no
+          # canonical check run can be found at all, the failure degrades to a
+          # non-blocking evidence gap -- an empty payload file plus a warning
+          # -- never to a block and never to a silent green.
+          cat >"$probe_dir/fetch_main_red_evidence.py" <<'MAIN_RED_EVIDENCE_PY'
+          """Read the canonical ci.yml run's check-suite evidence (#19565).
+
+          The commit-level check-run census
+          (``GET /repos/{repo}/commits/{sha}/check-runs``) returns only the
+          most recent 1000 check suites for a commit and silently drops the
+          rest; the endpoint's ``total_count`` counts check runs, not suites,
+          so the loss is invisible to anything that reads the count. A
+          long-lived ``main`` HEAD therefore evicts its own push-time
+          ``ci.yml`` suite -- the only producer of ``main``'s ``CI Gate shard
+          (...)`` verdicts -- and the refusal then reads "no evidence" as
+          non-blocking.
+
+          This program reads the evidence from the canonical ``ci.yml`` run's
+          own check suite (``GET /repos/{repo}/check-suites/{suite_id}/check-runs``),
+          which is complete and uncapped. The suite id is read from the run
+          object itself (``check_suite_id``), so no suite is scanned for or
+          guessed, and a suite's check runs are kept only when they name the
+          canonical run. The emitted payload keeps the ``{"check_runs": [...]}``
+          schema the trusted classifier already consumes, and every field is
+          observed API output: no verdict is derived or synthesised.
+
+          Every canonical ``ci.yml`` run for the subject SHA is read, and one
+          unreadable or empty suite does not discard the others: a superseded
+          run leaves an empty suite beside a current one, and the current
+          run's evidence must survive it. When no canonical check run can be
+          found at all, the failure degrades to a non-blocking evidence gap --
+          an empty payload file plus a warning -- never to a block and never to
+          a silent green.
+          """
+
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+          from typing import Any
+
+          RUN_ID_PATTERN = re.compile(r"/actions/runs/([0-9]+)(?:/|$)")
+
+
+          def pages(payload: Any) -> list[Any]:
+              """Return the pages of a one-page or ``--paginate --slurp`` payload."""
+              if isinstance(payload, list):
+                  return list(payload)
+              return [payload]
+
+
+          def canonical_run_ids(workflow_runs_payload: Any, subject_sha: str) -> set[int]:
+              """Return the canonical ``ci.yml`` run ids for one exact subject SHA."""
+              run_ids: set[int] = set()
+              for page in pages(workflow_runs_payload):
+                  runs = page.get("workflow_runs", []) if isinstance(page, dict) else []
+                  if not isinstance(runs, list):
+                      continue
+                  for run in runs:
+                      if not isinstance(run, dict) or run.get("head_sha") != subject_sha:
+                          continue
+                      run_id = run.get("id")
+                      if isinstance(run_id, int):
+                          run_ids.add(run_id)
+              return run_ids
+
+
+          def canonical_suites(workflow_runs_payload: Any, subject_sha: str) -> list[int]:
+              """Return the check suite ids the canonical ``ci.yml`` runs report.
+
+              The suite id is read from the run object, so the canonical run's
+              own suite is identified without scanning the commit's suites.
+              """
+              suite_ids: list[int] = []
+              for page in pages(workflow_runs_payload):
+                  runs = page.get("workflow_runs", []) if isinstance(page, dict) else []
+                  if not isinstance(runs, list):
+                      continue
+                  for run in runs:
+                      if not isinstance(run, dict) or run.get("head_sha") != subject_sha:
+                          continue
+                      suite_id = run.get("check_suite_id")
+                      if isinstance(suite_id, int) and suite_id not in suite_ids:
+                          suite_ids.append(suite_id)
+              return suite_ids
+
+
+          def suite_check_runs(suite_payload: Any) -> list[dict[str, Any]]:
+              """Return the check runs of one suite payload."""
+              runs: list[dict[str, Any]] = []
+              for page in pages(suite_payload):
+                  if not isinstance(page, dict):
+                      continue
+                  page_runs = page.get("check_runs", [])
+                  if not isinstance(page_runs, list):
+                      continue
+                  runs.extend(run for run in page_runs if isinstance(run, dict))
+              return runs
+
+
+          def select_canonical_runs(
+              suite_payload: Any,
+              run_ids: set[int],
+          ) -> list[dict[str, Any]]:
+              """Keep the check runs that name a canonical run.
+
+              The suite is bound to the canonical run by the run object, so
+              this verifies that binding instead of assuming it. A check run
+              that does not name a canonical run is not evidence about the
+              canonical run.
+              """
+              selected: list[dict[str, Any]] = []
+              for run in suite_check_runs(suite_payload):
+                  match = RUN_ID_PATTERN.search(str(run.get("details_url") or ""))
+                  if match is None or int(match.group(1)) not in run_ids:
+                      continue
+                  selected.append(run)
+              return selected
+
+
+          def collect_canonical_runs(
+              suite_payloads: list[Any],
+              run_ids: set[int],
+          ) -> list[dict[str, Any]] | None:
+              """Return the canonical run's check runs, or ``None`` on a gap.
+
+              A suite that reports no check run naming the canonical run
+              contributes nothing and does not invalidate the other suites: a
+              superseded or cancelled run leaves an empty suite beside a
+              successful one, and the successful run's evidence must survive
+              it. ``None`` means no canonical check run was found at all,
+              which is a fetch gap rather than an observation about the
+              canonical run, so the caller must treat it as a failure rather
+              than emit a payload that merely lacks the shard.
+              """
+              selected: list[dict[str, Any]] = []
+              for suite_payload in suite_payloads:
+                  selected.extend(select_canonical_runs(suite_payload, run_ids))
+              return selected or None
+
+
+          def fetch_suite_check_runs(repository: str, suite_id: int) -> Any:
+              """Fetch one check suite's check runs through the ``gh`` CLI."""
+              completed = subprocess.run(
+                  [
+                      "gh",
+                      "api",
+                      "--paginate",
+                      "--slurp",
+                      "-H",
+                      "Accept: application/vnd.github+json",
+                      "-H",
+                      "X-GitHub-Api-Version: 2022-11-28",
+                      f"repos/{repository}/check-suites/{suite_id}/check-runs?per_page=100",
+                  ],
+                  capture_output=True,
+                  text=True,
+                  encoding="utf-8",
+                  check=False,
+              )
+              if completed.returncode != 0:
+                  detail = (completed.stderr or "").strip().splitlines()
+                  reason = detail[-1] if detail else f"gh api exited {completed.returncode}"
+                  raise RuntimeError(reason)
+              return json.loads(completed.stdout)
+
+
+          def write_payload(path: Path, runs: list[dict[str, Any]]) -> None:
+              """Write the classifier's payload with observed check-run fields only."""
+              path.write_text(json.dumps({"check_runs": runs}), encoding="utf-8")
+
+
+          def write_missing_payload(path: Path) -> None:
+              """Write the failure payload: an empty file, not an empty observation.
+
+              This is the same failure payload the retired census error path
+              wrote. The trusted classifier reads it as missing evidence -- a
+              warning, hence non-blocking -- rather than as an observation
+              about the canonical run. A payload that is merely incomplete
+              (valid JSON carrying some check runs) would carry no warning at
+              all, so a missing required-context shard could not be told
+              apart from a shard that never ran.
+              """
+              path.write_text("", encoding="utf-8")
+
+
+          def main(argv: list[str]) -> int:
+              if len(argv) != 5:
+                  print(
+                      "usage: fetch_main_red_evidence.py "
+                      "<workflow-runs.json> <subject-sha> <output.json> <label>",
+                      file=sys.stderr,
+                  )
+                  return 2
+              runs_path = Path(argv[1])
+              subject_sha = argv[2]
+              out_path = Path(argv[3])
+              label = argv[4]
+              repository = os.environ.get("REPOSITORY", "")
+
+              def degrade(reason: str) -> int:
+                  print(
+                      f"::warning::{label} ci.yml check-suite evidence is unavailable "
+                      f"({reason}); main-red refusal probe is non-blocking",
+                      flush=True,
+                  )
+                  write_missing_payload(out_path)
+                  return 1
+
+              if not repository:
+                  return degrade("the repository to read from is unknown")
+
+              try:
+                  workflow_runs_payload = json.loads(runs_path.read_text(encoding="utf-8"))
+              except (OSError, ValueError) as error:
+                  return degrade(f"ci.yml run payload could not be read: {error}")
+
+              run_ids = canonical_run_ids(workflow_runs_payload, subject_sha)
+              if not run_ids:
+                  return degrade(f"no canonical ci.yml run for {subject_sha}")
+              suite_ids = canonical_suites(workflow_runs_payload, subject_sha)
+              if not suite_ids:
+                  return degrade(f"no canonical ci.yml run for {subject_sha} reports a check suite")
+
+              suite_payloads: list[Any] = []
+              for suite_id in suite_ids:
+                  try:
+                      suite_payloads.append(
+                          fetch_suite_check_runs(repository, suite_id)
+                      )
+                  except (OSError, RuntimeError, ValueError) as error:
+                      # One unreadable suite must not discard the evidence of
+                      # the others: a superseded run leaves a suite that can
+                      # no longer be read beside a current one that can.
+                      print(
+                          f"::warning::{label} canonical ci.yml check suite {suite_id} "
+                          f"could not be read ({error}); the remaining suites still count",
+                          flush=True,
+                      )
+
+              selected = collect_canonical_runs(suite_payloads, run_ids)
+              if selected is None:
+                  return degrade(
+                      "no canonical ci.yml check run names the canonical run"
+                  )
+
+              write_payload(out_path, selected)
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main(sys.argv))
+          MAIN_RED_EVIDENCE_PY
+
           # Read the branch immediately before and immediately after the
           # check-run lookup. A main movement makes all observations stale;
           # the classifier deliberately turns that into a warning.
@@ -748,27 +1031,16 @@ jobs:
             gh api --paginate --slurp \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              "repos/${REPOSITORY}/commits/${MAIN_SHA_BEFORE}/check-runs?per_page=100" \
-              >"$probe_dir/main-runs.json" 2>"$probe_dir/main-runs.err" || {
-                : >"$probe_dir/main-runs.json"
-                api_ok=false
-              }
-            gh api --paginate --slurp \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
               "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${MAIN_SHA_BEFORE}&per_page=100" \
               >"$probe_dir/main-workflow-runs.json" 2>"$probe_dir/main-workflow-runs.err" || {
                 : >"$probe_dir/main-workflow-runs.json"
                 api_ok=false
               }
-            gh api --paginate --slurp \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "repos/${REPOSITORY}/commits/${CANDIDATE_SHA}/check-runs?per_page=100" \
-              >"$probe_dir/candidate-runs.json" 2>"$probe_dir/candidate-runs.err" || {
-                : >"$probe_dir/candidate-runs.json"
-                api_ok=false
-              }
+            python3 "$probe_dir/fetch_main_red_evidence.py" \
+              "$probe_dir/main-workflow-runs.json" \
+              "${MAIN_SHA_BEFORE}" \
+              "$probe_dir/main-runs.json" \
+              main || api_ok=false
             gh api --paginate --slurp \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -777,6 +1049,11 @@ jobs:
                 : >"$probe_dir/candidate-workflow-runs.json"
                 api_ok=false
               }
+            python3 "$probe_dir/fetch_main_red_evidence.py" \
+              "$probe_dir/candidate-workflow-runs.json" \
+              "${CANDIDATE_SHA}" \
+              "$probe_dir/candidate-runs.json" \
+              candidate || api_ok=false
             CANDIDATE_WORKFLOW_SHA=""
             if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then
               CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE" candidate)" || {
@@ -834,17 +1111,15 @@ jobs:
             gh api --paginate --slurp \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              "repos/${REPOSITORY}/commits/${CANDIDATE_SHA}/check-runs?per_page=100" \
-              >"$probe_dir/candidate-runs.json" 2>"$probe_dir/candidate-runs.err" || {
-                : >"$probe_dir/candidate-runs.json"
-              }
-            gh api --paginate --slurp \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
               "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}&per_page=100" \
               >"$probe_dir/candidate-workflow-runs.json" 2>"$probe_dir/candidate-workflow-runs.err" || {
                 : >"$probe_dir/candidate-workflow-runs.json"
               }
+            python3 "$probe_dir/fetch_main_red_evidence.py" \
+              "$probe_dir/candidate-workflow-runs.json" \
+              "${CANDIDATE_SHA}" \
+              "$probe_dir/candidate-runs.json" \
+              candidate || true
             CANDIDATE_WORKFLOW_SHA=""
             if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then
               CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE" candidate)" || {
