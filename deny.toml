@@ -29,20 +29,29 @@ ignore = [
     { id = "RUSTSEC-2024-0449", reason = "unmaintained unsafe-libyaml via serde_yaml_ng in unpublished xtask only; inputs are repository-controlled; no shipped-crate exposure" },
     # RUSTSEC-2026-0543 (unmaintained): chrono is unmaintained and all versions
     # are affected, so no safe upgrade exists. This is a maintenance-abandonment
-    # advisory, not a vulnerability -- there is no CVE and no exploit path; the
-    # risk is that chrono stops receiving fixes. chrono is a direct dependency
-    # of six workspace crates. Published exposure is one runtime call site in
-    # crates/perl-corpus/src/index/coverage.rs plus two dev-target sites in
-    # crates/perl-lsp-rs (test + bench); the shipped perllsp binary does not
-    # link it. The remaining ~81 call sites are in publish = false workspace
+    # advisory, not a vulnerability -- no CVE, no exploit path; the risk is that
+    # chrono stops receiving fixes. chrono is a direct dependency of six
+    # workspace crates. No published crate other than perl-corpus links chrono
+    # at runtime: the one published runtime site is
+    # crates/perl-corpus/src/index/coverage.rs, and the two crates/perl-lsp-rs
+    # sites are dev targets (chrono sits under [dev-dependencies]). The
+    # remaining ~81 files with chrono use sites are publish = false workspace
     # tooling (xtask, perl-ci-hygiene, perl-core-harness, perl-lsp-ux-tests).
     # Bounded exposure, not a claim of no risk.
     # Durable fix is the chrono -> jiff/time migration, #19562.
-    # No [bans].deny guard is added, unlike the RUSTSEC-2024-0449 pair above:
-    # a ban would be unsatisfiable because chrono is legitimately used by six
-    # workspace crates, including the published perl-corpus. Do not "fix" this
-    # by adding a ban entry; remove the advisory ignore in #19562 instead.
-    { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono; all versions affected and no safe upgrade exists; no CVE and no exploit path, so the risk is maintenance abandonment; published exposure is one runtime site in crates/perl-corpus and two dev-target sites in crates/perl-lsp-rs, the rest is publish = false workspace tooling; durable fix tracked in #19562" },
+    # Guard: the fail-closed mechanism for an advisory ignore is `allow` on
+    # this entry -- a direct dependent that is not allowed makes the advisory
+    # report again -- not a [bans].deny entry. A [bans].deny on chrono would
+    # be unsatisfiable, because it would ban chrono from the graph outright
+    # and six workspace crates legitimately depend on it.
+    # `allow` is deliberately deferred to #19562. It needs cargo-deny >= 0.21.0
+    # and the CI tool is installed unpinned, currently resolving to 0.20.2,
+    # which rejects the field. And the current direct-dependent set includes
+    # procfs 0.18.0 and procfs-core 0.18.0 -- registry crates reached through
+    # xtask -> procfs -> procfs-core -> chrono that no repo decision can
+    # remove -- so an allow list would not yet constrain anything. `expiry` is
+    # likewise not set; whether dispositions expire is policy owned by #19551.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono; all versions affected and no safe upgrade exists; no CVE and no exploit path, so the risk is maintenance abandonment; no published crate other than crates/perl-corpus links chrono at runtime (one site there), plus two dev-target sites in crates/perl-lsp-rs; the remaining chrono use sites are in publish = false workspace tooling; durable fix tracked in #19562" },
 ]
 
 # -- Licenses ------------------------------------------------------------------
