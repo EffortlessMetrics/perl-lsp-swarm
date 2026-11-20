@@ -373,14 +373,7 @@ fn evaluate_conflict_markers<'a>(files: impl Iterator<Item = (&'a str, &'a str)>
 fn conflict_markers_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
     let paths = staged::staged_diff_paths(root, Some(&tree_oid))?;
-    let mut files = Vec::new();
-    for path in &paths {
-        if let StagedPathText::Present(text) =
-            staged::read_staged_path_text(root, path, Some(&tree_oid))?
-        {
-            files.push((path.clone(), text));
-        }
-    }
+    let files = staged::read_staged_text_batch(root, &tree_oid, &paths)?;
     let affected =
         evaluate_conflict_markers(files.iter().map(|(path, text)| (path.as_str(), text.as_str())));
 
@@ -1273,6 +1266,84 @@ mod tests {
     // edit and never the pre-image before staging. Proven against a real
     // temp git repository (not the host repo's own index).
     // -------------------------------------------------------------------
+
+    #[test]
+    fn conflict_markers_staged_batch_matches_single_reads_on_large_snapshot() -> Result<()> {
+        // Scope Git tracing to this test process, without mutating the
+        // environment of other test threads.
+        const TRACE: &str = "XTASK_STAGED_BATCH_TRACE";
+        let Some(trace) = std::env::var_os(TRACE) else {
+            let dir = tempfile::tempdir()?;
+            let trace = dir.path().join("git-events");
+            let status = Command::new(std::env::current_exe()?)
+                .args([
+                    "conflict_markers_staged_batch_matches_single_reads_on_large_snapshot",
+                    "--nocapture",
+                ])
+                .env(TRACE, &trace)
+                .env("GIT_TRACE2_EVENT", &trace)
+                .status()?;
+            assert!(status.success());
+            return Ok(());
+        };
+        let repo = TempRepo::init()?;
+        for number in 0..500 {
+            repo.write(&format!("nested/file-{number}"), &format!("<<<<<<< staged {number}\n"))?;
+        }
+        repo.write("name with spaces", "=======\n")?;
+        #[cfg(unix)]
+        repo.write(":literal[*]\nname", ">>>>>>> staged\n")?;
+        std::fs::write(repo.root().join("binary"), [0xff])?;
+        repo.add(".")?;
+        let tree = staged::staged_tree_oid(repo.root())?;
+        let paths = staged::staged_diff_paths(repo.root(), Some(&tree))?;
+        repo.write("nested/file-1", "new index content")?;
+        repo.add("nested/file-1")?;
+
+        std::fs::write(&trace, "")?;
+        let start = std::time::Instant::now();
+        let CommitCheckOutcome::Flagged(report) =
+            conflict_markers_staged_at(repo.root(), Some(&tree))?
+        else {
+            bail!("marker fixture should be flagged");
+        };
+        let batch_time = start.elapsed();
+        let events = std::fs::read_to_string(trace)?;
+        let starts = events
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|event| event["event"] == "start")
+            .count();
+        assert!((1..=8).contains(&starts), "{starts} Git processes for {} paths", paths.len());
+        let locations: Vec<_> = paths
+            .iter()
+            .filter(|path| path.as_str() != "binary")
+            .map(|path| format!("{path}:1"))
+            .collect();
+        assert_eq!(report.affected, locations);
+        eprintln!("{} paths: batch {batch_time:?}, {starts} Git processes", paths.len());
+        // Enable the expensive reference measurement for deliberate comparisons.
+        if std::env::var_os("XTASK_COMPARE_STAGED_SINGLE_READS").is_some() {
+            let start = std::time::Instant::now();
+            let mut expected = Vec::new();
+            for path in &paths {
+                if let StagedPathText::Present(text) =
+                    staged::read_staged_path_text(repo.root(), path, Some(&tree))?
+                {
+                    expected.push((path.clone(), text));
+                }
+            }
+            assert_eq!(
+                report.affected,
+                evaluate_conflict_markers(expected.iter().map(|(p, t)| (p.as_str(), t.as_str())))
+            );
+            eprintln!("single reads {:?}", start.elapsed());
+        }
+        assert!(batch_time < std::time::Duration::from_secs(60));
+        Ok(())
+    }
 
     struct TempRepo {
         dir: tempfile::TempDir,
