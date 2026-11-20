@@ -55,3 +55,5 @@ pub mod tooling;
 pub mod transport;
 /// URI parsing and conversion helpers used by protocol-facing components.
 pub mod uri;
+/// Transport-neutral workspace session facade composing lifecycle authorities (#7218).
+pub mod workspace_session;
