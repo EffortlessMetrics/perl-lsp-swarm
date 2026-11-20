@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "programme": "perl_regex_compile_oracle",
+  "family": "oracle.compile_safe",
+  "owner_issue": 7036,
+  "invocation": "direct perl -c child with a 2s deadline; env_clear with preserved PATH + LC_ALL=C",
+  "rows": [
+    {
+      "id": "oracle.compile_safe.qr-basic-accept",
+      "family": "oracle.compile_safe",
+      "authority": "perlre(1): compile-time qr// literals are syntax-checked by perl -c",
+      "positive_source": "use strict; use warnings; my $re = qr/a+/; 1;",
+      "negative_source": "use strict; use warnings; my $re = qr/(unclosed/; 1;",
+      "expected_positive": "accepted",
+      "expected_negative": "rejected",
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "required"
+    },
+    {
+      "id": "oracle.compile_safe.match-xx-modifier-pair",
+      "family": "oracle.compile_safe",
+      "authority": "perlop(1) Modifiers: /xx extended whitespace is accepted on supported profiles",
+      "positive_source": "use strict; use warnings; my $x = m/ a + /xx; 1;",
+      "negative_source": "use strict; use warnings; my $x = m/ a + /z; 1;",
+      "expected_positive": "accepted",
+      "expected_negative": "rejected",
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "required"
+    },
+    {
+      "id": "oracle.compile_safe.substitution-r-nondestructive",
+      "family": "oracle.compile_safe",
+      "authority": "perlop(1) Modifiers: /r non-destructive substitution compiles on s///",
+      "positive_source": "use strict; use warnings; my $s = 'ab'; $s =~ s/a/b/r; 1;",
+      "negative_source": "use strict; use warnings; my $x = m/a/r; 1;",
+      "expected_positive": "accepted",
+      "expected_negative": "rejected",
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "required"
+    }
+  ]
+}
