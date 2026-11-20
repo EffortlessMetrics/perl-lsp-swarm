@@ -292,19 +292,31 @@ fn use_strict_space_separated_in_single_string_enables_requested_categories()
 
 #[test]
 fn use_if_strict_conditionally_enables_strict() -> Result<(), Box<dyn std::error::Error>> {
-    let ast = program(vec![use_node("if", &["$^O", "eq", "'MSWin32'", "'strict'"], 0, 35)]);
+    let ast = program(vec![use_node("if", &["1", "'strict'"], 0, 20)]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
 
     assert!(state.strict_vars);
     assert!(state.strict_subs);
     assert!(state.strict_refs);
+    Ok(())
+}
+
+#[test]
+fn use_if_dynamic_condition_does_not_enable_strict() -> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![use_node("if", &["$^O", "eq", "'MSWin32'", "'strict'"], 0, 35)]);
+    let map = PragmaTracker::build(&ast);
+    let state = if map.is_empty() { PragmaState::default() } else { map[0].1.clone() };
+
+    assert!(!state.strict_vars);
+    assert!(!state.strict_subs);
+    assert!(!state.strict_refs);
     Ok(())
 }
 
 #[test]
 fn use_if_version_target_applies_version_semantics() -> Result<(), Box<dyn std::error::Error>> {
-    let ast = program(vec![use_node("if", &["$]", ">=", "5.034", "v5.40"], 0, 28)]);
+    let ast = program(vec![use_node("if", &["1", "v5.40"], 0, 18)]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
 
@@ -315,26 +327,26 @@ fn use_if_version_target_applies_version_semantics() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn use_unless_strict_conditionally_enables_strict() -> Result<(), Box<dyn std::error::Error>> {
+fn use_unless_is_not_a_builtin_conditional_pragma() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("unless", &["$already_strict", "'strict'"], 0, 38)]);
     let map = PragmaTracker::build(&ast);
-    let state = &map[0].1;
+    let state = if map.is_empty() { PragmaState::default() } else { map[0].1.clone() };
 
-    assert!(state.strict_vars);
-    assert!(state.strict_subs);
-    assert!(state.strict_refs);
+    assert!(!state.strict_vars);
+    assert!(!state.strict_subs);
+    assert!(!state.strict_refs);
     Ok(())
 }
 
 #[test]
-fn use_unless_version_target_applies_version_semantics() -> Result<(), Box<dyn std::error::Error>> {
+fn use_unless_version_target_is_not_conditional() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("unless", &["$]", "<", "5.036", "v5.40"], 0, 31)]);
     let map = PragmaTracker::build(&ast);
-    let state = &map[0].1;
+    let state = if map.is_empty() { PragmaState::default() } else { map[0].1.clone() };
 
-    assert!(state.strict_vars, "v5.40 should imply strict");
-    assert!(state.warnings, "v5.40 should imply warnings");
-    assert!(state.has_feature("builtin"), "v5.40 should imply builtin feature bundle");
+    assert!(!state.strict_vars);
+    assert!(!state.warnings);
+    assert!(!state.has_feature("builtin"));
     Ok(())
 }
 
@@ -355,7 +367,7 @@ fn use_if_version_condition_does_not_apply_version_semantics()
 
 #[test]
 fn use_if_encoding_targets_encoding_not_argument() -> Result<(), Box<dyn std::error::Error>> {
-    let ast = program(vec![use_node("if", &["$cond", "encoding", "'utf8'"], 0, 32)]);
+    let ast = program(vec![use_node("if", &["1", "encoding", "'utf8'"], 0, 32)]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
 
@@ -366,10 +378,8 @@ fn use_if_encoding_targets_encoding_not_argument() -> Result<(), Box<dyn std::er
 
 #[test]
 fn no_if_strict_conditionally_disables_strict() -> Result<(), Box<dyn std::error::Error>> {
-    let ast = program(vec![
-        use_node("strict", &[], 0, 12),
-        no_node("if", &["$cond", "'strict'"], 13, 33),
-    ]);
+    let ast =
+        program(vec![use_node("strict", &[], 0, 12), no_node("if", &["1", "'strict'"], 13, 33)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 25);
 
@@ -380,7 +390,7 @@ fn no_if_strict_conditionally_disables_strict() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn no_unless_feature_conditionally_disables_feature() -> Result<(), Box<dyn std::error::Error>> {
+fn no_unless_feature_is_not_conditional() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("feature", &["'say'"], 0, 20),
         no_node("unless", &["$cond", "feature", "'say'"], 21, 50),
@@ -388,7 +398,7 @@ fn no_unless_feature_conditionally_disables_feature() -> Result<(), Box<dyn std:
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 40);
 
-    assert!(!state.has_feature("say"));
+    assert!(state.has_feature("say"), "unless must not disable features without a contract");
     Ok(())
 }
 
@@ -1387,9 +1397,9 @@ fn no_builtin_preserves_lexical_imports_without_extra_entry()
 fn conditional_builtin_use_and_no_follow_directive_rules() -> Result<(), Box<dyn std::error::Error>>
 {
     let ast = program(vec![
-        use_node("if", &["$cond", "builtin", "'true'"], 0, 35),
+        use_node("if", &["1", "builtin", "'true'"], 0, 35),
         use_node("unless", &["$other", "builtin", "'true'"], 36, 75),
-        no_node("if", &["$cond", "builtin", "'true'"], 76, 110),
+        no_node("if", &["1", "builtin", "'true'"], 76, 110),
         no_node("unless", &["$other", "builtin", "'true'"], 111, 145),
     ]);
 
@@ -2082,7 +2092,7 @@ fn no_if_builtin_conditionally_preserves_lexical_imports() -> Result<(), Box<dyn
 #[test]
 fn use_if_strict_with_single_quoted_whitespace_list_enables_selected_flags()
 -> Result<(), Box<dyn std::error::Error>> {
-    let ast = program(vec![use_node("if", &["$cond", "strict", "'vars subs'"], 0, 36)]);
+    let ast = program(vec![use_node("if", &["1", "strict", "'vars subs'"], 0, 36)]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
 
@@ -2097,7 +2107,7 @@ fn no_if_strict_with_single_quoted_whitespace_list_disables_selected_flags()
 -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("strict", &[], 0, 11),
-        no_node("if", &["$cond", "strict", "'vars subs'"], 12, 48),
+        no_node("if", &["1", "strict", "'vars subs'"], 12, 48),
     ]);
     let map = PragmaTracker::build(&ast);
     let state = &map[1].1;
