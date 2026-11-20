@@ -177,10 +177,7 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         ),
         Node::new(NodeKind::ArrayLiteral { elements: vec![] }, loc()),
         Node::new(NodeKind::HashLiteral { pairs: vec![] }, loc()),
-        Node::new(
-            NodeKind::Use { module: "strict".to_string(), args: vec![], has_filter_risk: false },
-            loc(),
-        ),
+        Node::new(NodeKind::use_directive("strict".to_string(), vec![], false), loc()),
         Node::new(
             NodeKind::No { module: "warnings".to_string(), args: vec![], has_filter_risk: false },
             loc(),

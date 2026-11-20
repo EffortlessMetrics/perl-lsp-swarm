@@ -403,8 +403,8 @@ fn payload_summary(kind: &NodeKind) -> PayloadSummary {
             push_str(&mut parts, &mut truncated, "name", name);
             push_str(&mut parts, &mut truncated, "body", body);
         }
-        NodeKind::Use { module, args, has_filter_risk }
-        | NodeKind::No { module, args, has_filter_risk } => {
+        NodeKind::Use { module, module_span: _, syntax: _, args, has_filter_risk }
+        | NodeKind::No { module, module_span: _, syntax: _, args, has_filter_risk } => {
             push_str(&mut parts, &mut truncated, "module", module);
             push_list(&mut parts, &mut truncated, "args", args);
             push_bool(&mut parts, "has_filter_risk", *has_filter_risk);

@@ -1351,9 +1351,13 @@ pub enum NodeKind {
 
     /// Use statement for module loading: `use Module qw(imports);`
     Use {
-        /// Module name to load
+        /// Module name to load (legacy compatibility projection)
         module: String,
-        /// Import arguments (symbols to import)
+        /// Exact source span of the module / pragma name when established by the parser
+        module_span: SourceLocation,
+        /// Typed directive syntax (#8232); authoritative for structure and spans
+        syntax: crate::compile_directive_syntax::CompileDirectiveSyntax,
+        /// Import arguments (legacy compatibility projection)
         args: Vec<String>,
         /// Whether this module is a known source filter (security risk)
         has_filter_risk: bool,
@@ -1361,9 +1365,13 @@ pub enum NodeKind {
 
     /// No statement for disabling features: `no strict;`
     No {
-        /// Module/pragma name to disable
+        /// Module/pragma name to disable (legacy compatibility projection)
         module: String,
-        /// Arguments for the no statement
+        /// Exact source span of the module / pragma name when established by the parser
+        module_span: SourceLocation,
+        /// Typed directive syntax (#8232)
+        syntax: crate::compile_directive_syntax::CompileDirectiveSyntax,
+        /// Arguments for the no statement (legacy compatibility projection)
         args: Vec<String>,
         /// Whether this module is a known source filter (security risk)
         has_filter_risk: bool,
@@ -1469,6 +1477,28 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+    /// Build a `use` node for tests and manual fixtures (typed syntax derived from legacy fields).
+    #[must_use]
+    pub fn use_directive(module: String, args: Vec<String>, has_filter_risk: bool) -> Self {
+        let syntax =
+            crate::compile_directive_syntax::CompileDirectiveSyntax::from_legacy_module_and_args(
+                &module, &args,
+            );
+        let module_span = syntax.module_name_span();
+        Self::Use { module, module_span, syntax, args, has_filter_risk }
+    }
+
+    /// Build a `no` node for tests and manual fixtures.
+    #[must_use]
+    pub fn no_directive(module: String, args: Vec<String>, has_filter_risk: bool) -> Self {
+        let syntax =
+            crate::compile_directive_syntax::CompileDirectiveSyntax::from_legacy_module_and_args(
+                &module, &args,
+            );
+        let module_span = syntax.module_name_span();
+        Self::No { module, module_span, syntax, args, has_filter_risk }
+    }
+
     /// Get the name of this `NodeKind` as a static string.
     ///
     /// Useful for diagnostics, logging, and human-readable AST dumps.
@@ -2222,8 +2252,8 @@ mod tests {
                 negated: false,
             },
             NodeKind::Package { name: String::new(), name_span: loc, block: None },
-            NodeKind::Use { module: String::new(), args: vec![], has_filter_risk: false },
-            NodeKind::No { module: String::new(), args: vec![], has_filter_risk: false },
+            NodeKind::use_directive(String::new(), vec![], false),
+            NodeKind::no_directive(String::new(), vec![], false),
             NodeKind::PhaseBlock {
                 phase: String::new(),
                 phase_span: None,
