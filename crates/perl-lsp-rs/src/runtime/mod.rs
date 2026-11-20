@@ -31,6 +31,7 @@ mod lifecycle;
 mod metadata_invalidation;
 mod notebook;
 pub(crate) mod outbound;
+mod partial_result;
 #[allow(unused_imports)]
 use outbound::OutboundSink;
 pub(crate) mod parse_effect_contract;
