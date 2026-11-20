@@ -25,7 +25,7 @@ as `no_documented_lsp_surface` with tier `not_proven_unsupported`.
 | Codex Desktop | no documented custom-language-server surface; not proven |
 | Codex in the ChatGPT desktop app | plugins can bundle skills and MCP servers; any `perllsp` route needs a real host receipt first (#6961) |
 | Codex CLI | registers MCP servers, not LSP servers; see [Codex CLI setup](CODEX_CLI_SETUP.md) |
-| Codex IDE extension | plugins are unavailable under the current upstream contract |
+| Codex IDE extension | standalone skill + shared local MCP routes documented; exact-host proof blocked on #7825 / #6958 (#7826) |
 
 A third-party LSP-to-MCP bridge may provide compatibility on MCP-capable hosts.
 It is not bundled, supported, or verified by perl-lsp.
