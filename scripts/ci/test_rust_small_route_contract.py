@@ -32,6 +32,7 @@ from __future__ import annotations
 import copy
 import re
 import shlex
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -123,10 +124,13 @@ bash -eu -o pipefail -c '
 '''.strip().splitlines()
 
 
-def validate_proof_step(job_id: str, job: dict) -> None:
+def proof_step_name(job_id: str) -> str:
     name = "Run Rust small lane"
-    if job_id == "rust-small-fallback":
-        name += " (fallback)"
+    return name + " (fallback)" if job_id == "rust-small-fallback" else name
+
+
+def validate_proof_step(job_id: str, job: dict) -> None:
+    name = proof_step_name(job_id)
     steps = job.get("steps", [])
     if not isinstance(steps, list):
         raise AssertionError(f"{job_id} (field: proof-step) steps must be a YAML sequence")
@@ -355,13 +359,15 @@ CACHE_KEY_SUFFIX = "-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}"
 MAIN_SAVE = "${{ github.ref == 'refs/heads/main' }}"
 
 
-def validate_hosted_cache(job_id: str, steps: list[dict]) -> None:
+def validate_hosted_cache(job_id: str, workflow: dict, pinned_version: str) -> None:
     """Guard the two direct cache sites. The action pin is in the cache inventory."""
+    job = workflow["jobs"][job_id]
+    steps = job["steps"]
     caches = [
-        step for step in steps
-        if step.get("uses", "").split("@")[0].lower() in {
-            "swatinem/rust-cache", "actions/cache", "actions/cache/save", "actions/cache/restore"
-        }
+        step
+        for step in steps
+        if step.get("uses", "").split("@")[0].lower()
+        in {"swatinem/rust-cache", "actions/cache", "actions/cache/save", "actions/cache/restore"}
     ]
     if len(caches) != 1 or not re.fullmatch(
         r"Swatinem/rust-cache@[0-9a-f]{40}", caches[0]["uses"]
@@ -377,10 +383,27 @@ def validate_hosted_cache(job_id: str, steps: list[dict]) -> None:
 
     # A main ref can still check out another repository or a dispatch-supplied
     # revision. The current writer builds the implicit event checkout in place.
-    checkouts = [step for step in steps if step.get("uses", "").lower().startswith("actions/checkout@")]
-    if len(checkouts) != 1 or steps.index(checkouts[0]) > steps.index(cache):
-        raise AssertionError(f"{job_id} must check out the event tree before caching")
-    checkout = checkouts[0]
+    checkouts = [
+        step for step in steps if step.get("uses", "").lower().startswith("actions/checkout@")
+    ]
+    toolchains = [
+        step for step in steps if step.get("uses", "").startswith("dtolnay/rust-toolchain@")
+    ]
+    proofs = [step for step in steps if step.get("name") == proof_step_name(job_id)]
+    if len(checkouts) != 1 or len(toolchains) != 1 or len(proofs) != 1:
+        raise AssertionError(f"{job_id} needs one checkout, toolchain and proof step")
+    checkout, toolchain, proof = checkouts[0], toolchains[0], proofs[0]
+    if not steps.index(checkout) < steps.index(toolchain) < steps.index(cache) < steps.index(proof):
+        raise AssertionError(f"{job_id} must restore after toolchain setup and before proof")
+    job_version = job.get("env", {}).get("RUST_VERSION", workflow.get("env", {}).get("RUST_VERSION"))
+    if (
+        not re.fullmatch(r"dtolnay/rust-toolchain@[0-9a-f]{40}", toolchain["uses"])
+        or job_version != pinned_version
+        or toolchain.get("env", {}).get("RUST_VERSION", job_version) != pinned_version
+        or toolchain.get("with", {}).get("toolchain") != "${{ env.RUST_VERSION }}"
+        or "if" in toolchain
+    ):
+        raise AssertionError(f"{job_id} must install and cache the repository's pinned Rust version")
     if (
         not re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout["uses"])
         or "if" in checkout
@@ -393,6 +416,8 @@ class HostedCacheContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.workflow = yaml.load(load_workflow_text(), Loader=yaml.BaseLoader)
+        with (ROOT / "rust-toolchain.toml").open("rb") as toolchain:
+            cls.pinned_version = tomllib.load(toolchain)["toolchain"]["channel"]
 
     def test_hosted_cache_sites(self) -> None:
         # A ref-only save guard relies on the trigger context. In particular a
@@ -402,7 +427,7 @@ class HostedCacheContractTests(unittest.TestCase):
         )
         for job_id in HOSTED_CACHE_FAMILIES:
             with self.subTest(site=job_id):
-                validate_hosted_cache(job_id, self.workflow["jobs"][job_id]["steps"])
+                validate_hosted_cache(job_id, self.workflow, self.pinned_version)
 
     def test_hosted_cache_refuses_writer_or_family_drift_per_route(self) -> None:
         for job_id, family in HOSTED_CACHE_FAMILIES.items():
@@ -416,24 +441,45 @@ class HostedCacheContractTests(unittest.TestCase):
                 ("lockfile omitted", {"shared-key": family + "-${{ env.RUST_VERSION }}", "save-if": MAIN_SAVE}),
             ):
                 with self.subTest(site=job_id, mutation=label):
-                    steps = copy.deepcopy(self.workflow["jobs"][job_id]["steps"])
+                    workflow = copy.deepcopy(self.workflow)
+                    steps = workflow["jobs"][job_id]["steps"]
                     cache = next(
                         step for step in steps if step.get("uses", "").startswith("Swatinem/rust-cache@")
                     )
                     cache["with"] = override
                     with self.assertRaisesRegex(AssertionError, job_id):
-                        validate_hosted_cache(job_id, steps)
+                        validate_hosted_cache(job_id, workflow, self.pinned_version)
+
+    def test_restore_after_compilation_is_too_late(self) -> None:
+        for job_id in HOSTED_CACHE_FAMILIES:
+            with self.subTest(site=job_id):
+                workflow = copy.deepcopy(self.workflow)
+                steps = workflow["jobs"][job_id]["steps"]
+                cache = next(step for step in steps if step.get("uses", "").startswith("Swatinem/rust-cache@"))
+                steps.remove(cache)
+                steps.append(cache)
+                with self.assertRaisesRegex(AssertionError, "before proof"):
+                    validate_hosted_cache(job_id, workflow, self.pinned_version)
+
+    def test_dispatch_input_cannot_select_the_cached_toolchain(self) -> None:
+        for job_id in HOSTED_CACHE_FAMILIES:
+            with self.subTest(site=job_id):
+                workflow = copy.deepcopy(self.workflow)
+                workflow["jobs"][job_id]["env"]["RUST_VERSION"] = "${{ inputs.version }}"
+                with self.assertRaisesRegex(AssertionError, "pinned Rust version"):
+                    validate_hosted_cache(job_id, workflow, self.pinned_version)
 
     def test_main_dispatch_cannot_redirect_the_cache_checkout(self) -> None:
         for job_id in HOSTED_CACHE_FAMILIES:
             with self.subTest(site=job_id):
-                steps = copy.deepcopy(self.workflow["jobs"][job_id]["steps"])
+                workflow = copy.deepcopy(self.workflow)
+                steps = workflow["jobs"][job_id]["steps"]
                 checkout = next(
                     step for step in steps if step.get("uses", "").startswith("actions/checkout@")
                 )
                 checkout["with"]["ref"] = "${{ inputs.candidate }}"
                 with self.assertRaisesRegex(AssertionError, job_id):
-                    validate_hosted_cache(job_id, steps)
+                    validate_hosted_cache(job_id, workflow, self.pinned_version)
 
 
 class RustSmallRouteContractTests(unittest.TestCase):
