@@ -1025,13 +1025,11 @@ def _repository_root_for_execution(
     *,
     cwd: Path | None = None,
 ) -> Path:
-    """Find the checkout root the xtask gate runner will use.
+    """Select the checkout for both path preflight and xtask execution.
 
-    Xt task resolves its project root from the compiled workspace rather than
-    the caller's current directory.  The shard mirrors that identity by
-    locating the checkout marker from the policy/xtask ancestry before
-    preflight, so a shard launched from a subdirectory cannot validate paths
-    against the wrong root.
+    Pass this root explicitly to xtask: a transported binary otherwise defaults
+    to its compiled source root, which need not be the checkout validated here.
+    This selects the execution location, not the binary's source provenance.
     """
     if gate_policy.is_absolute():
         resolved_policy = gate_policy.resolve()
@@ -1064,6 +1062,20 @@ def _repository_root_for_execution(
     raise ValueError(
         "unable to derive repository root for gate preflight from xtask/policy paths"
     )
+
+
+def _canonical_execution_root(candidate: Path) -> Path:
+    """Match xtask's --worktree-root Git-toplevel selection before preflight."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            check=True, capture_output=True, text=True, encoding="utf-8",
+        )
+        root = Path(result.stdout.removesuffix("\n")).resolve(strict=True)
+        candidate.resolve(strict=True).relative_to(root)
+    except (OSError, subprocess.CalledProcessError, UnicodeError, ValueError) as error:
+        raise ValueError("unable to establish Git worktree root for gate execution") from error
+    return root
 
 
 def _path_from_repository_root(path: Path, root: Path) -> Path:
@@ -1450,6 +1462,7 @@ class ShardRunner:
         self,
         *,
         xtask: Path,
+        worktree_root: Path,
         gate_policy: Path,
         receipt_dir: Path,
         summary_path: Path,
@@ -1460,6 +1473,7 @@ class ShardRunner:
         clean_restored_receipts: bool = False,
     ) -> None:
         self.xtask = xtask
+        self.worktree_root = worktree_root
         self.gate_policy = gate_policy
         self.receipt_dir = receipt_dir
         self.summary_path = summary_path
@@ -1476,6 +1490,8 @@ class ShardRunner:
     def _command(self, gate: str) -> list[str]:
         return [
             str(self.xtask),
+            "--worktree-root",
+            str(self.worktree_root),
             "gates",
             "--gate",
             gate,
@@ -1487,7 +1503,8 @@ class ShardRunner:
         ]
 
     def _reproduce(self, gate: str) -> str:
-        return " ".join(self._command(gate))
+        # Failure digests render this as a bash reproduction, not raw argv.
+        return shlex.join(self._command(gate))
 
     def _receipt_path(self, gate: str) -> Path:
         return self.receipt_dir / f"{gate}.json"
@@ -1812,7 +1829,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         validate_args(args)
-        repository_root = _repository_root_for_execution(args.xtask, args.gate_policy)
+        repository_root = _canonical_execution_root(
+            _repository_root_for_execution(args.xtask, args.gate_policy)
+        )
         xtask = _path_from_repository_root(args.xtask, repository_root)
         receipt_dir = _path_from_repository_root(args.receipt_dir, repository_root)
         summary_path = _path_from_repository_root(args.summary_path, repository_root)
@@ -1838,6 +1857,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(error))
     runner = ShardRunner(
         xtask=xtask,
+        worktree_root=repository_root,
         gate_policy=gate_policy,
         receipt_dir=receipt_dir,
         summary_path=summary_path,
