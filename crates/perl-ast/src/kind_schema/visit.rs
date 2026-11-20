@@ -12,6 +12,7 @@
 
 use super::{ChildFieldSpec, KindStructuralRow, NODE_KIND_STRUCTURAL_REGISTRY};
 use crate::{FieldId, Node, NodeKind};
+use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 
 /// Look up the structural row for a stable [`crate::NodeKind::kind_name`].
@@ -323,6 +324,24 @@ macro_rules! visit_kind_children {
             | NodeKind::UnknownRest => {}
         }
     }};
+}
+
+/// Count direct-child field emissions for one `NodeKind` without building a [`Node`].
+///
+/// Used by checked construction to avoid cloning descendant trees during validation.
+#[must_use]
+pub fn field_emission_counts(kind: &NodeKind) -> BTreeMap<&'static str, usize> {
+    let mut counts = BTreeMap::new();
+    macro_rules! emit {
+        ($field:expr, $child:expr) => {{
+            // Touch `$child` so shared `visit_kind_children!` bindings stay used under `-D warnings`.
+            let _ = &$child;
+            let name = FieldId::name($field);
+            *counts.entry(name).or_default() += 1;
+        }};
+    }
+    visit_kind_children!(kind, emit);
+    counts
 }
 
 impl Node {

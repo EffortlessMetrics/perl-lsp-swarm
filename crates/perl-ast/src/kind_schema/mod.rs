@@ -60,7 +60,9 @@ pub use types::{
     ChildFieldSpec, FieldCardinality, GrammarNameSpec, KindBody, KindStructuralRow,
     SchemaCompatibility,
 };
-pub use visit::{registered_child_fields, registry_field_id_set, structural_row};
+pub use visit::{
+    field_emission_counts, registered_child_fields, registry_field_id_set, structural_row,
+};
 
 use crate::{FieldId, Node, NodeKind, node_kind_fixtures};
 
