@@ -519,6 +519,25 @@ fn expired_paths_in_tree(
 }
 
 fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> Result<()> {
+    validate_subject_workflow_with_trusted_contract(
+        root,
+        base_sha,
+        subject_sha,
+        PREAPPROVED_SUBJECT_CONTRACT_VERSION,
+        PREAPPROVED_QUEUE_WORKFLOW,
+    )
+}
+
+// The caller supplies compiled trusted authority, never candidate-derived text.
+// Keeping this seam explicit lets tests exercise a separately installed next
+// evaluator generation without changing the live workflow in the precursor.
+fn validate_subject_workflow_with_trusted_contract(
+    root: &Path,
+    base_sha: &str,
+    subject_sha: &str,
+    preapproved_version: u64,
+    preapproved_workflow: &str,
+) -> Result<()> {
     let base_listing =
         git_object(root, &["ls-tree", base_sha, "--", ".github/workflows/non-rust-policy.yml"])?;
     let listing =
@@ -556,11 +575,23 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             );
         }
     }
-    if !subject_matches_base && subject_version == PREAPPROVED_SUBJECT_CONTRACT_VERSION {
+    if subject_matches_base && text == REVIEWED_QUEUE_V10_WORKFLOW {
+        return Ok(());
+    }
+    if !subject_matches_base && subject_version == preapproved_version {
         // Preapproved contract upgrades are strict-only: in-family shape scan
         // applies only when the subject is not on the reviewed v10 path.
-        validate_preapproved_subject_workflow(&text)?;
+        if text != preapproved_workflow {
+            bail!(
+                "preapproved v{preapproved_version} workflow differs from the reviewed queue-only protected-main contract"
+            );
+        }
         return Ok(());
+    }
+    if subject_version >= 10 {
+        bail!(
+            "unreviewed queue workflow generation must not fall back to the legacy shape scanner"
+        );
     }
     scan_trusted_workflow_shape(&text)
 }
@@ -861,319 +892,428 @@ fn scan_trusted_workflow_shape(text: &str) -> Result<()> {
 /// closed when `main` moves without retargeting this constant.
 pub(crate) const PREAPPROVED_SUBJECT_CONTRACT_VERSION: u64 = 10;
 
-/// Canonical `with:` mapping of the preapproved checkout step. `fetch-depth: 0`
-/// keeps full history so the materializer's `git merge-tree --write-tree` can
-/// resolve the merge base; an exact-SHA fetch alone leaves it unavailable in a
-/// shallow governed checkout.
-const PREAPPROVED_CHECKOUT_WITH: &str =
-    "ref: ${{ env.EVALUATOR_SHA }}\nfetch-depth: 0\npersist-credentials: false\n";
+/// Reviewed queue-only protected-main evaluator contract. This is compiled into
+/// the trusted evaluator, never loaded from the candidate tree. Exact text
+/// equality deliberately closes every YAML key, action pin, script, environment,
+/// and control-flow surface, including fields unknown to this validator.
+/// Land this checker while the live workflow remains v9, then deploy this exact
+/// v10 workflow separately. Any change, even formatting, requires review here.
+const REVIEWED_QUEUE_V10_WORKFLOW: &str = r###"# contract-version: 10
+name: Non-Rust policy
 
-/// Canonical `with:` mapping of the preapproved receipt upload step. Both
-/// receipts live under `target/policy/`; a missing directory is an error so an
-/// approved workflow cannot silently drop the evidence it exists to publish.
-const PREAPPROVED_UPLOAD_WITH: &str = "name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}\npath: target/policy/\nif-no-files-found: error\nretention-days: 14\n";
+on:
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        required: true
+        type: string
+      subject_sha:
+        required: true
+        type: string
 
-fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
-    let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(text).with_context(|| {
-        format!("parsing preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow YAML")
-    })?;
-    let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
-    if yaml
-        .as_mapping()
-        .and_then(|mapping| mapping.get(key("name")))
-        .and_then(serde_yaml_ng::Value::as_str)
-        != Some("Non-Rust policy")
-    {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must use the canonical name"
-        );
-    }
-    let on = yaml
-        .as_mapping()
-        .and_then(|mapping| mapping.get(key("on")))
-        .and_then(serde_yaml_ng::Value::as_mapping)
-        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define structured triggers"))?;
-    let expected_on: serde_yaml_ng::Value = serde_yaml_ng::from_str(
-        "pull_request_target:\n  branches: [main, master]\n  types: [opened, synchronize, reopened, ready_for_review]\nmerge_group: {}\npush:\n  branches: [main, master]\nworkflow_dispatch:\n  inputs:\n    base_sha:\n      required: true\n      type: string\n    subject_sha:\n      required: true\n      type: string\n",
-    )?;
-    if on
-        != expected_on
-            .as_mapping()
-            .ok_or_else(|| eyre!("canonical trigger fixture is not a mapping"))?
-    {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow trigger configuration is not canonical"
-        );
-    }
-    let permissions = yaml
-        .as_mapping()
-        .and_then(|mapping| mapping.get(key("permissions")))
-        .and_then(serde_yaml_ng::Value::as_mapping)
-        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define structured permissions"))?;
-    if permissions.len() != 1
-        || permissions.get(key("contents")).and_then(serde_yaml_ng::Value::as_str) != Some("read")
-    {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must grant only contents: read"
-        );
-    }
-    let jobs = yaml
-        .as_mapping()
-        .and_then(|mapping| mapping.get(key("jobs")))
-        .and_then(serde_yaml_ng::Value::as_mapping)
-        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define jobs mapping"))?;
-    if jobs.len() != 1 {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define only the exact-tree job"
-        );
-    }
-    let job = jobs
-        .get(key("exact-tree"))
-        .and_then(serde_yaml_ng::Value::as_mapping)
-        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define exact-tree job"))?;
-    if job.get(key("name")).and_then(serde_yaml_ng::Value::as_str)
-        != Some("Non-Rust policy exact-tree")
-    {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must use the canonical name"
-        );
-    }
-    if job.get(key("timeout-minutes")).and_then(serde_yaml_ng::Value::as_i64) != Some(10) {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must use the canonical timeout"
-        );
-    }
-    let allowed_job_keys = ["name", "runs-on", "timeout-minutes", "env", "steps"];
-    if job.keys().any(|key| key.as_str().is_none_or(|name| !allowed_job_keys.contains(&name))) {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job contains an unapproved control field"
-        );
-    }
-    let allowed_step_keys = ["name", "id", "uses", "run", "with", "if", "continue-on-error"];
-    for step in
-        job.get(key("steps")).and_then(serde_yaml_ng::Value::as_sequence).into_iter().flatten()
-    {
-        let map = step.as_mapping().ok_or_else(|| {
-            eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} steps must be mappings")
-        })?;
-        if map.keys().any(|key| key.as_str().is_none_or(|name| !allowed_step_keys.contains(&name)))
-        {
-            bail!(
-                "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} step contains an unapproved control field"
-            );
-        }
-    }
-    if job.get(key("runs-on")).and_then(serde_yaml_ng::Value::as_str) != Some("ubuntu-24.04") {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must use ubuntu-24.04"
-        );
-    }
-    let env = job.get(key("env")).and_then(serde_yaml_ng::Value::as_mapping).ok_or_else(|| {
-        eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must define env")
-    })?;
-    let expected_env = [
-        (
-            "BASE_SHA",
-            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}",
-        ),
-        (
-            "SUBJECT_INPUT_SHA",
-            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}",
-        ),
-        (
-            "PR_HEAD_SHA",
-            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}",
-        ),
-        (
-            "PR_NUMBER",
-            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}",
-        ),
-        (
-            "EVALUATOR_SHA",
-            "${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}",
-        ),
-    ];
-    for (variable, expected) in expected_env {
-        let actual = env
-            .get(key(variable))
-            .and_then(serde_yaml_ng::Value::as_str)
-            .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow identity {variable} must be a string"))?;
-        if actual != expected {
-            bail!(
-                "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow identity {variable} is not canonical"
-            );
-        }
-    }
-    // Job env reaches every trusted `cargo run` and `git` invocation, so an
-    // extra key (`GIT_CONFIG_*`, `RUSTFLAGS`, `CARGO_*`, ...) is an injection
-    // surface, not a harmless addition.
-    if env.len() != expected_env.len() {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job env contains an unapproved variable"
-        );
-    }
-    let steps = job
-        .get(key("steps"))
-        .and_then(serde_yaml_ng::Value::as_sequence)
-        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must define steps"))?;
-    if steps.len() != 5 {
-        bail!(
-            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must contain exactly five steps"
-        );
-    }
-    let step_run = |step: &serde_yaml_ng::Value| {
-        step.as_mapping()
-            .and_then(|map| map.get(key("run")))
-            .and_then(serde_yaml_ng::Value::as_str)
-            .map(str::trim)
-            .map(str::to_owned)
-    };
-    let step_name = |step: &serde_yaml_ng::Value| {
-        step.as_mapping()
-            .and_then(|map| map.get(key("name")))
-            .and_then(serde_yaml_ng::Value::as_str)
-            .map(str::to_owned)
-    };
-    let step_id = |step: &serde_yaml_ng::Value| {
-        step.as_mapping()
-            .and_then(|map| map.get(key("id")))
-            .and_then(serde_yaml_ng::Value::as_str)
-            .map(str::to_owned)
-    };
-    let step_with = |step: &serde_yaml_ng::Value| {
-        step.as_mapping().and_then(|map| map.get(key("with"))).cloned()
-    };
-    let canonical_with = |fixture: &str| -> Result<serde_yaml_ng::Value> {
-        serde_yaml_ng::from_str(fixture).context("canonical with fixture is not YAML")
-    };
-    let checkout = steps
-        .first()
-        .ok_or_else(|| eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} checkout step is missing"))?;
-    let trusted_checkout = checkout
-        .as_mapping()
-        .and_then(|map| map.get(key("uses")))
-        .and_then(serde_yaml_ng::Value::as_str)
-        .is_some_and(|uses| uses == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
-        && step_with(checkout).as_ref() == Some(&canonical_with(PREAPPROVED_CHECKOUT_WITH)?);
-    if !trusted_checkout {
-        bail!(
-            "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} must checkout the trusted evaluator SHA first with exactly the canonical inputs"
-        );
-    }
-    let materializer = steps.get(1).ok_or_else(|| {
-        eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} materializer step is missing")
-    })?;
-    let materializer_run = step_run(materializer);
-    if step_name(materializer).as_deref() != Some("Materialize trusted PR subject")
-        || step_id(materializer).as_deref() != Some("materialize")
-        || materializer_run.as_deref()
-            != Some(
-                "cargo run --locked -p xtask -- ci-subject-materialize --event-name \"$GITHUB_EVENT_NAME\" --event-path \"$GITHUB_EVENT_PATH\" --repository \"$GITHUB_REPOSITORY\" --github-sha \"$SUBJECT_INPUT_SHA\" --base-sha \"$BASE_SHA\" --head-sha \"$SUBJECT_INPUT_SHA\" --receipt target/policy/ci-subject-materialization.json --env-file \"$GITHUB_ENV\"",
-            )
-        || materializer
-            .as_mapping()
-            .and_then(|map| map.get(key("if")))
-            .is_some_and(|condition| condition.as_str() != Some("always()"))
-        || materializer
-            .as_mapping()
-            .and_then(|map| map.get(key("continue-on-error")))
-            .and_then(serde_yaml_ng::Value::as_bool)
-            != Some(true)
-    {
-        bail!(
-            "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} materializer must be the exact trusted invocation"
-        );
-    }
-    let evaluator = steps.get(2).ok_or_else(|| {
-        eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} evaluator step is missing")
-    })?;
-    let expected_evaluator = "cargo run --locked -p xtask -- non-rust exact-tree --base-sha \"$BASE_SHA\" --subject-sha \"$SUBJECT_SHA\" ${PR_HEAD_SHA:+--pr-head-sha \"$PR_HEAD_SHA\"} --event-name \"$GITHUB_EVENT_NAME\" --repository \"$GITHUB_REPOSITORY\" --receipt target/policy/non-rust-policy-exact-tree.json";
-    let evaluator_run = step_run(evaluator);
-    if step_name(evaluator).as_deref() != Some("Run trusted exact-tree evaluator")
-        || step_id(evaluator).as_deref() != Some("evaluate")
-        || evaluator_run.as_deref() != Some(expected_evaluator)
-        || evaluator
-            .as_mapping()
-            .and_then(|map| map.get(key("if")))
-            .and_then(serde_yaml_ng::Value::as_str)
-            .is_none_or(|condition| condition.trim() != "steps.materialize.outcome == 'success'")
-        || evaluator
-            .as_mapping()
-            .and_then(|map| map.get(key("continue-on-error")))
-            .and_then(serde_yaml_ng::Value::as_bool)
-            != Some(true)
-    {
-        bail!(
-            "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} evaluator must be the exact trusted invocation"
-        );
-    }
-    let upload = steps.get(3).ok_or_else(|| {
-        eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} receipt upload step is missing")
-    })?;
-    if !upload
-        .as_mapping()
-        .and_then(|map| map.get(key("uses")))
-        .and_then(serde_yaml_ng::Value::as_str)
-        .is_some_and(|uses| {
-            uses == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-        })
-        || upload
-            .as_mapping()
-            .and_then(|map| map.get(key("if")))
-            .and_then(serde_yaml_ng::Value::as_str)
-            .is_none_or(|condition| condition.trim() != "always()")
-        || upload
-            .as_mapping()
-            .and_then(|map| map.get(key("continue-on-error")))
-            .is_some_and(|value| value != &serde_yaml_ng::Value::Bool(false))
-    {
-        bail!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} must always upload receipts");
-    }
-    if step_with(upload).as_ref() != Some(&canonical_with(PREAPPROVED_UPLOAD_WITH)?) {
-        bail!(
-            "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} receipt upload must use exactly the canonical artifact inputs"
-        );
-    }
-    let propagate = steps.get(4).ok_or_else(|| {
-        eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} propagation step is missing")
-    })?;
-    if step_name(propagate).as_deref() != Some("Propagate subject or policy failure")
-        || step_run(propagate).as_deref() != Some("exit 1")
-        || propagate
-            .as_mapping()
-            .and_then(|map| map.get(key("if")))
-            .and_then(serde_yaml_ng::Value::as_str)
-            .is_none_or(|condition| condition.trim() != "always() && (steps.materialize.outcome == 'failure' || steps.evaluate.outcome == 'failure')")
-        || propagate
-            .as_mapping()
-            .and_then(|map| map.get(key("continue-on-error")))
-            .is_some_and(|value| value != &serde_yaml_ng::Value::Bool(false))
-    {
-        bail!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} must propagate retained materialization or evaluator failure");
-    }
-    for step in steps {
-        if let Some(uses) = step
-            .as_mapping()
-            .and_then(|map| map.get(key("uses")))
-            .and_then(serde_yaml_ng::Value::as_str)
-        {
-            let approved = [
-                "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-                "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-            ];
-            if !approved.contains(&uses) {
-                bail!(
-                    "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} action is not the approved immutable action: {uses}"
-                );
+permissions:
+  contents: read
+
+jobs:
+  exact-tree:
+    name: Non-Rust policy exact-tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
+      SUBJECT_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
+      PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}
+    steps:
+      # B/G are subjects only; executable authority is independently read main T.
+      - name: Resolve protected main evaluator generation
+        id: evaluator
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
+            const fullName = owner + '/' + repo;
+            const eventRepo = context.payload.repository;
+            if (!['merge_group', 'workflow_dispatch'].includes(context.eventName) ||
+                (context.eventName === 'merge_group' && context.payload.action !== 'checks_requested') ||
+                context.repo.owner !== owner || context.repo.repo !== repo ||
+                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
+                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
+                (context.eventName === 'merge_group' && context.payload.merge_group?.base_ref !== 'refs/heads/main') ||
+                (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/main')) {
+              throw new Error('NOT_PROVEN: native repository/main identity required');
             }
-        }
-        if let Some(run) = step_run(step)
-            && run != materializer_run.clone().unwrap_or_default()
-            && run != evaluator_run.clone().unwrap_or_default()
-            && run != "exit 1"
-        {
-            bail!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} contains an unapproved executable step");
-        }
+            const {data: repository} = await github.rest.repos.get({owner, repo});
+            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
+            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
+            const sha = protectedBranch.commit?.sha;
+            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
+                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
+                protectedBranch.name !== branch || protectedBranch.protected !== true ||
+                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
+                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
+              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
+            }
+            core.setOutput('sha', sha);
+      - name: Checkout trusted evaluator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.evaluator.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind immutable evaluator identity
+        env:
+          EVALUATOR_SHA: ${{ steps.evaluator.outputs.sha }}
+        run: echo "EVALUATOR_SHA=$EVALUATOR_SHA" >> "$GITHUB_ENV"
+
+      - name: Fetch and bind subject Git object
+        id: bind
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Every binding phase records its failure reason through fail_bind.
+          # Outputs are emitted only on success; on failure the same GITHUB_OUTPUT
+          # line is rewritten with an empty subject_sha and a non-empty
+          # bind_failure_stage plus a stable artifact_id so downstream steps and
+          # the receipt writer can distinguish failure stages from each other.
+
+          fail_bind() {
+            local stage="$1"; shift
+            local artifact_id="bind-failure-${stage}-pr-${PR_NUMBER:-manual}-head-${PR_HEAD_SHA:-none}"
+            printf '::error::bind-%s: %s\n' "$stage" "$*" >&2
+            {
+              echo "subject_sha="
+              echo "bind_failure_stage=$stage"
+              echo "artifact_id=$artifact_id"
+            } >> "$GITHUB_OUTPUT"
+            echo "BIND_FAILURE_STAGE=$stage" >> "$GITHUB_ENV"
+            exit 1
+          }
+
+          if [ -n "$PR_HEAD_SHA" ]; then
+            git fetch --no-tags origin "+refs/pull/$PR_NUMBER/head:refs/remotes/origin/non-rust-policy-pr-head" \
+              || fail_bind "pr-ref-fetch" "fetch refs/pull/$PR_NUMBER/head failed for PR head=$PR_HEAD_SHA"
+            test "$(git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit})" = "$PR_HEAD_SHA" \
+              || fail_bind "event-head-mismatch" "fetched refs/remotes/origin/non-rust-policy-pr-head disagrees with event PR head=$PR_HEAD_SHA"
+
+            # --write-tree prints the result tree even when the merge itself
+            # conflicts (exit 1 with the tree OID on stdout line 1), so a
+            # failed merge-tree that still yields a valid tree is a content
+            # conflict, not a construction error. Anything else is a
+            # construction failure.
+            set +e
+            merge_tree_raw="$(git merge-tree --write-tree "$BASE_SHA" "$PR_HEAD_SHA" 2>/dev/null)"
+            merge_status=$?
+            set -e
+            merge_tree="$(printf '%s\n' "$merge_tree_raw" | head -n 1)"
+            if [ "$merge_status" -ne 0 ]; then
+              if [ -n "$merge_tree" ] \
+                && git rev-parse --verify --quiet "$merge_tree^{tree}" >/dev/null; then
+                fail_bind "subject-merge-conflict" "exact subject base=$BASE_SHA and head=$PR_HEAD_SHA conflict"
+              fi
+              fail_bind "merge-tree-construction" "git merge-tree --write-tree failed for base=$BASE_SHA head=$PR_HEAD_SHA"
+            fi
+            [ "$(git rev-parse "$merge_tree^{tree}")" = "$merge_tree" ] \
+              || fail_bind "merge-tree-tree-parse" "merge-tree OID=$merge_tree did not resolve to a tree"
+
+            SUBJECT_SHA="$(
+              GIT_AUTHOR_NAME=non-rust-policy \
+              GIT_AUTHOR_EMAIL=non-rust-policy@localhost \
+              GIT_AUTHOR_DATE=2000-01-01T00:00:00Z \
+              GIT_COMMITTER_NAME=non-rust-policy \
+              GIT_COMMITTER_EMAIL=non-rust-policy@localhost \
+              GIT_COMMITTER_DATE=2000-01-01T00:00:00Z \
+              git commit-tree "$merge_tree" -p "$BASE_SHA" -p "$PR_HEAD_SHA" \
+                -m "non-rust policy exact subject"
+            )" || fail_bind "synthetic-commit-creation" "commit-tree failed for merge_tree=$merge_tree base=$BASE_SHA head=$PR_HEAD_SHA"
+          else
+            git fetch --no-tags origin "$BASE_SHA" "$SUBJECT_SHA" \
+              || fail_bind "subject-fetch" "fetch of workflow_dispatch subject=$SUBJECT_SHA failed"
+          fi
+          git update-ref refs/heads/non-rust-policy-subject "$SUBJECT_SHA" \
+            || fail_bind "ref-update" "update-ref failed for subject=$SUBJECT_SHA"
+          [ "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA" ] \
+            || fail_bind "parent-verification" "BASE_SHA=$BASE_SHA is not a commit"
+          [ "$(git rev-parse "$SUBJECT_SHA^{commit}")" = "$SUBJECT_SHA" ] \
+            || fail_bind "subject-verification" "SUBJECT_SHA=$SUBJECT_SHA is not a commit"
+          [ "$(git rev-parse refs/heads/non-rust-policy-subject^{commit})" = "$SUBJECT_SHA" ] \
+            || fail_bind "ref-verification" "non-rust-policy-subject ref does not point to subject=$SUBJECT_SHA"
+          if [ -n "$PR_HEAD_SHA" ]; then
+            git merge-base --is-ancestor "$PR_HEAD_SHA" "$SUBJECT_SHA" \
+              || fail_bind "ancestor-verification" "PR head=$PR_HEAD_SHA is not an ancestor of subject=$SUBJECT_SHA"
+            [ "$(git rev-parse "$SUBJECT_SHA^1")" = "$BASE_SHA" ] \
+              || fail_bind "parent-verification" "subject first parent != BASE_SHA=$BASE_SHA"
+            [ "$(git rev-parse "$SUBJECT_SHA^2")" = "$PR_HEAD_SHA" ] \
+              || fail_bind "parent-verification" "subject second parent != PR_HEAD_SHA=$PR_HEAD_SHA"
+            [ "$(git rev-parse "$SUBJECT_SHA^{tree}")" = "$merge_tree" ] \
+              || fail_bind "tree-verification" "subject tree != merge_tree=$merge_tree"
+          fi
+          echo "subject_sha=$SUBJECT_SHA" >> "$GITHUB_OUTPUT"
+          echo "bind_failure_stage=" >> "$GITHUB_OUTPUT"
+          echo "artifact_id=$SUBJECT_SHA" >> "$GITHUB_OUTPUT"
+          echo "SUBJECT_SHA=$SUBJECT_SHA" >> "$GITHUB_ENV"
+
+      - name: Verify trusted workflow contract
+        id: verify-trusted-workflow-contract
+        if: steps.bind.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This is availability only, not compilation or historical-age proof.
+          echo "failure_stage=evaluator-availability" >> "$GITHUB_OUTPUT"
+          missing=()
+          for required in .github/workflows/non-rust-policy.yml Cargo.toml Cargo.lock xtask/Cargo.toml xtask/src/main.rs xtask/src/tasks/file_policy.rs; do
+            if [ ! -f "$required" ]; then
+              missing+=("$required")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf '::error::evaluator-availability: pre-bootstrap or incomplete trusted evaluator; base=%s evaluator=%s subject=%s; missing inputs: %s. Inventory was not evaluated. Obtain a reviewed base containing the evaluator and verify the next event selects it; an unchanged rerun is not recovery.\n' "$BASE_SHA" "$EVALUATOR_SHA" "$SUBJECT_SHA" "${missing[*]}" >&2
+            exit 1
+          fi
+          echo "failure_stage=trusted-workflow-contract" >> "$GITHUB_OUTPUT"
+          workflow=.github/workflows/non-rust-policy.yml
+          # T is the independently resolved protected-main executable generation.
+          # During bootstrap its live workflow is still v9; do not require it to
+          # have the candidate carrier's operational shape. The trusted compiled
+          # checker below validates the candidate contract, not candidate code.
+          # Inspect executable run bodies only.  Event metadata is expected in
+          # trusted environment declarations, while direct interpolation in a
+          # command would allow candidate-controlled code or refs to reach the
+          # evaluator.  Keeping the pattern in a variable also prevents this
+          # guard from matching its own run text.
+          python3 - "$workflow" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          run_bodies = []
+          index = 0
+          while index < len(lines):
+              line = lines[index]
+              match = re.match(r"^(?P<indent>\s*)run:\s?(?P<value>.*)$", line)
+              if not match:
+                  index += 1
+                  continue
+              key_indent = len(match.group("indent"))
+              step_name = ""
+              for prior in reversed(lines[:index]):
+                  prior_indent = len(prior) - len(prior.lstrip(" "))
+                  if prior_indent < key_indent and prior.lstrip().startswith("- name:"):
+                      step_name = prior.split(":", 1)[1].strip()
+                      break
+              value = match.group("value").strip()
+              if value.startswith(("|", ">")):
+                  header = value[1:]
+                  explicit_indent = next(
+                      (int(char) for char in header if char.isdigit()), None
+                  )
+                  content_indent = None
+                  if explicit_indent is not None:
+                      content_indent = key_indent + explicit_indent
+                  body_lines = []
+                  cursor = index + 1
+                  while cursor < len(lines):
+                      candidate = lines[cursor]
+                      candidate_indent = len(candidate) - len(candidate.lstrip(" "))
+                      if candidate.strip() and candidate_indent <= key_indent:
+                          break
+                      if content_indent is None and candidate.strip() and candidate_indent > key_indent:
+                          content_indent = candidate_indent
+                      body_lines.append(candidate)
+                      cursor += 1
+                  content_indent = content_indent or (key_indent + 1)
+                  normalized = [
+                      item[content_indent:] if len(item) >= content_indent else ""
+                      for item in body_lines
+                  ]
+                  if value.startswith(">"):
+                      body = " ".join(item.strip() for item in normalized)
+                  else:
+                      body = "\n".join(normalized)
+                  run_bodies.append((step_name, body))
+                  index = cursor
+                  continue
+              run_bodies.append((step_name, value))
+              index += 1
+
+          forbidden = re.compile(
+              r"(?:\$\{\{\s*)?github\.event\.pull_request\.(?:head(?:\.sha)?|merge_commit_sha)"
+          )
+          offenders = [
+              (name, body)
+              for name, body in run_bodies
+              if name != "Verify trusted workflow contract" and forbidden.search(body)
+          ]
+          if offenders:
+              raise SystemExit("trusted run body interpolates pull-request event data")
+          PY
+      - name: Write pre-evaluation failure receipt
+        if: always() && (steps.bind.outcome == 'failure' || steps.verify-trusted-workflow-contract.outcome == 'failure')
+        shell: bash
+        env:
+          BIND_ERROR: ${{ steps.bind.outcome }}
+          BIND_FAILURE_STAGE: ${{ steps.bind.outputs.bind_failure_stage }}
+          GUARD_FAILURE_STAGE: ${{ steps.verify-trusted-workflow-contract.outputs.failure_stage }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/policy
+          python3 - <<'PY'
+          import json, os
+          if os.environ.get("BIND_ERROR") == "failure":
+              bind_stage = os.environ.get("BIND_FAILURE_STAGE") or ""
+              stage = f"identity-binding-{bind_stage}" if bind_stage else "identity-binding"
+              error = (
+                  f"subject/base Git-object binding failed during phase {bind_stage}; inventory was not evaluated"
+                  if bind_stage
+                  else "subject/base Git-object binding failed; inventory was not evaluated"
+              )
+          else:
+              stage = os.environ.get("GUARD_FAILURE_STAGE") or "trusted-workflow-contract"
+              error = "trusted evaluator unavailable or invalid; inventory was not evaluated"
+          receipt = {
+              "schema_version": 2,
+              "event_name": os.environ.get("GITHUB_EVENT_NAME"),
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "base_sha": os.environ.get("BASE_SHA", ""),
+              "subject_sha": os.environ.get("SUBJECT_SHA", ""),
+              "pr_head_sha": os.environ.get("PR_HEAD_SHA") or None,
+              "base_tree_sha": None,
+              "subject_tree_sha": None,
+              "base_allowlist_blob_sha": None,
+              "subject_allowlist_blob_sha": None,
+              "base_unclassified_count": 0,
+              "subject_unclassified_count": 0,
+              "new_unclassified_paths": [],
+              "outcome": "fail",
+              "failure_stage": stage,
+              "error": error,
+              "evaluation_date": "",
+              "evaluator_commit": os.environ.get("EVALUATOR_SHA") or None,
+              "evaluator_tree": None,
+              "inventory_markdown_path": None,
+              "inventory_markdown_size": None,
+              "inventory_markdown_sha256": None,
+              "inventory_json_path": None,
+              "inventory_json_size": None,
+              "inventory_json_sha256": None,
+          }
+          with open("target/policy/non-rust-policy-exact-tree.json", "w", encoding="utf-8") as handle:
+              json.dump(receipt, handle, indent=2, sort_keys=True)
+          PY
+
+      - name: Revalidate protected evaluator before execution
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
+            const fullName = owner + '/' + repo;
+            const eventRepo = context.payload.repository;
+            if (!['merge_group', 'workflow_dispatch'].includes(context.eventName) ||
+                (context.eventName === 'merge_group' && context.payload.action !== 'checks_requested') ||
+                context.repo.owner !== owner || context.repo.repo !== repo ||
+                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
+                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
+                (context.eventName === 'merge_group' && context.payload.merge_group?.base_ref !== 'refs/heads/main') ||
+                (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/main')) {
+              throw new Error('NOT_PROVEN: native repository/main identity required');
+            }
+            const {data: repository} = await github.rest.repos.get({owner, repo});
+            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
+            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
+            const sha = protectedBranch.commit?.sha;
+            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
+                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
+                protectedBranch.name !== branch || protectedBranch.protected !== true ||
+                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
+                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
+              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
+            }
+            if (sha !== process.env.EVALUATOR_SHA) {
+              throw new Error('NOT_PROVEN: protected main evaluator generation changed');
+            }
+            const {execFileSync} = require('node:child_process');
+            const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+            Object.assign(env, {GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+              GIT_CONFIG_SYSTEM: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1'});
+            const head = execFileSync('git', ['rev-parse', 'HEAD'], {env, encoding: 'utf8'}).trim();
+            const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {env, encoding: 'utf8'}).trim();
+            if (head !== sha || dirty) {
+              throw new Error('NOT_PROVEN: evaluator checkout custody differs from protected T');
+            }
+
+      - name: Run trusted exact-tree evaluator
+        if: steps.bind.outcome == 'success'
+        run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json
+
+      - name: Revalidate protected evaluator after execution
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
+            const fullName = owner + '/' + repo;
+            const eventRepo = context.payload.repository;
+            if (!['merge_group', 'workflow_dispatch'].includes(context.eventName) ||
+                (context.eventName === 'merge_group' && context.payload.action !== 'checks_requested') ||
+                context.repo.owner !== owner || context.repo.repo !== repo ||
+                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
+                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
+                (context.eventName === 'merge_group' && context.payload.merge_group?.base_ref !== 'refs/heads/main') ||
+                (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/main')) {
+              throw new Error('NOT_PROVEN: native repository/main identity required');
+            }
+            const {data: repository} = await github.rest.repos.get({owner, repo});
+            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
+            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
+            const sha = protectedBranch.commit?.sha;
+            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
+                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
+                protectedBranch.name !== branch || protectedBranch.protected !== true ||
+                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
+                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
+              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
+            }
+            if (sha !== process.env.EVALUATOR_SHA) {
+              throw new Error('NOT_PROVEN: protected main evaluator generation changed');
+            }
+            const {execFileSync} = require('node:child_process');
+            const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+            Object.assign(env, {GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+              GIT_CONFIG_SYSTEM: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1'});
+            const head = execFileSync('git', ['rev-parse', 'HEAD'], {env, encoding: 'utf8'}).trim();
+            const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {env, encoding: 'utf8'}).trim();
+            if (head !== sha || dirty) {
+              throw new Error('NOT_PROVEN: evaluator checkout custody differs from protected T');
+            }
+
+      - name: Upload exact-tree receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: non-rust-policy-${{ steps.bind.outputs.artifact_id || env.SUBJECT_SHA || 'no-subject' }}
+          path: target/policy/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Propagate identity failure
+        if: always() && steps.bind.outcome == 'failure'
+        run: exit 1
+"###;
+
+const PREAPPROVED_QUEUE_WORKFLOW: &str = REVIEWED_QUEUE_V10_WORKFLOW;
+
+#[cfg(test)]
+fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
+    if text != PREAPPROVED_QUEUE_WORKFLOW {
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow differs from the reviewed queue-only protected-main contract"
+        );
     }
     Ok(())
 }
@@ -6098,203 +6238,191 @@ review_after = "2026-06-01"
         Ok((temp, base))
     }
 
-    const PREAPPROVED_FIXTURE: &str = r#"# contract-version: 10
-name: Non-Rust policy
-on:
-  pull_request_target:
-    branches: [main, master]
-    types: [opened, synchronize, reopened, ready_for_review]
-  merge_group: {}
-  push:
-    branches: [main, master]
-  workflow_dispatch:
-    inputs:
-      base_sha:
-        required: true
-        type: string
-      subject_sha:
-        required: true
-        type: string
-permissions:
-  contents: read
-jobs:
-  exact-tree:
-    name: Non-Rust policy exact-tree
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    env:
-      BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
-      SUBJECT_INPUT_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}
-      PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
-      PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}
-      EVALUATOR_SHA: ${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}
-    steps:
-      - name: Checkout trusted evaluator
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ env.EVALUATOR_SHA }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Materialize trusted PR subject
-        id: materialize
-        continue-on-error: true
-        run: 'cargo run --locked -p xtask -- ci-subject-materialize --event-name "$GITHUB_EVENT_NAME" --event-path "$GITHUB_EVENT_PATH" --repository "$GITHUB_REPOSITORY" --github-sha "$SUBJECT_INPUT_SHA" --base-sha "$BASE_SHA" --head-sha "$SUBJECT_INPUT_SHA" --receipt target/policy/ci-subject-materialization.json --env-file "$GITHUB_ENV"'
-      - name: Run trusted exact-tree evaluator
-        id: evaluate
-        if: steps.materialize.outcome == 'success'
-        continue-on-error: true
-        run: 'cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json'
-      - name: Upload exact-tree receipt
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}
-          path: target/policy/
-          if-no-files-found: error
-          retention-days: 14
-      - name: Propagate subject or policy failure
-        if: "always() && (steps.materialize.outcome == 'failure' || steps.evaluate.outcome == 'failure')"
-        run: exit 1
-"#;
+    const PREAPPROVED_FIXTURE: &str = PREAPPROVED_QUEUE_WORKFLOW;
 
     #[test]
     fn preapproved_workflow_rejects_control_plane_tampering() -> Result<()> {
         let workflow = PREAPPROVED_FIXTURE;
         validate_preapproved_subject_workflow(workflow)?;
-        let tampered = workflow.replace(
-            "      - name: Propagate subject or policy failure\n",
-            "      - name: Extra executable step\n        run: echo extra\n      - name: Propagate subject or policy failure\n",
-        );
-        ensure!(validate_preapproved_subject_workflow(&tampered).is_err());
-        let tampered_identity = workflow.replacen(
-            "${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}",
-            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha }}",
-            1,
-        );
-        ensure!(
-            validate_preapproved_subject_workflow(&tampered_identity).is_err(),
-            "candidate-controlled subject identity must be rejected"
-        );
-        for (label, tampered) in [
+        for (label, from, to) in [
+            ("PR trigger", "on:\n", "on:\n  pull_request_target: {}\n"),
+            ("push trigger", "on:\n", "on:\n  push: {}\n"),
+            ("wrong queue activity", "types: [checks_requested]", "types: [destroyed]"),
+            ("write permission", "contents: read", "contents: write"),
+            ("extra permission", "  contents: read", "  contents: read\n  actions: write"),
+            ("extra executable step", "    steps:\n", "    steps:\n      - run: echo injected\n"),
+            ("mutable checkout ref", "ref: ${{ steps.evaluator.outputs.sha }}", "ref: main"),
             (
-                "wrong job name",
-                workflow.replace("name: Non-Rust policy exact-tree", "name: lookalike"),
+                "top-level injection",
+                "jobs:\n",
+                "env:\n  NODE_OPTIONS: --require=/tmp/evil\njobs:\n",
             ),
-            ("wrong timeout", workflow.replace("timeout-minutes: 10", "timeout-minutes: 11")),
+            ("job env injection", "    steps:\n", "      GIT_CONFIG_COUNT: '1'\n    steps:\n"),
+            ("job condition", "    steps:\n", "    if: false\n    steps:\n"),
+            ("runner", "ubuntu-24.04", "self-hosted"),
+            ("checkout B", "ref: ${{ steps.evaluator.outputs.sha }}", "ref: ${{ env.BASE_SHA }}"),
             (
-                "wrong checkout action",
-                workflow.replace(
-                    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-                    "actions/checkout@0123456789012345678901234567890123456789",
-                ),
+                "checkout G",
+                "ref: ${{ steps.evaluator.outputs.sha }}",
+                "ref: ${{ env.SUBJECT_SHA }}",
             ),
+            ("persist credentials", "persist-credentials: false", "persist-credentials: true"),
             (
-                "wrong upload action",
-                workflow.replace(
-                    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-                    "actions/upload-artifact@0123456789012345678901234567890123456789",
-                ),
+                "mutable action",
+                "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+                "actions/github-script@main",
             ),
+            ("repository identity", "repository.id !== eventRepo.id", "false"),
+            ("protection identity", "protectedBranch.protected !== true", "false"),
+            ("generation change", "sha !== process.env.EVALUATOR_SHA", "false"),
+            ("checkout custody", "head !== sha || dirty", "false"),
+            ("candidate import", "run: exit 1", "run: bash candidate.sh"),
+            ("failure suppression", "run: exit 1", "run: exit 0"),
+            ("receipt redirection", "path: target/policy/", "path: /tmp/elsewhere"),
             (
-                "disabled trigger",
-                workflow.replace("branches: [main, master]", "branches: [release-only]"),
-            ),
-            ("disabled job", workflow.replace("  exact-tree:\n", "  exact-tree:\n    if: false\n")),
-            (
-                "disabled materializer",
-                workflow.replace(
-                    "        continue-on-error: true\n",
-                    "        if: false\n        continue-on-error: true\n",
-                ),
-            ),
-            (
-                "missing materializer continue-on-error",
-                workflow.replace("        continue-on-error: true\n        run: 'cargo run --locked -p xtask -- ci-subject-materialize", "        run: 'cargo run --locked -p xtask -- ci-subject-materialize"),
-            ),
-            (
-                "false evaluator continue-on-error",
-                workflow.replacen(
-                    "        continue-on-error: true\n        run: 'cargo run --locked -p xtask -- non-rust exact-tree",
-                    "        continue-on-error: false\n        run: 'cargo run --locked -p xtask -- non-rust exact-tree",
-                    1,
-                ),
-            ),
-            (
-                "upload continue-on-error suppresses receipt failure",
-                workflow.replace(
-                    "      - name: Upload exact-tree receipt\n        if: always()\n",
-                    "      - name: Upload exact-tree receipt\n        if: always()\n        continue-on-error: true\n",
-                ),
-            ),
-            (
-                "boolean propagation bypass",
-                workflow.replace(
-                    "        run: exit 1\n",
-                    "        continue-on-error: true\n        run: exit 1\n",
-                ),
-            ),
-            (
-                "expression propagation bypass",
-                workflow.replace(
-                    "        run: exit 1\n",
-                    "        continue-on-error: ${{ true }}\n        run: exit 1\n",
-                ),
-            ),
-            (
-                "disabled receipt upload",
-                workflow.replace(
-                    "        if: always()\n        uses: actions/upload-artifact@",
-                    "        if: always() && false\n        uses: actions/upload-artifact@",
-                ),
-            ),
-            (
-                "extra job env key (git config injection)",
-                workflow.replace(
-                    "    steps:\n",
-                    "      GIT_CONFIG_COUNT: '1'\n    steps:\n",
-                ),
-            ),
-            (
-                "extra job env key (RUSTFLAGS)",
-                workflow.replace("    steps:\n", "      RUSTFLAGS: -Zunstable\n    steps:\n"),
-            ),
-            (
-                "checkout gains an unapproved input",
-                workflow.replace(
-                    "          persist-credentials: false\n",
-                    "          persist-credentials: false\n          repository: attacker/fork\n",
-                ),
-            ),
-            (
-                "checkout drops persist-credentials",
-                workflow.replace("          persist-credentials: false\n", ""),
-            ),
-            (
-                "upload loses its with block",
-                workflow.replace(
-                    "        with:\n          name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}\n          path: target/policy/\n          if-no-files-found: error\n          retention-days: 14\n",
-                    "",
-                ),
-            ),
-            (
-                "upload redirected away from the receipts",
-                workflow.replace("          path: target/policy/\n", "          path: /tmp/elsewhere\n"),
-            ),
-            (
-                "upload tolerates missing receipts",
-                workflow.replace("          if-no-files-found: error\n", "          if-no-files-found: ignore\n"),
-            ),
-            (
-                "upload step gains an executable body",
-                workflow.replace(
-                    "          retention-days: 14\n",
-                    "          retention-days: 14\n        run: echo leak\n",
-                ),
+                "extra job",
+                "jobs:\n",
+                "jobs:\n  injected:\n    runs-on: ubuntu-latest\n    steps: []\n",
             ),
         ] {
+            let tampered = workflow.replace(from, to);
+            ensure!(tampered != workflow, "negative control must mutate: {label}");
             ensure!(
                 validate_preapproved_subject_workflow(&tampered).is_err(),
                 "control-plane tampering must be rejected: {label}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preapproved_queue_carrier_guard_accepts_v9_trusted_bootstrap() -> Result<()> {
+        let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(PREAPPROVED_FIXTURE)?;
+        let steps = yaml["jobs"]["exact-tree"]["steps"]
+            .as_sequence()
+            .ok_or_else(|| eyre!("fixture steps missing"))?;
+        let guard = steps
+            .iter()
+            .find(|step| step["id"].as_str() == Some("verify-trusted-workflow-contract"))
+            .and_then(|step| step["run"].as_str())
+            .ok_or_else(|| eyre!("fixture guard missing"))?;
+        let live = include_str!("../../../.github/workflows/non-rust-policy.yml");
+        for trusted_workflow in [live, REVIEWED_QUEUE_V10_WORKFLOW] {
+            for malicious in [false, true] {
+                let temp = tempfile::tempdir()?;
+                for required in [
+                    "Cargo.toml",
+                    "Cargo.lock",
+                    "xtask/Cargo.toml",
+                    "xtask/src/main.rs",
+                    "xtask/src/tasks/file_policy.rs",
+                ] {
+                    write_fixture(temp.path(), required, "available trusted input\n")?;
+                }
+                let workflow = if malicious {
+                    trusted_workflow.replace("run: cargo run --locked -p xtask -- non-rust exact-tree",
+                        "run: cargo run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}")
+                } else {
+                    trusted_workflow.to_string()
+                };
+                ensure!(
+                    !malicious || workflow != trusted_workflow,
+                    "negative guard control must mutate"
+                );
+                write_fixture(temp.path(), ".github/workflows/non-rust-policy.yml", &workflow)?;
+                let output = std::process::Command::new("bash")
+                    .args(["-c", guard])
+                    .current_dir(temp.path())
+                    .env("GITHUB_OUTPUT", temp.path().join("outputs"))
+                    .output()
+                    .context("executing actual carrier guard against trusted generation")?;
+                ensure!(
+                    output.status.success() != malicious,
+                    "unexpected guard result: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preapproved_queue_current_and_next_generation_transitions() -> Result<()> {
+        let (temp, base9) = exact_fixture()?;
+        let path = ".github/workflows/non-rust-policy.yml";
+        write_fixture(temp.path(), path, REVIEWED_QUEUE_V10_WORKFLOW)?;
+        let base10 = commit_fixture(temp.path(), "install reviewed queue v10")?;
+        validate_subject_workflow(temp.path(), &base9, &base10)?;
+        write_fixture(temp.path(), "README.md", "after queue cutover\n")?;
+        let unchanged10 = commit_fixture(temp.path(), "unchanged queue v10")?;
+        validate_subject_workflow(temp.path(), &base10, &unchanged10)?;
+
+        let next = REVIEWED_QUEUE_V10_WORKFLOW.replacen(
+            "# contract-version: 10",
+            "# contract-version: 11",
+            1,
+        );
+        // A separately reviewed and installed evaluator may preapprove v11.
+        validate_subject_workflow_with_trusted_contract(
+            temp.path(),
+            &base10,
+            &unchanged10,
+            11,
+            &next,
+        )?;
+        write_fixture(temp.path(), path, &next)?;
+        let subject11 = commit_fixture(temp.path(), "reviewed next generation")?;
+        validate_subject_workflow_with_trusted_contract(
+            temp.path(),
+            &base10,
+            &subject11,
+            11,
+            &next,
+        )?;
+        ensure!(
+            validate_subject_workflow(temp.path(), &base10, &subject11).is_err(),
+            "candidate next contract cannot authorize itself before installation"
+        );
+        ensure!(
+            validate_subject_workflow_with_trusted_contract(
+                temp.path(),
+                &base9,
+                &subject11,
+                11,
+                &next,
+            )
+            .is_err(),
+            "version skipping must be rejected"
+        );
+
+        for workflow in [REVIEWED_QUEUE_V10_WORKFLOW.to_string(), next.clone()] {
+            let tampered = workflow.replace("contents: read", "contents: write");
+            write_fixture(temp.path(), path, &tampered)?;
+            let subject = commit_fixture(temp.path(), "tampered generation")?;
+            ensure!(
+                validate_subject_workflow_with_trusted_contract(
+                    temp.path(),
+                    &base10,
+                    &subject,
+                    11,
+                    &next,
+                )
+                .is_err(),
+                "changed current/next generation must not bypass strict approval"
+            );
+            write_fixture(temp.path(), "README.md", &subject)?;
+            let equal = commit_fixture(temp.path(), "unchanged tampered generation")?;
+            ensure!(
+                validate_subject_workflow_with_trusted_contract(
+                    temp.path(),
+                    &subject,
+                    &equal,
+                    11,
+                    &next,
+                )
+                .is_err(),
+                "equal noncanonical queue workflow must not become trusted"
             );
         }
         Ok(())
@@ -6339,7 +6467,7 @@ jobs:
             "extra env key must be rejected on the reachable path",
         );
         assert!(
-            error.to_string().contains("unapproved variable"),
+            error.to_string().contains("reviewed queue-only protected-main contract"),
             "rejection must come from the structural validator, got: {error}"
         );
         Ok(())
@@ -6572,186 +6700,95 @@ jobs:
         Ok(())
     }
 
+    /// Exercise both the legacy shape scanner and the real strict-v10 dispatch.
+    /// The v10 positive control must pass before a mutation can prove refusal.
+    fn reject_workflow_mutation(from: &str, to: &str, legacy_error: &str) -> Result<()> {
+        let live = include_str!("../../../.github/workflows/non-rust-policy.yml");
+        let legacy = live.replacen(from, to, 1);
+        ensure!(legacy != live, "legacy negative control must mutate");
+        let error = must_err_with(scan_trusted_workflow_shape(&legacy), "legacy scanner refusal");
+        ensure!(error.to_string().contains(legacy_error), "unexpected legacy error: {error}");
+
+        let (temp, base) = exact_fixture()?;
+        let path = ".github/workflows/non-rust-policy.yml";
+        write_fixture(temp.path(), path, PREAPPROVED_FIXTURE)?;
+        let positive = commit_fixture(temp.path(), "canonical v10 control")?;
+        validate_subject_workflow(temp.path(), &base, &positive)?;
+        let tampered = PREAPPROVED_FIXTURE.replacen(from, to, 1);
+        ensure!(tampered != PREAPPROVED_FIXTURE, "strict negative control must mutate");
+        write_fixture(temp.path(), path, &tampered)?;
+        let subject = commit_fixture(temp.path(), "tampered v10")?;
+        let error = must_err_with(
+            validate_subject_workflow(temp.path(), &base, &subject),
+            "strict v10 dispatch must reject mutation",
+        );
+        ensure!(
+            error.to_string().contains("reviewed queue-only protected-main contract"),
+            "unexpected strict error: {error}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn trusted_workflow_rejects_alternate_candidate_checkout_or_import() -> Result<()> {
-        for injected in [
-            "\n          git checkout \"$SUBJECT_SHA\"\n",
-            "\n          git worktree add candidate \"$SUBJECT_SHA\"\n",
-            "\n          source ./candidate.sh\n",
+        for command in [
+            "git checkout \"$SUBJECT_SHA\"",
+            "git worktree add candidate \"$SUBJECT_SHA\"",
+            "source ./candidate.sh",
         ] {
-            let (temp, base) = exact_fixture()?;
-            let workflow_path = ".github/workflows/non-rust-policy.yml";
-            let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-            // A changed trusted workflow must increment its contract-version by
-            // exactly one before later checks run; follow that protocol so the
-            // injection itself is what gets rejected.
-            let version_marker = "# contract-version: ";
-            let version = must_some_with(
-                workflow
-                    .lines()
-                    .find_map(|line| line.trim().strip_prefix(version_marker))
-                    .and_then(|value| value.trim().parse::<u64>().ok()),
-                "fixture workflow must carry a contract-version",
-            );
-            let workflow = workflow.replacen(
-                &format!("{version_marker}{version}"),
-                &format!("{version_marker}{}", version + 1),
-                1,
-            );
-            let workflow = workflow.replacen(
+            reject_workflow_mutation(
                 "      - name: Upload exact-tree receipt",
-                &(injected.to_string() + "      - name: Upload exact-tree receipt"),
-                1,
-            );
-            write_fixture(temp.path(), workflow_path, &workflow)?;
-            let subject = commit_fixture(temp.path(), "untrusted workflow")?;
-            let error = must_err_with(
-                validate_subject_workflow(temp.path(), &base, &subject),
-                "candidate checkout/import must be rejected",
-            );
-            assert!(
-                error.to_string().contains("must not execute or import candidate-derived content"),
-                "unexpected error: {error}"
-            );
+                &format!(
+                    "      - name: Inject candidate execution\n        run: {command}\n      - name: Upload exact-tree receipt"
+                ),
+                "must not execute or import candidate-derived content",
+            )?;
         }
         Ok(())
     }
 
     #[test]
     fn trusted_workflow_scans_executable_cargo_runs_not_validator_source() -> Result<()> {
-        let (temp, base) = exact_fixture()?;
-        let workflow_path = ".github/workflows/non-rust-policy.yml";
-        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-        let workflow = workflow.replacen(
+        // This is a scanner-specific positive obligation, not permission to
+        // modify the compiled-in v10 contract. Keep it at the scanner boundary.
+        let live = include_str!("../../../.github/workflows/non-rust-policy.yml");
+        let comment = live.replacen(
             "          run_bodies = []\n",
             "          # cargo run github.event.pull_request.head.sha\n          run_bodies = []\n",
             1,
         );
-        let version_marker = "# contract-version: ";
-        let version = must_some_with(
-            workflow
-                .lines()
-                .find_map(|line| line.trim().strip_prefix(version_marker))
-                .and_then(|value| value.trim().parse::<u64>().ok()),
-            "fixture workflow must carry a contract-version",
-        );
-        let workflow = workflow.replacen(
-            &format!("{version_marker}{version}"),
-            &format!("{version_marker}{}", version + 1),
-            1,
-        );
-        write_fixture(temp.path(), workflow_path, &workflow)?;
-        let subject = commit_fixture(temp.path(), "validator source comment")?;
-        validate_subject_workflow(temp.path(), &base, &subject)?;
-
-        let (temp, base) = exact_fixture()?;
-        let workflow_path = ".github/workflows/non-rust-policy.yml";
-        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-        let version = must_some_with(
-            workflow
-                .lines()
-                .find_map(|line| line.trim().strip_prefix(version_marker))
-                .and_then(|value| value.trim().parse::<u64>().ok()),
-            "fixture workflow must carry a contract-version",
-        );
-        let workflow = workflow.replacen(
-            &format!("{version_marker}{version}"),
-            &format!("{version_marker}{}", version + 1),
-            1,
-        );
-        let workflow = workflow.replacen(
+        ensure!(comment != live, "validator-comment positive control must mutate");
+        scan_trusted_workflow_shape(&comment)?;
+        reject_workflow_mutation(
             "run: cargo run --locked -p xtask -- non-rust exact-tree",
             "run: cargo run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}",
-            1,
-        );
-        write_fixture(temp.path(), workflow_path, &workflow)?;
-        let subject = commit_fixture(temp.path(), "candidate interpolation")?;
-        let error = must_err_with(
-            validate_subject_workflow(temp.path(), &base, &subject),
-            "candidate-derived evaluator interpolation must fail closed",
-        );
-        assert!(
-            error.to_string().contains("must not execute candidate source"),
-            "unexpected error: {error}"
-        );
-        Ok(())
+            "must not execute candidate source",
+        )
     }
 
     #[test]
     fn trusted_workflow_rejects_candidate_refs_in_step_inputs_and_whitespace_variants() -> Result<()>
     {
-        let workflow_path = ".github/workflows/non-rust-policy.yml";
-        let version_marker = "# contract-version: ";
         for injected in [
-            "\n      - name: candidate ref input\n        env:\n          REF: refs/pull/${{ github.event.pull_request.number }}/head\n        run: echo \"$REF\"\n",
-            "\n      - name: candidate ref command\n        run: cargo  run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}\n",
+            "      - name: candidate ref input\n        env:\n          REF: refs/pull/${{ github.event.pull_request.number }}/head\n        run: echo \"$REF\"\n",
+            "      - name: candidate ref command\n        run: cargo  run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}\n",
         ] {
-            let (temp, base) = exact_fixture()?;
-            let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-            let version = must_some_with(
-                workflow
-                    .lines()
-                    .find_map(|line| line.trim().strip_prefix(version_marker))
-                    .and_then(|value| value.trim().parse::<u64>().ok()),
-                "fixture workflow must carry a contract-version",
-            );
-            let workflow = workflow.replacen(
-                &format!("{version_marker}{version}"),
-                &format!("{version_marker}{}", version + 1),
-                1,
-            );
-            let workflow = workflow.replacen(
+            reject_workflow_mutation(
                 "      - name: Upload exact-tree receipt",
                 &(injected.to_string() + "      - name: Upload exact-tree receipt"),
-                1,
-            );
-            write_fixture(temp.path(), workflow_path, &workflow)?;
-            let subject = commit_fixture(temp.path(), "candidate ref bypass")?;
-            let error = must_err_with(
-                validate_subject_workflow(temp.path(), &base, &subject),
-                "candidate-controlled ref must fail closed",
-            );
-            assert!(
-                error.to_string().contains("must not execute candidate source"),
-                "unexpected error: {error}"
-            );
+                "must not execute candidate source",
+            )?;
         }
         Ok(())
     }
 
     #[test]
     fn trusted_workflow_rejects_duplicate_reserved_contract_id() -> Result<()> {
-        let (temp, base) = exact_fixture()?;
-        let workflow_path = ".github/workflows/non-rust-policy.yml";
-        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-        let version_marker = "# contract-version: ";
-        let version = workflow
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(version_marker))
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .ok_or_else(|| eyre!("fixture workflow must carry a contract-version"))?;
-        let workflow = workflow.replacen(
-            &format!("{version_marker}{version}"),
-            &format!("{version_marker}{}", version + 1),
-            1,
-        );
-        let duplicate = "      - id: verify-trusted-workflow-contract\n        name: Unexpected duplicate\n        run: echo duplicate\n";
-        let workflow = workflow.replacen(
+        reject_workflow_mutation(
             "      - name: Upload exact-tree receipt",
-            &(duplicate.to_string() + "      - name: Upload exact-tree receipt"),
-            1,
-        );
-        write_fixture(temp.path(), workflow_path, &workflow)?;
-        let subject = commit_fixture(temp.path(), "duplicate reserved workflow id")?;
-        let error = must_err_with(
-            validate_subject_workflow(temp.path(), &base, &subject),
-            "duplicate reserved workflow ID must fail closed",
-        );
-        assert!(
-            error.to_string().contains("exactly one reserved contract-verification step ID"),
-            "unexpected error: {error}"
-        );
-        Ok(())
+            "      - id: verify-trusted-workflow-contract\n        name: Unexpected duplicate\n        run: echo duplicate\n      - name: Upload exact-tree receipt",
+            "exactly one reserved contract-verification step ID",
+        )
     }
 
     #[test]
