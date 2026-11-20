@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Windows gate commands now run through a native launcher that parses the POSIX-subset spelling directly, so assignments, env -u, quoted arguments, and && chains keep their meaning and PERL_LSP_BIN resolves to the native perllsp.exe instead of being rewritten by cmd.
+time: 2026-11-14T12:00:00Z
+custom:
+  PR: "17482"
+  Slug: native-windows-gate-launcher
+  Breaking: "no"

@@ -39,6 +39,8 @@ use crate::utils::project_root;
 
 pub mod disposition;
 mod first_failure;
+#[cfg(windows)]
+mod native_command;
 mod planning_types;
 #[cfg(not(windows))]
 mod posix_shell;
@@ -2713,7 +2715,66 @@ pub(crate) fn run_shell_command_with_timeout(
 /// the spawned shell (#8063): behavior children execute the prebuilt test
 /// binary from the package directory cargo would have used, so direct
 /// execution stays environment-equivalent to `cargo test`.
+///
+/// On Windows the command is executed by the native launcher (#17482,
+/// [`native_command`]): the POSIX-subset spelling is parsed and spawned
+/// directly instead of being rewritten by `cmd /C`, under the same log,
+/// watchdog, and tree-kill contract as the POSIX shell path.
 pub(crate) fn run_shell_command_with_timeout_in(
+    command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+    current_dir: Option<&Path>,
+) -> Result<ShellExecutionResult, GateShellError> {
+    #[cfg(windows)]
+    {
+        run_shell_command_native(command, log_path, timeout_secs, current_dir)
+    }
+    #[cfg(not(windows))]
+    {
+        run_shell_command_with_timeout_in_shell(command, log_path, timeout_secs, current_dir)
+    }
+}
+
+#[cfg(windows)]
+fn run_shell_command_native(
+    command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+    current_dir: Option<&Path>,
+) -> Result<ShellExecutionResult, GateShellError> {
+    let start = Instant::now();
+    let outcome = native_command::run_native_command(
+        command,
+        log_path,
+        timeout_secs,
+        current_dir,
+        is_cargo_test_command(command),
+    )
+    .map_err(|error| GateShellError {
+        report: eyre!(error.message),
+        child_started: error.child_started,
+    })?;
+    println!(
+        "gate command exited exit_code={} timed_out={} elapsed_ms={} log_path={}",
+        outcome.exit_code,
+        outcome.timed_out,
+        start.elapsed().as_millis(),
+        log_path.display()
+    );
+    Ok(ShellExecutionResult {
+        stdout: read_gate_output(log_path),
+        exit_code: outcome.exit_code,
+        timed_out: outcome.timed_out,
+        test_execution_reached_attempts: Vec::new(),
+    })
+}
+
+// On Windows the dispatcher above routes to the native launcher instead;
+// the shell path remains the POSIX implementation (and the reference the
+// Windows baseline probe in the tests contrasts against).
+#[cfg_attr(windows, allow(dead_code))]
+fn run_shell_command_with_timeout_in_shell(
     command: &str,
     log_path: &Path,
     timeout_secs: u64,
@@ -4147,7 +4208,11 @@ mod tests {
             let log_path = root.join("gate.log");
             let exit = if mode == "baseline" {
                 // Controlled wrong implementation: the same native process
-                // factory without the test-environment boundary.
+                // factory without the test-environment boundary. The stored
+                // command uses the native launcher's quoted `./` spelling;
+                // `cmd /C` needs the backslash spelling to find the shim.
+                #[cfg(windows)]
+                let command = command.replace("\"./cargo.cmd\"", ".\\cargo.cmd");
                 let log = fs::File::create(&log_path)?;
                 let status = super::shell_command_process(&command, 30)
                     .current_dir(root.join("commands"))
@@ -4201,7 +4266,7 @@ mod tests {
                         executable.display()
                     ),
                 )?;
-                ".\\cargo.cmd"
+                "\"./cargo.cmd\""
             };
             #[cfg(not(windows))]
             let cargo = {
@@ -6241,7 +6306,7 @@ gates:
     #[test]
     fn run_single_gate_captures_test_metrics_artifacts_and_log() -> color_eyre::eyre::Result<()> {
         let command = if cfg!(windows) {
-            "echo prelude && echo test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s"
+            "echo prelude && echo \"test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s\""
         } else {
             "printf 'prelude\ntest result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s\n'"
         };
@@ -6280,7 +6345,7 @@ gates:
     #[test]
     fn run_single_gate_omits_partial_counts_after_later_failure() -> color_eyre::eyre::Result<()> {
         let command = if cfg!(windows) {
-            "echo running 3 tests && echo test result: ok. 3 passed; 0 failed; 0 ignored && echo test fixture_failure ... FAILED && echo test result: FAILED. 0 passed; 1 failed; 0 ignored && exit /b 1 && cargo test never-executed"
+            "echo \"running 3 tests\" && echo \"test result: ok. 3 passed; 0 failed; 0 ignored\" && echo \"test fixture_failure ... FAILED\" && echo \"test result: FAILED. 0 passed; 1 failed; 0 ignored\" && exit /b 1 && cargo test never-executed"
         } else {
             "printf 'running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored\ntest fixture_failure ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n'; exit 1; true && cargo test never-executed"
         };
@@ -7840,6 +7905,19 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
             "env wrapping does not make a non-test command a test"
         );
         assert!(!is_cargo_test_command("env"), "bare env with no wrapped command");
+        assert!(is_cargo_test_command("RUST_TEST_THREADS=2 cargo test"), "bare assignment prefix");
+        assert!(
+            is_cargo_test_command("MARKER=\"a b\" cargo test"),
+            "quoted assignment containing spaces"
+        );
+        assert!(
+            is_cargo_test_command("FOO=bar env -u RUSTC_WRAPPER cargo test"),
+            "assignment before env prefix"
+        );
+        assert!(
+            !is_cargo_test_command("RUST_TEST_THREADS=2 cargo build"),
+            "bare assignment does not make a non-test command a test"
+        );
     }
 
     #[test]
