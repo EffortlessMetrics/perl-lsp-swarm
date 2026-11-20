@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
@@ -65,6 +66,13 @@ class SublimePerllspHostJourney(DeferrableTestCase):
     @classmethod
     def setUpClass(cls) -> Generator[Any, None, None]:
         super().setUpClass()
+        build = sublime.version()
+        python_version = sys.version.split()[0]
+        print(f"Sublime Text build {build}, plugin host Python {python_version}")
+        if build != "4200" or sys.version_info[:2] != (3, 8):
+            raise AssertionError(
+                f"expected Sublime Text 4200 with Python 3.8, got {build} / {python_version}"
+            )
         cls.root = Path(os.environ["PERLLSP_SUBLIME_FIXTURE"]).resolve()
         cls.binary = Path(os.environ["PERLLSP_TEST_BINARY"]).resolve()
         cls.receipt_path = Path(os.environ["PERLLSP_SUBLIME_RECEIPT"]).resolve()

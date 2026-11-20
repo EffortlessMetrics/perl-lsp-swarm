@@ -1409,32 +1409,11 @@ checked base registration is
 
 #### Zed (`settings.json`)
 
-Zed requires a language extension that registers the language server ID used
-below. The `lsp` block configures known servers; it does not register a new
-language server by itself.
-
-```json
-{
-  "lsp": {
-    "perl-lsp": {
-      "binary": {
-        "path": "/usr/local/bin/perllsp",
-        "arguments": ["--stdio"]
-      },
-      "initialization_options": {
-        "perl": {
-          "workspace": {
-            "includePaths": ["lib", ".", "local/lib/perl5"]
-          },
-          "inlayHints": {
-            "enabled": true
-          }
-        }
-      }
-    }
-  }
-}
-```
+**Planned / not proven.** Zed settings configure IDs already registered by the
+Perl extension. The EffortlessMetrics executable `perllsp` would use the
+proposed provider ID `perl-lsp-rs`. The existing `perl-lsp` settings belong
+to the tree-sitter-perl provider. See the
+[Zed integration status](../EDITORS/ZED_SETUP.md).
 
 #### Emacs (eglot)
 

@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Added
-body: "Code after an unconditional `goto LABEL` is now flagged as unreachable (PL406), matching the existing detection for die/exit/croak, including correct handling of forward goto targets inside continue blocks."
-time: 2026-07-23T11:52:44Z
-custom:
-  PR: "4699"
-  Slug: unreachable-code-after-goto
-  Breaking: "no"

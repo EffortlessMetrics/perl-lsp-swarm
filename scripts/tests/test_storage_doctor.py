@@ -1,6 +1,7 @@
 """Offline retained-output controls; no Cargo or large disk allocation."""
 
 import os
+import hashlib
 import json
 import sys
 from contextlib import contextmanager
@@ -9,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -307,6 +309,51 @@ class DescriptorInventoryTests(unittest.TestCase):
             self.assertIsNone(row["apparent_bytes"])
             self.assertIsNone(row["allocated_bytes"])
 
+    def test_move_between_already_and_not_yet_listed_directories_invalidates_totals(self):
+        root = self.paths["build"]
+        source = root / "src"
+        destination = root / "dst"
+        source.mkdir()
+        destination.mkdir()
+        payload = source / "payload"
+        payload.write_bytes(b"must not disappear from a complete observation")
+        real_scandir, real_lstat = os.scandir, Path.lstat
+        destination_listed = False
+        moved = False
+
+        @contextmanager
+        def ordered_scandir(path):
+            nonlocal destination_listed
+            with real_scandir(path) as children:
+                entries = list(children)
+                if Path(path) == root:
+                    entries.sort(key=lambda child: child.name == "dst")
+                if Path(path) == destination:
+                    destination_listed = True
+                yield iter(entries)
+
+        def lstat(path):
+            nonlocal moved
+            if Path(path) == source and destination_listed and not moved:
+                before = real_lstat(destination)
+                payload.rename(destination / payload.name)
+                os.utime(destination, ns=(before.st_atime_ns,
+                                         before.st_mtime_ns + 1_000_000_000))
+                moved = True
+            return real_lstat(path)
+
+        with mock.patch.object(self.observer.os, "scandir", ordered_scandir),              mock.patch.object(Path, "lstat", lstat):
+            result = self.observer.inventory_roots(
+                {"build": root}, collect_fingerprints=False)
+        self.assertTrue(moved)
+        build = result["resources"]["build"]
+        self.assertFalse(build["inventory_complete"])
+        self.assertIn("entry_changed", build["reasons"])
+        self.assertIsNone(build["apparent_bytes"])
+        self.assertIsNone(build["allocated_bytes"])
+        self.assertIsNone(result["combined"]["apparent_bytes"])
+        self.assertIsNone(result["combined"]["allocated_bytes"])
+
     def test_empty_is_known_only_when_all_named_roots_are_present(self):
         result = self.observe()
         self.assertTrue(result["inventory_complete"])
@@ -580,6 +627,425 @@ class DescriptorInventoryTests(unittest.TestCase):
             result = self.observer.inventory(self.paths)
         self.assertFalse(result["inventory_complete"])
         self.assertNotIn("SENSITIVE", json.dumps(result))
+
+
+@unittest.skipUnless(shutil.which("git"), "requires Git")
+class CurrentSlotCensusTests(unittest.TestCase):
+    """Private output outlives source registration; neither grants deletion."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="private-storage-census-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / "checkout with spaces"
+        self.repo.mkdir()
+        self.saved_cwd = Path.cwd()
+        self.addCleanup(os.chdir, self.saved_cwd)
+        os.chdir(self.repo)
+        self.env = {key: value for key, value in os.environ.items()
+                    if not key.startswith("GIT_") and key not in
+                    ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")}
+        self.env.update(DEVPLANE=str(self.root / "devplane"),
+                        CARGO_HOME=str(self.root / "cargo-home"),
+                        TMPDIR=str(self.root / "tmp"), GIT_CONFIG_NOSYSTEM="1",
+                        GIT_CONFIG_GLOBAL=str(self.root / "no-global-config"),
+                        GIT_OPTIONAL_LOCKS="0")
+        self.git("init", "-q")
+        self.git("-c", "user.name=Storage Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture")
+        sys.path.insert(0, str(SCRIPT.parent))
+        self.addCleanup(sys.path.remove, str(SCRIPT.parent))
+        import storage_observation
+        from cargo_admitted import resource_plan
+        self.observer = storage_observation
+        _, self.slot, self.paths = resource_plan(self.env)
+
+    def git(self, *args, cwd=None):
+        return subprocess.check_output(
+            ["git", "-c", "core.hooksPath=" + str(self.root / "no-hooks"), *args],
+            cwd=cwd or self.repo, env=self.env, stderr=subprocess.PIPE)
+
+    def linked_worktree(self, name="linked worktree"):
+        path = self.root / name
+        self.git("worktree", "add", "-q", "--detach", str(path))
+        return path
+
+    def private_root(self, worktree):
+        # Independent spelling of the existing on-disk contract, not the new helper.
+        key = hashlib.sha256(os.fsencode(worktree.resolve())).hexdigest()
+        return self.slot / "worktrees" / key
+
+    def output(self, worktree, data=b"retained build output"):
+        root = self.private_root(worktree)
+        payload = root / "build" / "payload"
+        payload.parent.mkdir(parents=True)
+        payload.write_bytes(data)
+        return root
+
+    def census(self, **limits):
+        return self.observer.observe_current_slot(self.env, **limits)
+
+    def row(self, result, root):
+        identity = hashlib.sha256(os.fsencode(root)).hexdigest()
+        return next(row for row in result["rows"] if row["path_sha256"] == identity)
+
+    def snapshot(self):
+        return {str(path.relative_to(self.root)):
+                (path.lstat().st_dev, path.lstat().st_ino, path.lstat().st_size,
+                 path.lstat().st_mtime_ns,
+                 hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None)
+                for path in self.root.rglob("*")}
+
+    def assert_unknown_ownership(self, result):
+        for row in result["rows"]:
+            self.assertEqual(row["allocation_ownership"], "unknown")
+            self.assertEqual(row["reclaim_eligibility"], "unknown")
+        self.assertNotIn("descriptor_valid", result)
+        self.assertNotIn("descriptor_sha256", result)
+        self.assertNotIn("fingerprints", result)
+        self.assertNotIn(str(self.root), json.dumps(result))
+
+    def test_removed_source_retains_unregistered_bytes_without_reclaim_authority(self):
+        linked = self.linked_worktree()
+        root = self.output(linked, b"retained after source removal")
+        before = self.census()
+        self.assertEqual(self.row(before, root)["registration"], "registered")
+        self.git("worktree", "remove", str(linked))
+        result = self.census()
+        row = self.row(result, root)
+        self.assertTrue(result["inventory_complete"], result)
+        self.assertEqual(row["registration"], "unregistered")
+        self.assertEqual(row["presence"], "present")
+        self.assertEqual(row["member_key"], root.name)
+        self.assertEqual(row["apparent_bytes"], len(b"retained after source removal"))
+        self.assertTrue((root / "build/payload").is_file())
+        self.assert_unknown_ownership(result)
+
+    def test_same_path_recreation_does_not_prove_allocation_owner(self):
+        linked = self.linked_worktree()
+        root = self.output(linked)
+        self.git("worktree", "remove", str(linked))
+        self.git("-c", "user.name=Storage Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "new source")
+        self.git("worktree", "add", "-q", "--detach", str(linked))
+        result = self.census()
+        self.assertEqual(self.row(result, root)["registration"], "registered")
+        self.assert_unknown_ownership(result)
+
+    def test_root_nested_and_linked_worktree_observe_same_slot(self):
+        linked = self.linked_worktree()
+        self.output(self.repo, b"primary")
+        self.output(linked, b"linked")
+        nested = linked / "nested"
+        nested.mkdir()
+        expected = self.census()
+        for cwd in (self.repo, linked, nested):
+            with self.subTest(cwd=cwd):
+                os.chdir(cwd)
+                self.assertEqual(self.census(), expected)
+
+    def test_missing_private_storage_is_known_absence_without_allocation(self):
+        result = self.census()
+        self.assertTrue(result["inventory_complete"], result)
+        row = self.row(result, self.private_root(self.repo))
+        self.assertEqual(row["registration"], "registered")
+        self.assertEqual(row["presence"], "missing")
+        self.assertEqual(row["member_key"], self.private_root(self.repo).name)
+        self.assertEqual(result["combined"]["apparent_bytes"], 0)
+        self.assertFalse(self.slot.exists())
+        self.assert_unknown_ownership(result)
+
+    def test_unrelated_common_repository_is_not_scanned(self):
+        self.output(self.repo, b"ours")
+        foreign = self.root / "other repository"
+        foreign.mkdir()
+        self.git("init", "-q", cwd=foreign)
+        from cargo_admitted import resource_plan
+        os.chdir(foreign)
+        _, foreign_slot, foreign_paths = resource_plan(self.env)
+        foreign_paths["target"].mkdir(parents=True)
+        (foreign_paths["target"] / "foreign").write_bytes(b"foreign" * 1000)
+        os.chdir(self.repo)
+        real_scandir = self.observer.os.scandir
+
+        def confined(path):
+            self.assertNotIn(foreign_slot, (Path(path), *Path(path).parents))
+            return real_scandir(path)
+
+        with mock.patch.object(self.observer.os, "scandir", side_effect=confined):
+            result = self.census()
+        self.assertEqual(result["combined"]["apparent_bytes"], 4)
+
+    def test_hardlinks_are_deduplicated_across_private_roots(self):
+        first = self.output(self.repo, b"x" * 8192)
+        second = self.private_root(self.linked_worktree())
+        (second / "target").mkdir(parents=True)
+        os.link(first / "build/payload", second / "target/alias")
+        result = self.census()
+        self.assertTrue(result["inventory_complete"], result)
+        self.assertEqual(result["combined"]["apparent_bytes"], 8192)
+        self.assertEqual(sum(row["apparent_bytes"] for row in result["rows"]), 16384)
+
+    def test_global_entry_budget_cannot_restart_for_each_member(self):
+        self.output(self.repo)
+        for number in range(4):
+            root = self.slot / "worktrees" / (f"{number + 1:064x}")
+            root.mkdir()
+            for entry in range(8):
+                (root / str(entry)).write_bytes(b"x")
+        result = self.census(max_entries=18)
+        self.assertFalse(result["inventory_complete"])
+        self.assertLessEqual(result["entries_examined"], 18)
+        self.assertIsNone(result["combined"]["apparent_bytes"])
+        self.assertGreaterEqual(result["combined"]["observed_apparent_bytes"], 0)
+        self.assert_unknown_ownership(result)
+
+    def test_invalid_member_name_and_nondirectory_are_reported_without_traversal(self):
+        self.output(self.repo)
+        invalid = self.slot / "worktrees/SENSITIVE invalid member"
+        invalid.mkdir()
+        (invalid / "payload").write_bytes(b"unclassified")
+        nondirectory = self.slot / "worktrees" / ("f" * 64)
+        nondirectory.write_bytes(b"not a directory")
+        result = self.census()
+        self.assertEqual(self.row(result, invalid)["presence"], "invalid")
+        self.assertEqual(self.row(result, nondirectory)["presence"], "invalid")
+        self.assertIsNone(self.row(result, invalid)["member_key"])
+        self.assertIsNone(self.row(result, nondirectory)["member_key"])
+        self.assertFalse(result["inventory_complete"])
+        self.assertIsNone(result["combined"]["apparent_bytes"])
+        self.assertNotIn("SENSITIVE", json.dumps(result))
+
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires POSIX")
+    def test_alias_root_is_not_followed(self):
+        real = self.output(self.repo, b"one payload")
+        alias = self.slot / "worktrees" / ("a" * 64)
+        alias.symlink_to(real, target_is_directory=True)
+        result = self.census()
+        self.assertEqual(self.row(result, alias)["presence"], "invalid")
+        self.assertFalse(result["inventory_complete"])
+        self.assertEqual(result["combined"]["observed_apparent_bytes"], len(b"one payload"))
+        self.assert_unknown_ownership(result)
+
+    def test_malformed_and_partial_registration_cannot_prove_unregistered(self):
+        root = self.output(self.repo)
+        real_read = self.observer.read_git
+        malformed = [b"", b"worktree /unfinished", b"HEAD a\0\0",
+                     b"worktree /a\0worktree /b\0\0"]
+        for raw in malformed:
+            def read(command, env, budget):
+                return raw if "worktree" in command else real_read(command, env, budget)
+            with self.subTest(raw=raw), mock.patch.object(self.observer, "read_git", side_effect=read):
+                result = self.census()
+            self.assertFalse(result["registration_complete"])
+            self.assertEqual(self.row(result, root)["registration"], "unknown")
+            self.assert_unknown_ownership(result)
+
+    def test_valid_registration_fragment_missing_current_worktree_is_unknown(self):
+        root = self.output(self.repo)
+        linked = self.linked_worktree()
+        real_read = self.observer.read_git
+        raw = (b"worktree " + os.fsencode(linked) + b"\0HEAD " + b"a" * 40
+               + b"\0detached\0\0")
+
+        def read(command, env, budget):
+            return raw if "worktree" in command else real_read(command, env, budget)
+
+        with mock.patch.object(self.observer, "read_git", side_effect=read):
+            result = self.census()
+        self.assertFalse(result["registration_complete"])
+        self.assertEqual(self.row(result, root)["registration"], "unknown")
+
+    def test_malformed_registration_field_values_are_not_complete(self):
+        root = self.output(self.repo)
+        real_read = self.observer.read_git
+        prefix = b"worktree " + os.fsencode(self.repo) + b"\0HEAD " + b"a" * 40 + b"\0"
+        for field in (b"branch", b"branch ", b"detached unexpected-payload", b"bare unexpected-payload"):
+            raw = prefix + field + b"\0\0"
+
+            def read(command, env, budget):
+                return raw if "worktree" in command else real_read(command, env, budget)
+
+            with self.subTest(field=field), mock.patch.object(self.observer, "read_git", side_effect=read):
+                result = self.census()
+            self.assertFalse(result["registration_complete"])
+            self.assertFalse(result["inventory_complete"])
+            self.assertEqual(self.row(result, root)["registration"], "unknown")
+
+    def test_changed_registration_after_inventory_invalidates_membership(self):
+        root = self.output(self.repo)
+        real_read = self.observer.read_git
+        reads = 0
+
+        def read(command, env, budget):
+            nonlocal reads
+            raw = real_read(command, env, budget)
+            if "worktree" in command:
+                reads += 1
+                if reads == 2:
+                    raw = raw.replace(b"HEAD ", b"HEAD f", 1)
+            return raw
+
+        with mock.patch.object(self.observer, "read_git", side_effect=read):
+            result = self.census()
+        self.assertEqual(reads, 2)
+        self.assertFalse(result["registration_complete"])
+        self.assertEqual(self.row(result, root)["registration"], "unknown")
+        self.assertIsNone(result["combined"]["apparent_bytes"])
+
+    def test_missing_storage_created_during_observation_is_incomplete(self):
+        real_inventory = self.observer.inventory_roots
+
+        def create_after_scan(*args, **kwargs):
+            result = real_inventory(*args, **kwargs)
+            self.output(self.repo)
+            return result
+
+        with mock.patch.object(self.observer, "inventory_roots", side_effect=create_after_scan):
+            result = self.census()
+        self.assertFalse(result["discovery_complete"])
+        self.assertFalse(result["inventory_complete"])
+        self.assertIsNone(result["combined"]["apparent_bytes"])
+        row = self.row(result, self.private_root(self.repo))
+        self.assertEqual(row["presence"], "unknown")
+        self.assertFalse(row["inventory_complete"])
+        self.assertIsNone(row["apparent_bytes"])
+        self.assertIsNone(row["allocated_bytes"])
+        self.assertIn("member_absence_unproven", row["reasons"])
+
+    def test_unreadable_member_parent_is_unknown_not_empty(self):
+        self.output(self.repo)
+        real_scandir = self.observer.os.scandir
+
+        def denied(path):
+            if Path(path) == self.slot / "worktrees":
+                raise PermissionError("SENSITIVE")
+            return real_scandir(path)
+
+        with mock.patch.object(self.observer.os, "scandir", side_effect=denied):
+            result = self.census()
+        self.assertFalse(result["inventory_complete"])
+        self.assertIsNone(result["combined"]["apparent_bytes"])
+        self.assertNotIn("SENSITIVE", json.dumps(result))
+
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires POSIX")
+    def test_linked_private_container_does_not_scan_foreign_destination(self):
+        self.slot.mkdir(parents=True)
+        foreign = self.root / "foreign-output"
+        foreign.mkdir()
+        (foreign / "unique").write_bytes(b"preserve")
+        (self.slot / "worktrees").symlink_to(foreign, target_is_directory=True)
+        with mock.patch.object(self.observer.os, "scandir", side_effect=AssertionError("foreign scan")):
+            result = self.census()
+        self.assertFalse(result["inventory_complete"])
+        self.assertIsNone(result["combined"]["apparent_bytes"])
+        self.assertEqual((foreign / "unique").read_bytes(), b"preserve")
+
+    def test_inherited_repository_selector_remains_refused(self):
+        for selector in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+            with self.subTest(selector=selector):
+                env = dict(self.env, **{selector: ""})
+                with mock.patch.object(self.observer, "read_git", side_effect=AssertionError("Git invoked")):
+                    result = self.observer.observe_current_slot(env)
+                self.assertFalse(result["inventory_complete"])
+                self.assertEqual(result["rows"], [])
+                self.assertFalse(self.slot.exists())
+
+    def test_exhausted_deadline_refuses_before_git_or_allocation(self):
+        result = self.census(max_seconds=0)
+        self.assertFalse(result["inventory_complete"])
+        self.assertEqual(result["entries_examined"], 0)
+        self.assertFalse(self.slot.exists())
+
+    def test_git_output_and_time_bounds_terminate_the_owned_query(self):
+        commands = [
+            ([sys.executable, "-B", "-c", "import sys; sys.stdout.write('x' * 4096)"],
+             {"max_seconds": 2, "max_git_bytes": 64}, "git_output_clipped"),
+            ([sys.executable, "-B", "-c", "import time; time.sleep(5)"],
+             {"max_seconds": 0.08}, "git_observation_timeout")]
+        for command, limits, reason in commands:
+            with self.subTest(reason=reason):
+                budget = self.observer.ObservationBudget(**limits)
+                started = time.monotonic()
+                with self.assertRaises(self.observer.Unknown) as raised:
+                    self.observer.read_git(command, self.env, budget)
+                self.assertIn(str(raised.exception),
+                              (reason, "observation_timeout") if "timeout" in reason else (reason,))
+                self.assertLess(time.monotonic() - started, 2)
+
+    @unittest.skipIf(os.name == "nt", "non-UTF-8 and newline native paths require POSIX")
+    def test_lossless_registered_native_paths_match_existing_private_state(self):
+        for name in ("unicode-\u03bb ending\t\n", "native-" + os.fsdecode(b"\xff")):
+            linked = self.linked_worktree(name)
+            root = self.output(linked, b"native path")
+            result = self.census()
+            self.assertTrue(result["registration_complete"], result)
+            self.assertEqual(self.row(result, root)["registration"], "registered")
+
+    def test_failed_registration_keeps_partial_output_unknown(self):
+        root = self.output(self.repo)
+        real_read = self.observer.read_git
+
+        def read(command, env, budget):
+            if "worktree" in command:
+                raise subprocess.CalledProcessError(1, command, output=b"worktree /partial\0\0")
+            return real_read(command, env, budget)
+
+        with mock.patch.object(self.observer, "read_git", side_effect=read):
+            result = self.census()
+        self.assertFalse(result["registration_complete"])
+        self.assertEqual(self.row(result, root)["registration"], "unknown")
+        self.assertFalse(result["inventory_complete"])
+
+    def test_census_does_not_read_fingerprints(self):
+        root = self.output(self.repo)
+        fingerprint = root / "target/agent/.fingerprint/unit/lib.json"
+        fingerprint.parent.mkdir(parents=True)
+        fingerprint.write_text('{"SENSITIVE":"not read"}', encoding="utf-8")
+        with mock.patch.object(self.observer, "read_file", side_effect=AssertionError("payload read")):
+            result = self.census()
+        self.assertTrue(result["inventory_complete"], result)
+        self.assert_unknown_ownership(result)
+
+    def test_read_only_snapshot_preserves_git_source_and_resources(self):
+        linked = self.linked_worktree()
+        self.output(linked)
+
+        before = self.snapshot()
+        result = self.census()
+        self.assertTrue(result["inventory_complete"], result)
+        self.assertEqual(self.snapshot(), before)
+
+    @unittest.skipUnless(BASH and shutil.which("timeout"), "requires Bash and timeout")
+    def test_real_doctor_current_slot_mode_is_reachable(self):
+        root = self.output(self.repo, b"public command")
+        result = subprocess.run([BASH, str(SCRIPT), "--current-slot", "--json"],
+                                cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(result.stdout)
+        self.assertEqual(self.row(record, root)["apparent_bytes"], len(b"public command"))
+        self.assert_unknown_ownership(record)
+
+    @unittest.skipUnless(BASH and shutil.which("timeout"), "requires Bash and timeout")
+    def test_shell_mode_preserves_snapshot_with_inherited_git_trace_targets(self):
+        self.output(self.repo, b"public read-only command")
+        config = Path(self.env["GIT_CONFIG_GLOBAL"])
+        config.write_text('[trace2]\nnormalTarget = "' + (self.root / "normal-trace").as_posix()
+                          + '"\neventTarget = "' + (self.root / "event-trace").as_posix()
+                          + '"\nperfTarget = "' + (self.root / "perf-trace").as_posix() + '"\n')
+        for traced in (False, True):
+            with self.subTest(inherited_trace_environment=traced):
+                env = dict(self.env, PYTHONPYCACHEPREFIX=str(self.root / "bytecode"))
+                if traced:
+                    env.update(GIT_TRACE=str(self.root / "ordinary-trace"),
+                               GIT_TRACE_SETUP=str(self.root / "setup-trace"),
+                               GIT_TRACE2_EVENT=str(self.root / "inherited-event-trace"))
+                before = self.snapshot()
+                result = subprocess.run([BASH, str(SCRIPT), "--current-slot", "--json"],
+                                        cwd=self.repo, env=env, text=True, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(json.loads(result.stdout)["inventory_complete"])
+                self.assertEqual(self.snapshot(), before)
 
 
 if __name__ == "__main__":

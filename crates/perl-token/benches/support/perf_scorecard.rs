@@ -74,7 +74,7 @@ where
         let start = Instant::now();
         run();
         let elapsed_ns = start.elapsed().as_nanos();
-        let sample = u64::try_from(elapsed_ns).map_or(u64::MAX, |value| value);
+        let sample = u64::try_from(elapsed_ns).unwrap_or(u64::MAX);
         samples.push(sample);
     }
 

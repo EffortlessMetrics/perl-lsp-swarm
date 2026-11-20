@@ -2,11 +2,12 @@
 """Validate gate policy mappings and required-gate workflow reachability.
 
 Every gate in .ci/gate-policy.yaml must map to a lane in policy/ci-lanes.toml
-(or be explicitly declared as not-mapped). When workflow files are supplied,
-every ``required: true`` merge-gate or release gate must also have a statically
-visible execution path through a ``gates --tier`` invocation or a workflow gate
-matrix. Commit-tier hooks and nightly jobs are intentionally outside this
-workflow reachability check.
+(or be explicitly declared as not-mapped), and every mapping must name a gate
+in that policy. When workflow files are supplied, every ``required: true``
+merge-gate or release gate must also have a statically visible execution path
+through a ``gates --tier`` invocation or a workflow gate matrix. Commit-tier
+hooks and nightly jobs are intentionally outside this workflow reachability
+check.
 
 This is the cross-reference validator: it does not enforce, it reports.
 PR 09 of the CI economics rollout.
@@ -97,6 +98,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # but carries no pr-fast lane economics of its own: pr-fast is advisory,
     # and the meta shard is the blocking placement.
     "public_api_baseline_canonical": {"lanes": ["merge_gate_shards"]},
+    "release_history_domain6_rerender": {"lanes": ["merge_gate_shards"]},
     "clippy_full": {"lanes": ["merge_gate_shards"]},
     "unit_foundation_full": {"lanes": ["merge_gate_shards"]},
     "unit_parser_stack_full": {"lanes": ["merge_gate_shards"]},
@@ -527,6 +529,14 @@ def main() -> int:
     for g, l in missing_lanes:
         print(f"  - {g} -> {l}  (lane not in ci-lanes.toml)")
 
+    stale_mappings: list[str] = []
+    # A custom policy can describe a subset of the repository gates.
+    if args.gate_policy.resolve() == DEFAULT_GATE_POLICY.resolve():
+        stale_mappings = sorted(GATE_TO_LANE_MAP.keys() - gate_specs.keys())
+        print(f"Mappings to gates absent from {args.gate_policy}: {len(stale_mappings)}")
+        for gate in stale_mappings:
+            print(f"  - {gate}")
+
     docs_target = resolve_docs_target(args.docs, args.gate_policy, args.lanes)
     if docs_target is None:
         docs_problems: list[str] = []
@@ -583,7 +593,11 @@ def main() -> int:
         args.json_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     if args.strict and (
-        unmapped_gates or missing_lanes or docs_problems or required_unreachable
+        unmapped_gates
+        or missing_lanes
+        or stale_mappings
+        or docs_problems
+        or required_unreachable
     ):
         return 1
     return 0

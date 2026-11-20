@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Backslash-delimited substitution and transliteration replacements now preserve their closing delimiters, modifiers, and following statements."
+time: 2026-10-22T12:28:00Z
+custom:
+  PR: "18334"
+  Slug: backslash-second-body-delimiter
+  Breaking: "no"

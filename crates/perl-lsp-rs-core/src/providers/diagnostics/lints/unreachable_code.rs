@@ -595,6 +595,86 @@ fn emit_unreachable(stmt: &Node, diagnostics: &mut Vec<Diagnostic>) {
     });
 }
 
+/// Byte span that a PL406 "remove unreachable code" fix must delete.
+///
+/// A whole-physical-line removal is only sound when the unreachable statement
+/// is the sole content of that line. When the line also carries live code — a
+/// subroutine declaration, an earlier `return`, a closing brace, or a
+/// neighbouring statement — removing the line deletes that live code too. For
+/// the critic fix and the code-action quick fix alike that edit is advertised
+/// as `FixSafety::Safe`, so widening past the statement is a destructive edit
+/// rather than a cleanup (issue #19333).
+///
+/// The span is therefore the whole line only when the statement owns the line;
+/// otherwise it is the statement itself plus the statement terminator that
+/// directly follows it. Both removal paths share this one rule so the two
+/// surfaces cannot disagree about what "remove the unreachable statement"
+/// means.
+///
+/// Returns `(start, end)` byte offsets into `source`.
+pub(crate) fn unreachable_removal_span(source: &str, start: usize, end: usize) -> (usize, usize) {
+    let start = floor_char_boundary(source, start);
+    let end = ceil_char_boundary(source, end.max(start));
+
+    // `line_end` is the offset of the line break itself, or the end of the
+    // source when the statement sits on the final line.
+    let line_start = source[..start].rfind('\n').map_or(0, |pos| pos + 1);
+    let line_end = source[end..].find('\n').map_or(source.len(), |pos| end + pos);
+
+    let prefix = &source[line_start..start];
+    let suffix = &source[end..line_end];
+
+    if prefix.trim().is_empty() && is_only_statement_separator(suffix) {
+        // The statement owns its line: remove the line together with its line
+        // break so no blank line is left behind.
+        let remove_end = if line_end < source.len() { line_end + 1 } else { source.len() };
+        return (line_start, remove_end);
+    }
+
+    // The statement shares its line with live code: remove only the statement
+    // and the terminator that follows it.
+    let mut remove_end = end;
+    let mut probe = end;
+    while probe < line_end && source.as_bytes()[probe].is_ascii_whitespace() {
+        probe += 1;
+    }
+    if probe < line_end && source.as_bytes()[probe] == b';' {
+        remove_end = probe + 1;
+    }
+    (start, remove_end)
+}
+
+/// Whether the text following an unreachable statement carries no live code.
+///
+/// A statement terminator and a trailing comment are separators, not code; a
+/// closing brace or a neighbouring statement is live code and must survive the
+/// removal.
+fn is_only_statement_separator(suffix: &str) -> bool {
+    let mut rest = suffix.trim_start();
+    if let Some(after_terminator) = rest.strip_prefix(';') {
+        rest = after_terminator.trim_start();
+    }
+    rest.is_empty() || rest.starts_with('#')
+}
+
+/// Largest char boundary at or below `offset`.
+fn floor_char_boundary(source: &str, mut offset: usize) -> usize {
+    offset = offset.min(source.len());
+    while offset > 0 && !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+/// Smallest char boundary at or above `offset`.
+fn ceil_char_boundary(source: &str, mut offset: usize) -> usize {
+    offset = offset.min(source.len());
+    while offset < source.len() && !source.is_char_boundary(offset) {
+        offset += 1;
+    }
+    offset
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1056,5 +1136,47 @@ mod tests {
             0,
             "next DONE exits the DONE block itself; no sibling should be PL406: {diags:?}"
         );
+    }
+
+    /// The removal span is the whole physical line only when the unreachable
+    /// statement owns that line. Otherwise it is the statement itself, so the
+    /// live code sharing the line survives the removal (#19333).
+    #[test]
+    fn removal_span_only_widens_to_the_line_the_statement_owns() {
+        let owns_its_line = "sub f {\n    return 1;\n    my $dead = 2;\n}\n";
+        let start = must_some(owns_its_line.find("my $dead"));
+        let (remove_start, remove_end) =
+            unreachable_removal_span(owns_its_line, start, start + "my $dead = 2".len());
+        assert_eq!(
+            &owns_its_line[remove_start..remove_end],
+            "    my $dead = 2;\n",
+            "a statement that owns its line is removed with that line"
+        );
+
+        let shares_its_line = "sub f { return 1; print 2; }\n";
+        let start = must_some(shares_its_line.find("print 2"));
+        let (remove_start, remove_end) =
+            unreachable_removal_span(shares_its_line, start, start + "print 2".len());
+        assert_eq!(
+            &shares_its_line[remove_start..remove_end],
+            "print 2;",
+            "a statement that shares its line is removed alone, never the whole line"
+        );
+        assert!(
+            shares_its_line[..remove_start].contains("sub f")
+                && shares_its_line[remove_end..].contains('}'),
+            "the live code on the shared line must survive the removal"
+        );
+    }
+
+    /// A trailing comment is a separator, not live code: a statement that owns
+    /// its line is still removed together with the comment that follows it.
+    #[test]
+    fn removal_span_treats_a_trailing_comment_as_a_separator() {
+        let source = "sub f {\n    return 1;\n    my $dead = 2; # gone\n}\n";
+        let start = must_some(source.find("my $dead"));
+        let (remove_start, remove_end) =
+            unreachable_removal_span(source, start, start + "my $dead = 2".len());
+        assert_eq!(&source[remove_start..remove_end], "    my $dead = 2; # gone\n");
     }
 }

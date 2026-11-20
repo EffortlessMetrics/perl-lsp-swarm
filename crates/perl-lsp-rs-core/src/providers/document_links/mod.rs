@@ -188,6 +188,82 @@ fn collect_module_runtime_links(
     }
 }
 
+/// If `byte_offset` sits on a literal module argument to `use_module` /
+/// `require_module` (including qualified `Module::Runtime::*` spellings),
+/// return that module name. Used by goto-definition (#2511).
+#[must_use]
+pub fn module_runtime_module_at_byte_offset(text: &str, byte_offset: usize) -> Option<String> {
+    if byte_offset > text.len() {
+        return None;
+    }
+    let mut line_start = 0usize;
+    let mut in_pod = false;
+    let mut quote_like_state = None;
+    for line in text.lines() {
+        let line_end = line_start.saturating_add(line.len());
+        let on_line = byte_offset >= line_start && byte_offset <= line_end;
+
+        if in_pod {
+            if line.starts_with("=cut") {
+                in_pod = false;
+            } else if on_line {
+                return None;
+            }
+            line_start = line_end.saturating_add(1);
+            continue;
+        }
+
+        if starts_pod_block(line) {
+            in_pod = true;
+            if on_line {
+                return None;
+            }
+            line_start = line_end.saturating_add(1);
+            continue;
+        }
+
+        if on_line {
+            let line_byte = byte_offset.saturating_sub(line_start);
+            let code = code_mask(line, &mut quote_like_state);
+            return module_runtime_module_on_line(line, line_byte, &code).map(str::to_string);
+        }
+        line_start = line_end.saturating_add(1);
+    }
+    None
+}
+
+fn module_runtime_module_on_line<'a>(
+    line: &'a str,
+    line_byte_offset: usize,
+    code: &[bool],
+) -> Option<&'a str> {
+    let mut offset = 0;
+    while offset < line.len() {
+        let Some(rest) = line.get(offset..) else {
+            break;
+        };
+        if code.get(offset).copied() != Some(true) {
+            offset += rest.chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        let Some((name_end, allows_version)) = match_module_runtime_call(line, offset, code) else {
+            offset += rest.chars().next().map_or(1, char::len_utf8);
+            continue;
+        };
+        if let Some((module, content_start, content_end, next_offset)) =
+            parse_module_runtime_argument(line, name_end, code, allows_version)
+        {
+            if line_byte_offset >= content_start && line_byte_offset < content_end {
+                return Some(module);
+            }
+            offset = next_offset;
+        } else {
+            offset = name_end;
+        }
+    }
+    None
+}
+
 fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<(usize, bool)> {
     let prefix = line.get(..start)?.trim_end();
     if !prefix.is_empty() && prefix.chars().next_back().is_some_and(is_identifier_boundary) {
@@ -845,7 +921,7 @@ fn make_link(_src: &str, line: u32, line_text: &str, pkg: &str, target: String) 
 
 #[cfg(test)]
 mod tests {
-    use super::compute_links;
+    use super::{compute_links, module_runtime_module_at_byte_offset};
     use serde_json::Value;
 
     fn uri() -> &'static str {
@@ -894,6 +970,38 @@ mod tests {
         };
         check_module_link(first, "Foo::Bar", 12, 20, 0)?;
         check_module_link(second, "Baz::Qux", 16, 24, 1)
+    }
+
+    #[test]
+    fn module_runtime_module_at_byte_offset_resolves_literal_argument() -> Result<(), String> {
+        let text = "use Module::Runtime qw(use_module);\nuse_module('Demo::Worker');\n";
+        let worker = "Demo::Worker";
+        let line_start = text.find("use_module('Demo").ok_or("missing call")?;
+        let in_literal = line_start + text[line_start..].find('D').ok_or("missing Demo")?;
+        let resolved = module_runtime_module_at_byte_offset(text, in_literal)
+            .ok_or("cursor on literal must resolve module name")?;
+        assert_eq!(resolved, worker);
+        let before_call = line_start + 1;
+        assert!(
+            module_runtime_module_at_byte_offset(text, before_call).is_none(),
+            "cursor on the call keyword must not resolve"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn module_runtime_module_at_byte_offset_ignores_pod_headings() -> Result<(), String> {
+        let text = "=head1 use_module('Foo::Bar')\n\n=cut\nuse_module('Demo::Worker');\n";
+        let in_pod = text.find('F').ok_or("missing pod text")?;
+        assert!(
+            module_runtime_module_at_byte_offset(text, in_pod).is_none(),
+            "POD headings must not resolve as executable Module::Runtime calls"
+        );
+        let in_code = text.find("Demo::Worker").ok_or("missing code call")?;
+        let resolved = module_runtime_module_at_byte_offset(text, in_code)
+            .ok_or("code after POD must still resolve")?;
+        assert_eq!(resolved, "Demo::Worker");
+        Ok(())
     }
 
     #[test]

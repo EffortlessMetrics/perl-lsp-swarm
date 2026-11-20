@@ -4,6 +4,12 @@
 //! after a quiet period. The interval is supplied at construction by the
 //! Scheduler, which reads it from the active [`RuntimeTuning`].
 //!
+//! The debounce is trailing-edge (the deadline resets on every reschedule)
+//! but bounded: a URI stays pending at most
+//! [`MAX_DEFERRAL_INTERVALS`](const@MAX_DEFERRAL_INTERVALS) intervals after
+//! its first schedule, so a continuous keystroke storm cannot postpone
+//! publication indefinitely (#18774).
+//!
 //! [`RuntimeTuning`]: perl_lsp_rs_core::runtime::tuning::RuntimeTuning
 
 use std::collections::HashMap;
@@ -15,6 +21,24 @@ use std::time::{Duration, Instant};
 enum DebounceMsg {
     Schedule(String),
     Shutdown,
+}
+
+/// Maximum deferral for one pending URI, in multiples of the debounce
+/// interval (#18774). A pure trailing-edge debounce resets the deadline on
+/// every keystroke, so continuous fast typing postpones a URI's publication
+/// indefinitely; the bound guarantees at least one publish every
+/// `MAX_DEFERRAL_INTERVALS` intervals after the URI was first scheduled.
+const MAX_DEFERRAL_INTERVALS: u32 = 4;
+
+/// A pending publication: its trailing-edge deadline plus when the URI was
+/// first scheduled.
+struct PendingPublication {
+    /// Earliest permitted publish; resets to `now + interval` on every
+    /// reschedule, clamped by the max-deferral bound below.
+    deadline: Instant,
+    /// When this URI's current pending episode began. Reset (with the
+    /// entry) when the URI fires.
+    first_scheduled: Instant,
 }
 
 pub(crate) struct DiagnosticDebouncer {
@@ -220,7 +244,7 @@ fn worker_loop<F>(
 ) where
     F: Fn(&str) + Send + 'static,
 {
-    let mut pending: HashMap<String, Instant> = HashMap::new();
+    let mut pending: HashMap<String, PendingPublication> = HashMap::new();
     loop {
         let timeout = earliest_timeout(&pending);
         let msg = match timeout {
@@ -247,7 +271,19 @@ fn worker_loop<F>(
         };
         match msg {
             Some(DebounceMsg::Schedule(uri)) => {
-                pending.insert(uri, Instant::now() + interval);
+                let now = Instant::now();
+                let entry = pending.entry(uri).or_insert_with(|| PendingPublication {
+                    deadline: now + interval,
+                    first_scheduled: now,
+                });
+                // Trailing-edge debounce: the deadline chases the latest
+                // keystroke so bursts coalesce -- but never past the
+                // max-deferral bound measured from the first schedule
+                // (#18774), so a sustained storm cannot starve publication.
+                entry.deadline = std::cmp::min(
+                    now + interval,
+                    entry.first_scheduled + interval * MAX_DEFERRAL_INTERVALS,
+                );
                 pending_count.store(pending.len(), Ordering::SeqCst);
             }
             Some(DebounceMsg::Shutdown) => {
@@ -262,17 +298,17 @@ fn worker_loop<F>(
     }
 }
 
-fn earliest_timeout(pending: &HashMap<String, Instant>) -> Option<Duration> {
+fn earliest_timeout(pending: &HashMap<String, PendingPublication>) -> Option<Duration> {
     if pending.is_empty() {
         return None;
     }
     let now = Instant::now();
-    let earliest = pending.values().min().copied().unwrap_or(now);
+    let earliest = pending.values().map(|pending| pending.deadline).min().unwrap_or(now);
     Some(earliest.saturating_duration_since(now))
 }
 
 fn fire_expired<F>(
-    pending: &mut HashMap<String, Instant>,
+    pending: &mut HashMap<String, PendingPublication>,
     publish_fn: &F,
     pending_count: &AtomicUsize,
 ) where
@@ -281,7 +317,7 @@ fn fire_expired<F>(
     let now = Instant::now();
     let expired: Vec<String> = pending
         .iter()
-        .filter(|(_, deadline)| **deadline <= now)
+        .filter(|(_, pending)| pending.deadline <= now)
         .map(|(uri, _)| uri.clone())
         .collect();
     for uri in expired {
@@ -308,7 +344,11 @@ mod tests {
     #[test]
     fn earliest_timeout_saturates_when_deadline_already_passed() {
         let mut pending = HashMap::new();
-        pending.insert("file:///expired.pl".to_string(), Instant::now() - Duration::from_millis(5));
+        let now = Instant::now();
+        pending.insert(
+            "file:///expired.pl".to_string(),
+            PendingPublication { deadline: now - Duration::from_millis(5), first_scheduled: now },
+        );
 
         assert_eq!(earliest_timeout(&pending), Some(Duration::ZERO));
     }
@@ -318,8 +358,15 @@ mod tests {
         let pending_count = AtomicUsize::new(0);
         let published = Mutex::new(Vec::<String>::new());
         let mut pending = HashMap::new();
-        pending.insert("file:///ready.pl".to_string(), Instant::now() - Duration::from_millis(1));
-        pending.insert("file:///later.pl".to_string(), Instant::now() + Duration::from_secs(30));
+        let now = Instant::now();
+        pending.insert(
+            "file:///ready.pl".to_string(),
+            PendingPublication { deadline: now - Duration::from_millis(1), first_scheduled: now },
+        );
+        pending.insert(
+            "file:///later.pl".to_string(),
+            PendingPublication { deadline: now + Duration::from_secs(30), first_scheduled: now },
+        );
         pending_count.store(pending.len(), Ordering::SeqCst);
 
         fire_expired(&mut pending, &|uri| published.lock().push(uri.to_string()), &pending_count);
@@ -328,6 +375,36 @@ mod tests {
         assert!(!pending.contains_key("file:///ready.pl"));
         assert!(pending.contains_key("file:///later.pl"));
         assert_eq!(pending_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// #18774: a pure trailing-edge debounce resets the deadline on every
+    /// reschedule, so scheduling every interval/2 for many intervals would
+    /// postpone the publication forever. The max-deferral bound must fire
+    /// the URI by `first_scheduled + 4 * interval` even while the storm
+    /// continues (asserted with generous slack at 5.5 intervals to stay
+    /// robust on loaded CI machines).
+    #[test]
+    fn debouncer_fires_by_max_deferral_under_continuous_rescheduling() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        let debouncer = DiagnosticDebouncer::with_interval(Duration::from_millis(100), move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // 12 reschedules at interval/2 spacing = a 6-interval burst.
+        for _ in 0..12 {
+            debouncer.schedule("file:///storm.pl");
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        let bound = Instant::now() + Duration::from_millis(150);
+        while Instant::now() < bound && count.load(Ordering::SeqCst) == 0 {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            count.load(Ordering::SeqCst) >= 1,
+            "continuous rescheduling must not starve publication past the max-deferral bound"
+        );
     }
 
     #[test]

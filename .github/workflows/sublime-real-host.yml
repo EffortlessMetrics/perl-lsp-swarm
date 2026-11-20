@@ -36,18 +36,7 @@ jobs:
       # bound in the first step instead, where $RUNNER_OS is real.
       PERLLSP_SUBLIME_FIXTURE: ${{ github.workspace }}/clients/sublime/host-fixture
       PERLLSP_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      # The UnitTesting setup action resolves `extra-packages` refs through
-      # `gitResolvePrefixToTag`, which matches only tags and branches and then
-      # clones with `git clone --branch`. A raw commit SHA can never resolve, so
-      # the package is installed by its tag and the tag is asserted to still
-      # point at the exact reviewed commit below.
-      PERLLSP_LSP_TAG: 4070-2.13.0
       PERLLSP_LSP_REF: cc9f5201d9f053d9ab67aa0ea575b494fd133803
-      # UnitTesting declares sublime_aio as a Package Control dependency for
-      # ST4 (dependencies.json), but this workflow disables Package Control,
-      # so the dependency is installed explicitly and pinned the same way.
-      PERLLSP_AIO_TAG: v0.2.3
-      PERLLSP_AIO_REF: b3d1d559ec223f276c9693e17476768257951266
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -68,136 +57,21 @@ jobs:
             "$GITHUB_WORKSPACE/target/sublime-host/$RUNNER_OS-commands.json" >> "$GITHUB_ENV"
           mkdir -p "$GITHUB_WORKSPACE/target/sublime-host"
 
-      - name: Reject sublimelsp/LSP tag drift from the reviewed commit
+      - name: Install the verified Sublime Text 4200 build and exact packages
+        # Later ST4 builds replaced the Python 3.8 host needed by LSP 2.13.0 (#16388).
+        shell: bash
+        run: python scripts/sublime/setup_pinned_host.py
+
+      - name: Start the Linux test display
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          resolved=$(git ls-remote https://github.com/sublimelsp/LSP \
-            "refs/tags/$PERLLSP_LSP_TAG^{}" | cut -f1)
-          if [[ "$resolved" != "$PERLLSP_LSP_REF" ]]; then
-            echo "sublimelsp/LSP tag $PERLLSP_LSP_TAG resolves to ${resolved:-<none>}," >&2
-            echo "but the reviewed exact-source commit is $PERLLSP_LSP_REF." >&2
-            exit 1
-          fi
-          echo "sublimelsp/LSP $PERLLSP_LSP_TAG is $PERLLSP_LSP_REF"
-
-      - name: Reject sublime_aio tag drift from the pinned commit
-        shell: bash
-        run: |
-          resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio             "refs/tags/$PERLLSP_AIO_TAG^{}" | cut -f1)
-          if [[ -z "$resolved" ]]; then
-            # Lightweight tags have no peeled ref; the tag ref is the commit.
-            resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio               "refs/tags/$PERLLSP_AIO_TAG" | cut -f1)
-          fi
-          if [[ "$resolved" != "$PERLLSP_AIO_REF" ]]; then
-            echo "packagecontrol/sublime_aio tag $PERLLSP_AIO_TAG resolves to ${resolved:-<none>}," >&2
-            echo "but the pinned commit is $PERLLSP_AIO_REF." >&2
-            exit 1
-          fi
-          echo "packagecontrol/sublime_aio $PERLLSP_AIO_TAG is $PERLLSP_AIO_REF"
-
-      - name: Stage the exact helper-package source
-        shell: bash
-        run: |
-          rm -rf target/LSP-perllsp-package
-          mkdir -p target/LSP-perllsp-package
-          cp -R clients/sublime/LSP-perllsp/. target/LSP-perllsp-package/
-          git -C target/LSP-perllsp-package init -q
-          git -C target/LSP-perllsp-package remote add origin \
-            https://github.com/EffortlessMetrics/perl-lsp-swarm.git
-
-      - name: Install Sublime Text, UnitTesting, and exact LSP 2.13.0 source
-        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164  # master (sublime-journey)
-        with:
-          package-name: LSP-perllsp
-          package-path: target/LSP-perllsp-package
-          sublime-text-version: 4
-          install-package-control: false
-          extra-packages: |
-            LSP:sublimelsp/LSP@${{ env.PERLLSP_LSP_TAG }}
-            sublime_aio:packagecontrol/sublime_aio@${{ env.PERLLSP_AIO_TAG }}
-
-      - name: Pin the exact Sublime Text 4200 build over the floating install
-        # The setup action above cannot pin an exact ST4 build: its
-        # `sublime-text-version` input accepts only the literal `3` or `4`, and
-        # both of its installers resolve the actual artifact by scraping the
-        # live sublimetext.com download page for the newest build. That float
-        # crossed 4200 -> 4213 on 2026-09-21: builds after 4200 ship a
-        # python-3.13/3.14 plugin host instead of python-3.8, under which the
-        # pinned LSP 2.13.0 window registry never populates and the journey
-        # dies with `windows.lookup() -> None` before a single test runs
-        # (#16388). Every other input of this lane is already pinned to the
-        # last-green 4200 era (the UnitTesting action SHA, LSP 4070-2.13.0,
-        # the python-3.8-era typing_extensions vendor), so the floating
-        # install is replaced in place with the exact 4200 artifacts, each
-        # verified by digest. Install paths, PATH entries, and the subl
-        # launcher symlinks are unchanged; on Windows the Data directory,
-        # which already holds the packages the action installed, is
-        # preserved across the swap.
-        shell: bash
-        run: |
-          set -euo pipefail
-          base="https://download.sublimetext.com"
-          staging="$(mktemp -d)"
-          case "$RUNNER_OS" in
-            Windows)
-              artifact="sublime_text_build_4200_x64.zip"
-              digest="d20456bbefcd626c7c89a4a2e95c326a0c570df2fd7626fc35091e43ae5bff9f"
-              curl -fsSL "$base/$artifact" -o "$staging/$artifact"
-              printf '%s  %s\n' "$digest" "$staging/$artifact" | sha256sum -c -
-              restore_data=""
-              if [ -d /c/st/Data ]; then
-                mv /c/st/Data "$staging/Data"
-                restore_data=1
-              fi
-              rm -rf /c/st
-              mkdir -p /c/st
-              python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
-                "$staging/$artifact" /c/st
-              # The 4200 zip ships a Data/KEEPME stub; drop it so the
-              # preserved action-installed Data (the Packages tree) is
-              # restored in place, not nested inside the stub. First observed
-              # as PR #16682's run 36420315629: the Windows journey timed out
-              # with Packages missing the four installed packages.
-              rm -rf /c/st/Data
-              if [ -n "$restore_data" ]; then
-                mv "$staging/Data" /c/st/Data
-              fi
-              test -f /c/st/sublime_text.exe
-              test -f /c/st/plugin_host-3.8.exe
-              test -d /c/st/Data/Packages/LSP-perllsp
-              test -d /c/st/Data/Packages/UnitTesting
-              test -d /c/st/Data/Packages/LSP
-              test -d /c/st/Data/Packages/sublime_aio
-              echo "Sublime Text build 4200 installed in C:\\st"
-              ;;
-            macOS)
-              artifact="sublime_text_build_4200_mac.zip"
-              digest="4835eb2a5d3f2b223ce93a27149f360ef158af9f8dd708b6f501d708c081d319"
-              curl -fsSL "$base/$artifact" -o "$staging/$artifact"
-              printf '%s  %s\n' "$digest" "$staging/$artifact" | sha256sum -c -
-              rm -rf "$HOME/Applications/Sublime Text.app"
-              unzip -q "$staging/$artifact" -d "$HOME/Applications/"
-              test -f "$HOME/Applications/Sublime Text.app/Contents/MacOS/sublime_text"
-              test -f "$HOME/Applications/Sublime Text.app/Contents/MacOS/plugin_host-3.8"
-              echo "Sublime Text build 4200 installed in ~/Applications/Sublime Text.app"
-              ;;
-            Linux)
-              artifact="sublime_text_build_4200_x64.tar.xz"
-              digest="36f69c551ad18ee46002be4d9c523fe545d93b67fea67beea731e724044b469f"
-              curl -fsSL "$base/$artifact" -o "$staging/$artifact"
-              printf '%s  %s\n' "$digest" "$staging/$artifact" | sha256sum -c -
-              rm -rf "$HOME/sublime_text"
-              tar xf "$staging/$artifact" -C "$HOME"
-              test -f "$HOME/sublime_text/sublime_text"
-              test -f "$HOME/sublime_text/plugin_host-3.8"
-              echo "Sublime Text build 4200 installed in ~/sublime_text"
-              ;;
-            *)
-              echo "unsupported RUNNER_OS: $RUNNER_OS" >&2
-              exit 1
-              ;;
-          esac
-          rm -rf "$staging"
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgtk-3-0 psmisc locales locales-all xvfb
+          echo "DISPLAY=:1" >> "$GITHUB_ENV"
+          Xvfb :1 -screen 0 1024x768x24 -ac +extension GLX +render -noreset &
+          sleep 1
 
       - name: Vendor the pinned typing_extensions dependency
         # The pinned LSP 2.13.0 declares typing_extensions as a Package

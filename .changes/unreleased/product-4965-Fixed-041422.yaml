@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "Document links for `use`/`require` statements inside POD now report correct UTF-16 columns for lines containing multi-byte characters, instead of using a locally-duplicated conversion helper that silently returned the wrong (raw byte) offset."
-time: 2026-07-25T04:14:22Z
-custom:
-  PR: "4965"
-  Slug: doclinks-utf16-column-dedup
-  Breaking: "no"

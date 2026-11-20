@@ -62,6 +62,7 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
     let readme = read(&root, "README.md")?;
     let faq = read(&root, "docs/reference/FAQ.md")?;
     let zed = read(&root, "docs/EDITORS/ZED_SETUP.md")?;
+    let config = read(&root, "docs/reference/CONFIG.md")?;
     let editor_setup = read(&root, "docs/how-to/EDITOR_SETUP.md")?;
     let book_setup = read(&root, "book/src/reference/editor-setup-canonical.md")?;
     let troubleshooting = read(&root, "docs/how-to/TROUBLESHOOTING.md")?;
@@ -84,8 +85,8 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
         "Zed setup guide must keep planned/not-proven status"
     );
     assert!(
-        zed.contains("does **not** register `perllsp`"),
-        "Zed setup guide must not claim public perllsp registration"
+        zed.contains("`perl-lsp-rs`") && zed.contains("`perllsp --stdio`"),
+        "Zed guide must distinguish the proposed provider ID from the executable"
     );
     assert!(
         editor_setup.contains("| Zed | **Planned / not proven:**"),
@@ -96,7 +97,7 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
         "mdBook editor setup must keep Zed planned/not-proven"
     );
     assert!(
-        troubleshooting.contains("public Perl extension does not register `perllsp`"),
+        troubleshooting.contains("**Planned / not proven.**"),
         "troubleshooting must keep the public-extension boundary"
     );
     assert!(
@@ -117,15 +118,21 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
     }
     let troubleshooting_zed =
         markdown_section(&troubleshooting, "## Zed Does Not Start `perllsp`", "## ")?;
+    let config_zed = markdown_section(&config, "#### Zed (`settings.json`)", "#### ")?;
+    let provider_object =
+        regex::Regex::new(r#""(?:perl-lsp-rs|perl-lsp|perllsp)"[ \t\r\n]*:[ \t\r\n]*\{"#)?;
     for (path, text) in [
         ("docs/EDITORS/ZED_SETUP.md", zed.as_str()),
+        ("docs/reference/CONFIG.md", config_zed),
         ("docs/how-to/EDITOR_SETUP.md", combined_zed),
         ("book/src/reference/editor-setup-canonical.md", book_zed),
         ("docs/how-to/TROUBLESHOOTING.md", troubleshooting_zed),
     ] {
         assert!(
-            !text.contains("\"perl-lsp\": {"),
-            "{path} must not repoint Zed's independent perl-lsp ID to perllsp"
+            !text.to_ascii_lowercase().contains("```json")
+                && !text.contains("lsp.perllsp")
+                && !provider_object.is_match(text),
+            "{path} must not offer runnable Zed JSON settings or the provisional settings key"
         );
     }
 

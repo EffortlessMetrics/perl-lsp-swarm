@@ -134,6 +134,141 @@ All notable changes to the Perl Language Server extension will be documented in 
   granted. This prevents untrusted workspace content from triggering binary
   downloads or spawning server processes. (#4631)
 
+### Language intelligence
+
+#### Fixed
+
+- A custom perl-lsp.serverPath that points to a directory or a non-executable file is now rejected at startup with a message naming the actual problem, instead of being spawned and failing with a misleading permission error. Paths starting with ~ are expanded to the home directory instead of silently falling back to a different bundled or downloaded binary. ([#18119](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/18119))
+
+### Editor behavior
+
+#### Added
+
+- Added a versioned accessibility inventory and semantic guards for extension-authored VS Code control surfaces. ([#7882](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7882))
+- The POD preview webview now ships a main landmark, a theme-variable focus indicator, and enforced semantic/theme/reflow accessibility contracts, and the installed VS Code smoke writes a candidate-bound accessibility receipt (keyboard routes, labels, and honest not-proven screen-reader rows) for the exact packaged VSIX (#7807, ([#17044](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/17044))
+
+#### Changed
+
+- Workspace status now separates the product name from runtime server state and reports the observed server version only from a live initialize probe, preserved verbatim and single-line instead of asserting an executable identity the snapshot never established. ([#6869](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/6869))
+- **Breaking:** New .pm and .t files are no longer auto-populated. Use Perl: Create Module or Perl: Create Test to choose a new file and create it with starter content. The old perl-lsp.autoPopulateNewFiles setting is retired; existing true/false values have no effect. ([#16515](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16515))
+
+#### Fixed
+
+- Status bar now shows workspace file and error counts in the running state; HealthWidget.setFileCount/setErrorCount are wired to client-side diagnostics and workspace file-scan telemetry instead of being dead code. ([#4712](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/4712))
+- A mid-session server crash is no longer silent: the extension now shows an error toast with a diagnosis hint, attempts up to 3 automatic restarts, and prompts the user to restart manually or run a Health Check once the retry budget is exhausted. ([#4732](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/4732))
+- The format-on-save error cooldown was reduced from 30s to 5s so a formatting error doesn't silently block saves for half a minute, and the indexing status bar now shows file count. ([#5184](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5184))
+- Show Output, Reinstall, Restart, and Status Menu commands are now available even without a Perl file open, all 35 commands are now grouped under a single "Perl" category in the command palette instead of "Perl LSP", and format-on-save now logs a debug message explaining why formatting was skipped while the server is still indexing. ([#5188](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5188))
+- The extension no longer accumulates duplicate @INC/AST output channels on repeated use, the status bar now renders indexing percentage when the server reports it, and the file count shown in the status bar now refreshes when workspace folders change instead of being computed once and never updated. ([#5190](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5190))
+- The deprecated perl-lsp.perlcritic.theme setting's deprecation message now points to perl-lsp.critic.profile instead of the nonexistent perl-lsp.critic.theme. ([#5291](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5291))
+- The Test Explorer's TAP result parser now honors '# TODO' and '# SKIP' directives, reporting them as skipped instead of counting an expected-to-fail TODO test as a failure or a SKIP test as a pass. ([#5301](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5301))
+- The Test Explorer's prove-based test runner now resolves the prove executable from the directory of the perl found on PATH (so perlbrew/plenv users whose shims are on PATH get the matching prove) and falls back to shell:true on Windows, instead of failing on Windows where prove is a .bat shim. Note: this resolution uses the PATH perl and does not consult the perl.perlPath setting. ([#5305](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5305))
+- A failed or incomplete startup health check no longer reports that Perl is missing. The extension now names a root cause only when an explicit check result establishes it, and otherwise says the cause could not be determined. ([#10149](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/10149))
+- Per-folder include paths now reach the language server. The server asks for its configuration once per workspace folder, but those requests were resolved against the unrelated `perl` settings namespace instead of the extension's `perl-lsp` one, so every folder-scoped answer came back empty and only a single workspace-wide push was ever applied. Include paths set on one folder of a multi-root workspace are now answered for that folder alone — note this means a folder-scoped `perl-lsp.includePaths` value that previously had no effect will now take precedence over a checked-in project config for that folder. Critic settings remain session-wide on the server and are unchanged. Accepting the discovered-include-paths suggestion, and setting Critic severity from the command palette, now write to the folder you acted on rather than publishing the value to every folder in the workspace. ([#14447](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/14447))
+- `perl-lsp.autoPopulateNewFiles` now honours the per-folder scope it is contributed with. The setting is declared `resource`, so the settings UI offers it per workspace folder, but the file-creation listener read it once without a resource before looking at the created files — a read with no resource cannot see a folder value, so in a multi-root workspace the global or workspace-wide value decided the behaviour for every folder. The gate is now resolved against each created file's own URI: a folder that sets the value to `false` no longer has new `.pm` and `.t` files auto-populated even when the workspace-wide value is `true`, and a folder that sets it to `true` gets population even when the workspace-wide value is `false`. A workspace opened as a single folder has no per-folder layer and behaves exactly as before, as do files created outside any workspace folder and workspaces that never set the value. A `.code-workspace` listing exactly one folder is multi-root for this purpose: a value set on that folder now takes effect where it previously did not. ([#14547](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/14547))
+- Language-client shutdown now retains the spawned server process witness so Run Health Check can distinguish a live failed process from a safely exited one before retrying startup. ([#15162](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15162))
+- Run Health Check now reports the current language-server startup and recovery state, revalidates setup across one bounded lifecycle replacement, and labels explicit-path checks as setup diagnostics. ([#15146](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15146))
+- Run Health Check now keeps binary presence separate from runtime startup, reports cleanup-blocked failures with reload guidance, prevents stale startup diagnoses from overwriting a recovered server generation, and keeps transport-write failures on the public request path without orphaned rejections. ([#15158](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15158))
+- Health Check now fails closed when the language-server process witness is unavailable or malformed, preventing replacement startup from assuming cleanup completed. ([#15159](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15159))
+- The Windows Perl Test Explorer path runs through Perl's documented stdin test-list interface, so test files with spaces and shell metacharacters execute without the batch-shim globbing failure. ([#15163](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15163))
+- Keep each workspace folder's Perl include paths separate during startup and live setting changes, while retaining include paths for standalone files. ([#16955](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16955))
+- Reset the automatic crash recovery budget when Restart Now is accepted after changing server settings, matching the Restart Server command. ([#17966](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/17966))
+
+#### Security
+
+- AI-completion settings are now machine-scoped in the extension, the 'Enable' suggestion writes the user (global) setting instead of a workspace setting, and changes to machine-scoped AI-completion settings are re-sent to the server, so a workspace can no longer switch AI completion on for its users. ([#5022](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5022))
+- The extension now forwards external include roots to the server only from the user/machine-scoped externalIncludePaths setting (inspect().globalValue), never from workspace- or folder-scoped values, so a checked-in .vscode/settings.json can no longer widen the server's include path on behalf of the user. ([#5021](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5021))
+- The legacy tooling settings perl-lsp.perltidyConfig, perl-lsp.critic.engine, perl-lsp.perlcritic.profile and perl-lsp.perlcritic.theme are now machine-scoped, so a checked-in .vscode/settings.json can no longer set them and a cloned repository cannot re-arm the legacy Perl::Critic/perltidy subprocess path on your machine; set them in your user or machine settings instead. ([#5023](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5023))
+
+### Performance and reliability
+
+#### Added
+
+- Added a bounded VS Code client measurement recorder that keeps missing instrumentation distinct from zero cost. ([#7884](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7884))
+- Added a generation-owned crash recovery arbiter that deduplicates watchdog and process-exit failure episodes. ([#7888](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7888))
+
+#### Changed
+
+- Added a transactional activation resource owner with deterministic rollback and idempotent deactivation. ([#7918](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7918))
+- The Perl language server now starts on demand instead of on every activation. Gherkin-only, walkthrough-only, and debug-configuration sessions no longer spawn or download a language server they never use, and the status bar reports a truthful "not started" state instead of an indefinite spinner. Opening a Perl file later in the session starts exactly one server without a window reload. ([#10221](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/10221))
+- The VS Code language-client lifecycle retains a completed cleanup episode's exact process subject and permits an explicit restart only after that subject is observed terminal; failed client cleanup, unknown observation, and timed-out startup remain blocked and request reload remediation (#14486). ([#0000](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15168))
+
+#### Fixed
+
+- Perl test discovery caps the initial .t file collection at 500 files, removing one source of unbounded work in large workspaces, and binary-download redirects are bounded to a small count instead of potentially following a redirect loop indefinitely. ([#5141](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5141))
+- The extension now runs a liveness watchdog that pings the language server every 30 seconds and automatically restarts it when a request goes unanswered for 10 seconds, so a hung server recovers on its own instead of staying unresponsive until a manual restart. ([#5152](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5152))
+- Restored watchdog recovery of a hung language server; a shutdown-timeout stop rejection from an already-stopped client no longer blocks the replacement as incomplete cleanup. ([#14155](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/14155))
+- Restarting the language server or rebuilding Test Explorer integration no longer retains disposed test adapters in the extension host subscription array. ([#18327](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/18327))
+- Ignore malformed disabled-feature settings during language-client startup, filter non-string feature entries, and apply feature-disable aliases only for explicit false settings. ([#18322](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/18322))
+
+#### Performance
+
+- Added an evidence-backed VS Code client performance policy layer that classifies metrics by evidence quality and policy class, keeps missing instrumentation explicitly not-proven instead of zero, refuses noisy or unattributable evidence as blocking gates, and validates the committed vscode_client_perf_policy.v1 baseline record against those rules. ([#11909](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/11909))
+
+### Packaging and distribution
+
+#### Added
+
+- Added versioned managed-cache candidate and mutation-lease identities for cross-extension-host coordination. ([#7880](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7880))
+- Added the internal managed-startup decision policy that separates local binary readiness from update-metadata availability. No user-visible startup behavior changes until a later slice consumes it. ([#7914](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7914))
+- Added the checked, fail-closed workspace-host target decision used to distinguish exact release targets from unsupported architecture, Android/Termux, unresolved libc, and topology-drift states. Production downloader wiring follows in the closing ([#10001](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/10001))
+- Added the topology-derived VSIX target projection and closed candidate payload manifest, keeping GNU/musl, Windows ARM64, required server/DAP members, and binaryless universal packages distinct before package construction. ([#10003](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/10003))
+
+#### Changed
+
+- Added immutable managed candidate selection, host binding, and fail-safe garbage-collection policy for shared caches. ([#11780](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/11780))
+- Binary identity status now offers working follow-up actions — managed-binary repair runs the governed reinstall flow, refresh re-reads identity, and inspect shows the resolved server path — and identity requests carry a version-independent packaged authority token plus the installed managed candidate and target when known. ([#17040](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/17040))
+
+#### Fixed
+
+- Checking for a newer perl-lsp release now times out after 30 seconds instead of being able to hang indefinitely and block the binary download/update flow. ([#5018](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5018))
+- The VS Code Marketplace listing's keywords were trimmed from 12 (exceeding the 5-tag limit, so the last 7 were silently dropped) to the 5 highest-intent terms; the README's command table and links were corrected to match actual command-palette labels; and the bug-report issue template now points at the real 'Perl: Show Output Channel' command instead of one that doesn't exist. ([#5158](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5158))
+- Ordinary VSIX packaging now validates the exact archive it produced, so package inventory checks use shipped archive names and reject missing or corrupt artifacts. ([#15123](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15123))
+- The manual Check for Binary Updates command now always performs a real check and reports the outcome, including a You-are-up-to-date confirmation, instead of being silently suppressed for up to a day by a recent background check; pinned tag-channel users are told why checks are disabled. ([#16573](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16573))
+- Cancelling a binary download now shows a short confirmation instead of a failure dialog; checksum failures offer a working Retry Download button; and a missing SHA256SUMS manifest is reported as missing release metadata rather than a corrupted download. ([#16573](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16573))
+- HTTP 403 download failures stop blaming the GitHub rate limit unconditionally and now name GitHub-or-network/proxy with a proxy hint, and network-failure guidance widens to DNS, unreachable-network, connection-reset, and TLS certificate errors with a concrete retry command. ([#16573](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16573))
+- Don't ask again on the update prompt now suppresses only the prompt: interval update checks and perl-lsp.autoUpdate keep working, instead of the old behavior that permanently rewrote updateCheckInterval to 0. ([#16573](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16573))
+- perl-lsp.versionTag pinning failures are now attributable. A tag that GitHub has no release record for reports "No release found for the configured tag "<tag>"; check the perl-lsp.versionTag setting." instead of "No releases found"; channel="tag" with an empty versionTag names the empty setting and its remedy instead of the "Invalid managed release policy" wrapper; and a versionTag set while channel is still latest emits a one-time warning that it is ignored unless channel="tag". ([#16533](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16533))
+- Accepting a perllsp update — through the availability prompt's Update button or perl-lsp.autoUpdate — now confirms the staged install with "perllsp x.y.z downloaded. Reload the window to switch to it." and a Reload Window button, instead of finishing silently while the running server stays on the old binary. The update install's progress is labelled "Updating Perl Language Server" so it no longer looks identical to a first-run download. ([#16531](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16531))
+- When perl-lsp.serverPath names a missing path, the extension shows a once-per-session warning that names the actual fallback source (downloaded, bundled, or PATH), or says when no fallback is available. The warning links to the serverPath setting. ([#16535](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16535))
+- Managed binary downloads now honor the `http.proxy` setting and the standard proxy environment variables (including CONNECT tunnels for HTTPS release hosts), follow relative redirects instead of failing the archive download, keep proxy credentials out of every error and log, classify proxy/TLS failures as actionable network problems, and route the proxy hop itself around the extension host's patched HTTP modules so a proxy that resolves itself cannot loop the plain-HTTP path. ([#17041](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/17041))
+
+#### Security
+
+- Pinned the brace-expansion npm dependency to patched versions (1.1.16 / 2.1.3 / 5.0.8) to remediate a known runtime security alert in the VS Code extension's dependency tree. ([#5263](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5263))
+- **Breaking:** Managed binary archive downloads are bounded independently of timeout, and extraction inspects the archive then installs only the unique perllsp executable and optional perl-dap. Oversized, traversing, linked, or ambiguous archives are rejected and leave no partial candidate. ([#12808](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/12808))
+- Updated the development-time fast-uri override used through Ajv to the patched 3.1.6 release, removing the four known host-normalization advisories from the extension dependency lock. ([#15120](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15120))
+
+### Compatibility
+
+#### Added
+
+- Added a versioned public-beta VS Code settings migration registry with deterministic security and scope invariants. ([#7878](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7878))
+
+#### Changed
+
+- Added runtime interpretation for compatible, action-required, and inert public-beta VS Code setting migrations without rewriting user state, naming why a legacy setting could not be interpreted so a registry defect is not reported as an unknown user setting. ([#7896](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7896))
+- The public-beta settings migration registry now treats a row's historical era as a comparable window rather than opaque text: bounds accept a strict release or a whole minor series (0.17.x), two rows claiming any release in common for the same setting and scope are rejected as a registry defect, and several legitimate disjoint eras for one setting are resolved by the era covering the registry's own source public release instead of failing closed as ambiguous. A differing value shape no longer licenses two eras a reader cannot separate. No shipped setting changes behavior: today's single-row registry is validated and interpreted exactly as before (#15503). ([#15504](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15504))
+
+#### Security
+
+- Disabled the generic configured-command MCP passthrough so stale public-beta settings cannot register arbitrary local MCP processes. ([#7911](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7911))
+
+### Developer experience
+
+#### Added
+
+- Added a typed structurally redacted support-packet model for public-beta issue reproduction without log scraping. ([#7879](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7879))
+
+#### Changed
+
+- npm test now runs Jest quietly by default; verbose per-test output is opt-in via `npm run test:ci` or the JEST_VERBOSE env var. ([#3904](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/3904))
+- Report Issue now copies a typed redacted public-beta support packet while keeping unavailable live state explicitly not proven. ([#7904](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/7904))
+- Report Issue now separates showing, copying, and filing — copying the support packet no longer opens the browser, the packet can be inspected in an editor tab first, and clipboard or packet failures stay bounded without blocking the issue form. ([#13815](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/13815))
+
+#### Fixed
+
+- A failing VSIX packaging step now says what failed instead of exiting 1 with no output. `packageVsix()` no longer returns a bare `false` that the caller could only turn into an exit code; each failing stage (vsce packaging, prebuilt payload member, prebuilt inventory SHA, and the inventory ratchet) throws a reason naming the stage and the artifact, so the existing CLI `catch` reports it on stderr. The inventory ratchet also writes its violations to stderr, naming the offending file with its baseline and actual sizes, and the missing-file case names the file. What the ratchet rejects is unchanged. ([#16570](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16570))
+
 ## [0.17.0] - 2026-06-28
 
 ### Added

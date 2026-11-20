@@ -211,9 +211,9 @@ pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
 pub use symbol_table::LocalSymbolTable;
 pub use token::{StringPart, Token, TokenType};
-pub use unicode::is_perl_identifier_continue;
+pub use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
 
-use unicode::{is_perl_identifier_start, is_perl_package_segment_start};
+use unicode::is_perl_package_segment_start;
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
@@ -3889,12 +3889,12 @@ impl<'a> PerlLexer<'a> {
             }
 
             match ch {
-                '\\' => {
+                '\\' if delim != '\\' => {
                     body.push(ch);
                     self.advance();
                     escaped = true;
                 }
-                '"' | '\'' if ch != delim => {
+                '"' | '\'' if ch != delim && delim != '\\' => {
                     if let Some((string_end, true)) =
                         self.scan_inner_string_for_delimiter(self.position, ch, delim)
                     {

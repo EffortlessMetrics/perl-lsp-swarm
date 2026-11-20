@@ -22,7 +22,7 @@ use serde_yaml_ng::Value;
 
 const CACHE_ACTION: &str = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6";
 const CHECKOUT_ACTION: &str = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
-const TOOLCHAIN_ACTION: &str = "dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de";
+const TOOLCHAIN_ACTION: &str = "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8";
 const CHECKOUT_REF: &str = "${{ github.event.pull_request.head.sha || github.sha }}";
 const CHECKOUT_REF_LINE: &str =
     "          ref: ${{ github.event.pull_request.head.sha || github.sha }}\n";
@@ -611,6 +611,7 @@ fn static_contract_rejects_structural_cache_and_permission_mutations() -> Result
         (CACHE_ACTION, "Swatinem/rust-cache@v2"),
         (CHECKOUT_ACTION, "actions/checkout@v7"),
         (TOOLCHAIN_ACTION, "dtolnay/rust-toolchain@master"),
+        (TOOLCHAIN_ACTION, "dtolnay/rust-toolchain@0000000000000000000000000000000000000000"),
         (CHECKOUT_ACTION, "./.github/actions/cache-writer"),
         (CHECKOUT_REF_LINE, "          ref: ${{ github.sha }}\n"),
         ("persist-credentials: false", "persist-credentials: true"),

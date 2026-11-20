@@ -340,7 +340,16 @@ fn current_commit() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_lsp_rs_core::tooling::perl_critic::{NativeCriticProfile, NativeCriticRegistry};
     use serde_json::Value;
+
+    /// The number of native critic rules the engine selects for `profile`.
+    ///
+    /// Derived from the registry the engine itself selects from, so adding a
+    /// rule cannot stale a pinned count (#17944).
+    fn native_rule_count(profile: NativeCriticProfile) -> u64 {
+        NativeCriticRegistry::for_profile(profile).rule_ids().len() as u64
+    }
 
     #[test]
     fn native_critic_check_writes_receipt_and_summary() -> Result<()> {
@@ -365,7 +374,8 @@ mod tests {
         assert_eq!(value["engine"], "native");
         assert_eq!(value["profile"], "strict");
         assert_eq!(value["files_checked"], 1);
-        assert_eq!(value["rules_run"], 31);
+        let strict_rules = native_rule_count(NativeCriticProfile::Strict);
+        assert_eq!(value["rules_run"].as_u64(), Some(strict_rules));
         assert_eq!(value["findings_count"], 1);
         assert_eq!(value["fixable_findings_count"], 1);
         assert_eq!(value["findings_by_rule"]["native.variables.unused_lexical"], 1);
@@ -424,7 +434,8 @@ mod tests {
 
         let value: Value = serde_json::from_str(&fs::read_to_string(receipt)?)?;
         assert_eq!(value["profile"], "recommended");
-        assert_eq!(value["rules_run"], 16);
+        let recommended_rules = native_rule_count(NativeCriticProfile::Recommended);
+        assert_eq!(value["rules_run"].as_u64(), Some(recommended_rules));
         assert_eq!(value["findings_by_rule"]["native.variables.unused_lexical"], Value::Null);
         Ok(())
     }
@@ -451,7 +462,8 @@ mod tests {
         let value: Value = serde_json::from_str(&fs::read_to_string(receipt)?)?;
         assert_eq!(value["files_checked"], 12);
         assert_eq!(value["files_with_parse_errors"], 0);
-        assert_eq!(value["rules_run"], 31);
+        let strict_rules = native_rule_count(NativeCriticProfile::Strict);
+        assert_eq!(value["rules_run"].as_u64(), Some(strict_rules));
         assert_eq!(value["findings_count"], 0);
         assert_eq!(value["suppressed_findings_count"], 0);
         assert_eq!(value["fixable_findings_count"], 0);

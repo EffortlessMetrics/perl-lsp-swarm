@@ -193,28 +193,19 @@ If you are debugging with `perl-dap`, check the DAP guide:
 
 ## Zed Does Not Start `perllsp`
 
-This is currently an integration-availability problem, not an ordinary binary
-troubleshooting path. The public Perl extension does not register `perllsp`, so
-installing `perllsp` alone cannot make Zed start it.
+**Planned / not proven.** The proposed EffortlessMetrics provider ID is
+`perl-lsp-rs`. Installing the `perllsp` executable alone leaves the public
+Perl extension without a registration for that provider.
 
-The extension's existing IDs belong to other products:
+The extension's existing IDs belong to separate products:
 
 ```text
 perlnavigator-server -> Perl Navigator
 perl-lsp             -> tree-sitter-perl/perl-tree-sitter-lsp
 ```
 
-Do not override the existing `perl-lsp` ID to run `perllsp`. Doing so hides the
-winning product identity and invalidates support evidence.
-
-For contributors preparing the upstream change, use the exact-base candidate
-and apply script documented in
-[ZED_UPSTREAM_SUBMISSION.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/integrations/ZED_UPSTREAM_SUBMISSION.md). That
-candidate remains `not_proven` until an actual Zed development-extension receipt
-binds the host, extension, binary, platform, requests, edits, and shutdown.
-
-Public-user runtime troubleshooting will be added only after a released Perl
-extension registers `perllsp` and a public-artifact host receipt exists.
+See the [Zed integration status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/ZED_SETUP.md) for the registration
+and evidence required before public runtime troubleshooting is available.
 
 ## When To Escalate
 

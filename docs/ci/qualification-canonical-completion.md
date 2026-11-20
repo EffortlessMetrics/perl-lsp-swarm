@@ -39,7 +39,7 @@ by the trusted build/tool installer. The constructor is not provenance or an
 installer: candidate JSON or a caller-authored digest cannot qualify a binary.
 The callback verifies regular executable custody and matching bytes before and
 after invocation. It runs in the candidate H checkout with the existing pinned
-Rust1.95/no-auto-install environment and strips metadata credentials and Git
+Rust1.100/no-auto-install environment and strips metadata credentials and Git
 overrides. The native private packet retains repository/S/run/attempt and the
 captured H/tree/B/S/key plus producer-check ID; the central importer remains the
 authentication authority.

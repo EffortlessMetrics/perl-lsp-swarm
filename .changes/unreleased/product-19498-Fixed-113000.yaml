@@ -1,0 +1,15 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: >-
+  The nightly flake-detection lane no longer fails because one workspace
+  package's lib target contains no unit tests: a zero-test block contributes
+  no verdict that outranks COMPLETE_PASS once any block has observed a test,
+  while the sweep-level NO_TESTS_DISCOVERED verdict still fires when nothing
+  was observed (#18648). The extractor's own fixture suite now runs in the
+  CI Gate Self-Tests lane instead of running nowhere.
+time: 2026-11-16T11:30:00Z
+custom:
+  PR: 19498
+  Slug: flake-empty-block-precedence
+  Breaking: "no"

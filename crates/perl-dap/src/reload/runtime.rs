@@ -491,7 +491,7 @@ fn decode_perl_hex(hex: &str) -> Option<String> {
     }
     let mut bytes = Vec::with_capacity(hex.len() / 2);
     let raw = hex.as_bytes();
-    for pair in raw.chunks_exact(2) {
+    for pair in raw.as_chunks::<2>().0 {
         let hi = (pair[0] as char).to_digit(16)?;
         let lo = (pair[1] as char).to_digit(16)?;
         // Both digits are < 16, so the product fits a u8 without any

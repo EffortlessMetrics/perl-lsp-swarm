@@ -26,6 +26,7 @@ python3 - "$REPO_ROOT" <<'PY'
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -68,6 +69,7 @@ source = read(candidate / "src" / "perl.rs")
 readme = read(root / "README.md")
 faq = read(root / "docs" / "reference" / "FAQ.md")
 setup = read(root / "docs" / "EDITORS" / "ZED_SETUP.md")
+config = read(root / "docs" / "reference" / "CONFIG.md")
 combined_setup = read(root / "docs" / "how-to" / "EDITOR_SETUP.md")
 book_setup = read(root / "book" / "src" / "reference" / "editor-setup-canonical.md")
 troubleshooting = read(root / "docs" / "how-to" / "TROUBLESHOOTING.md")
@@ -184,7 +186,7 @@ require("Zed is **planned / not proven**" in faq, "FAQ Zed boundary is missing")
 require("**Status: planned / not proven.**" in setup, "Zed guide status is missing")
 require("| Zed | **Planned / not proven:**" in combined_setup, "combined editor table must bound Zed")
 require("| Zed | **Planned / not proven:**" in book_setup, "mdBook editor table must bound Zed")
-require("public Perl extension does not register `perllsp`" in troubleshooting, "troubleshooting boundary is missing")
+require("**Planned / not proven.**" in troubleshooting, "troubleshooting boundary is missing")
 require("Zed integration: planned / not proven" in steering, "agent steering still overclaims Zed")
 
 
@@ -199,6 +201,7 @@ def markdown_section(text: str, heading: str, next_heading_prefix: str) -> str:
 
 zed_sections = {
     "docs/EDITORS/ZED_SETUP.md": setup,
+    "docs/reference/CONFIG.md": markdown_section(config, "#### Zed (`settings.json`)", "#### "),
     "docs/how-to/EDITOR_SETUP.md": markdown_section(combined_setup, "### Zed", "### "),
     "book/src/reference/editor-setup-canonical.md": markdown_section(
         book_setup, "### Zed", "### "
@@ -214,8 +217,10 @@ for path in ("docs/how-to/EDITOR_SETUP.md", "book/src/reference/editor-setup-can
     )
 for path, text in zed_sections.items():
     require(
-        '\"perl-lsp\": {' not in text,
-        f"{path} still contains a runnable Zed perl-lsp configuration block",
+        "```json" not in text.lower()
+        and "lsp.perllsp" not in text
+        and not re.search(r'"(?:perl-lsp-rs|perl-lsp|perllsp)"[ \t\r\n]*:[ \t\r\n]*\{', text),
+        f"{path} must not offer runnable Zed JSON settings or the provisional settings key",
     )
 
 require(
@@ -223,8 +228,8 @@ require(
     "Zed guide must identify the existing perl-lsp product",
 )
 require(
-    "does **not** register `perllsp`" in setup,
-    "Zed guide must state the public extension gap",
+    "`perl-lsp-rs`" in setup and "`perllsp --stdio`" in setup,
+    "Zed guide must distinguish the proposed provider ID from the executable",
 )
 
 # ---- perl-dap debug-adapter authority (#9485) ----

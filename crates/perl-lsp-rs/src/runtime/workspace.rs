@@ -1495,6 +1495,15 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature (#18464): resolve only enriches items
+        // returned by the parent workspace/symbol request, so it must refuse
+        // with the same method-not-advertised error whenever the parent
+        // workspaceSymbolProvider is not advertised (e.g. after
+        // `disabledFeatures: ["lsp.workspace_symbol"]`).
+        if !self.advertised_features.lock().workspace_symbol {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let params = params.ok_or_else(|| {
             crate::protocol::invalid_params(
                 "workspace/symbol/resolve: missing required parameter 'params'",
@@ -4612,6 +4621,15 @@ mod tests {
             "B's scoped pull item is missing",
         )?;
 
+        // #18774's identical-content law suppresses an outbound frame whose
+        // diagnostics array is byte-identical to the last committed one. The
+        // scoped-pull refresh republishes all three documents, but only A's
+        // squiggles actually change -- B and the folderless document keep the
+        // same PL701, so their refresh frames are suppressed. This test's
+        // claim is about the wire -- "refreshes fallback consumers" with their
+        // diagnostic policy -- so detach the committed ledger and let the
+        // refresh reach the client.
+        server.test_clear_committed_push_diagnostics();
         server.handle_client_response(Some(json!({
             "id": id,
             "result": [

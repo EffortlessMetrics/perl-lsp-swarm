@@ -199,7 +199,23 @@ outcome_owner = "#10230"
 # runtime/language/completion.rs; 41 files, producer population unchanged,
 # entry routes and finalizer untouched. This is a source re-audit, not a claim
 # that completion behavior is unchanged.
-source_digest = "sha256:393918b93e6d55430a241d2663ed91d5b72ee4e35019cb08424232aa69943a7d"
+# Re-anchor 2026-11-05 (#18487, closing #18462): the variable-completion suffix
+# range in the scanned `completion/variables.rs` extends with an apostrophe only
+# when another identifier-start character follows it, so `$dog'9` and `$dog'`
+# preserve the apostrophe while a qualified segment such as `$dog's` stays part
+# of the replaced token. The edit is confined to the suffix-extension arm of
+# `add_variable_completions`: candidate selection, construction, the
+# `&mut Vec<CompletionItem>` append channel and its existing push are unchanged.
+# 41 scanned files, 60 producer rows over 18 candidate classes, the entry routes
+# and the finalizer seam are unchanged. This is a source re-audit of changed
+# insertion geometry, not a claim that completion behavior is unchanged.
+# Re-anchor 2026-11-14 (#9864): #19209 made the two runtime completion routes
+# adjudicate `#` with the generation-current SourceRegionIndex and narrowed
+# regex-flag region detection; it added no candidate channel, route, or finalizer.
+# The later request-dispatch and Dancer2 edits are behavior-preserving Rust 1.100
+# lint repairs. The same 41 files, 60 producers, 18 classes, and existing evidence,
+# identity, completeness, and migration ceilings remain current.
+source_digest = "sha256:21e0f9b8d51e0b5c955651f6e6b54fab424dbf58c8307c34c8b5c23345108094"
 
 [[delegations]]
 module = "dancer2"

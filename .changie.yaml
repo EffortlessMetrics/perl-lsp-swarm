@@ -16,6 +16,12 @@
 changesDir: .changes
 unreleasedDir: unreleased
 headerPath: header.tpl.md
+# Extension for the version files `changie batch` writes under
+# `.changes/<project>/` (e.g. `.changes/product/v0.18.0.md`) before
+# `changie merge` folds them into each project's changelog. Required by
+# changie; without it batch writes extensionless files that `changie merge`
+# cannot re-open (found by the first real batch, v0.18.0).
+versionExt: md
 
 # Two projects share this repo. Each project's batched notes flow into its own
 # Keep-a-Changelog file. Fragments live in the shared `.changes/unreleased/`

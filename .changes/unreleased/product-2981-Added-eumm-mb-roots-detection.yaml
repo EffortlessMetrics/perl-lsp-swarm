@@ -1,6 +1,0 @@
-kind: Added
-body: "perl-workspace-core gains non-executing ExtUtils::MakeMaker / Module::Build detection and typed source/generated root candidates (#2981 / #13636). `detect_eumm_mb` classifies Makefile.PL and Build.PL markers without executing build scripts, admits `lib` and `t/lib` as source roots with explicit test vs canonical precedence, and selects or rejects `blib/arch` and `blib/lib` with freshness, symlink/out-of-root guards, and typed rejection reasons for downstream environment snapshot wiring."
-packages:
-  - perl-workspace-core
-metadata:
-  Slug: eumm-mb-roots-detection-2981

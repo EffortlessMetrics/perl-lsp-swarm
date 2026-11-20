@@ -13,7 +13,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 1: builder
 # ─────────────────────────────────────────────────────────────────────────────
-FROM rust:1.95-slim-bookworm AS builder
+FROM rust:1.100-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \

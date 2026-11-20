@@ -56,7 +56,7 @@ Pre-built binaries are provided for:
 | macOS    | x86_64, Apple Silicon (aarch64) |
 | Windows  | x86_64 |
 
-Building from source (Rust 1.95+) works on any Rust-supported platform.
+Building from source (Rust 1.100+) works on any Rust-supported platform.
 
 ---
 
@@ -98,12 +98,11 @@ host journey. Current setup paths include:
 - **Sublime Text** — the LSP package
 - **Vim and coc.nvim** — generic LSP configuration
 
-Zed is **planned / not proven**. The public Zed Perl extension currently
-registers `perlnavigator-server` for Perl Navigator and `perl-lsp` for
-`tree-sitter-perl/perl-tree-sitter-lsp`; it does not register the EffortlessMetrics
-`perllsp` server ID. Do not repoint that independent `perl-lsp` ID to
-`perllsp`. See [ZED_SETUP.md](../EDITORS/ZED_SETUP.md) for the current boundary
-and prepared upstream candidate.
+Zed is **planned / not proven**. The public Perl extension registers
+`perlnavigator-server` for Perl Navigator and `perl-lsp` for
+`tree-sitter-perl/perl-tree-sitter-lsp`. The proposed EffortlessMetrics provider
+ID is `perl-lsp-rs`, and its executable is `perllsp`. See the
+[Zed integration status](../EDITORS/ZED_SETUP.md).
 
 See [EDITOR_SETUP.md](../how-to/EDITOR_SETUP.md) for editor-specific configuration
 and evidence boundaries.

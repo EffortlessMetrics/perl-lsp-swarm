@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "Statement keywords (package, sub, use, etc.) are no longer suggested in expression positions (after =, commas, operators); '.' was added as a completion trigger character for string-concat and chained method access; and hover documentation was added for 14 Perl operators and 12 keywords that previously had none."
-time: 2026-07-28T14:41:33Z
-custom:
-  PR: "5179"
-  Slug: keyword-filter-dot-trigger-hover
-  Breaking: "no"

@@ -1,4 +1,6 @@
 //! Integration tests for META.json/META.yml reconciliation (#7176).
+
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 #![expect(
     clippy::unwrap_used,
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"

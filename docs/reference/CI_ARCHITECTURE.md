@@ -308,16 +308,22 @@ check rather than no check.
 
 ### Timeout Classification
 
-`pr-smoke` has a 75-minute GitHub job timeout and wraps `xtask gates --tier pr-fast`
-with a 45-minute runner watchdog, leaving setup and receipt/telemetry headroom.
+| Job | GitHub job timeout (minutes) | Runner watchdog (minutes) |
+| --- | ---: | ---: |
+| `pr-smoke` | 75 | 60 |
+| `pr-fast-unblocked` | 75 | 60 |
+| `merge-gate-shards` | 40 | 30 |
+
+Both PR-fast jobs wrap `xtask gates --tier pr-fast` with the runner watchdog.
+The longer job timeout leaves time for setup and receipt collection.
 Individual shell-backed gates still use their
 `.ci/gate-policy.yaml` `timeout_seconds` values. On Unix runners, xtask delegates those
 per-gate deadlines to GNU `timeout` when available so a timed-out cargo or test command
 terminates as a process group, writes a receipt entry with `status: "timeout"`, and does
 not continue running until the outer job timeout cancels the runner.
 
-`merge-gate-shards` runs bounded groups of required gates with per-shard receipts and a
-20-minute GitHub job timeout. The gate runner writes a receipt and log for each shard,
+`merge-gate-shards` runs bounded groups of required gates under the shard watchdog.
+The gate runner writes a receipt and log for each shard,
 truncates very large gate logs before summarizing them, and records per-gate timeout
 status from `.ci/gate-policy.yaml`. The `merge-gate` aggregate job reports those shard
 results as the required merge-blocking status instead of hiding failures behind one

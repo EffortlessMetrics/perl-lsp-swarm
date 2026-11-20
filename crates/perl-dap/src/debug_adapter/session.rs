@@ -37,6 +37,14 @@ pub(super) struct DebugSession {
     /// Monotonic stopped-suspension authority used to prevent old frame ids
     /// from becoming valid again when the debugger reuses a numeric frame id.
     pub(super) stopped_generation: u64,
+    /// Monotonic count of reader-published stop transitions (#18491). The
+    /// output reader is the authority that publishes a stop (entry, step,
+    /// breakpoint, exception) or retains the pre-configurationDone startup
+    /// pause. Adapter-internal framed queries that mask the session as
+    /// `Stopped` for their echo window snapshot this epoch and only restore
+    /// their masked state when it is unchanged, so they can never clobber a
+    /// suspension the reader published while the query was in flight.
+    pub(super) reader_stop_epoch: u64,
     /// Monotonic runtime-module generation authority (ADR-0046 §4): advanced
     /// by both terminal mutation outcomes of a loaded-module reload and
     /// reset only when the debuggee process/session is replaced. Carried on

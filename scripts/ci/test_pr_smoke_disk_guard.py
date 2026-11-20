@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import io
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -87,6 +89,90 @@ class FootprintFloorTests(unittest.TestCase):
         self.assertEqual(breaches, [])
 
 
+class FootprintBaselineTests(unittest.TestCase):
+    """The committed baseline JSON is the guard's single source (#19067)."""
+
+    def test_committed_baseline_matches_guard_constants(self) -> None:
+        baseline = Path(__file__).resolve().parents[2] / ".ci" / "pr-smoke-footprint-baseline.json"
+        self.assertTrue(baseline.is_file())
+        footprint, reserve = guard.load_footprint_baseline(baseline)
+        self.assertEqual(footprint, 85 * guard.GIB)
+        self.assertEqual(reserve, 5 * guard.GIB)
+        self.assertEqual(guard.MEASURED_FOOTPRINT_BYTES, footprint)
+        self.assertEqual(guard.RESERVE_BYTES, reserve)
+        self.assertEqual(guard.effective_min_free_bytes(None), 90 * guard.GIB)
+
+    def test_committed_baseline_records_expired_provenance(self) -> None:
+        baseline = Path(__file__).resolve().parents[2] / ".ci" / "pr-smoke-footprint-baseline.json"
+        data = json.loads(baseline.read_text(encoding="utf-8"))
+        self.assertEqual(data["footprint_gib"], 85)
+        self.assertEqual(data["reserve_gib"], 5)
+        self.assertEqual(data["source_run_id"], 37195503421)
+        self.assertEqual(data["provenance_status"], "expired-unverifiable")
+        self.assertEqual(data["recorded_date"], "2026-11-08")
+        self.assertEqual(data["runner"], "ubuntu-24.04")
+
+    def test_baseline_json_overrides_fallback_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "baseline.json"
+            path.write_text(
+                '{"footprint_gib": 100, "reserve_gib": 10}',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                guard.load_footprint_baseline(path),
+                (100 * guard.GIB, 10 * guard.GIB),
+            )
+
+    def test_low_baseline_never_lowers_the_floor(self) -> None:
+        # A well-formed baseline below the in-code fallback must not
+        # lower the floor on its own; only a reviewed change that also
+        # lowers the fallback (with a fresh measurement) may do that.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "baseline.json"
+            path.write_text(
+                '{"footprint_gib": 1, "reserve_gib": 0}',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                guard.load_footprint_baseline(path),
+                (85 * guard.GIB, 5 * guard.GIB),
+            )
+
+    def test_baseline_fields_clamp_independently(self) -> None:
+        # A raise to one field must not be discarded because the other
+        # field sits below its fallback: each clamps on its own.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "baseline.json"
+            path.write_text(
+                '{"footprint_gib": 100, "reserve_gib": 2}',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                guard.load_footprint_baseline(path),
+                (100 * guard.GIB, 5 * guard.GIB),
+            )
+
+    def test_missing_baseline_falls_back_to_in_code_constants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "absent.json"
+            self.assertEqual(
+                guard.load_footprint_baseline(missing),
+                (85 * guard.GIB, 5 * guard.GIB),
+            )
+
+    def test_malformed_baseline_falls_back_without_lowering_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for text in ("not json", '{"footprint_gib": 1}', '{"footprint_gib": "85", "reserve_gib": 5}'):
+                path = Path(tmp) / "baseline.json"
+                path.write_text(text, encoding="utf-8")
+                with self.subTest(text=text):
+                    self.assertEqual(
+                        guard.load_footprint_baseline(path),
+                        (85 * guard.GIB, 5 * guard.GIB),
+                    )
+
+
 class ParseMinFreeBytesTests(unittest.TestCase):
     def test_plain_bytes(self) -> None:
         self.assertEqual(guard.parse_min_free_bytes("4096"), 4096)
@@ -96,6 +182,71 @@ class ParseMinFreeBytesTests(unittest.TestCase):
 
     def test_gib_suffix_case_insensitive(self) -> None:
         self.assertEqual(guard.parse_min_free_bytes("2gib"), 2 * guard.GIB)
+
+    def test_finite_gib_controls(self) -> None:
+        for raw, expected in (("0GiB", 0), ("0.5GiB", guard.GIB // 2), ("1e2GiB", 100 * guard.GIB)):
+            with self.subTest(raw=raw):
+                self.assertEqual(guard.parse_min_free_bytes(raw), expected)
+
+    def test_rejects_non_finite_gib_and_byte_conversion_overflow(self) -> None:
+        for raw in ("infGiB", "-infGiB", "NaNGiB", "1e309GiB", "1e308GiB"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    guard.parse_min_free_bytes(raw)
+
+    def test_large_gib_value_preserves_integer_precision(self) -> None:
+        self.assertEqual(
+            guard.parse_min_free_bytes("9007199254740993GiB"),
+            9007199254740993 * guard.GIB,
+        )
+
+    def test_fractional_gib_truncates_only_fractional_bytes(self) -> None:
+        self.assertEqual(guard.parse_min_free_bytes("0.1GiB"), guard.GIB // 10)
+        self.assertEqual(guard.parse_min_free_bytes("1e-10GiB"), 0)
+
+    def test_extreme_exponents_are_bounded_without_huge_integers(self) -> None:
+        for raw in ("1e999999999GiB", "-1e999999999GiB", "1e308GiB"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    guard.parse_min_free_bytes(raw)
+        self.assertEqual(guard.parse_min_free_bytes("1e-999999999GiB"), 0)
+
+    def test_zero_with_extreme_exponent_parses_to_zero(self) -> None:
+        self.assertEqual(guard.parse_min_free_bytes("0e500GiB"), 0)
+        self.assertEqual(guard.parse_min_free_bytes("-0e500GiB"), 0)
+
+    def test_rejects_nonfinite_gib(self) -> None:
+        for raw in ("NaNGiB", "sNaNGiB", "infGiB", "-InfinityGiB"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    guard.parse_min_free_bytes(raw)
+
+    def test_cli_rejects_non_finite_budgets_without_traceback(self) -> None:
+        for option in ("--footprint-bytes", "--min-free-bytes"):
+            for raw in ("infGiB", "-infGiB", "NaNGiB", "1e309GiB", "1e308GiB"):
+                with self.subTest(option=option, raw=raw):
+                    result = subprocess.run(
+                        [sys.executable, "-B", str(SCRIPT), "preflight", f"{option}={raw}"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("must be finite", result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+
+    def test_nonfinite_cli_arguments_fail_without_traceback(self) -> None:
+        for flag in ("--min-free-bytes", "--footprint-bytes"):
+            with self.subTest(flag=flag):
+                result = subprocess.run(
+                    [sys.executable, "-B", str(SCRIPT), "preflight", flag, "infGiB"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("finite", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_rejects_garbage(self) -> None:
         with self.assertRaises(argparse.ArgumentTypeError):

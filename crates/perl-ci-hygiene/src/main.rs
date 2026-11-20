@@ -183,13 +183,9 @@ fn is_excluded_test_path(path: &Path) -> bool {
         return true;
     }
 
-    if path.components().any(|component| {
+    path.components().any(|component| {
         CI_REPORT_CRATES_EXCLUDE.iter().any(|item| component.as_os_str() == OsStr::new(item))
-    }) {
-        return true;
-    }
-
-    false
+    })
 }
 
 /// The 1-based line where the file's test scope begins, or [`usize::MAX`].
@@ -3617,6 +3613,24 @@ mod tests {
         assert!(is_excluded_test_path(Path::new(
             "crates/perl-workspace/src/bin/workspace_memory_profile.rs"
         )));
+    }
+
+    /// The three exclusion branches are `||`-equivalent, but only the `bin`
+    /// branch had coverage. The crate-component branch and the not-excluded
+    /// tail are the two paths that a rewrite of the final branch can silently
+    /// invert, so both are pinned here.
+    #[test]
+    fn excluded_test_paths_skip_excluded_crate_components_and_keep_production_paths() {
+        // The crate-component branch: a path component listed in
+        // CI_REPORT_CRATES_EXCLUDE is excluded even though no path component
+        // is a test directory and the file name is not a test suffix.
+        assert!(is_excluded_test_path(Path::new("crates/perl-parser-pest/src/lib.rs")));
+        assert!(is_excluded_test_path(Path::new("crates/perl-ci-hygiene/src/main.rs")));
+
+        // The not-excluded tail: no directory component, no test-suffix file
+        // name, and no excluded crate component. This is the path whose
+        // truth value the final branch now produces directly.
+        assert!(!is_excluded_test_path(Path::new("crates/perl-workspace/src/lib.rs")));
     }
 
     #[test]

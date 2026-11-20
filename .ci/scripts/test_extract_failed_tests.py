@@ -445,6 +445,134 @@ class ExtractFailedTestsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(json.loads(proc.stdout)["verdict"], "COMPLETE_PASS")
 
+    # --- #18648: a zero-test package must not veto the packages that did run ---
+
+    def test_empty_block_does_not_veto_healthy_blocks(self):
+        """One package with no lib tests must not decide the sweep's verdict.
+
+        `perllsp` has a lib target with zero `#[test]` functions, so its block
+        is NO_TESTS_DISCOVERED. That is a statement about that package alone;
+        it is not evidence about the 45 packages that did observe tests.
+        """
+        lines = [
+            envelope("pkg_a"),
+            suite_start(1),
+            test_event("started", "a::one"),
+            test_event("ok", "a::one"),
+            suite_end("ok", 1, 0),
+            run_end("pkg_a", 0),
+            envelope("pkg_empty"),
+            suite_start(0),
+            suite_end("ok", 0, 0),
+            run_end("pkg_empty", 0),
+        ]
+        receipt = self.parse(lines)
+        self.assertEqual(receipt["verdict"], "COMPLETE_PASS")
+        self.assertEqual(receipt["counts"]["discovered"], 1)
+        self.assertEqual(receipt["counts"]["passed"], 1)
+
+    def test_empty_block_observation_is_still_recorded(self):
+        """The repair changes the aggregate, not the recorded observation."""
+        lines = [
+            envelope("pkg_a"),
+            suite_start(1),
+            test_event("started", "a::one"),
+            test_event("ok", "a::one"),
+            suite_end("ok", 1, 0),
+            run_end("pkg_a", 0),
+            envelope("pkg_empty"),
+            suite_start(0),
+            suite_end("ok", 0, 0),
+            run_end("pkg_empty", 0),
+        ]
+        receipt = self.parse(lines)
+        empty = [b for b in receipt["blocks"] if b["package"] == "pkg_empty"]
+        self.assertEqual(len(empty), 1)
+        self.assertEqual(empty[0]["verdict"], "NO_TESTS_DISCOVERED")
+        self.assertEqual(empty[0]["counts"]["discovered"], 0)
+
+    def test_sweep_with_no_tests_at_all_still_reports_no_tests_discovered(self):
+        """The scheduled lane's guard still fires when nothing was observed."""
+        lines = [
+            envelope("pkg_empty"),
+            suite_start(0),
+            suite_end("ok", 0, 0),
+            run_end("pkg_empty", 0),
+            envelope("pkg_empty_two"),
+            suite_start(0),
+            suite_end("ok", 0, 0),
+            run_end("pkg_empty_two", 0),
+        ]
+        receipt = self.parse(lines)
+        self.assertEqual(receipt["verdict"], "NO_TESTS_DISCOVERED")
+        self.assertEqual(receipt["exit_code"], 0)
+        self.assertIn("NO_TESTS_DISCOVERED", _MODULE.EXIT_CODES)
+
+    def test_empty_block_does_not_mask_observed_failures(self):
+        """Observed failures still outrank an empty block (#15349)."""
+        lines = [
+            envelope("pkg_a"),
+            suite_start(1),
+            test_event("started", "a::one"),
+            test_event("failed", "a::one"),
+            suite_end("failed", 0, 1),
+            run_end("pkg_a", 101),
+            envelope("pkg_empty"),
+            suite_start(0),
+            suite_end("ok", 0, 0),
+            run_end("pkg_empty", 0),
+        ]
+        receipt = self.parse(lines)
+        self.assertEqual(receipt["verdict"], "COMPLETE_WITH_FAILURES")
+        self.assertEqual(receipt["counts"]["failed"], 1)
+
+    def test_declared_zero_with_observed_test_events_is_not_proven(self):
+        """A declared-empty suite cannot be reconciled with test events."""
+        for observed_event in ("ok", "failed"):
+            with self.subTest(observed_event=observed_event):
+                suite_event = "ok" if observed_event == "ok" else "failed"
+                passed = 1 if observed_event == "ok" else 0
+                failed = 1 if observed_event == "failed" else 0
+                exit_status = 0 if observed_event == "ok" else 101
+                lines = [
+                    envelope("pkg_healthy"),
+                    suite_start(1),
+                    test_event("started", "h::one"),
+                    test_event("ok", "h::one"),
+                    suite_end("ok", 1, 0),
+                    run_end("pkg_healthy", 0),
+                    envelope("pkg_contradictory"),
+                    suite_start(0),
+                    test_event("started", "c::one"),
+                    test_event(observed_event, "c::one"),
+                    suite_end(suite_event, passed, failed),
+                    run_end("pkg_contradictory", exit_status),
+                ]
+                receipt = self.parse(lines)
+                self.assertEqual(receipt["verdict"], "NOT_PROVEN")
+                self.assertEqual(receipt["exit_code"], 6)
+                self.assertFalse(receipt["success_verdict"])
+                self.assertEqual(receipt["counts"]["failed"], failed)
+                contradictory = receipt["blocks"][1]
+                self.assertEqual(contradictory["verdict"], "NOT_PROVEN")
+                self.assertIn(
+                    "suite declared zero tests but observed test events",
+                    contradictory["reasons"],
+                )
+                expected_failures = (
+                    [
+                        {
+                            "package": "pkg_contradictory",
+                            "target": "lib",
+                            "name": "c::one",
+                            "block_start_line": 7,
+                        }
+                    ]
+                    if failed
+                    else []
+                )
+                self.assertEqual(receipt["failures"], expected_failures)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

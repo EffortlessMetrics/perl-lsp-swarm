@@ -12,6 +12,17 @@ pub(super) use debt::validate_debt_ledger;
 #[cfg(test)]
 pub(super) use disposition::{validate_required_dispositions, validate_workspace_lints};
 
+/// The lint identities `validate_required_dispositions` requires to appear
+/// exactly once across the merged disposition model.
+///
+/// Exposed under `#[cfg(test)]` so a fixture that has to present the production
+/// set can assert set equality against it, instead of restating the list and
+/// drifting from it the way two fixture copies already have.
+#[cfg(test)]
+pub(super) fn required_disposition_identities() -> Vec<&'static str> {
+    disposition::REQUIRED_DISPOSITIONS.iter().map(|(name, _, _)| *name).collect()
+}
+
 use super::model::{DebtLedger, LintLedger};
 use color_eyre::eyre::Result;
 use std::path::Path;

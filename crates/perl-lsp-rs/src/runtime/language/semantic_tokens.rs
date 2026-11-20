@@ -2137,7 +2137,7 @@ fn semantic_tokens_live_contains_span(
 
     let mut current_line = 0_u32;
     let mut current_start = 0_u32;
-    for token in data.chunks_exact(5) {
+    for token in data.as_chunks::<5>().0 {
         let Some(delta_line) = semantic_token_value_u32(&token[0]) else {
             return false;
         };
