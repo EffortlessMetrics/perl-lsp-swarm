@@ -4,7 +4,10 @@ use perl_lsp_rs_core::governance::{FeatureProfile, catalog_advertised_feature_id
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+
+const MISSING_OWNER_ALLOWLIST: &str = "feature-implementation-owner-allowlist.txt";
 
 // Public API functions called from main.rs
 pub fn sync_docs() -> Result<()> {
@@ -19,8 +22,8 @@ pub fn report() -> Result<()> {
     generate_report()
 }
 
-pub fn invariants() -> Result<()> {
-    check_invariants()
+pub fn invariants(base: &str) -> Result<()> {
+    check_invariants(base)
 }
 
 fn load_features() -> Result<Catalog> {
@@ -99,11 +102,95 @@ fn snapshot_comparable_feature_ids() -> BTreeSet<String> {
     ids
 }
 
-fn check_invariants() -> Result<()> {
+fn base_catalog(root: &Path, base: &str) -> Result<Catalog> {
+    // Peel the caller-selected ref before constructing the Git blob expression.
+    let git = |args: &[&str]| {
+        xtask::git_environment::isolate(Command::new("git"))
+            .current_dir(root)
+            .args(args)
+            .output()
+            .context("running Git for the implementation owner ratchet")
+    };
+    let commit = format!("{base}^{{commit}}");
+    let resolved = git(&["rev-parse", "--verify", "--end-of-options", &commit])?;
+    if !resolved.status.success() {
+        bail!("cannot resolve owner ratchet base {base:?}; fetch main or pass --base");
+    }
+    let object = format!("{}:features.toml", std::str::from_utf8(&resolved.stdout)?.trim());
+    let blob = git(&["cat-file", "blob", &object])?;
+    if !blob.status.success() {
+        bail!("cannot read features.toml from owner ratchet base {base:?}");
+    }
+    toml::from_str(std::str::from_utf8(&blob.stdout)?)
+        .with_context(|| format!("parsing features.toml from owner ratchet base {base:?}"))
+}
+
+fn missing_owner_ids(catalog: &Catalog) -> BTreeSet<&str> {
+    catalog
+        .features()
+        .iter()
+        .filter(|feature| feature.implementation_owner == "missing")
+        .map(|feature| feature.id.as_str())
+        .collect()
+}
+
+fn implementation_owner_violations(
+    root: &Path,
+    catalog: &Catalog,
+    base: &Catalog,
+    allowlist: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut allowed = BTreeSet::new();
+    for line in allowlist.lines().map(str::trim) {
+        if !line.is_empty() && !line.starts_with('#') && !allowed.insert(line) {
+            violations.push(format!("OWNER_ALLOWLIST_DUPLICATE: {line:?} appears more than once"));
+        }
+    }
+
+    let missing = missing_owner_ids(catalog);
+    for id in missing.difference(&allowed) {
+        violations
+            .push(format!("OWNER_NOT_ALLOWLISTED: {id:?} records a missing implementation owner"));
+    }
+    for id in allowed.difference(&missing) {
+        violations.push(format!(
+            "OWNER_ALLOWLIST_STALE: {id:?} does not record a missing implementation owner"
+        ));
+    }
+    for id in missing.difference(&missing_owner_ids(base)) {
+        violations.push(format!(
+            "OWNER_NEWLY_MISSING: {id:?} had no missing implementation owner in the base catalog"
+        ));
+    }
+
+    for feature in catalog.features().iter().filter(|f| f.implementation_owner != "missing") {
+        let path = Path::new(&feature.implementation_owner);
+        let valid = !path.as_os_str().is_empty()
+            && path.components().all(|part| matches!(part, Component::Normal(_)))
+            && root
+                .join(path)
+                .canonicalize()
+                .is_ok_and(|file| file.starts_with(root) && file.is_file());
+        if !valid {
+            violations.push(format!(
+                "OWNER_PATH_INVALID: {:?} implementation owner {:?} must name an existing repository source file",
+                feature.id, feature.implementation_owner
+            ));
+        }
+    }
+    violations
+}
+
+fn check_invariants(base: &str) -> Result<()> {
     println!("🔍 Checking features.toml invariants...");
 
     let catalog = load_features()?;
-    let mut violations = Vec::new();
+    let root = crate::utils::project_root()?.canonicalize().context("resolving workspace root")?;
+    let base = base_catalog(&root, base)?;
+    let allowlist = fs::read_to_string(root.join(MISSING_OWNER_ALLOWLIST))
+        .with_context(|| format!("reading {MISSING_OWNER_ALLOWLIST}"))?;
+    let mut violations = implementation_owner_violations(&root, &catalog, &base, &allowlist);
     let mut seen_ids = BTreeSet::new();
 
     for feature in catalog.features() {
@@ -481,13 +568,99 @@ fn generate_report() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_snapshot_caps, ensure_fence, lsp_feature_snapshot_path, replace_fence,
-        repo_relative_path, snapshot_caps_from_content, snapshot_comparable_feature_ids,
+        compare_snapshot_caps, ensure_fence, implementation_owner_violations,
+        lsp_feature_snapshot_path, replace_fence, repo_relative_path, snapshot_caps_from_content,
+        snapshot_comparable_feature_ids,
     };
     use color_eyre::eyre::Result;
+    use perl_lsp_rs_core::feature_catalog::Catalog;
     use perl_tdd_support::must_err;
     use std::collections::BTreeSet;
     use std::path::PathBuf;
+
+    fn owner_catalog() -> Result<Catalog> {
+        Ok(toml::from_str(
+            r#"
+[meta]
+version = "test"
+lsp_version = "test"
+
+[[feature]]
+id = "lsp.assigned"
+maturity = "not_proven"
+advertised = true
+implementation_owner = "handler.rs"
+
+[[feature]]
+id = "lsp.debt"
+maturity = "not_proven"
+implementation_owner = "missing"
+"#,
+        )?)
+    }
+
+    #[test]
+    fn implementation_owner_gate_checks_recorded_paths_on_non_proven_rows() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let catalog = owner_catalog()?;
+        let violations = implementation_owner_violations(&root, &catalog, &catalog, "lsp.debt\n");
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("OWNER_PATH_INVALID: \"lsp.assigned\""));
+
+        std::fs::write(root.join("handler.rs"), "")?;
+        assert!(
+            implementation_owner_violations(&root, &catalog, &catalog, "lsp.debt\n").is_empty()
+        );
+
+        let mut candidate = catalog.clone();
+        candidate.feature[0].implementation_owner = root.join("handler.rs").display().to_string();
+        let violations = implementation_owner_violations(&root, &candidate, &catalog, "lsp.debt\n");
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("OWNER_PATH_INVALID: \"lsp.assigned\""));
+        Ok(())
+    }
+
+    #[test]
+    fn implementation_owner_gate_rejects_new_missing_even_if_allowlisted() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let base = owner_catalog()?;
+        let mut catalog = base.clone();
+        catalog.feature[0].implementation_owner = "missing".into();
+        let violations = implementation_owner_violations(
+            temp.path(),
+            &catalog,
+            &base,
+            "lsp.assigned\nlsp.debt\n",
+        );
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("OWNER_NEWLY_MISSING: \"lsp.assigned\""));
+        Ok(())
+    }
+
+    #[test]
+    fn implementation_owner_gate_requires_exact_inventory_and_accepts_shrink() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        std::fs::write(root.join("handler.rs"), "")?;
+        let base = owner_catalog()?;
+        let violations = implementation_owner_violations(&root, &base, &base, "lsp.assigned\n");
+        assert_eq!(violations.len(), 2, "{violations:?}");
+        assert!(violations.iter().any(|v| v.contains("OWNER_NOT_ALLOWLISTED: \"lsp.debt\"")));
+        assert!(violations.iter().any(|v| v.contains("OWNER_ALLOWLIST_STALE: \"lsp.assigned\"")));
+
+        let violations =
+            implementation_owner_violations(&root, &base, &base, "lsp.debt\nlsp.debt\n");
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("OWNER_ALLOWLIST_DUPLICATE: \"lsp.debt\""));
+
+        let mut resolved = base.clone();
+        resolved.feature[1].implementation_owner = "handler.rs".into();
+        assert!(
+            implementation_owner_violations(&root, &resolved, &base, "# All resolved\n").is_empty()
+        );
+        Ok(())
+    }
 
     #[test]
     fn snapshot_caps_from_content_extracts_caps_array() -> Result<()> {

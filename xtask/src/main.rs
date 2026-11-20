@@ -4279,7 +4279,11 @@ enum FeaturesCommand {
     Verify,
 
     /// Run feature catalog invariant checks
-    Invariants,
+    Invariants {
+        /// Trusted base commit or ref for the missing implementation owner ratchet
+        #[arg(long, default_value = "refs/remotes/origin/main")]
+        base: String,
+    },
 
     /// Generate compliance report
     Report,
@@ -7355,7 +7359,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Features { command } => match command {
             FeaturesCommand::SyncDocs => features::sync_docs(),
             FeaturesCommand::Verify => features::verify(),
-            FeaturesCommand::Invariants => features::invariants(),
+            FeaturesCommand::Invariants { base } => features::invariants(&base),
             FeaturesCommand::Report => features::report(),
             FeaturesCommand::RegenVendored => features::regen_vendored(),
         },

@@ -956,6 +956,21 @@ created = "2026-05-07"
 review_after = "2026-12-07"
 
 [[allow]]
+id = "non-rust-feature-implementation-owner-allowlist"
+path = "feature-implementation-owner-allowlist.txt"
+kind = "feature_catalog"
+language = "text"
+surface = "lsp"
+classification = "config"
+owner = "lsp/features"
+reason = "Exact, shrink-only inventory of feature IDs with missing implementation owners in features.toml."
+covered_by = [
+  "cargo xtask features invariants",
+]
+created = "2026-11-20"
+review_after = "2027-05-20"
+
+[[allow]]
 id = "non-rust-bacon-toml"
 path = "bacon.toml"
 kind = "developer_tooling"
