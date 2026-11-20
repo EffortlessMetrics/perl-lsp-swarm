@@ -51,6 +51,9 @@ _spec.loader.exec_module(publish_topo)  # type: ignore[union-attr]
 
 compute_publish_order = publish_topo.compute_publish_order
 derive_publish_list = publish_topo.derive_publish_list
+encode_publish_crates_payload = publish_topo.encode_publish_crates_payload
+load_publish_crates_payload = publish_topo.load_publish_crates_payload
+PUBLISH_CRATES_TOPO_SCHEMA_VERSION = publish_topo.PUBLISH_CRATES_TOPO_SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +204,12 @@ class TestPublishWorkflowStep(unittest.TestCase):
         )
         result = self._run_workflow_topology_command(metadata)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), [{"name": "a", "version": "0.1.0"}, {"name": "b", "version": "0.1.0"}])
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["schema_version"], PUBLISH_CRATES_TOPO_SCHEMA_VERSION)
+        self.assertEqual(
+            payload["crates"],
+            [{"name": "a", "version": "0.1.0"}, {"name": "b", "version": "0.1.0"}],
+        )
 
     def test_workflow_step_fails_closed_on_malformed_metadata(self) -> None:
         result = self._run_workflow_topology_command({"not": "cargo metadata"})
@@ -593,6 +601,18 @@ class TestAllowlistDriftCheck(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             compute_publish_order(meta, from_metadata=False)
         self.assertEqual(ctx.exception.code, 1)
+
+
+class TestPublishCratesTopoEnvelope(unittest.TestCase):
+    def test_round_trip(self) -> None:
+        crates = [{"name": "demo", "version": "0.2.0"}]
+        payload = encode_publish_crates_payload(crates)
+        self.assertEqual(load_publish_crates_payload(payload), crates)
+
+    def test_legacy_array_fails_closed(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            load_publish_crates_payload([{"name": "demo", "version": "0.2.0"}])
+        self.assertIn("bare JSON array", str(ctx.exception))
 
 
 if __name__ == "__main__":

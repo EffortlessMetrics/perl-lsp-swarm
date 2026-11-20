@@ -2,8 +2,11 @@
 """
 publish-topo.py — Compute topological publish order for a Cargo workspace.
 
-Reads `cargo metadata` JSON on stdin and prints a JSON array of
-{"name": ..., "version": ...} objects in the order they should be published.
+Reads `cargo metadata` JSON on stdin and prints a versioned JSON envelope:
+
+    {"schema_version": "publish_crates_topo.v1", "crates": [{"name": ..., "version": ...}, ...]}
+
+The `crates` array is in the order packages should be published.
 
 Implements Tarjan SCC to break dev-dependency cycles:
 - Normal dep edges are always kept.
@@ -36,6 +39,54 @@ import argparse
 import json
 import sys
 from collections import defaultdict
+
+PUBLISH_CRATES_TOPO_SCHEMA_VERSION = "publish_crates_topo.v1"
+
+
+def encode_publish_crates_payload(crates: list[dict]) -> dict:
+    """Wrap the topo-order list in the versioned envelope consumed by publish workflows."""
+    return {
+        "schema_version": PUBLISH_CRATES_TOPO_SCHEMA_VERSION,
+        "crates": crates,
+    }
+
+
+def load_publish_crates_payload(payload: object) -> list[dict]:
+    """Validate and unwrap a publish_crates_topo JSON envelope."""
+    if isinstance(payload, list):
+        raise ValueError(
+            "CRATES_JSON must be a versioned envelope with "
+            f"schema_version={PUBLISH_CRATES_TOPO_SCHEMA_VERSION!r}; "
+            "got a bare JSON array (legacy shape). "
+            "Re-run compute-order with the current publish-topo.py producer."
+        )
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "CRATES_JSON must be a JSON object, got {}".format(type(payload).__name__)
+        )
+
+    schema = payload.get("schema_version")
+    if schema != PUBLISH_CRATES_TOPO_SCHEMA_VERSION:
+        raise ValueError(
+            "Unsupported CRATES_JSON schema_version {!r}; expected {!r}".format(
+                schema,
+                PUBLISH_CRATES_TOPO_SCHEMA_VERSION,
+            )
+        )
+
+    crates = payload.get("crates")
+    if not isinstance(crates, list):
+        raise ValueError("CRATES_JSON envelope missing a crates array")
+
+    for index, crate in enumerate(crates):
+        if not isinstance(crate, dict):
+            raise ValueError("CRATES_JSON crates[{}] must be an object".format(index))
+        if "name" not in crate or "version" not in crate:
+            raise ValueError(
+                "CRATES_JSON crates[{}] must include name and version".format(index)
+            )
+
+    return crates
 
 
 def tarjan_sccs(graph: dict[str, set[str]], nodes: list[str]) -> list[list[str]]:
@@ -354,7 +405,7 @@ def main() -> None:
         sys.exit(1)
 
     result = compute_publish_order(meta, from_metadata=args.from_metadata)
-    print(json.dumps(result))
+    print(json.dumps(encode_publish_crates_payload(result)))
 
 
 if __name__ == "__main__":

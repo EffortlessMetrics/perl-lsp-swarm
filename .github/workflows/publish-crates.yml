@@ -115,12 +115,8 @@ jobs:
             python3 scripts/publish-topo.py > /tmp/crates.json
 
           printf 'crates=%s\n' "$(cat /tmp/crates.json)" >> "$GITHUB_OUTPUT"
-          printf 'Publish order (%s crates):\n' "$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' < /tmp/crates.json)"
-          python3 -c '
-          import json, sys
-          for i, c in enumerate(json.load(sys.stdin), 1):
-              print("  {}. {}@{}".format(i, c["name"], c["version"]))
-          ' < /tmp/crates.json
+          printf 'Publish order (%s crates):\n' "$(python3 scripts/ci/publish_crates_json.py --count < /tmp/crates.json)"
+          python3 scripts/ci/publish_crates_json.py --list < /tmp/crates.json | awk '{printf "  %d. %s@%s\n", NR, $1, $2}'
 
       - name: Resolve and validate target version
         id: release-version
@@ -167,28 +163,7 @@ jobs:
           CRATES_JSON: ${{ needs.compute-order.outputs.crates }}
           TARGET_VERSION: ${{ needs.compute-order.outputs.version }}
         run: |
-          printf '%s\n' "$CRATES_JSON" | python3 -c '
-          import json, os, sys
-
-          target = os.environ["TARGET_VERSION"]
-          crates = json.load(sys.stdin)
-          mismatches = [
-              "{}@{}".format(crate["name"], crate["version"])
-              for crate in crates
-              if crate["version"] != target
-          ]
-
-          if mismatches:
-              print(
-                  "::error::Crate versions do not match release target {}: {}".format(
-                      target,
-                      ", ".join(mismatches),
-                  )
-              )
-              sys.exit(1)
-
-          print("All publishable crates match target version {}".format(target))
-          '
+          printf '%s\n' "$CRATES_JSON" | python3 scripts/ci/publish_crates_json.py --validate-target-version
 
       - name: Check perl-lsp-rs-core packaged build inputs
         run: python3 scripts/ci/check_perl_lsp_rs_core_package.py
@@ -255,7 +230,7 @@ jobs:
             fi
           }
 
-          TOTAL="$(printf '%s\n' "$CRATES_JSON" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+          TOTAL="$(printf '%s\n' "$CRATES_JSON" | python3 scripts/ci/publish_crates_json.py --count)"
           printf 'Publishing %s crates...\n' "$TOTAL"
 
           # Compute the sparse-index path for a crate name per the cargo
@@ -343,7 +318,7 @@ jobs:
           FAILED_CRATES=()
           PUBLISHED_COUNT=0
           CRATES_LIST="$(mktemp)"
-          printf '%s\n' "$CRATES_JSON" | python3 -c 'import json,sys; [print("{} {}".format(c["name"], c["version"])) for c in json.load(sys.stdin)]' > "$CRATES_LIST"
+          printf '%s\n' "$CRATES_JSON" | python3 scripts/ci/publish_crates_json.py --list > "$CRATES_LIST"
 
           if [ "$DRY_RUN" != "true" ]; then
             assert_clean_workspace "before the publish loop"
@@ -522,6 +497,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Verify all crates against sparse index
         env:
           CRATES_JSON: ${{ needs.compute-order.outputs.crates }}
@@ -569,7 +549,7 @@ jobs:
           OK=0
 
           CRATES_LIST="$(mktemp)"
-          printf '%s\n' "$CRATES_JSON" | python3 -c 'import json,sys; [print("{} {}".format(c["name"], c["version"])) for c in json.load(sys.stdin)]' > "$CRATES_LIST"
+          printf '%s\n' "$CRATES_JSON" | python3 scripts/ci/publish_crates_json.py --list > "$CRATES_LIST"
           while read -r CRATE VERSION; do
             TOTAL=$((TOTAL + 1))
 
@@ -606,7 +586,7 @@ jobs:
           CRATES_JSON: ${{ needs.compute-order.outputs.crates }}
           TARGET_VERSION: ${{ needs.compute-order.outputs.version }}
         run: |
-          COUNT="$(printf '%s\n' "$CRATES_JSON" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+          COUNT="$(printf '%s\n' "$CRATES_JSON" | python3 scripts/ci/publish_crates_json.py --count)"
           {
             echo "## All Crates Published Successfully :rocket:"
             echo ""
@@ -642,7 +622,7 @@ jobs:
             exit 1
           fi
           mkdir -p receipt
-          COUNT="$(printf '%s\n' "$CRATES_JSON" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+          COUNT="$(printf '%s\n' "$CRATES_JSON" | python3 scripts/ci/publish_crates_json.py --count)"
           printf '{"schema_version":"publication_receipt.v1","release_version":"%s","subject_sha":"%s","crate_count":%s,"publish_run_id":"%s"}\n' \
             "$PUBLISHED_VERSION" "$SUBJECT_SHA" "$COUNT" "$RUN_ID" > receipt/publication-receipt.json
           cat receipt/publication-receipt.json
