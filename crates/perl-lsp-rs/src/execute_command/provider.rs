@@ -1,13 +1,12 @@
 //! Backend command implementations for run/debug/test and analyzer actions.
 
-use crate::perl_critic::{
-    BuiltInAnalyzer, CriticAnalyzer, CriticConfig, CriticContext, NativeCriticProfile,
-    NativeCriticRegistry,
-};
+use crate::perl_critic::{BuiltInAnalyzer, CriticAnalyzer, CriticConfig};
 use crate::perl_remediation::PERL_REMEDIATION;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
-use perl_lsp_rs_core::config::{CriticEngine, WorkspaceConfig};
+use perl_lsp_rs_core::config::{
+    AcceptedCriticSnapshot, CriticEngine, EffectiveCriticState, WorkspaceConfig,
+};
 use perl_lsp_rs_core::providers::{
     ProviderDecisionConfidence, ProviderDecisionCopyablePayload, ProviderDecisionExplanation,
     ProviderDecisionFactSource, ProviderDecisionFallback, ProviderDecisionFreshness,
@@ -95,6 +94,19 @@ pub struct ExecuteCommandProvider {
     /// native pull-diagnostics path uses, so the command and on-type diagnostics
     /// report the same `NativeCriticRegistry` rule set.
     native_critic_config: NativeCriticCommandConfig,
+    /// Accepted critic snapshot attached explicitly (#6969), used by tests
+    /// and other direct callers. When present it is the policy authority
+    /// for the unopened-file native run: `Disabled` yields no native
+    /// findings, and profile/severity/include/exclude come from the #8253
+    /// accepted state rather than the raw sibling fields above.
+    accepted_critic_snapshot: Option<AcceptedCriticSnapshot>,
+    /// Live `ServerConfig` attached where this provider is constructed
+    /// from the server (#6969). When present (and no explicit snapshot is
+    /// attached), each unopened run captures its accepted snapshot from
+    /// this config at request time, for the workspace root that owns the
+    /// target file, so per-root accepted state and `Disabled` reach the
+    /// native service exactly as the pull-diagnostics path sees them.
+    accepted_critic_config: Option<perl_lsp_rs_core::config::ServerConfig>,
 }
 
 /// Native-critic rule configuration plumbed into [`ExecuteCommandProvider`] from
@@ -245,6 +257,8 @@ impl ExecuteCommandProvider {
             workspace_config: None,
             critic_engine: CriticEngine::Native,
             native_critic_config: NativeCriticCommandConfig::default(),
+            accepted_critic_snapshot: None,
+            accepted_critic_config: None,
         }
     }
 
@@ -255,6 +269,8 @@ impl ExecuteCommandProvider {
             workspace_config: None,
             critic_engine: CriticEngine::Native,
             native_critic_config: NativeCriticCommandConfig::default(),
+            accepted_critic_snapshot: None,
+            accepted_critic_config: None,
         }
     }
 
@@ -283,6 +299,86 @@ impl ExecuteCommandProvider {
         self.native_critic_config =
             NativeCriticCommandConfig { profile, include, exclude, severity };
         self
+    }
+
+    /// Attach the accepted critic snapshot captured from live `ServerConfig`
+    /// where this provider is constructed (#6969).
+    ///
+    /// This is the production seam for the unopened-file `perl.runCritic`
+    /// route: the snapshot is captured in one read of the accepted-state
+    /// authority, so a `Disabled` state (critic switched off) and the
+    /// canonical profile/severity/include/exclude policy reach the native
+    /// service exactly as the pull-diagnostics path sees them. It takes
+    /// precedence over the raw sibling fields set by
+    /// [`Self::with_native_critic_config`].
+    #[cfg(test)]
+    pub(crate) fn with_accepted_critic_snapshot(
+        mut self,
+        snapshot: AcceptedCriticSnapshot,
+    ) -> Self {
+        self.accepted_critic_snapshot = Some(snapshot);
+        self
+    }
+
+    /// Attach the live `ServerConfig` this provider was constructed from
+    /// (#6969). Each unopened run then captures its accepted snapshot at
+    /// request time for the owning workspace root (see
+    /// [`Self::effective_critic_state`]). An explicitly attached snapshot
+    /// takes precedence.
+    pub(crate) fn with_accepted_critic_config(
+        mut self,
+        config: perl_lsp_rs_core::config::ServerConfig,
+    ) -> Self {
+        self.accepted_critic_config = Some(config);
+        self
+    }
+
+    /// The accepted critic state this provider evaluates one unopened file
+    /// under (#6969).
+    ///
+    /// An explicitly attached snapshot wins. Otherwise, when the live
+    /// server config is attached, capture the accepted snapshot now, for
+    /// the longest workspace root containing `file_path` (or the
+    /// server-global subject when no root contains it), so the run is
+    /// judged against the same per-root accepted state the
+    /// pull-diagnostics path uses, `Disabled` included.
+    ///
+    /// Without either, derive through the same #8253 derivation law
+    /// (`ServerConfig::effective_critic_state`) fed from the raw command
+    /// config. That fallback cannot express `Disabled` — the command
+    /// config carries no enabled flag — which is why server construction
+    /// always attaches the live config.
+    fn effective_critic_state(&self, file_path: &Path) -> EffectiveCriticState {
+        if let Some(snapshot) = &self.accepted_critic_snapshot {
+            return snapshot.state().clone();
+        }
+        if let Some(config) = &self.accepted_critic_config {
+            // `file_path` arrives canonicalized (`resolve_path_from_args`),
+            // which on Windows yields `\\?\`-prefixed paths, while the
+            // registered roots are plain paths: compare canonical forms on
+            // both sides (as `find_workspace_root` does) or the prefix test
+            // silently never matches and the run falls back to the global
+            // subject. The captured root keeps the registered spelling.
+            let canonical_file = file_path.canonicalize().ok();
+            let owning_root = self
+                .workspace_roots
+                .iter()
+                .filter(|root| {
+                    let Ok(canonical_root) = root.canonicalize() else { return false };
+                    canonical_file.as_ref().is_some_and(|path| path.starts_with(&canonical_root))
+                })
+                .max_by_key(|root| root.as_os_str().len());
+            let owning_root = owning_root.map(|root| root.to_string_lossy().into_owned());
+            return AcceptedCriticSnapshot::capture(config, owning_root.as_deref()).state().clone();
+        }
+        let cfg = &self.native_critic_config;
+        let mut config = perl_lsp_rs_core::config::ServerConfig::default();
+        config.perlcritic_enabled = true;
+        config.native_critic_profile.clone_from(&cfg.profile);
+        config.perlcritic_severity = cfg.severity;
+        config.native_critic_include.clone_from(&cfg.include);
+        config.native_critic_exclude.clone_from(&cfg.exclude);
+        config.effective_critic_state(None)
     }
 
     /// Attach a workspace configuration to enable PerlOracleEnv isolation for
@@ -877,9 +973,9 @@ impl ExecuteCommandProvider {
         }
     }
 
-    /// Run the native critic rule registry (`NativeCriticRegistry`) — the same
-    /// engine the editor's on-type pull diagnostics use — and format its findings
-    /// into the `perl.runCritic` result shape.
+    /// Run the native critic service (`NativeCriticService`) — the same
+    /// entrypoint the editor's pull diagnostics and code actions use — and
+    /// format its findings into the `perl.runCritic` result shape.
     ///
     /// This is the default `perl.runCritic` path (engine `Native`). Unlike
     /// [`Self::run_builtin_critic`] (which runs the Perl::Critic-compatible
@@ -915,43 +1011,39 @@ impl ExecuteCommandProvider {
             }
         };
 
-        // Build the native critic config from the plumbed server config, mirroring
-        // the editor's native pull-diagnostics path (`add_native_critic_diagnostics`).
-        // The `NativeCriticProfile` selects the rule set; `include`/`exclude`/
-        // `severity` refine it. The rc-file `profile` is an external-perlcritic
-        // concept the native registry does not consult, so it stays `None`.
-        let cfg = &self.native_critic_config;
-        let critic_config = CriticConfig {
-            severity: cfg.severity.clamp(1, 5),
-            profile: None,
-            include: cfg.include.clone(),
-            exclude: cfg.exclude.clone(),
-            ..CriticConfig::default()
-        };
-        let critic_context = CriticContext::new(code_text, &ast, &critic_config);
-        let profile = NativeCriticProfile::parse(&cfg.profile).unwrap_or_default();
-        let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
-        let file = file_path.to_string_lossy();
-
+        // Route through the one native critic service (#6969/#9062): the
+        // accepted state captured at construction (or derived from the raw
+        // command config) is the sole policy authority, so registry
+        // construction, candidate collection, canonical normalization,
+        // profile/severity/include/exclude policy, and scoped suppression
+        // all happen inside the service exactly as on the pull-diagnostics
+        // and code-action routes. Service normalization supersedes the
+        // hand-rolled registry/policy pipeline this method used before:
+        // where the two differed (canonical rule-ID lists, the disabled
+        // state, completeness accounting), the service behavior wins.
+        // This provider is a synchronous one-shot: the accepted state is
+        // captured for this request (see `effective_critic_state`) and
+        // cannot move underneath the run, so both gates are open. The
+        // publishability check below still applies: a non-publishable
+        // run is reported as stale, never as a successful empty result.
         use perl_lsp_rs_core::tooling::perl_critic::{
-            CriticSuppressionMap, NativeCriticPolicy, critic_source_identity_for_uri,
-            native_finding_candidates_with_accounting, normalize_with_native_policy,
+            NativeCriticService, NativeCriticSubject, RunGate, critic_source_identity_for_uri,
         };
-        let candidates = native_finding_candidates_with_accounting(
+        let file = file_path.to_string_lossy();
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
             &file,
-            registry.check_unfiltered(&critic_context),
             critic_source_identity_for_uri(&file, 0),
-        );
-        let suppressions = CriticSuppressionMap::from_source(code_text);
-        let policy = NativeCriticPolicy::new(
-            cfg.severity.clamp(1, 5),
-            &critic_config.include,
-            &critic_config.exclude,
-            &suppressions,
-        );
+            &ast,
+            code_text,
+            self.effective_critic_state(file_path),
+            Vec::new(),
+            RunGate::open(),
+            RunGate::open(),
+        ));
 
-        let mut formatted_violations: Vec<_> = normalize_with_native_policy(candidates, &policy)
-            .into_iter()
+        let mut formatted_violations: Vec<_> = run
+            .findings()
+            .iter()
             .map(|finding| {
                 self.format_violation(
                     finding.public_code(),
@@ -976,6 +1068,22 @@ impl ExecuteCommandProvider {
                 (violation.range.start.column + 1) as usize,
                 &file,
             ));
+        }
+
+        if !run.is_publishable() {
+            // The subject is an accepted snapshot and both gates are open,
+            // so this is unreachable today; if the service ever judges an
+            // evaluation incomplete or cancelled, report it the way the
+            // open-document route reports stale (empty violation list,
+            // no findings dressed up as a successful result) instead of
+            // publishing partial findings as plain success.
+            return Ok(json!({
+                "status": "stale",
+                "staleReason": "critic evaluation did not complete",
+                "violations": Vec::<Value>::new(),
+                "violationCount": 0,
+                "analyzerUsed": "native"
+            }));
         }
 
         Ok(json!({
