@@ -1419,16 +1419,22 @@ fn summarize_event(event: &str, body: Option<&Value>) -> String {
 }
 
 fn wait_error(reason: &str, event_name: &str, recent_events: &VecDeque<String>) -> String {
-    let recent = if recent_events.is_empty() {
-        "none".to_string()
-    } else {
-        recent_events.iter().cloned().collect::<Vec<_>>().join(", ")
-    };
+    let recent = format_recent_events(recent_events);
     format!(
         "{} while waiting for event `{}`; recent events: [{recent}]",
         diagnostic_atom(reason),
         diagnostic_atom(event_name)
     )
+}
+
+/// Render the observed-event summaries as the bracketed list that every wait
+/// diagnostic shares.
+fn format_recent_events(recent_events: &VecDeque<String>) -> String {
+    if recent_events.is_empty() {
+        "none".to_string()
+    } else {
+        recent_events.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
 }
 
 fn diagnostic_atom(value: &str) -> String {
@@ -3505,6 +3511,55 @@ pub fn debuggee_perl_or_typed_skip(test_name: &str) -> Option<&'static DebuggeeP
     }
 }
 
+/// The capacity of the DAP event channel this crate's test senders use
+/// (`sync_channel(64)`), used to recognise the backpressure row when a wait
+/// reports the events it observed (#19536).
+const DAP_EVENT_CHANNEL_CAPACITY: usize = 64;
+
+/// Classify why the awaited event never arrived, so a wait failure lands in
+/// exactly one row (#19536).
+///
+/// The rows are checked in the order the issue fixes them:
+///
+/// | observed during the wait | classification |
+/// |---|---|
+/// | `terminated` | preempted — the debuggee or adapter ended first |
+/// | `output`, no `terminated` | never emitted — output was consumed but no stop published |
+/// | nothing | nothing published — the adapter produced no event in the window |
+/// | count at or above the channel capacity | backpressure — the outbound queue was full |
+/// | anything else | filtered — the awaited event was not among the observed ones |
+fn classify_wait_failure(observed: usize, saw_terminated: bool, saw_output: bool) -> &'static str {
+    if saw_terminated {
+        "preempted: the debuggee or adapter terminated before the awaited event"
+    } else if saw_output {
+        "never-emitted: the adapter consumed debuggee output but published no awaited event"
+    } else if observed == 0 {
+        "nothing-published: the adapter published no event in the wait window"
+    } else if observed >= DAP_EVENT_CHANNEL_CAPACITY {
+        "backpressure: the outbound queue reached the channel capacity"
+    } else {
+        "filtered: events were observed but the awaited event was not among them"
+    }
+}
+
+/// Build a wait diagnostic that names the events observed while waiting, how
+/// many there were, and the classification of the stall. The message is the
+/// shared `wait_error` format plus the observations `wait_error` alone cannot
+/// express.
+fn wait_diagnostic(
+    reason: &str,
+    event_name: &str,
+    recent_events: &VecDeque<String>,
+    observed: usize,
+    classification: &str,
+) -> String {
+    format!(
+        "{}; observed {observed} event(s); classification: {}",
+        wait_error(reason, event_name, recent_events),
+        diagnostic_atom(classification)
+    )
+}
+
 /// Wait for a named DAP event on the receiver, returning the full message.
 ///
 /// This is the canonical shared copy of the `wait_for_event` helper that was
@@ -3514,6 +3569,13 @@ pub fn debuggee_perl_or_typed_skip(test_name: &str) -> Option<&'static DebuggeeP
 /// different signature (e.g. returning `Option<Value>` or taking `timeout_ms`)
 /// keep their local variant — only the byte-identical copies were consolidated
 /// here (#5232).
+///
+/// A timeout reports **which events the adapter published while the helper was
+/// waiting** and classifies the stall into exactly one row, so a stalled wait
+/// is no longer an opaque "timeout waiting for event" (#19536). The awaited
+/// event's matching semantics are unchanged: the helper still returns the
+/// first message whose event name matches, and still ignores every other
+/// message for *matching* purposes.
 // Shared helper: each integration-test binary compiles `common` separately, so
 // binaries that do not call it would otherwise trip per-target dead_code.
 #[allow(dead_code)]
@@ -3523,10 +3585,20 @@ pub fn wait_for_event(
     timeout: Duration,
 ) -> Result<DapMessage, String> {
     let deadline = Instant::now() + timeout;
+    let mut recent_events: VecDeque<String> = VecDeque::with_capacity(RECENT_EVENT_LIMIT);
+    let mut observed = 0usize;
+    let mut saw_terminated = false;
+    let mut saw_output = false;
     loop {
         let now = Instant::now();
         if now >= deadline {
-            return Err(format!("timeout waiting for event `{event_name}`"));
+            return Err(wait_diagnostic(
+                "timeout",
+                event_name,
+                &recent_events,
+                observed,
+                classify_wait_failure(observed, saw_terminated, saw_output),
+            ));
         }
         let remaining = deadline.saturating_duration_since(now);
         match rx.recv_timeout(remaining) {
@@ -3536,13 +3608,47 @@ pub fn wait_for_event(
                 {
                     return Ok(message.0);
                 }
+                observed += 1;
+                match &message.0 {
+                    DapMessage::Event { event, body, .. } => {
+                        if event == "terminated" {
+                            saw_terminated = true;
+                        }
+                        if event == "output" {
+                            saw_output = true;
+                        }
+                        push_recent_event(
+                            &mut recent_events,
+                            summarize_event(event, body.as_ref()),
+                        );
+                    }
+                    DapMessage::Response { command, .. } => {
+                        push_recent_event(
+                            &mut recent_events,
+                            summarize_event(&format!("response({command})"), None),
+                        );
+                    }
+                    DapMessage::Request { command, .. } => {
+                        push_recent_event(
+                            &mut recent_events,
+                            summarize_event(&format!("request({command})"), None),
+                        );
+                    }
+                }
             }
             Err(RecvTimeoutError::Timeout) => {
-                return Err(format!("timeout waiting for event `{event_name}`"));
+                return Err(wait_diagnostic(
+                    "timeout",
+                    event_name,
+                    &recent_events,
+                    observed,
+                    classify_wait_failure(observed, saw_terminated, saw_output),
+                ));
             }
             Err(RecvTimeoutError::Disconnected) => {
                 return Err(format!(
-                    "channel disconnected waiting for `{event_name}` — debuggee exited or crashed"
+                    "channel disconnected waiting for `{event_name}` — debuggee exited or crashed; observed {observed} event(s); recent events: [{}]",
+                    format_recent_events(&recent_events)
                 ));
             }
         }

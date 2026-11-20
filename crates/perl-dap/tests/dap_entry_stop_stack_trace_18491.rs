@@ -14,6 +14,7 @@
 )]
 use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
+use perl_tdd_support::{must_err_with, must_with};
 use serde_json::{Value, json};
 use std::fs::write;
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -44,6 +45,20 @@ fn wait_for_event(
     bound: Duration,
 ) -> Result<DapMessage, String> {
     common::wait_for_event(rx, event_name, bound)
+}
+
+/// Wait for the next `stopped` event, naming the phase in any failure.
+///
+/// The entry stop and the follow-up breakpoint stop are two separate waits for
+/// the same event name, so without a phase label their failures are
+/// indistinguishable in the log (#19536).
+fn await_stop(
+    rx: &Receiver<DapMessageWithEpoch>,
+    bound: Duration,
+    phase: &str,
+) -> Result<DapMessage, String> {
+    wait_for_event(rx, "stopped", bound)
+        .map_err(|error| format!("{phase} stop never arrived: {error}"))
 }
 
 fn response_success(response: DapMessage, command: &str) -> Result<Option<Value>, String> {
@@ -159,7 +174,7 @@ print "$x\n";
 
     response_success(adapter.handle_request(4, "configurationDone", None), "configurationDone")?;
 
-    let entry_stop = wait_for_event(&rx, "stopped", bound)?;
+    let entry_stop = await_stop(&rx, bound, "ENTRY")?;
     let entry_body = event_body(&entry_stop, "stopped")?;
     let entry_reason = entry_body.get("reason").and_then(Value::as_str).unwrap_or("");
     assert!(
@@ -222,7 +237,7 @@ print "$x\n";
         adapter.handle_request(6, "continue", Some(json!({ "threadId": thread_id }))),
         "continue",
     )?;
-    let breakpoint_stop = wait_for_event(&rx, "stopped", bound)?;
+    let breakpoint_stop = await_stop(&rx, bound, "BREAKPOINT")?;
     let breakpoint_body = event_body(&breakpoint_stop, "stopped")?;
     assert_eq!(
         breakpoint_body.get("reason").and_then(Value::as_str),
@@ -243,4 +258,111 @@ print "$x\n";
     let _terminated = wait_for_event(&rx, "terminated", bound)?;
 
     Ok(())
+}
+
+/// The wait helper must report the events it observed while waiting and
+/// classify the stall into exactly one row, so a stalled `stopped` wait is
+/// diagnosable instead of an opaque timeout (#19536).
+///
+/// The success path is asserted too: the awaited event's matching semantics are
+/// unchanged by the diagnostic, and a wait that sees the awaited event still
+/// returns it rather than reporting a timeout.
+///
+/// The phase label is asserted as well: the entry stop and the follow-up
+/// breakpoint stop are two waits for the same event name, so their failures
+/// must not be indistinguishable in the log.
+#[test]
+fn wait_for_event_reports_observed_events_and_classifies_the_stall() {
+    use perl_dap::debug_adapter::DrainEpoch;
+
+    fn event(name: &str, body: Option<Value>) -> DapMessageWithEpoch {
+        (DapMessage::Event { seq: 1, event: name.to_string(), body }, DrainEpoch::Global)
+    }
+
+    const BOUND: Duration = Duration::from_millis(250);
+
+    // (a) Nothing observed: the adapter published no event in the wait window.
+    let (_tx, rx) = sync_channel(64);
+    let error = must_err_with(
+        wait_for_event(&rx, "stopped", BOUND),
+        "a wait with no observed events must time out",
+    );
+    assert!(error.contains("classification: nothing-published"), "{error}");
+    assert!(error.contains("observed 0 event(s)"), "{error}");
+
+    // (b) An `output` event was observed: the adapter consumed debuggee output
+    // but published no awaited event.
+    let (tx, rx) = sync_channel(64);
+    must_with(
+        tx.send(event("output", Some(json!({"category": "stderr", "output": "boom"})))),
+        "send the observed output event",
+    );
+    let error = must_err_with(
+        wait_for_event(&rx, "stopped", BOUND),
+        "a wait without the awaited event must time out",
+    );
+    assert!(error.contains("classification: never-emitted"), "{error}");
+    assert!(error.contains("observed 1 event(s)"), "{error}");
+    assert!(error.contains("output(category=stderr"), "{error}");
+
+    // (c) A `terminated` event preempted the awaited stop.
+    let (tx, rx) = sync_channel(64);
+    must_with(
+        tx.send(event("terminated", Some(json!({"reason": "debugger_frame_limit"})))),
+        "send the terminating event",
+    );
+    let error = must_err_with(
+        wait_for_event(&rx, "stopped", BOUND),
+        "a wait without the awaited event must time out",
+    );
+    assert!(error.contains("classification: preempted"), "{error}");
+    assert!(error.contains("terminated(reason=debugger_frame_limit)"), "{error}");
+
+    // (d) The outbound queue reached the channel capacity: the count alone
+    // identifies the backpressure row.
+    let (tx, rx) = sync_channel(64);
+    for _ in 0..64 {
+        must_with(
+            tx.send(event("continued", None)),
+            "send the events that fill the outbound queue",
+        );
+    }
+    let error = must_err_with(
+        wait_for_event(&rx, "stopped", BOUND),
+        "a wait without the awaited event must time out",
+    );
+    assert!(error.contains("classification: backpressure"), "{error}");
+    assert!(error.contains("observed 64 event(s)"), "{error}");
+
+    // (e) The awaited event is still returned, unchanged: the diagnostic is
+    // additive and never alters the matching semantics.
+    let (tx, rx) = sync_channel(64);
+    must_with(
+        tx.send(event("output", Some(json!({"category": "stdout", "output": "hi"})))),
+        "send the ignored output event",
+    );
+    must_with(
+        tx.send(event("stopped", Some(json!({"reason": "entry"})))),
+        "send the awaited event",
+    );
+    let message = must_with(
+        wait_for_event(&rx, "stopped", BOUND),
+        "the awaited event must still be returned",
+    );
+    assert!(matches!(message, DapMessage::Event { event, .. } if event == "stopped"));
+
+    // (f) The two `stopped` waits are distinguishable: the phase label is in
+    // the failure, so a stalled entry stop cannot be read as a stalled
+    // breakpoint stop.
+    let (_entry_tx, entry_rx) = sync_channel(64);
+    let error =
+        must_err_with(await_stop(&entry_rx, BOUND, "ENTRY"), "a stalled entry stop must time out");
+    assert!(error.starts_with("ENTRY stop never arrived:"), "{error}");
+
+    let (_breakpoint_tx, breakpoint_rx) = sync_channel(64);
+    let error = must_err_with(
+        await_stop(&breakpoint_rx, BOUND, "BREAKPOINT"),
+        "a stalled breakpoint stop must time out",
+    );
+    assert!(error.starts_with("BREAKPOINT stop never arrived:"), "{error}");
 }
