@@ -2,9 +2,13 @@
 PR title convention: end with a real issue ref, e.g.
   fix(crate): description (#NNNN)
 
-Replace NNNN with the tracking issue number this PR addresses.
-The validate-title CI check enforces this format — placeholder refs
-like (#0000) or (#9999) will fail CI.
+Replace NNNN with the tracking issue number this PR addresses. If you cannot
+determine it, use (#0000). When the title contains only zero-valued references,
+validate-title passes and flags the PR with needs-issue-link. Link the real
+issue before merge (see #15351). Never guess an issue number.
+A nonzero reference such as (#9999) takes the ordinary issue lookup path.
+If the lookup fails, validate-title warns and still passes. For a non-exempt
+PR, a title without an issue reference fails the check.
 
 A PR owns one coherent acceptance-and-rollback claim. Complete the sections
 that apply to that claim. Use "N/A" where a repository-specific proof surface
