@@ -159,6 +159,7 @@ on:
       - 'scripts/ci/test_pr_smoke_artifact_inventory.py'
       - 'scripts/ci/test_pr_smoke_workflow_guard.py'
       - '.github/workflows/ci.yml'
+      - 'docs/reference/CI_ARCHITECTURE.md'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
       - 'scripts/ci/test_verify_gate_receipt_freshness.py'
       # PR-fast failing-gate reporter (#15492): it decides which gates reach the
