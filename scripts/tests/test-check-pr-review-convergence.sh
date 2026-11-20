@@ -307,6 +307,16 @@ done
 # of failing silently. The state helper checks the version, warns on missing,
 # and refuses on greater-than-supported.
 
+DOC_V1="$SCRIPT_DIR/../../docs/reference/REVIEW_CONVERGENCE_OUTPUT_V1.md"
+if [[ -f "$DOC_V1" ]] \
+   && grep -Fq 'convergence_core.v1' "$DOC_V1" \
+   && grep -Fq 'schema_version' "$DOC_V1" \
+   && grep -Fq 'headRefOid' "$DOC_V1"; then
+    pass "v1 output contract documented in docs/reference/REVIEW_CONVERGENCE_OUTPUT_V1.md"
+else
+    fail "docs/reference/REVIEW_CONVERGENCE_OUTPUT_V1.md must document convergence_core.v1 field contract"
+fi
+
 # 1. The production core emits a schema_version field at the top of the
 #    envelope, before any of the existing fields. jq preserves object key
 #    order from its input, so to_object + keys[0] tells us whether the field
@@ -333,7 +343,20 @@ fi
 TMP_FUTURE="$TEST_TMP/future"
 mkdir -p "$TMP_FUTURE/scripts/reviews" "$TMP_FUTURE/scripts/ci"
 cp "$STATE_SCRIPT" "$TMP_FUTURE/scripts/reviews/state"
-cp "$SCRIPT" "$TMP_FUTURE/scripts/ci/check-pr-review-convergence"
+cat >"$TMP_FUTURE/scripts/ci/check-pr-review-convergence" <<'EOF'
+#!/usr/bin/env bash
+# Stub wrapper: passthrough core JSON so scripts/reviews/state exercises its own
+# schema gate (the production wrapper refuses unknown core versions earlier).
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CORE_JSON="$(bash "$SCRIPT_DIR/check-pr-review-convergence-core" "${1:-9999}")"
+jq -n --argjson core "$CORE_JSON" '$core + {
+  wrapper_schema_version: "pr_review_convergence.v2",
+  converged: false,
+  formal_review: { classification: "NOT_PROVEN", status: "unusable", reason: "stub" }
+}'
+EOF
+chmod +x "$TMP_FUTURE/scripts/ci/check-pr-review-convergence"
 cat >"$TMP_FUTURE/scripts/ci/check-pr-review-convergence-core" <<'EOF'
 #!/usr/bin/env bash
 jq -n --arg pr "${1:-9999}" '{
@@ -427,6 +450,54 @@ if [[ "$legacy_state_exit" -eq 0 ]] \
     pass "missing schema_version is a deprecation warning, not a refusal"
 else
     fail "missing schema_version should warn and continue — exit=$legacy_state_exit stderr=$legacy_state_err"
+fi
+
+# 5. The public wrapper is a live consumer of the core envelope and must refuse
+#    unsupported core schema versions instead of merging unknown shapes forward.
+TMP_WRAPPER_CORE="$TEST_TMP/wrapper-core-gate"
+mkdir -p "$TMP_WRAPPER_CORE/scripts/ci"
+cp "$SCRIPT" "$TMP_WRAPPER_CORE/scripts/ci/check-pr-review-convergence"
+cat >"$TMP_WRAPPER_CORE/scripts/ci/check-pr-review-convergence-core" <<'EOF'
+#!/usr/bin/env bash
+jq -n --arg pr "${1:-9999}" '{
+  schema_version: "convergence_core.v2",
+  pr: ($pr | tonumber? // $pr),
+  headRefOid: "future-head",
+  is_draft: false,
+  pending_reviewers: [],
+  independent_review_pending: false,
+  current_change_requests: [],
+  stale_reviews: [],
+  stale_bot_reviews: [],
+  current_human_reviews: [],
+  dismissed_human_reviews: [],
+  human_review_count: 0,
+  current_human_review_count: 0,
+  dismissed_human_review_count: 0,
+  review_decision: "",
+  unresolved_active: 0,
+  unresolved_outdated: 0,
+  unresolved_total: 0,
+  resolved_threads: 0,
+  resolved_without_disposition: 0,
+  review_protocol_enforce: false,
+  review_runs_in_flight: 0,
+  verification_runs_in_flight: 0,
+  deep_review_receipt_head_match: true,
+  verification_receipt_head_match: true,
+  dispositions_missing_marker: 0,
+  followups_without_issue: 0,
+  unreachable_fix_commits: 0
+}'
+EOF
+chmod +x "$TMP_WRAPPER_CORE/scripts/ci/check-pr-review-convergence-core"
+wrapper_future_exit=0
+wrapper_future_out="$(bash "$TMP_WRAPPER_CORE/scripts/ci/check-pr-review-convergence" 9999 test-owner/test-repo 2>/dev/null)" || wrapper_future_exit=$?
+if [[ "$wrapper_future_exit" -eq 2 ]] \
+   && jq -e '.formal_review.reason == "unsupported_convergence_core_schema_version"' >/dev/null <<<"$wrapper_future_out"; then
+    pass "wrapper refuses unsupported core schema_version with structured NOT_PROVEN"
+else
+    fail "wrapper should refuse unsupported core schema_version — exit=$wrapper_future_exit output=$wrapper_future_out"
 fi
 
 echo ""

@@ -109,7 +109,7 @@ class ConvergenceCleanup(unittest.TestCase):
                 self.assertIn("injected-copy-failure", result.stderr)
                 self.assertEqual(str(fail_copy_at), counter.read_text().strip())
             else:
-                self.assertIn("=== Results: 29 passed, 0 failed ===", result.stdout)
+                self.assertIn("=== Results: 31 passed, 0 failed ===", result.stdout)
             self.assertEqual("preserve unrelated files\n", sentinel.read_text())
             if cleanup_fails:
                 self.assertIn("injected-cleanup-failure", result.stderr)
