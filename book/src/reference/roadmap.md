@@ -501,9 +501,8 @@ across parser corpus, diagnostics, refactoring, and distribution.
 
 ### v0.14.0
 
-Public-alpha minor release train in progress for the Rust 1.95 MSRV line.
-RP-1 (readiness queue) is complete and RP-2 (dry-run publish readiness)
-is open on `master` readiness tracking.
+The May 2026 public-alpha minor release raised its MSRV to Rust 1.95.
+See the [release notes](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/releases/v0.14.0.md) for the release record.
 
 ### Beyond v0.14.0
 

@@ -171,16 +171,9 @@ jobs:
           echo "idle_cx53=${idle_cx53:-0}"
           echo "idle_cx43=${idle_cx43:-0}"
 
-          # TEMPORARY: CX43 is demoted from routing. The CX43 host has lost its
-          # preloaded em-ci-rust:1.95 Docker image (a local-only image, not in any
-          # registry), so every CX43 job fails preflight in ~11-14s with
-          # "Unable to find image 'em-ci-rust:1.95' locally / pull access denied".
-          # The GitHub-hosted disk-full fallback then rescues the required aggregate,
-          # but this (a) shows a misleading red "Perl LSP Rust Small on CX43" check on
-          # every PR and (b) wastes a doomed CX43 start plus a full GH-hosted re-run.
-          # Evidence: PR #3321 job 85060598571 — "repository does not exist or may
-          # require 'docker login'". Routing straight to CX53 (or GH-hosted when CX53
-          # is busy) is both cleaner and cheaper until ops restores the CX43 image.
+          # CX43 is excluded from routing after PR #3321 job 85060598571 failed
+          # preflight with a missing local Rust image. Sending work to CX43 in
+          # that state showed a failed check before retrying on GitHub-hosted.
           # Revert: delete this block's CX43 skip and restore the `elif ... emit cx43`
           # branch (preserved below) once `docker image inspect em-ci-rust:1.100`
           # passes on the CX43 host.

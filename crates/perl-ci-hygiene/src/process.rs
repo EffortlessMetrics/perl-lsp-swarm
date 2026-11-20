@@ -465,15 +465,10 @@ fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
 
     #[cfg(windows)]
     {
-        // Mirror std's *selection* before judging launchability: std's
-        // `program_exists` is `GetFileAttributesW`-based and admits
-        // directories and broken links, so std stops at the first
-        // attribute-resolving candidate and the real launch then fails if
-        // that subject is not a file. Selecting the same first candidate via
-        // `symlink_metadata` (which likewise does not follow links) keeps the
-        // probe from reporting a later PATH entry the launch would never
-        // reach; the probe is true only when the selected subject is a
-        // regular file, so directory and broken-link selections fail closed.
+        // Select the first candidate with readable metadata before checking
+        // whether it resolves to a regular file. A directory or broken link
+        // at that position makes the probe fail closed instead of reporting
+        // a later PATH entry. See the std comparison below.
         windows_command_candidates(command, path)
             .into_iter()
             .find(|candidate| std::fs::symlink_metadata(candidate).is_ok())
@@ -493,13 +488,13 @@ fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
 /// search that `std::process::Command` performs for a bare file name, in PATH
 /// order.
 ///
-/// Authority: the pinned toolchain (Rust 1.95.0, `rust-toolchain.toml`),
-/// `library/std/src/sys/process/windows.rs` (`resolve_exe` / `search_paths`):
+/// The bare-name rules below follow Rust 1.100.0's
+/// [Windows std source](https://github.com/rust-lang/rust/blob/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/process/windows.rs#L439-L576)
+/// (`resolve_exe`, `search_paths`, and `program_exists`).
 ///
 /// - A bare name containing `.` anywhere is searched verbatim — the launch API
-///   appends nothing, so `tool.cmd` probes `tool.cmd` only, never
-///   `tool.cmd.exe`. An explicit `.bat`/`.cmd` name is the *only* way
-///   `Command::new` reaches a script (std then routes it through `cmd.exe`).
+///   appends nothing, so `tool.cmd` probes `tool.cmd` only. Std routes a
+///   selected `.bat` or `.cmd` through the command interpreter.
 /// - A bare name without `.` is searched only as `<name>.exe`. `PATHEXT` is
 ///   never consulted by `Command::new`, so it is not authority here either.
 /// - Only the admissible (absolute) PATH components are searched. std skips
@@ -509,15 +504,13 @@ fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
 /// - A name carrying a path separator is not PATH-searched by the launch API
 ///   at all, so the probe fails closed (no candidates) for it.
 ///
-/// Deliberate scope limits versus the full launch route: std additionally
-/// searches the application, system, and Windows directories after the child
-/// PATH; this probe covers the PATH leg only, because every caller probes for
-/// tools expected on PATH. Selection mirrors std's `GetFileAttributesW`-based
-/// `program_exists` (first attribute-resolving candidate wins, directories and
-/// broken links included); the caller in `command_exists_in_path` then fails
-/// closed unless that selected subject is a regular file, matching the
-/// eventual launch outcome. The spawn result remains authoritative for races
-/// and lifecycle failure.
+/// This probe covers only the supplied PATH for tools expected there. Std
+/// searches an explicit child PATH first, then the application and system
+/// directories, the Windows directory on non-UWP targets, and the parent PATH.
+/// Std's `GetFileAttributesW`-based `program_exists` selects the first candidate
+/// whose attributes it can read. The probe approximates that selection with
+/// `symlink_metadata` and requires the selected path to resolve to a regular
+/// file. The actual spawn result determines whether the tool can launch.
 ///
 /// Compiled on every platform so the candidate rules are unit-tested off
 /// Windows; the production caller exists only under `cfg(windows)`.

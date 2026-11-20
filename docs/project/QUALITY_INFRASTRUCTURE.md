@@ -61,7 +61,8 @@ Purpose: catch subtle issues and track metrics over time. Non-blocking but track
 - Fuzz testing (5 libFuzzer targets, 60 seconds each in bounded mode, 600 seconds in nightly CI)
 - Performance benchmarks (Criterion, with regression detection and PR comments)
 - Code coverage (cargo-llvm-cov, uploaded to Codecov)
-- Full OS/toolchain matrix (Ubuntu, Windows, macOS x stable, MSRV 1.95, beta)
+- Full OS/toolchain matrix specified by the gate policy (Ubuntu, Windows, macOS
+  × stable, the workspace MSRV, and beta)
 - Corpus sweep with ratchet baseline
 - Determinism checks (run tests 3 times, diff outputs)
 - SemVer compatibility checks (cargo-semver-checks against last release tag)

@@ -2,7 +2,8 @@
 //!
 //! Pins the strongest accepted-boundary behaviors the research classification relies on.
 //! Activates no lint and changes no production error model.
-//! Toolchain pin: 1.95.0 (`rust-toolchain.toml`) — lint behavior is version-dependent.
+//! These assertions exercise runtime error boundaries. Check lint diagnostics
+//! separately with Clippy from the toolchain selected by `rust-toolchain.toml`.
 
 use perl_lsp_rs_core::protocol::resolve_envelope::{
     ResolveEnvelopeRejection, ResolveEnvelopeToken,

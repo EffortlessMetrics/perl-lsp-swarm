@@ -22,7 +22,7 @@ demonstrates progress, and the status doc that holds the authoritative record.
 | **CI UX** | CI failure summaries are noisy; agents and humans both burn tokens parsing them | CI economics agent in flight | TBD | pending | [`status/ci_hardening.md`](status/ci_hardening.md) |
 | **Local CI parity** | `just pr-fast` ≠ remote CI; agents claim "green locally" then CI fails | Partial — gate tiers documented, drift remains | TBD | pending | [`status/ci_hardening.md`](status/ci_hardening.md) |
 | **File policy** | Non-Rust files (docs, fixtures, scripts) bypass quality gates | Non-Rust file policy agent in flight | TBD | pending | [`status/quality.md`](status/quality.md) |
-| **Rust 1.95 quality** | Strong-clippy lints, MSRV alignment, post-1.95 dead-code cleanup | Rust 1.95 rollout agents in flight | TBD | pending | [`status/quality.md`](status/quality.md) |
+| **Rust toolchain quality** | Clippy lints, MSRV alignment, and dead-code cleanup | See the quality status for current toolchain and lint work | TBD | pending | [`status/quality.md`](status/quality.md) |
 
 ## How to use this page
 

@@ -65,7 +65,7 @@ fn installed_rustc_version() -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    // "rustc 1.95.0 (abc123 2026-05-01)" → "1.95.0"
+    // The second whitespace-delimited field is the release channel.
     let version = text.split_whitespace().nth(1)?;
     Some(version.to_string())
 }

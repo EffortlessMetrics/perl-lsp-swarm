@@ -105,7 +105,8 @@ collect_stderr() {
     fi
 LC_ALL=C exec awk "${input_options[@]}" -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v finished="$prefix.finished.log" -v descriptor="${descriptor_file:-/dev/null}" -v summary="$prefix.stderr.json" '
     BEGIN {
-        # Cargo 0.96.0 DirtyReason variants (the pinned 1.95 toolchain).
+        # Allowlisted DirtyReason labels for the Cargo 0.96 trace format.
+        # This list describes the collector input format, not the workspace pin.
         # No arbitrary token, package SourceId, path, flag or log prefix survives.
         kinds="RustcChanged FeaturesChanged DeclaredFeaturesChanged TargetConfigurationChanged PathToSourceChanged ProfileConfigurationChanged RustflagsChanged ConfigSettingsChanged CompileKindChanged LocalLengthsChanged PrecalculatedComponentsChanged ChecksumUseChanged DepInfoOutputChanged RerunIfChangedOutputFileChanged RerunIfChangedOutputPathsChanged EnvVarsChanged EnvVarChanged LocalFingerprintTypeChanged NumberOfDependenciesChanged UnitDependencyNameChanged UnitDependencyInfoChanged FsStatusOutdated NothingObvious Forced FreshBuild"
         split(kinds, names, " "); for (i in names) allowed_kind[names[i]]=1

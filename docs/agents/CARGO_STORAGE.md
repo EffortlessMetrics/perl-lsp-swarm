@@ -9,8 +9,10 @@ route sets `RUSTUP_AUTO_INSTALL=0` before even the version probe, preserves it f
 Cargo, and forces it in Cargo's child environment; a missing pinned toolchain
 refuses instead of automatically installing. This changes no global rustup setting.
 See the [rustup environment reference](https://rust-lang.github.io/rustup/environment-variables.html).
-Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Python 3.11+ and the exact installed repository pin 1.100.0. Keep the qualification
-profiles unchanged. Default jobs remain two (accepted range one to four), with
+Builtin routes require Python 3.10+ and Cargo at or above the workspace
+`rust-version` in [Cargo.toml](../../Cargo.toml) (currently 1.100). Staged Clippy
+requires Python 3.11+ and the exact installed repository pin 1.100.0. Keep the
+qualification profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
 Cargo's child environment also receives the admitted target/build paths, jobs and
 incremental setting, overriding conflicting forced `[env]` values after local

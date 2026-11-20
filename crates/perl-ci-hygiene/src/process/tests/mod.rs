@@ -137,10 +137,8 @@ fn command_exists_in_path_returns_false_without_path() {
 }
 
 // Pure candidate-generation tests for the Windows probe seam. These run on
-// every platform: `windows_command_candidates` mirrors the bare-name search
-// of the pinned Rust 1.95 `std::process::Command` implementation
-// (`library/std/src/sys/process/windows.rs`, `resolve_exe`), and std's rules
-// are platform-independent pure path construction.
+// every platform and check the path construction described in
+// `windows_command_candidates`. The Windows-only tests cover filesystem lookup.
 #[test]
 fn windows_candidates_bare_name_try_only_dot_exe_in_path_order() -> TestResult {
     let first = TempDir::new("candidates-first")?;
