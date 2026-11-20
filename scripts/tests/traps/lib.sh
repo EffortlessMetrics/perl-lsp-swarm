@@ -38,6 +38,13 @@ trap_git_identity() {
     git -C "$repo" config commit.gpgsign false
 }
 
+# These ref-policy fixtures have no Rust workspace. Stand in only for the
+# parser validator so the real hook can continue to its ref-policy controls.
+trap_stub_parser_validator() {
+    mkdir -p "$1/scripts/ci"
+    printf '%s\n' 'import sys' 'assert "--validate-only" in sys.argv' > "$1/scripts/ci/run_parser_integration.py"
+}
+
 trap_say() { printf '  evidence: %s\n' "$1"; }
 
 # verdict <Tn> <PASS|FAIL|UNGUARDED> <detail>

@@ -90,6 +90,10 @@ assert not selectors,'validation inherited outer Git selectors'
         policy = writer / '.ci/gate-policy.yaml'; policy.parent.mkdir(); policy.write_text('gates:\n  - name: clippy_tests_kernel\n    command:\n      -p fixture\n')
         status = writer / 'scripts/update-current-status.py'; status.parent.mkdir()
         status.write_text('import runpy,sys\nsys.argv=[' + repr(str(recorder)) + ',"status"]\nrunpy.run_path(' + repr(str(recorder)) + ',run_name="__main__")\n')
+        # Isolate the downstream dispatch fixtures from parser target discovery.
+        validator = writer / 'scripts/ci/run_parser_integration.py'
+        validator.parent.mkdir()
+        validator.write_text("import sys\nassert '--validate-only' in sys.argv\n")
         tools = case / 'bin'; tools.mkdir()
         for label in ['cargo', 'just']:
             file = tools / label

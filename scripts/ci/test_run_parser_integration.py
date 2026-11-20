@@ -106,6 +106,79 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
             str(receipt),
         ]
 
+    def test_validate_only_detects_renamed_cargo_test_with_unchanged_lock(self) -> None:
+        root, manifest, lock, receipt = self.authority_root()
+        (root / "Cargo.toml").write_text(
+            '[package]\nname = "perl-parser"\nversion = "0.1.0"\nedition = "2021"\n',
+            encoding="utf-8",
+        )
+        tests = root / "tests"
+        tests.mkdir()
+        target = tests / "semantic_smoke_tests.rs"
+        target.touch()
+        command = [
+            sys.executable, str(MODULE_PATH), "--validate-only",
+            *self.main_args(root, manifest, lock, receipt),
+        ]
+        valid = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+
+        target.rename(tests / "renamed_tests.rs")
+        missing = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(missing.returncode, 2, missing.stderr)
+        self.assertIn("manifest is stale: perl-parser:semantic_smoke_tests", missing.stderr)
+        self.assertFalse(receipt.exists())
+
+    def test_pre_push_checks_outgoing_target_before_classifying_changes(self) -> None:
+        root, _, _, _ = self.authority_root()
+        package = root / "crates/perl-parser"
+        target = package / "tests/semantic_smoke_tests.rs"
+        target.parent.mkdir(parents=True)
+        target.touch()
+        (root / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n')
+        (package / "Cargo.toml").write_text(
+            '[package]\nname = "perl-parser"\nversion = "0.1.0"\nedition = "2021"\n'
+        )
+        validator = root / "scripts/ci/run_parser_integration.py"
+        validator.parent.mkdir(parents=True)
+        shutil.copyfile(MODULE_PATH, validator)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+        def git(*args: str) -> str:
+            return subprocess.check_output(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null", *args],
+                cwd=root, env=env, text=True,
+            ).strip()
+
+        def pre_push(old: str, new: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["bash", str(runner.ROOT / "hooks/pre-push")], cwd=root, env=env,
+                input=f"refs/heads/probe {new} refs/heads/probe {old}\n",
+                capture_output=True, text=True,
+            )
+
+        git("init", "-q")
+        git("add", ".")
+        git("commit", "-qm", "valid manifest")
+        base = git("rev-parse", "HEAD")
+        (root / "README.md").touch()
+        git("add", "README.md")
+        git("commit", "-qm", "documentation")
+        docs = git("rev-parse", "HEAD")
+        valid = pre_push(base, docs)
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertIn("Doc-only fast-path gate passed", valid.stdout)
+
+        target.rename(target.with_name("renamed_tests.rs"))
+        git("add", "-A")
+        git("commit", "-qm", "rename test target")
+        target.touch()  # A valid working tree must not mask the stale outgoing commit.
+        missing = pre_push(docs, git("rev-parse", "HEAD"))
+        self.assertEqual(missing.returncode, 2, missing.stderr)
+        self.assertIn("manifest is stale: perl-parser:semantic_smoke_tests", missing.stderr)
+        self.assertNotIn("Single-crate push", missing.stdout)
+
     def test_feature_gated_target_builds_one_manifest_owned_command(self) -> None:
         plan = runner.TargetPlan(
             proof_id="parser.incremental.integration",

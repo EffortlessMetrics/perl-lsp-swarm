@@ -35,7 +35,7 @@
 # Hook logic version (#17431 review wave 3): bump the integer below on EVERY
 # guard-logic change. Self-heal only upgrades (checkout > installed) and
 # never downgrades; unmarked legacy hooks count as version 0.
-# pre-push-hook-version: 3
+# pre-push-hook-version: 4
 
 set -euo pipefail
 
@@ -229,6 +229,27 @@ run_validation_child() (
     fi
     "$@"
 )
+# Resolve Cargo's test targets in each outgoing commit. The checkout can contain
+# unrelated edits or be on a different branch than the ref being pushed.
+validate_parser_targets() (
+    local sha="$1" snapshot
+    snapshot="$(mktemp -d)" || return
+    trap 'rm -rf -- "$snapshot"' EXIT
+    export GIT_INDEX_FILE="$snapshot/index"
+    git read-tree "$sha" || return
+    git checkout-index --all --ignore-skip-worktree-bits --prefix="$snapshot/tree/" || return
+    unset GIT_INDEX_FILE
+    python3 "$REPO_ROOT/scripts/ci/run_parser_integration.py" --validate-only \
+        --root "$snapshot/tree" --manifest "$snapshot/tree/.ci/parser-integration-targets.json" \
+        --lock "$snapshot/tree/.ci/parser-integration-targets.lock.json"
+)
+for line in "${PUSH_REFS[@]}"; do
+    read -r _local_ref local_sha _remote_ref _remote_sha <<< "$line"
+    if [ "$local_sha" != "$ZERO_SHA" ]; then
+        run_validation_child validate_parser_targets "$local_sha"
+    fi
+done
+
 DOC_ONLY=true
 TEST_FILES_CHANGED=false
 HAS_DIFFABLE_REF=false

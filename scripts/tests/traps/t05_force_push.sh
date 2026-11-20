@@ -63,6 +63,7 @@ GUARD_PIN="$(grep -c 'merge-base --is-ancestor' "$TRAP_ROOT/hooks/pre-push" || t
 trap_say "hooks/pre-push ref-update guard pins=$GUARD_PIN"
 
 # Live proof: install the checked-in hook and attempt the force-push.
+trap_stub_parser_validator "$SCRATCH/local"
 cp "$TRAP_ROOT/hooks/pre-push" "$SCRATCH/local/.git/hooks/pre-push"
 chmod +x "$SCRATCH/local/.git/hooks/pre-push"
 set +e

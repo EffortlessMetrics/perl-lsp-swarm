@@ -51,6 +51,7 @@ BLIND_PIN="$(grep -c 'dispatches nothing at all' "$TRAP_ROOT/.github/workflows/m
 trap_say "hooks/pre-push ref-update guard pins=$GUARD_PIN hatch pins=$HATCH_PIN; main-history blind-spot pins=$BLIND_PIN"
 
 # Live proof: install the checked-in hook and force-push the rewrite.
+trap_stub_parser_validator "$SCRATCH/wt"
 cp "$TRAP_ROOT/hooks/pre-push" "$SCRATCH/wt/.git/hooks/pre-push"
 chmod +x "$SCRATCH/wt/.git/hooks/pre-push"
 set +e

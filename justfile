@@ -69,7 +69,7 @@ agent-nextest:
     {{cargo_safe}} nextest run --workspace --profile agent --cargo-profile agent
 
 # Legacy cargo-safe compatibility gates; not host admission. The xtask alias is not admitted; requires a separately admitted route.
-agent-pr-fast:
+agent-pr-fast: check-parser-integration-targets
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
 
 # Legacy cargo-safe compatibility cache; not host admission. New agent work: scripts/cargo-admitted after host admission; see docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md.
@@ -118,8 +118,12 @@ _timed name cmd:
         exit $RC
     fi
 
+# Validate every locked parser proof against Cargo before changed-path classification.
+check-parser-integration-targets:
+    python3 scripts/ci/run_parser_integration.py --validate-only
+
 # Tier: PR-fast (required for every PR iteration, must be fast ~1-2 min)
-pr-fast: _check-tools-basic
+pr-fast: check-parser-integration-targets _check-tools-basic
     #!/usr/bin/env bash
     set -euo pipefail
     args=(--tier pr-fast --receipt)
@@ -183,7 +187,7 @@ pre-merge-check NUMBER:
     bash scripts/pre-merge-check.sh {{NUMBER}}
 
 # Tier: Merge-gate (required before merge to master ~3-5 min)
-merge-gate: _check-tools-basic pr-fast
+merge-gate: pr-fast
     #!/usr/bin/env bash
     set -uo pipefail
     echo "=============================================="
@@ -1050,7 +1054,7 @@ ci-contracts: prove-required-merge-surface
 
 # Fast merge gate (~2-5 min) - REQUIRED for all merges
 # The pre-push hook runs `just pr-fast`; this is the broader local merge gate.
-ci-gate:
+ci-gate: check-parser-integration-targets
     @echo "Running fast merge gate..."
     just ci-workflow-audit && \
     just ci-contracts && \
