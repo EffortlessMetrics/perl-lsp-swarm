@@ -1,3 +1,4 @@
+from collections import Counter
 import unittest
 
 import xtask_bin_selection as audit
@@ -26,7 +27,9 @@ class SelectionTest(unittest.TestCase):
         known = {"owner::two", "owner::ignored", "removed"}
 
         def evaluate(commands):
-            return audit.report(commands, known, lambda args: answers[tuple(args)])
+            return audit.report(
+                commands, known, lambda args: Counter(answers[tuple(args)])
+            )
 
         before = evaluate([narrow])
         self.assertEqual(before["expansion_control_added"], "owner::two")
@@ -59,3 +62,23 @@ class SelectionTest(unittest.TestCase):
         for changed in ("", source.split("\n", 1)[1], source + source.splitlines()[0]):
             with self.assertRaises(ValueError):
                 audit.historical_paths(changed)
+
+    def test_duplicate_libtest_rows_preserve_runnable_instance(self):
+        name = "tasks::module_train_live::tests::a_pre_change_snapshot_is_rejected_as_older_schema_not_as_tampering"
+        inventory = audit.parse_listing(
+            f"{name}: test\n{name}: test\n\n2 tests, 0 benchmarks\n"
+        )
+        ignored = audit.parse_listing(f"{name}: test\n\n1 test, 0 benchmarks\n")
+        route = ["--locked", "--", "--exact", name]
+
+        def listing(args):
+            return ignored if "--ignored" in args else inventory
+
+        data = audit.report([route], {name}, listing)
+        self.assertEqual(data["inventory_slots"], 2)
+        self.assertEqual(data["inventory_count"], 1)
+        self.assertEqual(data["routes"][0]["runnable_slots"], 1)
+        self.assertEqual(data["routes"][0]["ignored_slots"], 1)
+        self.assertEqual(data["historical_selected"], [name])
+        with self.assertRaises(ValueError):
+            audit.parse_listing(f"{name}: test\n\n2 tests, 0 benchmarks\n")

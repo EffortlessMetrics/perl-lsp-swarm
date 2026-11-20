@@ -8,6 +8,7 @@ paths selected, uncovered (including ignored), or absent. Absent paths return
 nonzero. The expansion control measures one temporary filter addition.
 """
 
+from collections import Counter
 import hashlib
 import json
 from pathlib import Path
@@ -73,11 +74,15 @@ def listing(args):
         cwd=ROOT,
         text=True,
     )
+    return parse_listing(output)
+
+
+def parse_listing(output):
     names = re.findall(r"^([^\s]+): test$", output, re.M)
     total = re.search(r"^(\d+) tests?, (\d+) benchmarks?\s*\Z", output, re.M)
-    if not total or int(total[1]) != len(set(names)) or len(names) != len(set(names)):
+    if not total or int(total[1]) != len(names):
         raise ValueError("incomplete libtest listing")
-    return set(names)
+    return Counter(names)
 
 
 def report(commands, known, list_tests=listing):
@@ -97,12 +102,14 @@ def report(commands, known, list_tests=listing):
             {
                 "args": args,
                 "selected": sorted(runnable),
+                "runnable_slots": sum(runnable.values()),
+                "ignored_slots": sum((matches & ignored).values()),
                 "ignored": sorted(matches & ignored),
             }
         )
     # Widen an exact invocation in memory and require the harness to name
     # precisely one additional path. The installed producer stays untouched.
-    uncovered = sorted((known & inventory) - selected - ignored)
+    uncovered = sorted(known.intersection(inventory - ignored) - selected)
     control = None
     if uncovered:
         exact = next((args for args in commands if "--exact" in args), None)
@@ -110,17 +117,18 @@ def report(commands, known, list_tests=listing):
             raise ValueError("no exact route available for expansion control")
         baseline = list_tests(exact)
         expanded = list_tests([*exact, uncovered[0]])
-        if expanded != baseline | {uncovered[0]}:
+        if expanded != baseline + Counter({uncovered[0]: inventory[uncovered[0]]}):
             raise ValueError(f"filter expansion did not add exactly {uncovered[0]}")
         control = uncovered[0]
     return {
         "expansion_control_added": control,
         "inventory_count": len(inventory),
+        "inventory_slots": sum(inventory.values()),
         "routes": rows,
         "selected": sorted(selected),
         "historical_selected": sorted(known & selected),
-        "historical_uncovered": sorted((known & inventory) - selected),
-        "historical_absent": sorted(known - inventory),
+        "historical_uncovered": sorted(known.intersection(inventory) - selected),
+        "historical_absent": sorted(known.difference(inventory)),
     }
 
 
