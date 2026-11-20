@@ -186,6 +186,23 @@ fn rerun_for(check: &str) -> String {
 /// called outside a real plan (e.g. ad hoc testing); still correct, just
 /// not pinned to a single snapshot.
 pub fn run_named_check(name: &str, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    run_named_check_against(name, tree_oid, None)
+}
+
+/// Reuse the established checks against an explicit committed base/head tree.
+pub fn run_named_check_for_publication(
+    name: &str,
+    tree_oid: &str,
+    base: &str,
+) -> Result<CommitCheckOutcome> {
+    run_named_check_against(name, Some(tree_oid), Some(base))
+}
+
+fn run_named_check_against(
+    name: &str,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let root = project_root()?;
     // `other => bail!(...)` short-circuits the whole function (an unknown
     // check name is a `.ci/gate-policy.yaml` wiring bug, not a runtime
@@ -199,15 +216,15 @@ pub fn run_named_check(name: &str, tree_oid: Option<&str>) -> Result<CommitCheck
     // as a real Blocked finding either (never a hard failure that reads as
     // a product/policy violation).
     let result: Result<CommitCheckOutcome> = match name {
-        "staged_tree_identity" => staged_tree_identity_at(&root, tree_oid),
-        "whitespace_check" => whitespace_check_at(&root, tree_oid),
-        "conflict_markers_staged" => conflict_markers_staged_at(&root, tree_oid),
-        "staged_exec_mode_policy" => staged_exec_mode_policy_at(&root, tree_oid),
-        "staged_config_syntax" => staged_config_syntax_at(&root, tree_oid),
-        "forbidden_machine_paths" => forbidden_machine_paths_at(&root, tree_oid),
-        "staged_oversized_or_binary" => staged_oversized_or_binary_at(&root, tree_oid),
-        "rustfmt_staged" => rustfmt_staged_at(&root, tree_oid),
-        "from_raw_staged" => from_raw_staged_at(&root, tree_oid),
+        "staged_tree_identity" => staged_tree_identity_against(&root, tree_oid, base),
+        "whitespace_check" => whitespace_check_against(&root, tree_oid, base),
+        "conflict_markers_staged" => conflict_markers_staged_against(&root, tree_oid, base),
+        "staged_exec_mode_policy" => staged_exec_mode_policy_against(&root, tree_oid, base),
+        "staged_config_syntax" => staged_config_syntax_against(&root, tree_oid, base),
+        "forbidden_machine_paths" => forbidden_machine_paths_against(&root, tree_oid, base),
+        "staged_oversized_or_binary" => staged_oversized_or_binary_against(&root, tree_oid, base),
+        "rustfmt_staged" => rustfmt_staged_against(&root, tree_oid, base),
+        "from_raw_staged" => from_raw_staged_against(&root, tree_oid, base),
         other => bail!("unknown commit-tier check '{other}'"),
     };
     Ok(result
@@ -236,6 +253,18 @@ fn instrument_failure_report(check: &str, err: &color_eyre::eyre::Error) -> Chec
     }
 }
 
+/// Frozen publication ranges have an explicit base; commit checks keep HEAD/index semantics.
+fn snapshot_diff_base(root: &Path, base: Option<&str>) -> Result<String> {
+    match base {
+        Some(base) => Ok(base.to_string()),
+        None => staged::diff_base(root),
+    }
+}
+
+fn snapshot_diff_paths(root: &Path, tree: &str, base: Option<&str>) -> Result<Vec<String>> {
+    staged::staged_diff_paths_against(root, Some(tree), base)
+}
+
 /// Resolve `tree_oid` to a concrete OID string, computing one fresh only
 /// when the caller genuinely has none (see [`run_named_check`]'s doc
 /// comment on why every real dispatch path already has one).
@@ -255,13 +284,22 @@ fn resolve_tree_oid(root: &Path, tree_oid: Option<&str>) -> Result<String> {
 // (git write-tree OID) end to end into AgentReceipt.staged_tree_oid.
 // =============================================================================
 
+#[cfg(test)]
 fn staged_tree_identity_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    staged_tree_identity_against(root, tree_oid, None)
+}
+
+fn staged_tree_identity_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
     // Scope the reported file list to the SAME snapshot as the identity
     // above -- pass the (now-resolved) tree_oid through rather than letting
     // staged_diff_paths fall back to the live index, which could have moved
     // since tree_oid was captured.
-    let changed = staged::staged_diff_paths(root, Some(&tree_oid))?;
+    let changed = snapshot_diff_paths(root, &tree_oid, base)?;
 
     if changed.is_empty() {
         return Ok(CommitCheckOutcome::Pass(format!(
@@ -308,9 +346,18 @@ fn staged_tree_identity_at(root: &Path, tree_oid: Option<&str>) -> Result<Commit
 // what's actually being checked.
 // =============================================================================
 
+#[cfg(test)]
 fn whitespace_check_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    whitespace_check_against(root, tree_oid, None)
+}
+
+fn whitespace_check_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
-    let base = staged::diff_base(root)?;
+    let base = snapshot_diff_base(root, base)?;
     let output = Command::new("git")
         .current_dir(root)
         .args(["diff", &base, &tree_oid, "--check"])
@@ -370,9 +417,18 @@ fn evaluate_conflict_markers<'a>(files: impl Iterator<Item = (&'a str, &'a str)>
     affected
 }
 
+#[cfg(test)]
 fn conflict_markers_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    conflict_markers_staged_against(root, tree_oid, None)
+}
+
+fn conflict_markers_staged_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
-    let paths = staged::staged_diff_paths(root, Some(&tree_oid))?;
+    let paths = snapshot_diff_paths(root, &tree_oid, base)?;
     let mut files = Vec::new();
     for path in &paths {
         if let StagedPathText::Present(text) =
@@ -430,10 +486,19 @@ fn evaluate_exec_mode<'a>(entries: impl Iterator<Item = (&'a str, bool)>) -> Vec
         .collect()
 }
 
+#[cfg(test)]
 fn staged_exec_mode_policy_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    staged_exec_mode_policy_against(root, tree_oid, None)
+}
+
+fn staged_exec_mode_policy_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
     let diff_paths: BTreeSet<String> =
-        staged::staged_diff_paths(root, Some(&tree_oid))?.into_iter().collect();
+        snapshot_diff_paths(root, &tree_oid, base)?.into_iter().collect();
     if diff_paths.is_empty() {
         return Ok(CommitCheckOutcome::Pass("no staged files".to_string()));
     }
@@ -487,9 +552,18 @@ fn config_syntax_error(ext: &str, text: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn staged_config_syntax_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    staged_config_syntax_against(root, tree_oid, None)
+}
+
+fn staged_config_syntax_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
-    let paths = staged::staged_diff_paths(root, Some(&tree_oid))?;
+    let paths = snapshot_diff_paths(root, &tree_oid, base)?;
     let mut affected = Vec::new();
     for path in &paths {
         // Case-insensitive extension match: `.YAML`/`.Json` are valid staged
@@ -613,9 +687,18 @@ fn evaluate_forbidden_paths<'a>(
     affected
 }
 
+#[cfg(test)]
 fn forbidden_machine_paths_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    forbidden_machine_paths_against(root, tree_oid, None)
+}
+
+fn forbidden_machine_paths_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
-    let paths = staged::staged_diff_paths(root, Some(&tree_oid))?;
+    let paths = snapshot_diff_paths(root, &tree_oid, base)?;
     let mut files = Vec::new();
     for path in &paths {
         if let StagedPathText::Present(text) =
@@ -681,13 +764,22 @@ fn evaluate_oversized_or_binary<'a>(entries: impl Iterator<Item = (&'a str, u64)
     affected
 }
 
+#[cfg(test)]
 fn staged_oversized_or_binary_at(
     root: &Path,
     tree_oid: Option<&str>,
 ) -> Result<CommitCheckOutcome> {
+    staged_oversized_or_binary_against(root, tree_oid, None)
+}
+
+fn staged_oversized_or_binary_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
     let diff_paths: BTreeSet<String> =
-        staged::staged_diff_paths(root, Some(&tree_oid))?.into_iter().collect();
+        snapshot_diff_paths(root, &tree_oid, base)?.into_iter().collect();
     if diff_paths.is_empty() {
         return Ok(CommitCheckOutcome::Pass("no staged files".to_string()));
     }
@@ -769,10 +861,10 @@ const RUSTFMT_CONFIG_FILE: &str = "rustfmt.toml";
 /// unlike file-path mode (`--check <path>` exits non-zero on a real diff),
 /// rustfmt's stdin `--check` mode exits `0` even when stdout carries an
 /// actual diff — an exit-code check alone would silently report every
-/// unformatted file as clean. A genuine tool failure (a bad
-/// `--config-path`, a syntax error in the staged content itself) writes to
-/// stderr and must surface as a real `Err` — the "error" gate status, not a
-/// silently-wrong "clean" or a misleading "needs reformatting".
+/// unformatted file as clean. A genuine tool failure may write stderr
+/// (a bad configuration path or syntax error) or exit unsuccessfully without
+/// any output. Both must surface as an instrument error, not a silently-wrong
+/// "clean" or a misleading "needs reformatting".
 fn rustfmt_would_reformat(config_text: Option<&str>, text: &str) -> Result<bool> {
     use std::io::Write;
     use std::process::Stdio;
@@ -809,9 +901,19 @@ fn rustfmt_would_reformat(config_text: Option<&str>, text: &str) -> Result<bool>
         .context("failed to write staged content to rustfmt stdin")?;
     let output = child.wait_with_output().context("failed to wait for rustfmt")?;
 
+    rustfmt_output_would_reformat(&output)
+}
+
+/// An unsuccessful formatter is an instrument failure even when it emits
+/// nothing. Successful stdin checks still report formatting differences in
+/// stdout rather than through a nonzero exit status.
+fn rustfmt_output_would_reformat(output: &std::process::Output) -> Result<bool> {
     if !output.stderr.is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("rustfmt reported a failure rather than a formatting diff: {stderr}");
+    }
+    if !output.status.success() {
+        bail!("rustfmt exited unsuccessfully: {}", output.status);
     }
     Ok(!output.stdout.is_empty())
 }
@@ -834,9 +936,18 @@ fn load_staged_rustfmt_config(root: &Path, tree_oid: &str) -> Result<Option<Stri
     }
 }
 
+#[cfg(test)]
 fn rustfmt_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    rustfmt_staged_against(root, tree_oid, None)
+}
+
+fn rustfmt_staged_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
-    let paths: Vec<String> = staged::staged_diff_paths(root, Some(&tree_oid))?
+    let paths: Vec<String> = snapshot_diff_paths(root, &tree_oid, base)?
         .into_iter()
         .filter(|p| p.ends_with(".rs"))
         .collect();
@@ -917,12 +1028,21 @@ static ALLOWED_FROM_RAW_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(ALLOWED_FROM_RAW_PATTERN).expect("ALLOWED_FROM_RAW_PATTERN is a valid regex literal")
 });
 
+#[cfg(test)]
 fn from_raw_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    from_raw_staged_against(root, tree_oid, None)
+}
+
+fn from_raw_staged_against(
+    root: &Path,
+    tree_oid: Option<&str>,
+    base: Option<&str>,
+) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
     let disallow_re = &*DISALLOW_FROM_RAW_RE;
     let allowed_re = &*ALLOWED_FROM_RAW_RE;
 
-    let paths: Vec<String> = staged::staged_diff_paths(root, Some(&tree_oid))?
+    let paths: Vec<String> = snapshot_diff_paths(root, &tree_oid, base)?
         .into_iter()
         .filter(|p| {
             p.ends_with(".rs")
@@ -1273,6 +1393,19 @@ mod tests {
     // edit and never the pre-image before staging. Proven against a real
     // temp git repository (not the host repo's own index).
     // -------------------------------------------------------------------
+
+    fn fixture_git() -> Command {
+        let mut command = Command::new("git");
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("GIT_") {
+                command.env_remove(name);
+            }
+        }
+        command
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" });
+        command
+    }
 
     struct TempRepo {
         dir: tempfile::TempDir,
@@ -1629,6 +1762,23 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn rustfmt_silent_failed_exit_is_not_clean() -> Result<()> {
+        #[cfg(windows)]
+        let output = Command::new("cmd").args(["/d", "/c", "exit", "23"]).output()?;
+        #[cfg(unix)]
+        let output = Command::new("sh").args(["-c", "exit 23"]).output()?;
+        assert_eq!(output.status.code(), Some(23));
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        let error = rustfmt_output_would_reformat(&output).err();
+        assert!(
+            error.is_some_and(|error| error.to_string().contains("exited unsuccessfully")),
+            "a failed formatter must not be reported as clean"
+        );
+        Ok(())
+    }
+
     #[test]
     fn rustfmt_staged_flags_unformatted_staged_rust() -> Result<()> {
         let repo = TempRepo::init()?;
@@ -1874,6 +2024,46 @@ mod tests {
                 bail!("expected the unpinned (live-index) read to see the fix and pass: {report:?}")
             }
         }
+        Ok(())
+    }
+    #[test]
+    fn publication_explicit_base_detects_committed_conflict_hidden_by_index() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("file.rs", "fn main() {}\n")?;
+        repo.add("file.rs")?;
+        repo.commit("base")?;
+        let base = fixture_git().current_dir(repo.root()).args(["rev-parse", "HEAD"]).output()?;
+        let base = String::from_utf8(base.stdout)?.trim().to_string();
+        repo.write("file.rs", "<<<<<<< ours\nfn main() {}\n=======\n>>>>>>> theirs\n")?;
+        repo.add("file.rs")?;
+        repo.commit("committed conflict")?;
+        let tree = staged::staged_tree_oid(repo.root())?;
+        repo.write("file.rs", "fn main() {}\n")?;
+        repo.add("file.rs")?;
+        match conflict_markers_staged_against(repo.root(), Some(&tree), Some(&base))? {
+            CommitCheckOutcome::Flagged(report) => assert_eq!(report.posture, Posture::Blocked),
+            _ => bail!("committed conflict was hidden by repaired index"),
+        }
+        assert!(
+            matches!(
+                conflict_markers_staged_at(repo.root(), Some(&tree))?,
+                CommitCheckOutcome::Pass(_)
+            ),
+            "retention control: commit-tier HEAD-to-tree baseline stays empty"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publication_explicit_base_rejects_bad_baseline() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("file.json", "{}\n")?;
+        repo.add("file.json")?;
+        repo.commit("fixture")?;
+        let tree = staged::staged_tree_oid(repo.root())?;
+        assert!(
+            staged_config_syntax_against(repo.root(), Some(&tree), Some("missing-base")).is_err()
+        );
         Ok(())
     }
 }
