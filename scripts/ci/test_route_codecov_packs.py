@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from unittest.mock import patch
 from pathlib import Path
@@ -23,6 +24,84 @@ SPEC.loader.exec_module(router)
 
 
 class RouteCodecovPacksTests(unittest.TestCase):
+    def test_full_history_fetch_preserves_merge_base_routing(self) -> None:
+        """#17026: retained objects do not defeat a later shallow boundary.
+
+        This differential exercises the production router, not the workflow.
+        The depth-limited arm deliberately reproduces the existing failure;
+        it does not assert that the workflow has already been repaired.
+        """
+        with tempfile.TemporaryDirectory(prefix="coverage-history-") as directory:
+            root = Path(directory)
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_")}
+            env.update({
+                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C",
+            })
+
+            def git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    ["git", "-C", str(cwd), "-c", "commit.gpgsign=false",
+                     "-c", f"core.hooksPath={root / 'no-hooks'}", *args],
+                    env=env, capture_output=True, text=True, check=check, timeout=15,
+                )
+
+            def route(cwd: Path) -> subprocess.CompletedProcess:
+                # Run in a child so the suite's working directory is never changed.
+                return subprocess.run(
+                    [sys.executable, "-c",
+                     "import json, runpy, sys; "
+                     "r = runpy.run_path(sys.argv[1]); "
+                     "print(json.dumps(r['changed_files']('origin/main', 'HEAD')))",
+                     str(SCRIPT_PATH.resolve())],
+                    cwd=cwd, env=env, capture_output=True, text=True, timeout=15,
+                )
+
+            origin = root / "origin"
+            origin.mkdir()
+            git(origin, "init", "-b", "main")
+            git(origin, "config", "user.name", "Coverage history fixture")
+            git(origin, "config", "user.email", "fixture@example.invalid")
+            git(origin, "commit", "--allow-empty", "-qm", "common ancestor")
+            ancestor = git(origin, "rev-parse", "HEAD").stdout.strip()
+            git(origin, "checkout", "-qb", "topic")
+            (origin / "topic.rs").write_text("// changed source\n", encoding="utf-8")
+            git(origin, "add", "topic.rs")
+            git(origin, "commit", "-qm", "topic change")
+            head = git(origin, "rev-parse", "HEAD").stdout.strip()
+            git(origin, "checkout", "main")
+            for index in range(205):
+                git(origin, "commit", "--allow-empty", "-qm", f"main {index}")
+
+            for depth_limited in (True, False):
+                with self.subTest(depth_limited=depth_limited):
+                    clone = root / ("limited" if depth_limited else "complete")
+                    # file:// uses transport semantics rather than local hardlink cloning.
+                    git(root, "clone", "--quiet", origin.as_uri(), str(clone))
+                    git(clone, "checkout", "--detach", head)
+                    self.assertEqual("false", git(clone, "rev-parse", "--is-shallow-repository").stdout.strip())
+                    before = route(clone)
+                    self.assertEqual(0, before.returncode, before.stderr)
+                    self.assertEqual(["topic.rs"], json.loads(before.stdout))
+                    depth_args = ["--depth=200"] if depth_limited else []
+                    git(clone, "fetch", "--no-tags", *depth_args, "origin", "main")
+                    self.assertEqual(head, git(clone, "rev-parse", "HEAD").stdout.strip())
+                    git(clone, "cat-file", "-e", f"{ancestor}^{{commit}}")
+                    merge_base = git(clone, "merge-base", "origin/main", "HEAD", check=False)
+                    after = route(clone)
+                    if depth_limited:
+                        self.assertEqual("true", git(clone, "rev-parse", "--is-shallow-repository").stdout.strip())
+                        self.assertEqual(1, merge_base.returncode, merge_base.stderr)
+                        self.assertNotEqual(0, after.returncode)
+                        self.assertIn("no merge base", after.stderr)
+                    else:
+                        self.assertEqual("false", git(clone, "rev-parse", "--is-shallow-repository").stdout.strip())
+                        self.assertEqual(0, merge_base.returncode, merge_base.stderr)
+                        self.assertEqual(ancestor, merge_base.stdout.strip())
+                        self.assertEqual(0, after.returncode, after.stderr)
+                        self.assertEqual(["topic.rs"], json.loads(after.stdout))
+
     def test_policy_only_lcov_sources_report_routing_bug_in_receipt_and_summary(self) -> None:
         for path in [
             "xtask/src/tasks/ci_route.rs",
