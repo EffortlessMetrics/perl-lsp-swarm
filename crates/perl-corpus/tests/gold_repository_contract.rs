@@ -1016,6 +1016,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_malformed_typed_named_assertion_members() -> Result<(), Box<dyn Error>> {
+        let directory = tempdir()?;
+        let sidecar = directory.path().join("expected_hover.json");
+        write_fixture_file(
+            &sidecar,
+            r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"hover_contains","line":0,"character":0,"needle":"value"}]}"#,
+        )?;
+        validate_named_sidecar(&sidecar, "fixture")?;
+
+        write_fixture_file(&sidecar, r#"{"version":1,"fixture":"fixture","assertions":[{}]}"#)?;
+        let error = validation_error(validate_named_sidecar(&sidecar, "fixture"))?;
+        assert!(
+            error.contains("typed assertions") && error.contains("expected_hover.json"),
+            "valid envelope must reach typed assertion validation: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn named_sidecars_reject_unknown_fields() -> Result<(), Box<dyn Error>> {
         let directory = tempdir()?;
         let sidecar = directory.path().join("expected_completion.json");
@@ -1135,6 +1154,48 @@ mod tests {
         if !error.contains("symbolic link") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_dangling_symlinked_fixture_members() -> Result<(), Box<dyn Error>> {
+        let root = tempdir()?;
+        let fixture = root.path().join("fixture");
+        fs::create_dir(&fixture)?;
+        write_fixture_file(&fixture.join("fixture.pl"), "use strict;\n")?;
+        validate_fixture_members(&fixture)?;
+
+        // A recognized sidecar name must be rejected as a link even when
+        // following it would report a missing target.
+        let link = fixture.join("expected_hover.json");
+        std::os::unix::fs::symlink(root.path().join("missing.json"), &link)?;
+        let error = validation_error(validate_fixture_members(&fixture))?;
+        assert!(
+            error.contains("fixture directory contains a symbolic link")
+                && error.contains("expected_hover.json"),
+            "dangling link must not be treated as an absent sidecar: {error}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_nested_module_payload_symlinks() -> Result<(), Box<dyn Error>> {
+        let root = tempdir()?;
+        let fixture = root.path().join("fixture");
+        let nested = fixture.join("lib").join("nested");
+        fs::create_dir_all(&nested)?;
+        write_fixture_file(&nested.join("Target.pm"), "package Target;\n1;\n")?;
+        validate_fixture_members(&fixture)?;
+
+        std::os::unix::fs::symlink(nested.join("Target.pm"), nested.join("Linked.pm"))?;
+        let error = validation_error(validate_fixture_members(&fixture))?;
+        assert!(
+            error.contains("module fixture payload contains a symbolic link")
+                && error.contains("Linked.pm"),
+            "nested payload must reject links instead of following or skipping them: {error}"
+        );
         Ok(())
     }
 
