@@ -22,6 +22,7 @@ mod reference;
 mod rename;
 mod request;
 mod resolution;
+mod subroutine_move;
 mod token;
 mod token_core;
 mod token_parser;

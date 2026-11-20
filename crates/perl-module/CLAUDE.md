@@ -18,6 +18,9 @@ reference extraction, and safe renaming.
 - `module_move` -- pure, generation-bound conventional source-module move
   planning (`ModuleMovePlan`); consumes fact identities from
   `perl-semantic-facts`, never materializes edits.
+- `subroutine_move` -- pure generation-bound ordinary named package-subroutine
+  move planning (`SubroutineMovePlan`, #2990); same fact-only contract as
+  `module_move`.
 - `reference` -- `ModuleReference` extraction (feeds go-to-definition /
   find-references).
 - `rename` -- safe module/file rename edit planning

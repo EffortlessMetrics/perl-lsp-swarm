@@ -44,6 +44,17 @@ use perl_module::{
     PartialModuleRequest,
     RequestBoundary,
     ResolvedEvidence,
+    SUBROUTINE_MOVE_SCHEMA_VERSION,
+    SubroutineMoveAppend,
+    SubroutineMoveBlocker,
+    SubroutineMoveDisposition,
+    SubroutineMoveEdit,
+    SubroutineMoveFileGeneration,
+    SubroutineMoveInvalidPlan,
+    SubroutineMoveOccurrence,
+    SubroutineMovePlan,
+    SubroutineMoveSource,
+    SubroutineMoveTarget,
     // rename module
     apply_module_rename_edits,
     // token module
@@ -541,4 +552,31 @@ fn module_move_types_reachable(
     _edit: ModuleMoveEdit,
     _plan: ModuleMovePlan,
 ) {
+}
+
+/// Subroutine move plan types are facade-exported for the #2990 semantic profile.
+#[allow(dead_code)]
+fn subroutine_move_types_reachable(
+    _source: SubroutineMoveSource,
+    _target: SubroutineMoveTarget,
+    _occurrence: SubroutineMoveOccurrence,
+    _edit: SubroutineMoveEdit,
+    _append: SubroutineMoveAppend,
+    _plan: SubroutineMovePlan,
+) {
+}
+
+#[test]
+fn test_subroutine_move_facade_exports() {
+    assert_eq!(SUBROUTINE_MOVE_SCHEMA_VERSION, 1);
+    let blocker = SubroutineMoveBlocker::MissingCallableDefinition;
+    assert_eq!(blocker.tag(), "missing-callable-definition");
+    let disposition = SubroutineMoveDisposition::Complete;
+    assert_eq!(disposition.tag(), "complete");
+    let invalid = SubroutineMoveInvalidPlan::MissingTargetAppend;
+    assert!(format!("{invalid:?}").contains("MissingTargetAppend"));
+    let _ = SubroutineMoveFileGeneration {
+        file_id: perl_semantic_facts::FileId(1),
+        generation: perl_semantic_facts::SourceGeneration::Unknown,
+    };
 }
