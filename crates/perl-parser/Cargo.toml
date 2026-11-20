@@ -150,4 +150,8 @@ required-features = ["incremental"]
 name = "incremental_parse_snapshot"
 required-features = ["incremental"]
 
+[[test]]
+name = "exact_suffix_sync_contract"
+required-features = ["incremental"]
+
 # Edge case test examples

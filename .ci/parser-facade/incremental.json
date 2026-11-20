@@ -241,6 +241,97 @@
       "production_eligible": false
     },
     {
+      "name": "exact_suffix_sync::EXACT_SUFFIX_SYNC_CONTRACT_VERSION",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6986",
+      "target_owner": "#6986",
+      "exit_condition": "Retain while the exact suffix-sync contract is staged; becomes production-eligible only once the oracle wires into canonical lex restart.",
+      "pending": {
+        "reason": "Evaluation oracle exists but production lex restart still reports zero suffix reuse.",
+        "resolves_when": "#6986 wires exact suffix synchronization into the canonical incremental path with honest receipts."
+      },
+      "production_eligible": false
+    },
+    {
+      "name": "exact_suffix_sync::ExactSuffixSyncCandidate",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6986",
+      "target_owner": "#6986",
+      "exit_condition": "Candidate input bundle for one exact suffix-sync evaluation.",
+      "pending": {
+        "reason": "Oracle is not yet load-bearing on the production incremental path.",
+        "resolves_when": "#6986 closes with production suffix reuse admitted only through this contract."
+      },
+      "production_eligible": false
+    },
+    {
+      "name": "exact_suffix_sync::ExactSuffixSyncDenial",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6986",
+      "target_owner": "#6986",
+      "exit_condition": "Typed denial reasons for fail-closed suffix reuse.",
+      "pending": {
+        "reason": "Denial vocabulary is staged ahead of production wiring.",
+        "resolves_when": "#6986 receipts report these reasons on live reparse paths."
+      },
+      "production_eligible": false
+    },
+    {
+      "name": "exact_suffix_sync::ExactSuffixSyncMetrics",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6986",
+      "target_owner": "#6986",
+      "exit_condition": "Metrics shape for exact suffix synchronization work.",
+      "pending": {
+        "reason": "Metrics are not yet populated by production incremental lex restart.",
+        "resolves_when": "#6986 distinguishes prefix, fresh lex, exact suffix retention, and oracle work on live receipts."
+      },
+      "production_eligible": false
+    },
+    {
+      "name": "exact_suffix_sync::ExactSuffixSyncPolicy",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6986",
+      "target_owner": "#6986",
+      "exit_condition": "Correctness policy for direct token-window evidence.",
+      "pending": {
+        "reason": "Policy parameters are not yet enforced on the canonical path.",
+        "resolves_when": "#6986 wires the oracle into production lex restart."
+      },
+      "production_eligible": false
+    },
+    {
+      "name": "exact_suffix_sync::compare_direct_token_window",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6986",
+      "target_owner": "#6986",
+      "exit_condition": "Bounded direct token-window comparison under one stable byte shift.",
+      "pending": {
+        "reason": "Comparison helper is contract-tested but not yet load-bearing in production.",
+        "resolves_when": "#6986 admits suffix reuse only through this evidence plane."
+      },
+      "production_eligible": false
+    },
+    {
+      "name": "exact_suffix_sync::evaluate_exact_suffix_sync",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6986",
+      "target_owner": "#6986",
+      "exit_condition": "Fail-closed admission oracle requiring state equality plus token-window evidence.",
+      "pending": {
+        "reason": "Production lex restart still reports zero suffix reuse.",
+        "resolves_when": "#6986 wires this oracle into the canonical incremental path."
+      },
+      "production_eligible": false
+    },
+    {
       "name": "lex::MAX_STORED_LEX_CHECKPOINTS",
       "classification": "experimental",
       "disposition": "review",

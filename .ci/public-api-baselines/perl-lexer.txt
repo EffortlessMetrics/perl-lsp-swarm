@@ -64,6 +64,26 @@ pub fn perl_lexer::builtins::phf_lookup::get_param_names(function_name: &str) ->
 pub fn perl_lexer::builtins::phf_lookup::is_builtin(function_name: &str) -> bool
 pub fn perl_lexer::builtins::phf_lookup::try_get_param_names(function_name: &str) -> core::option::Option<&'static [&'static str]>
 pub mod perl_lexer::checkpoint
+#[non_exhaustive] pub enum perl_lexer::checkpoint::BehaviorBearingStateMismatch
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::Context
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::CurrentPos
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::DelimiterStack
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::EofEmitted
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::LineStartOffset
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::Mode
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::NewlineContext
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::ParenDepth
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::PendingHeredocs
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::PendingPrintListParen
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::Policy
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::Position
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::PrintListParens
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::PrototypeState
+pub perl_lexer::checkpoint::BehaviorBearingStateMismatch::QuoteOperator
+pub fn perl_lexer::BehaviorBearingStateMismatch::clone(&self) -> perl_lexer::BehaviorBearingStateMismatch
+pub fn perl_lexer::BehaviorBearingStateMismatch::eq(&self, other: &perl_lexer::BehaviorBearingStateMismatch) -> bool
+pub fn perl_lexer::BehaviorBearingStateMismatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::BehaviorBearingStateMismatch::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_lexer::checkpoint::CheckpointContext
 pub perl_lexer::checkpoint::CheckpointContext::Format
 pub perl_lexer::checkpoint::CheckpointContext::Format::start_position: usize
@@ -100,6 +120,12 @@ pub fn perl_lexer::CheckpointRestoreError::clone(&self) -> perl_lexer::Checkpoin
 pub fn perl_lexer::CheckpointRestoreError::eq(&self, other: &perl_lexer::CheckpointRestoreError) -> bool
 pub fn perl_lexer::CheckpointRestoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lexer::CheckpointRestoreError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::checkpoint::BehaviorBearingStateFingerprint(_)
+pub fn perl_lexer::BehaviorBearingStateFingerprint::digest(&self) -> &perl_source_identity::digest::ContentDigest
+pub fn perl_lexer::BehaviorBearingStateFingerprint::clone(&self) -> perl_lexer::BehaviorBearingStateFingerprint
+pub fn perl_lexer::BehaviorBearingStateFingerprint::eq(&self, other: &perl_lexer::BehaviorBearingStateFingerprint) -> bool
+pub fn perl_lexer::BehaviorBearingStateFingerprint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::BehaviorBearingStateFingerprint::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_lexer::checkpoint::CheckpointCache
 pub fn perl_lexer::CheckpointCache::add(&mut self, checkpoint: perl_lexer::LexerCheckpoint)
 pub fn perl_lexer::CheckpointCache::apply_edit(&mut self, start: usize, old_len: usize, new_len: usize)
@@ -153,6 +179,9 @@ pub fn perl_lexer::LexerCheckpoint::prototype_depth(&self) -> usize
 pub fn perl_lexer::LexerCheckpoint::qw_recovery_enabled(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::rebind_to_source(&mut self, source: &str, generation: perl_source_identity::generation::SourceGeneration) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub fn perl_lexer::LexerCheckpoint::try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool
+pub fn perl_lexer::LexerCheckpoint::behavior_bearing_fingerprint(&self) -> perl_lexer::BehaviorBearingStateFingerprint
+pub fn perl_lexer::LexerCheckpoint::behavior_bearing_state_equal(&self, other: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::BehaviorBearingStateMismatch>
+pub fn perl_lexer::LexerCheckpoint::behavior_bearing_state_equal_with_byte_shift(&self, other: &perl_lexer::LexerCheckpoint, byte_shift: isize) -> core::result::Result<(), perl_lexer::BehaviorBearingStateMismatch>
 pub fn perl_lexer::LexerCheckpoint::clone(&self) -> perl_lexer::LexerCheckpoint
 pub fn perl_lexer::LexerCheckpoint::eq(&self, other: &perl_lexer::LexerCheckpoint) -> bool
 pub fn perl_lexer::LexerCheckpoint::default() -> perl_lexer::LexerCheckpoint
@@ -192,6 +221,7 @@ pub perl_lexer::checkpoint::QuoteOperatorCheckpoint::start_pos: usize
 pub fn perl_lexer::checkpoint::QuoteOperatorCheckpoint::clone(&self) -> perl_lexer::checkpoint::QuoteOperatorCheckpoint
 pub fn perl_lexer::checkpoint::QuoteOperatorCheckpoint::eq(&self, other: &perl_lexer::checkpoint::QuoteOperatorCheckpoint) -> bool
 pub fn perl_lexer::checkpoint::QuoteOperatorCheckpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lexer::checkpoint::BEHAVIOR_BEARING_STATE_COMPARE_VERSION: u32
 pub const perl_lexer::checkpoint::CHECKPOINT_SCHEMA_VERSION: u32
 pub trait perl_lexer::checkpoint::Checkpointable
 pub fn perl_lexer::checkpoint::Checkpointable::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
@@ -398,6 +428,26 @@ pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> 
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_lexer::BehaviorBearingStateMismatch
+pub perl_lexer::BehaviorBearingStateMismatch::Context
+pub perl_lexer::BehaviorBearingStateMismatch::CurrentPos
+pub perl_lexer::BehaviorBearingStateMismatch::DelimiterStack
+pub perl_lexer::BehaviorBearingStateMismatch::EofEmitted
+pub perl_lexer::BehaviorBearingStateMismatch::LineStartOffset
+pub perl_lexer::BehaviorBearingStateMismatch::Mode
+pub perl_lexer::BehaviorBearingStateMismatch::NewlineContext
+pub perl_lexer::BehaviorBearingStateMismatch::ParenDepth
+pub perl_lexer::BehaviorBearingStateMismatch::PendingHeredocs
+pub perl_lexer::BehaviorBearingStateMismatch::PendingPrintListParen
+pub perl_lexer::BehaviorBearingStateMismatch::Policy
+pub perl_lexer::BehaviorBearingStateMismatch::Position
+pub perl_lexer::BehaviorBearingStateMismatch::PrintListParens
+pub perl_lexer::BehaviorBearingStateMismatch::PrototypeState
+pub perl_lexer::BehaviorBearingStateMismatch::QuoteOperator
+pub fn perl_lexer::BehaviorBearingStateMismatch::clone(&self) -> perl_lexer::BehaviorBearingStateMismatch
+pub fn perl_lexer::BehaviorBearingStateMismatch::eq(&self, other: &perl_lexer::BehaviorBearingStateMismatch) -> bool
+pub fn perl_lexer::BehaviorBearingStateMismatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::BehaviorBearingStateMismatch::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_lexer::CheckpointNewlinePolicy
 pub perl_lexer::CheckpointNewlinePolicy::SourceExact
 pub fn perl_lexer::CheckpointNewlinePolicy::clone(&self) -> perl_lexer::CheckpointNewlinePolicy
@@ -509,6 +559,12 @@ pub fn perl_lexer::token::TokenType::is_trivia(&self) -> bool
 pub fn perl_lexer::token::TokenType::clone(&self) -> perl_lexer::token::TokenType
 pub fn perl_lexer::token::TokenType::eq(&self, other: &perl_lexer::token::TokenType) -> bool
 pub fn perl_lexer::token::TokenType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::BehaviorBearingStateFingerprint(_)
+pub fn perl_lexer::BehaviorBearingStateFingerprint::digest(&self) -> &perl_source_identity::digest::ContentDigest
+pub fn perl_lexer::BehaviorBearingStateFingerprint::clone(&self) -> perl_lexer::BehaviorBearingStateFingerprint
+pub fn perl_lexer::BehaviorBearingStateFingerprint::eq(&self, other: &perl_lexer::BehaviorBearingStateFingerprint) -> bool
+pub fn perl_lexer::BehaviorBearingStateFingerprint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::BehaviorBearingStateFingerprint::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_lexer::BuiltinSignature
 pub perl_lexer::BuiltinSignature::documentation: &'static str
 pub perl_lexer::BuiltinSignature::signatures: alloc::vec::Vec<&'static str>
@@ -556,6 +612,9 @@ pub fn perl_lexer::LexerCheckpoint::prototype_depth(&self) -> usize
 pub fn perl_lexer::LexerCheckpoint::qw_recovery_enabled(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::rebind_to_source(&mut self, source: &str, generation: perl_source_identity::generation::SourceGeneration) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub fn perl_lexer::LexerCheckpoint::try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool
+pub fn perl_lexer::LexerCheckpoint::behavior_bearing_fingerprint(&self) -> perl_lexer::BehaviorBearingStateFingerprint
+pub fn perl_lexer::LexerCheckpoint::behavior_bearing_state_equal(&self, other: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::BehaviorBearingStateMismatch>
+pub fn perl_lexer::LexerCheckpoint::behavior_bearing_state_equal_with_byte_shift(&self, other: &perl_lexer::LexerCheckpoint, byte_shift: isize) -> core::result::Result<(), perl_lexer::BehaviorBearingStateMismatch>
 pub fn perl_lexer::LexerCheckpoint::clone(&self) -> perl_lexer::LexerCheckpoint
 pub fn perl_lexer::LexerCheckpoint::eq(&self, other: &perl_lexer::LexerCheckpoint) -> bool
 pub fn perl_lexer::LexerCheckpoint::default() -> perl_lexer::LexerCheckpoint
@@ -651,6 +710,7 @@ pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> 
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lexer::BEHAVIOR_BEARING_STATE_COMPARE_VERSION: u32
 pub const perl_lexer::CHECKPOINT_SCHEMA_VERSION: u32
 pub const perl_lexer::DAP_COMPLETION_KEYWORDS: &[&str]
 pub const perl_lexer::KEYWORDS: &[&str]
