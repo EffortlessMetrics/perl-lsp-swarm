@@ -1,0 +1,4 @@
+package Old::Name;
+use Old::Name;
+Old::Name->handler();
+# rename target Old::Name -> New::Name

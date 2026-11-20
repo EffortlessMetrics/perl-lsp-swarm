@@ -1,0 +1,2 @@
+require 'O\'Reilly::Module.pm';
+use POSIX qw(:errno_h);

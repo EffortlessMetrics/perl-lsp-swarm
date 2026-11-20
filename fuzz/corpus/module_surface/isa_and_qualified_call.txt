@@ -1,0 +1,3 @@
+our @ISA = ('My::Parent');
+My::Parent->new();
+My::Parent::method();

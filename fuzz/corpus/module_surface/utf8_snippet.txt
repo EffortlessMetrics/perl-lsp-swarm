@@ -1,0 +1,4 @@
+use utf8;
+# 模块名测试 🦀
+package Foo::Bar::Baz;
+use parent 'Foo::Bar';

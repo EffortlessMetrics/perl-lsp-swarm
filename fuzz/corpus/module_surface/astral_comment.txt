@@ -1,0 +1,3 @@
+package Test::Unicode;
+# surrogate pair test: 𝌆 musical symbol
+use strict;
