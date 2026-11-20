@@ -550,6 +550,45 @@ impl UxClient {
         self.inbox.drain_events().iter().map(decode_event).collect()
     }
 
+    /// Capture-order checkpoint for server messages on this client.
+    #[must_use]
+    pub fn server_message_cursor(&self) -> crate::observation::ServerMessageCursor {
+        self.inbox.server_message_cursor()
+    }
+
+    /// Alias for [`Self::server_message_cursor`].
+    #[must_use]
+    pub fn checkpoint(&self) -> crate::observation::ServerMessageCursor {
+        self.inbox.checkpoint()
+    }
+
+    /// Cursor before any captured server message on this client.
+    #[must_use]
+    pub fn origin_cursor(&self) -> crate::observation::ServerMessageCursor {
+        self.inbox.origin_cursor()
+    }
+
+    pub(crate) fn inbox(&self) -> &Inbox {
+        &self.inbox
+    }
+
+    /// Block until `select` matches a captured server-initiated message strictly
+    /// after `cursor`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WaitEnd`] when the wait ends without a match. When `cursor` belongs
+    /// to another inbox, returns a transport-failure [`WaitEnd`] carrying
+    /// [`CursorOwnerMismatch`].
+    pub fn wait_for_after<T>(
+        &self,
+        cursor: &crate::observation::ServerMessageCursor,
+        timeout: Duration,
+        select: impl FnMut(&[crate::observation::CapturedMessage]) -> Option<T>,
+    ) -> Result<T, WaitEnd> {
+        self.inbox.wait_for_events_after(cursor, timeout, select)
+    }
+
     /// Clone and decode all buffered events **without** removing them from the
     /// queue.  Safe to call before or after `drain_events` / `collect_notifications`.
     pub fn peek_events(&self) -> Vec<LspEvent> {
