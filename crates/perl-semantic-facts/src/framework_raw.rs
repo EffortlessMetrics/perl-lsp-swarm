@@ -53,8 +53,10 @@ pub const FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION: &str = "framework_adapter_sdk.v1
 ///   The rule is therefore not only "a new discriminant needs a new version"
 ///   but "a payload an older consumer would misread needs one": the check in
 ///   [`AdapterResult::validate_structure`] is an exact match, so the bump
-///   makes those consumers reject the record instead of misreading it.
-pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 4;
+///   makes those consumers reject the record instead of misreading it;
+/// - `5`: adds the `TemplateTarget` `SemanticFactKind` discriminant (#8937)
+///   under the same new-discriminant rule as version 3 (`Hook`).
+pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 5;
 
 /// Stable opaque identity for a registered adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1049,17 +1051,17 @@ mod tests {
         // older consumer ignores unknown fields and would apply the narrower
         // invariant it was written against.
         //
-        // Version 4 is the second case: a `RouteHandlerContext` payload may
-        // now describe a hook interval, or one whose request context is not
-        // established (#13604), neither of which a version-3 consumer could
-        // tell apart from an established route context.
-        assert_eq!(FRAMEWORK_ADAPTER_SCHEMA_VERSION, 4);
+        // Version 5 is the first case again: `TemplateTarget` is a new
+        // discriminant (#8937). Older consumers have no unknown-variant
+        // fallback, so the bump makes them reject the record.
+        assert_eq!(FRAMEWORK_ADAPTER_SCHEMA_VERSION, 5);
         for kind in [
             SemanticFactKind::Route,
             SemanticFactKind::RoutePrefix,
             SemanticFactKind::RouteParameter,
             SemanticFactKind::RouteHandlerContext,
             SemanticFactKind::Hook,
+            SemanticFactKind::TemplateTarget,
         ] {
             let mut envelope = envelope(Provenance::FrameworkSynthesis);
             envelope.kind = kind;
@@ -1078,7 +1080,7 @@ mod tests {
             let value = serde_json::to_value(&result)?;
             assert_eq!(
                 value["schema_version"],
-                serde_json::json!(4),
+                serde_json::json!(5),
                 "{kind:?} must only travel on the bumped schema version"
             );
         }

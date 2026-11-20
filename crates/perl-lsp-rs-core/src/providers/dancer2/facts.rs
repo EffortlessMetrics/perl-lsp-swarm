@@ -11,6 +11,7 @@ use super::activation::{Dancer2FileActivations, Dancer2TwoXPackageActivation};
 use perl_parser_core::Node;
 use perl_semantic_analyzer::analysis::dancer2_hooks::extract_dancer2_hook_declarations;
 use perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_contexts;
+use perl_semantic_analyzer::analysis::dancer2_templates::extract_dancer2_template_calls;
 use perl_semantic_facts::FileId;
 use perl_semantic_facts::framework_adapters::dancer2_hooks::{
     Dancer2HookDeclaration, dancer2_hook_facts, dancer2_hook_handler_context_facts,
@@ -18,9 +19,11 @@ use perl_semantic_facts::framework_adapters::dancer2_hooks::{
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
     Dancer2RouteFacts, dancer2_route_family_facts,
 };
+use perl_semantic_facts::framework_adapters::dancer2_templates::dancer2_template_facts;
 use perl_semantic_facts::handler::FrameworkHandler as RouteHandler;
 use perl_semantic_facts::hook::HookFact;
 use perl_semantic_facts::route::{RouteFact, RouteHandlerContextFact};
+use perl_semantic_facts::template::TemplateTargetFact;
 
 /// Canonical Dancer2 facts for one document (all exactly activated packages).
 #[non_exhaustive]
@@ -36,6 +39,10 @@ pub struct CanonicalDancer2FileFacts {
     pub handler_contexts: Vec<RouteHandlerContextFact>,
     /// Minted hook facts.
     pub hooks: Vec<HookFact>,
+    /// Minted template-target facts (#8937). Logical names only in this
+    /// slice; filesystem resolution stays unresolved without canonical
+    /// project configuration (#7900).
+    pub templates: Vec<TemplateTargetFact>,
     /// Source-extracted route declarations of exactly activated packages,
     /// retained for bounded diagnostics (excluded keywords mint no fact but
     /// remain source observations).
@@ -68,6 +75,7 @@ impl CanonicalDancer2FileFacts {
             && self.parameters.is_empty()
             && self.handler_contexts.is_empty()
             && self.hooks.is_empty()
+            && self.templates.is_empty()
     }
 
     /// Whether comparison-only 2.x (shadow) facts are present. Deliberately
@@ -156,6 +164,12 @@ impl CanonicalDancer2FileFacts {
             .is_some_and(RouteHandlerContextFact::establishes_request_context)
     }
 
+    /// The template-target fact whose call span contains `offset`.
+    #[must_use]
+    pub fn template_at(&self, offset: usize) -> Option<&TemplateTargetFact> {
+        self.templates.iter().find(|fact| span_contains(&fact.envelope.anchor, offset))
+    }
+
     /// Whether `offset` lies inside one of the minted inline handler spans.
     ///
     /// Retained as the containment predicate; prefer
@@ -199,6 +213,7 @@ pub fn canonical_file_facts(
     let route_contexts = extract_dancer2_route_contexts(ast, file_id);
     let hook_declarations: Vec<Dancer2HookDeclaration> =
         extract_dancer2_hook_declarations(ast, file_id);
+    let template_declarations = extract_dancer2_template_calls(ast, file_id);
 
     if let Some(detection) = &activations.detection {
         for activation in &activations.packages {
@@ -227,6 +242,12 @@ pub fn canonical_file_facts(
                 &activation.facts,
                 package,
                 &hook_declarations,
+            ));
+            facts.templates.extend(dancer2_template_facts(
+                detection,
+                &activation.facts,
+                package,
+                &template_declarations,
             ));
             // Hook handler bodies join the same handler-context family as route
             // handlers, so one query answers both (#13604).

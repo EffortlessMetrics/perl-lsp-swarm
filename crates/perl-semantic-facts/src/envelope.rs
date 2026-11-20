@@ -39,6 +39,8 @@ pub enum SemanticFactKind {
     RouteHandlerContext,
     /// Framework hook declaration (canonical hook fact family).
     Hook,
+    /// Framework template-target reference (canonical template fact family).
+    TemplateTarget,
 }
 
 /// Source identity for a fact's bytes or compiler input snapshot.
