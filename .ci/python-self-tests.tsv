@@ -1,6 +1,9 @@
 # Exact top-level tracked filenames. local = individually selectable by --run.
 # Inventory membership makes no claim about hosted execution or a passing result.
 # owned-19530 and owned-18154 retain their existing issue-specific qualification.
+# rust-generated-hook-fixture runs through perl-ci-hygiene on Unix:
+# git_hooks::tests::generated_pre_push_validation_children_preserve_outer_repository
+# supplies the generated hook and retained evidence directory.
 # tool identifies the standalone qualification driver.
 qualify_admitted_clippy.py	tool
 test-check-doc-claims-shim.py	local
@@ -62,7 +65,7 @@ test_observe_xtask_build.py	local
 test_policy_validator_build_routing.py	local
 test_pr_overlap.py	local
 test_pr_overlap_source.py	local
-test_pre_push_validation_child.py	local
+test_pre_push_validation_child.py	rust-generated-hook-fixture
 test_project_selection_characterization.py	local
 test_release_channel_actuals.py	local
 test_release_container_actuals.py	local

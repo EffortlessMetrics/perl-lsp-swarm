@@ -11,6 +11,7 @@ DIRECTORY = Path("scripts/tests")
 MANIFEST = ROOT / ".ci/python-self-tests.tsv"
 EXCEPTIONS = {
     "qualify_admitted_clippy.py": "tool",
+    "test_pre_push_validation_child.py": "rust-generated-hook-fixture",
     "test_measure_cargo_storage.py": "owned-19530",
     "test_measure_cargo_storage_boundaries.py": "owned-19530",
     "test_review_feedback.py": "owned-18154",
@@ -54,7 +55,8 @@ def main():
             print(f"{name}\t{dispositions[name]}")
         return 0
     if dispositions.get(args.run) != "local":
-        parser.error(f"{args.run!r} has no local execution disposition")
+        parser.error(f"{args.run!r} is unavailable for direct execution: "
+                     f"{dispositions.get(args.run, 'unknown filename')}")
     # Script operands preserve sibling imports. Some suites also import scripts.*.
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH")]))

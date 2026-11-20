@@ -39,6 +39,15 @@ class InventoryTest(unittest.TestCase):
             self.assertNotEqual(invalid.returncode, 0)
             self.assertIn("Invalid disposition", invalid.stderr)
             manifest.write_text("test_a.py\tlocal\ntest-a.py\tlocal\n")
+            hook = "test_pre_push_validation_child.py"
+            (tests / hook).write_text("raise AssertionError('requires the Rust fixture')\n")
+            subprocess.run(["git", "add", str(tests / hook)], cwd=root, check=True)
+            with manifest.open("a") as stream:
+                stream.write(f"{hook}\trust-generated-hook-fixture\n")
+            self.assertEqual(invoke().returncode, 0)
+            blocked = invoke("--run", hook)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("unavailable for direct execution: rust-generated-hook-fixture", blocked.stderr)
             (tests / "new.py").touch()
             subprocess.run(["git", "add", "scripts/tests/new.py"], cwd=root, check=True)
             missing = invoke("--run", "test_a.py")
