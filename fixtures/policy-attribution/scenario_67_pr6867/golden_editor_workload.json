@@ -1,0 +1,36 @@
+{
+  "kind": "golden_editor_workload",
+  "schema_version": 2,
+  "manifest_version": "2026-08-11-recurrence",
+  "claim_boundary": "Permanent #7061 fixture: PR #6867 shape — identical Scenario 67 waiver manifest on evaluated base and candidate; August 11 expiry boundary.",
+  "error_waivers": [
+    {
+      "project": "mojolicious",
+      "journey": "edit_burst_completion",
+      "expected_error_class": "request_superseded",
+      "issue": 4050,
+      "expires_after": "2026-08-11"
+    },
+    {
+      "project": "dancer2",
+      "journey": "edit_burst_completion",
+      "expected_error_class": "request_superseded",
+      "issue": 4050,
+      "expires_after": "2026-08-11"
+    },
+    {
+      "project": "catalyst",
+      "journey": "edit_burst_completion",
+      "expected_error_class": "request_superseded",
+      "issue": 4050,
+      "expires_after": "2026-08-11"
+    },
+    {
+      "project": "plain_modern_oo",
+      "journey": "edit_burst_completion",
+      "expected_error_class": "request_superseded",
+      "issue": 4050,
+      "expires_after": "2026-08-11"
+    }
+  ]
+}

@@ -4,6 +4,7 @@
 //! review and expiry dates at an explicit date so owners see work before a
 //! governing validator changes state.
 
+pub mod attribution;
 mod clippy;
 mod tautology;
 pub mod transition;
@@ -170,7 +171,7 @@ struct ScenarioManifest {
 }
 
 #[derive(Debug, Deserialize)]
-struct ScenarioWaiver {
+pub(super) struct ScenarioWaiver {
     project: String,
     journey: String,
     expected_error_class: String,
@@ -277,31 +278,53 @@ fn quality_obligations(root: &Path) -> Result<Vec<RawObligation>> {
         .collect())
 }
 
+pub(super) const SCENARIO_67_MANIFEST: &str =
+    "crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json";
+
 fn scenario_obligations(root: &Path) -> Result<Vec<RawObligation>> {
-    let relative = "crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json";
-    let text = read(root, relative)?;
+    let text = read(root, SCENARIO_67_MANIFEST)?;
+    Ok(scenario_waivers_from_text(&text, SCENARIO_67_MANIFEST)?)
+}
+
+pub(super) fn scenario_waivers_from_text(
+    text: &str,
+    source_path: &str,
+) -> Result<Vec<RawObligation>> {
     let manifest: ScenarioManifest =
-        serde_json::from_str(&text).context("parsing Scenario 67 manifest")?;
+        serde_json::from_str(text).context("parsing Scenario 67 manifest")?;
     Ok(manifest
         .error_waivers
         .into_iter()
-        .map(|entry| RawObligation {
-            record_id: format!("{}:{}", entry.project, entry.journey),
-            source_kind: "scenario_67_error_waiver".to_string(),
-            source_path: relative.to_string(),
-            owner: format!("#{}", entry.issue),
-            owner_issue: Some(format!("#{}", entry.issue)),
-            review_after: None,
-            expires: Some(entry.expires_after),
-            evidence_identity: None,
-            expected_debt_class: Some(entry.expected_error_class),
-            required_decision: "remove after proof, narrow, re-justify with fresh evidence, or intentionally let expire".to_string(),
-            reproduce: Some("cargo test -p perl-lsp-ux-tests --test ux_scenario_67_golden_editor_workload --locked".to_string()),
-            disposition: None,
-            falsifier: None,
-            invalid_reason: None,
-        })
+        .map(|entry| raw_from_scenario_waiver(&entry, source_path))
         .collect())
+}
+
+pub(super) fn parse_scenario_waivers(text: &str) -> Result<Vec<ScenarioWaiver>> {
+    let manifest: ScenarioManifest =
+        serde_json::from_str(text).context("parsing Scenario 67 manifest")?;
+    Ok(manifest.error_waivers)
+}
+
+pub(super) fn raw_from_scenario_waiver(entry: &ScenarioWaiver, source_path: &str) -> RawObligation {
+    RawObligation {
+        record_id: format!("{}:{}", entry.project, entry.journey),
+        source_kind: "scenario_67_error_waiver".to_string(),
+        source_path: source_path.to_string(),
+        owner: format!("#{}", entry.issue),
+        owner_issue: Some(format!("#{}", entry.issue)),
+        review_after: None,
+        expires: Some(entry.expires_after.clone()),
+        evidence_identity: None,
+        expected_debt_class: Some(entry.expected_error_class.clone()),
+        required_decision: "remove after proof, narrow, re-justify with fresh evidence, or intentionally let expire".to_string(),
+        reproduce: Some(
+            "cargo test -p perl-lsp-ux-tests --test ux_scenario_67_golden_editor_workload --locked"
+                .to_string(),
+        ),
+        disposition: None,
+        falsifier: None,
+        invalid_reason: None,
+    }
 }
 
 fn non_rust_obligations(root: &Path) -> Result<Vec<RawObligation>> {
@@ -333,6 +356,10 @@ fn non_rust_obligations(root: &Path) -> Result<Vec<RawObligation>> {
             }
         })
         .collect())
+}
+
+pub(super) fn classify_obligation(raw: RawObligation, as_of: NaiveDate) -> CadenceObligation {
+    classify(raw, as_of)
 }
 
 fn classify(raw: RawObligation, as_of: NaiveDate) -> CadenceObligation {
