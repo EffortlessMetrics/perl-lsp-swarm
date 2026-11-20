@@ -2187,6 +2187,33 @@ impl LspServer {
                 }])));
             }
 
+            // Canonical in-pattern capture definition (#7030).
+            {
+                let documents = self.documents_guard();
+                if let Some(doc) = self.get_document(&documents, uri) {
+                    let offset = self.pos16_to_offset(doc, line, character);
+                    if !is_in_comment_naive(offset, &doc.text) {
+                        let table = doc
+                            .current_parsed()
+                            .and_then(|parsed| parsed.regex_analysis().cloned());
+                        if let Some(table) = table {
+                            if let Some(result) =
+                                self.regex_capture_definitions(uri, doc, &table, offset)
+                            {
+                                return Ok(Some(result));
+                            }
+                            if perl_lsp_rs_core::providers::regex::record_at_pattern_body_offset(
+                                &doc.text, &table, offset,
+                            )
+                            .is_some()
+                            {
+                                return Ok(Some(Value::Null));
+                            }
+                        }
+                    }
+                }
+            }
+
             // Now resolve module to path WITHOUT holding the document lock
             if let Some((lookup_target, doc_text, doc_offset)) = module_lookup_info {
                 match lookup_target {
