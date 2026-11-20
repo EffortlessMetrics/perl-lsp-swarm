@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: &str = "dependency_hygiene.v1";
 const INSTRUMENT_NAME: &str = "cargo-machete";
 const FINDING_CODE_UNUSED_DEP: &str = "UNUSED_DEP";
 const COMMAND_IDENTITY: &str = "cargo machete --json --skip-target-dir";
@@ -139,9 +139,11 @@ pub struct DependencyHygieneConfig {
 }
 
 /// Complete result of one dependency hygiene run.
+///
+/// Field shape mirrors `.ci/receipts/schemas/dependency-hygiene.schema.json`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DependencyHygieneResult {
-    pub schema_version: u32,
+    pub schema_version: String,
     pub timestamp: String,
     pub outcome: DependencyHygieneOutcome,
     /// Populated when outcome is NOT_PROVEN or NOT_APPLICABLE.
@@ -254,7 +256,7 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
         Some(0) | Some(1) => {} // expected exit codes
         other => {
             return DependencyHygieneResult {
-                schema_version: SCHEMA_VERSION,
+                schema_version: SCHEMA_VERSION.to_owned(),
                 timestamp: Utc::now().to_rfc3339(),
                 outcome: DependencyHygieneOutcome::NotProven,
                 outcome_detail: Some(format!(
@@ -282,7 +284,7 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
         Ok(f) => f,
         Err(parse_err) => {
             return DependencyHygieneResult {
-                schema_version: SCHEMA_VERSION,
+                schema_version: SCHEMA_VERSION.to_owned(),
                 timestamp: Utc::now().to_rfc3339(),
                 outcome: DependencyHygieneOutcome::NotProven,
                 outcome_detail: Some(format!(
@@ -306,7 +308,7 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
     };
 
     DependencyHygieneResult {
-        schema_version: SCHEMA_VERSION,
+        schema_version: SCHEMA_VERSION.to_owned(),
         timestamp: Utc::now().to_rfc3339(),
         outcome,
         outcome_detail: None,
@@ -325,7 +327,7 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
 fn not_proven(root: &Path, reason: String, version: Option<String>) -> DependencyHygieneResult {
     clear_stale_native_output(root);
     DependencyHygieneResult {
-        schema_version: SCHEMA_VERSION,
+        schema_version: SCHEMA_VERSION.to_owned(),
         timestamp: Utc::now().to_rfc3339(),
         outcome: DependencyHygieneOutcome::NotProven,
         outcome_detail: Some(reason),
@@ -702,6 +704,59 @@ mod tests {
     #[test]
     fn test_outcome_display_not_applicable() {
         assert_eq!(DependencyHygieneOutcome::NotApplicable.to_string(), "NOT_APPLICABLE");
+    }
+
+    fn sample_hygiene_result() -> DependencyHygieneResult {
+        DependencyHygieneResult {
+            schema_version: SCHEMA_VERSION.to_owned(),
+            timestamp: "2026-11-02T12:00:00+00:00".to_owned(),
+            outcome: DependencyHygieneOutcome::Success,
+            outcome_detail: None,
+            findings: vec![],
+            instrument_version: Some(MACHETE_VERSION.to_owned()),
+            native_output_ref: Some(MACHETE_NATIVE_REF.to_owned()),
+            command_identity: COMMAND_IDENTITY.to_owned(),
+        }
+    }
+
+    #[test]
+    fn schema_version_is_project_wide_string_field() {
+        const EXPECTED: &str = "dependency_hygiene.v1";
+        let result = sample_hygiene_result();
+        assert_eq!(result.schema_version, EXPECTED);
+
+        let rendered = must_with(serde_json::to_value(&result), "serialize hygiene result");
+        let object = rendered.as_object().expect("hygiene result is a JSON object");
+        assert_eq!(
+            object.get("schema_version").and_then(serde_json::Value::as_str),
+            Some(EXPECTED),
+            "serialized report must expose schema_version as a string for project-wide consumers",
+        );
+        assert!(
+            object.get("schema_version").and_then(serde_json::Value::as_u64).is_none(),
+            "schema_version must not serialize as a JSON number (legacy u32 drift)",
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_legacy_numeric_schema_version() {
+        let legacy = format!(
+            r#"{{
+                "schema_version": 1,
+                "timestamp": "2026-11-02T12:00:00+00:00",
+                "outcome": "SUCCESS",
+                "outcome_detail": null,
+                "findings": [],
+                "instrument_version": null,
+                "native_output_ref": null,
+                "command_identity": "{COMMAND_IDENTITY}"
+            }}"#
+        );
+        let parsed = serde_json::from_str::<DependencyHygieneResult>(&legacy);
+        assert!(
+            parsed.is_err(),
+            "legacy numeric schema_version must not deserialize into String field (D1 / #15324)"
+        );
     }
 
     // ── JSON serialization round-trip ─────────────────────────────────────────
