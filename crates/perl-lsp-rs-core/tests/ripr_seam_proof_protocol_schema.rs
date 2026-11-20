@@ -77,6 +77,7 @@ fn pinned_manifest_and_rust_registry_are_consistent() {
             "server_to_client:notification:window/logMessage:3.17",
             "server_to_client:notification:window/showMessage:3.17",
             "server_to_client:request:window/showMessageRequest:3.17",
+            "server_to_client:notification:textDocument/publishDiagnostics:3.17",
         ]
     );
 }
