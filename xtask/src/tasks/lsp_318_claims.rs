@@ -24,6 +24,9 @@ const LIFECYCLE_CAPABILITIES: &str = "crates/perl-lsp-rs/src/runtime/lifecycle/c
 const RUNTIME_LANGUAGE_MISC: &str = "crates/perl-lsp-rs/src/runtime/language/misc.rs";
 const REFACTOR_RUNTIME_RECEIPTS: &str =
     "crates/perl-lsp-rs/src/runtime/language/refactor_runtime_blocker_receipts.rs";
+const EDIT_DELIVERY: &str = "crates/perl-lsp-rs/src/runtime/edit_delivery.rs";
+const EDIT_DELIVERY_MATRIX_TEST: &str =
+    "crates/perl-lsp-rs/tests/edit_delivery_capability_matrix_8954.rs";
 const LIFECYCLE_WATCHERS: &str = "crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs";
 const RUNTIME_REFRESH: &str = "crates/perl-lsp-rs/src/runtime/refresh.rs";
 const STATE_DOCUMENT: &str = "crates/perl-lsp-rs/src/state/document.rs";
@@ -485,6 +488,7 @@ pub fn run() -> Result<()> {
     check_code_action_tag_guard(&root, &mut violations)?;
     check_snippet_text_edit_guard(&root, &mut violations)?;
     check_apply_edit_metadata_guard(&root, &mut violations)?;
+    check_edit_delivery_boundary(&root, &mut violations)?;
     check_message_type_debug_support(&root, &mut violations)?;
 
     if violations.is_empty() {
@@ -1032,6 +1036,8 @@ fn check_apply_edit_metadata_guard(root: &Path, violations: &mut Vec<Violation>)
             "request_apply_workspace_edit_with_metadata",
             "apply_edit_requested",
             "apply_edit_request",
+            "edit_delivery_disposition",
+            "select_edit_delivery",
         ],
         "ApplyWorkspaceEditParams.metadata safe-delete apply path",
         violations,
@@ -1047,11 +1053,41 @@ fn check_apply_edit_metadata_guard(root: &Path, violations: &mut Vec<Violation>)
             "/metadata/label",
             "/metadata/description",
             "/edit/metadata",
+            "edit_delivery_disposition",
         ],
         "ApplyWorkspaceEditParams.metadata wire receipts",
         violations,
     );
 
+    Ok(())
+}
+
+fn check_edit_delivery_boundary(root: &Path, violations: &mut Vec<Violation>) -> Result<()> {
+    let edit_delivery = read_required(root, EDIT_DELIVERY)?;
+    require_all(
+        EDIT_DELIVERY,
+        &edit_delivery,
+        &[
+            "EditDeliveryDisposition",
+            "EditDeliverySurface",
+            "select_edit_delivery",
+            "request_client_apply_edit",
+            "refused_unsupported_client",
+        ],
+        "edit delivery selector (#8954)",
+        violations,
+    );
+    require_all(
+        EDIT_DELIVERY_MATRIX_TEST,
+        &read_required(root, EDIT_DELIVERY_MATRIX_TEST)?,
+        &[
+            "kate_shaped_execute_command_safe_delete_refuses_without_silent_noop",
+            "edit_delivery_disposition",
+            "refused_unsupported_client",
+        ],
+        "edit delivery capability matrix (#8954)",
+        violations,
+    );
     Ok(())
 }
 

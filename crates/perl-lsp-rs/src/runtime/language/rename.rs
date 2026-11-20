@@ -1475,7 +1475,7 @@ impl LspServer {
     /// during initialize, converts the internal `{ "changes" }` representation to
     /// the `{ "documentChanges" }` array format.  Otherwise returns the value
     /// unchanged.
-    fn to_workspace_edit_format(&self, ws_edit: Value) -> Value {
+    pub(crate) fn to_workspace_edit_format(&self, ws_edit: Value) -> Value {
         if self.client_capabilities.lock().workspace_edit_document_changes_support {
             self.changes_to_document_changes(ws_edit)
         } else {

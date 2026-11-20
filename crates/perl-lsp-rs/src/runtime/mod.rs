@@ -20,6 +20,7 @@ mod diagnostics_sink;
 mod dispatch;
 mod document_access;
 mod document_symbols_sink;
+pub(crate) mod edit_delivery;
 mod exit_policy;
 /// File discovery abstraction for workspace scanning
 pub mod file_discovery;

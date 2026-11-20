@@ -388,15 +388,25 @@ fn apply_workspace_edit_metadata_absent_without_metadata_support() -> TestResult
         }),
     )?;
     assert_eq!(result.get("live_symbol_delete_enabled").and_then(Value::as_bool), Some(true));
-    assert_absent(&result, "/apply_edit_requested")?;
-    assert!(
-        !harness
-            .drain_server_requests(250)
-            .iter()
-            .any(|message| message.get("method").and_then(Value::as_str)
-                == Some("workspace/applyEdit")),
-        "workspace/applyEdit metadata must not be sent without metadataSupport"
+    assert_eq!(
+        result.get("edit_delivery_disposition").and_then(Value::as_str),
+        Some("request_client_apply_edit")
     );
+    assert_eq!(result.get("apply_edit_requested").and_then(Value::as_bool), Some(true));
+    let requests = harness.drain_server_requests(250);
+    let request = requests
+        .iter()
+        .find(|message| {
+            message.get("method").and_then(Value::as_str) == Some("workspace/applyEdit")
+        })
+        .ok_or_else(|| {
+            format!("expected workspace/applyEdit without metadataSupport: {requests:?}")
+        })?;
+    assert!(
+        request.pointer("/params/metadata").is_none(),
+        "workspace/applyEdit metadata must not be sent without metadataSupport: {request}"
+    );
+    assert_absent(request, "/params/edit/metadata")?;
 
     let mut harness = LspHarness::new_raw();
     harness.initialize_ready(
@@ -421,7 +431,11 @@ fn apply_workspace_edit_metadata_absent_without_metadata_support() -> TestResult
             }]
         }),
     )?;
-    assert_eq!(result.get("live_symbol_delete_enabled").and_then(Value::as_bool), Some(true));
+    assert_eq!(result.get("live_symbol_delete_enabled").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        result.get("edit_delivery_disposition").and_then(Value::as_str),
+        Some("refused_unsupported_client")
+    );
     assert_absent(&result, "/apply_edit_requested")?;
     assert!(
         !harness
@@ -429,7 +443,7 @@ fn apply_workspace_edit_metadata_absent_without_metadata_support() -> TestResult
             .iter()
             .any(|message| message.get("method").and_then(Value::as_str)
                 == Some("workspace/applyEdit")),
-        "workspace/applyEdit metadata must not be sent without workspace.applyEdit"
+        "workspace/applyEdit must not be sent without workspace.applyEdit"
     );
     Ok(())
 }

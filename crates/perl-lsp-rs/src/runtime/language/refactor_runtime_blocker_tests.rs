@@ -3505,7 +3505,77 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_returns_source_backed_edit
 }
 
 #[test]
-fn refactor_runtime_blocker_ux_safe_delete_live_pilot_keeps_edit_when_apply_edit_send_fails()
+fn refactor_runtime_blocker_ux_safe_delete_live_pilot_refuses_without_apply_edit_support()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    server.initialized.store(true, std::sync::atomic::Ordering::Release);
+    {
+        let mut caps = server.client_capabilities.lock();
+        caps.workspace_apply_edit_support = false;
+        caps.workspace_edit_metadata_support = false;
+    }
+    let files = open_semantic_real_workspace(&server)?;
+    let base = files.get("lib/RealBaseline/Base.pm").ok_or("missing RealBaseline Base fixture")?;
+    let (reset_line, reset_character) = position_of(base, "reset {")?;
+    let live_result = server
+        .safe_delete_symbol_live_pilot(Some(json!({
+            "textDocument": {"uri": REAL_BASELINE_BASE_URI},
+            "position": {"line": reset_line, "character": reset_character}
+        })))?
+        .ok_or("missing safe-delete live pilot result")?;
+
+    assert_eq!(
+        live_result.get("edit_delivery_disposition").and_then(Value::as_str),
+        Some("refused_unsupported_client")
+    );
+    assert_eq!(live_result.get("live_symbol_delete_enabled").and_then(Value::as_bool), Some(false));
+    assert_eq!(live_result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
+    assert_eq!(live_result.get("apply_edit_requested").and_then(Value::as_bool), None);
+    let user_message =
+        live_result.get("user_message").and_then(Value::as_str).ok_or("missing user_message")?;
+    assert!(
+        user_message.contains("does not support") && user_message.contains("No source changes"),
+        "expected explicit refusal message: {user_message}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn refactor_runtime_blocker_ux_safe_delete_live_pilot_requests_apply_edit_without_metadata_support()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    server.initialized.store(true, std::sync::atomic::Ordering::Release);
+    {
+        let mut caps = server.client_capabilities.lock();
+        caps.workspace_apply_edit_support = true;
+        caps.workspace_edit_metadata_support = false;
+    }
+    let files = open_semantic_real_workspace(&server)?;
+    let base = files.get("lib/RealBaseline/Base.pm").ok_or("missing RealBaseline Base fixture")?;
+    let (reset_line, reset_character) = position_of(base, "reset {")?;
+    let live_result = server
+        .safe_delete_symbol_live_pilot(Some(json!({
+            "textDocument": {"uri": REAL_BASELINE_BASE_URI},
+            "position": {"line": reset_line, "character": reset_character}
+        })))?
+        .ok_or("missing safe-delete live pilot result")?;
+
+    assert_eq!(
+        live_result.get("edit_delivery_disposition").and_then(Value::as_str),
+        Some("request_client_apply_edit")
+    );
+    assert_eq!(live_result.get("apply_edit_requested").and_then(Value::as_bool), Some(true));
+    assert!(
+        live_result.pointer("/apply_edit_request/metadata").is_none(),
+        "apply_edit_request receipt must omit metadata when unsupported: {live_result}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn refactor_runtime_blocker_ux_safe_delete_live_pilot_withholds_edit_when_apply_edit_send_fails()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut server = create_server();
     {
@@ -3531,17 +3601,32 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_keeps_edit_when_apply_edit
         Some("perl.safeDeleteSymbol")
     );
     assert_eq!(live_result.get("decision").and_then(Value::as_str), Some("allowed"));
-    assert_eq!(live_result.get("live_symbol_delete_enabled").and_then(Value::as_bool), Some(true));
-    assert_eq!(live_result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(1));
+    assert_eq!(live_result.get("live_symbol_delete_enabled").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        live_result.get("edit_delivery_disposition").and_then(Value::as_str),
+        Some("apply_edit_send_failed")
+    );
+    assert_eq!(live_result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
     assert_eq!(live_result.get("apply_edit_requested").and_then(Value::as_bool), None);
     assert!(
         live_result.get("apply_edit_request").is_none(),
         "failed client request must not be recorded as sent: {live_result}"
     );
+    let user_message =
+        live_result.get("user_message").and_then(Value::as_str).ok_or("missing user_message")?;
+    assert!(
+        user_message.contains("could not send")
+            && user_message.contains("No source changes")
+            && !user_message.contains("does not support"),
+        "expected applyEdit send-failure message, not capability refusal: {user_message}"
+    );
 
     let workspace_edit = live_result.get("workspace_edit").ok_or("missing live workspace_edit")?;
-    let live_texts = workspace_edit_texts_for_uri(workspace_edit, REAL_BASELINE_BASE_URI)?;
-    assert_eq!(live_texts, vec![""], "live pilot must keep the source-backed delete edit");
+    assert_eq!(
+        workspace_edit.pointer("/changes").and_then(Value::as_object).map(serde_json::Map::len),
+        Some(0),
+        "failed applyEdit send must not leave a success-like edit payload: {live_result}"
+    );
 
     Ok(())
 }
