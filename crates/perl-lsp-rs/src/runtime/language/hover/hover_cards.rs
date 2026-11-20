@@ -1,5 +1,5 @@
+use super::presentation::{HoverBlock, HoverCard};
 use super::{Value, json};
-use crate::util::escape_markdown_text;
 
 fn method_modifier_description(modifier_kind: &str) -> &'static str {
     match modifier_kind {
@@ -16,15 +16,14 @@ fn method_modifier_description(modifier_kind: &str) -> &'static str {
 
 pub(super) fn method_modifier_hover(modifier_kind: &str, method_name: &str, doc: &str) -> Value {
     let kind_label = method_modifier_description(modifier_kind);
-    let escaped_doc = escape_markdown_text(doc);
-    json!({
-        "contents": {
-            "kind": "markdown",
-            "value": format!(
-                "**Method Modifier (`{modifier_kind}`)**\n\n`{method_name}` — {kind_label}\n\n{escaped_doc}"
-            ),
-        },
-    })
+    let mut blocks = vec![
+        HoverBlock::MethodModifierHeading { modifier_kind: modifier_kind.to_string() },
+        HoverBlock::MethodModifierSummary { method_name: method_name.to_string(), kind_label },
+    ];
+    if !doc.is_empty() {
+        blocks.push(HoverBlock::UserProse { text: doc.to_string() });
+    }
+    HoverCard::new(blocks).to_lsp_hover(true)
 }
 
 /// Return the timing semantics description for a Perl phase block.
@@ -78,15 +77,19 @@ independently.",
 /// Returns `None` when `phase` is not one of the recognised phase keywords.
 pub(super) fn phase_block_hover(phase: &str) -> Option<Value> {
     let (timing, description) = phase_block_description(phase)?;
-    Some(json!({
-        "contents": {
-            "kind": "markdown",
-            "value": format!(
-                "**Phase Block: `{phase}`**\n\n_{timing}_\n\n{description}\n\n\
-    [perlmod — Special Subroutines](https://perldoc.perl.org/perlmod#BEGIN%2C-UNITCHECK%2C-CHECK%2C-INIT-and-END)"
-            ),
-        },
-    }))
+    Some(
+        HoverCard::new(vec![
+            HoverBlock::PhaseBlockHeading { phase: phase.to_string() },
+            HoverBlock::TimingLabel { text: timing },
+            HoverBlock::AuthoredProse { text: description },
+            HoverBlock::PresentationLink {
+                label: "perlmod — Special Subroutines".to_string(),
+                url: "https://perldoc.perl.org/perlmod#BEGIN%2C-UNITCHECK%2C-CHECK%2C-INIT-and-END"
+                    .to_string(),
+            },
+        ])
+        .to_lsp_hover(true),
+    )
 }
 
 /// Indexed workspace-qualified callable (`Pkg::sub`). Must not include install advice.
@@ -96,18 +99,15 @@ pub(super) fn qualified_callable_hover(
     package: &str,
     documentation: Option<&str>,
 ) -> Value {
-    let doc = documentation
-        .filter(|text| !text.is_empty())
-        .map(|text| format!("\n\n{}", escape_markdown_text(text)))
-        .unwrap_or_default();
-    json!({
-        "contents": {
-            "kind": "markdown",
-            "value": format!(
-                "**{kind_label}**\n\n`{signature}`\n\nDefined in `{package}`{doc}"
-            ),
-        },
-    })
+    let mut blocks = vec![
+        HoverBlock::BoldTitle { title: kind_label.to_string() },
+        HoverBlock::CodeLine { code: signature.to_string() },
+        HoverBlock::PackageDefinedLine { package: package.to_string() },
+    ];
+    if let Some(text) = documentation.filter(|text| !text.is_empty()) {
+        blocks.push(HoverBlock::UserProse { text: text.to_string() });
+    }
+    HoverCard::new(blocks).to_lsp_hover(true)
 }
 
 /// Fallback when a qualified callable is not an indexed workspace sub.
