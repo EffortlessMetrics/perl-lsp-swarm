@@ -84,6 +84,8 @@ pub mod declaration;
 /// that geometry has, and how a coordinate-mapping consumer must transform it.
 /// Structural children remain owned by [`kind_schema`]; this is not a second
 /// child traversal.
+/// Bounded ordered-binder adapter for `NodeKind::Foreach` (#13320 F01).
+pub mod foreach_binders;
 pub mod geometry_policy;
 /// Exhaustive invariant policy metadata for every [`NodeKind`] variant.
 pub mod invariant_policy;
@@ -124,6 +126,11 @@ pub use declaration::{
     DeclarationAttributeArgumentDisposition, DeclarationAttributeArgumentSyntax,
     DeclarationAttributeCompleteness, DeclarationAttributeDelimiter, DeclarationAttributeSeparator,
     DeclarationAttributeSyntax, DeclarationAttributeSyntaxError,
+};
+/// Foreach binder migration adapter and dispositions (#13320).
+pub use foreach_binders::{
+    CURRENT_FOREACH_BINDER_CARDINALITY, ForeachBinderMigrationDisposition, ForeachBinderView,
+    ForeachSyntheticBinderProbe,
 };
 /// Field-level source-geometry registry types, observation, and reconciliation.
 pub use geometry_policy::{

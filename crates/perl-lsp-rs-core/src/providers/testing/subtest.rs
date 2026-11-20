@@ -10,6 +10,7 @@
 //! rather than guessed — the caller decides how to present an unknown name.
 
 use crate::providers::document_symbols::{CALLABLE_DOCUMENT_SYMBOL_PRIORITY, DocumentSymbol};
+use perl_ast::ForeachBinderView;
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_position_tracking::WireRange;
 use perl_semantic_analyzer::symbol::SymbolKind;
@@ -409,7 +410,11 @@ fn structural_children(node: &Node) -> Vec<&Node> {
             children.push(body.as_ref());
             children
         }
-        NodeKind::Foreach { list, body, .. } => vec![list.as_ref(), body.as_ref()],
+        NodeKind::Foreach { variable, list, body, continue_block, .. } => {
+            let view =
+                ForeachBinderView::from_parts(variable, list, body, continue_block.as_deref());
+            view.structural_test_children()
+        }
         _ => Vec::new(),
     }
 }

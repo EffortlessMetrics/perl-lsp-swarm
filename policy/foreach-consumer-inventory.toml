@@ -1,0 +1,413 @@
+# Foreach `variable` consumer inventory — issue #13320 (F01 / parent #13311).
+#
+# Reconciled by `crates/perl-ast/tests/foreach_consumer_inventory_tests.rs`.
+# Each production `NodeKind::Foreach` match must appear exactly once. Test-only
+# fixtures under `tests/`, `fixtures/`, and `snapshots/` are excluded from the
+# scan denominator but may be listed for documentation.
+#
+# Dispositions (closed vocabulary):
+#   binder-cardinality-sensitive
+#   binder-cardinality-agnostic
+#   compatibility-projection
+#   must-migrate-with-f02
+#   must-migrate-with-f03-f04
+#   unrelated-with-proof
+
+schema_version = 1
+issue = 13320
+
+[[site]]
+path = "crates/perl-ast/src/foreach_binders.rs"
+line = 55
+disposition = "compatibility-projection"
+owner = "perl-ast"
+notes = "adapter construction from legacy single field"
+
+[[site]]
+path = "crates/perl-ast/src/kind_schema/visit.rs"
+line = 160
+disposition = "compatibility-projection"
+owner = "perl-ast"
+notes = "canonical field-aware traversal via FieldId::VARIABLE"
+
+[[site]]
+path = "crates/perl-ast/src/ast/node_clone.rs"
+line = 240
+disposition = "binder-cardinality-agnostic"
+owner = "perl-ast"
+notes = "structural clone via shared visit table"
+
+[[site]]
+path = "crates/perl-ast/src/ast/node_debug.rs"
+line = 427
+disposition = "binder-cardinality-agnostic"
+owner = "perl-ast"
+notes = "payload delegated to visit table"
+
+[[site]]
+path = "crates/perl-ast/src/ast/node_sexp.rs"
+line = 676
+disposition = "binder-cardinality-agnostic"
+owner = "perl-ast"
+notes = "payload delegated to visit table"
+
+[[site]]
+path = "crates/perl-ast/src/ast.rs"
+line = 1527
+disposition = "unrelated-with-proof"
+owner = "perl-ast"
+notes = "kind_name metadata"
+
+[[site]]
+path = "crates/perl-ast/src/ast.rs"
+line = 1623
+disposition = "unrelated-with-proof"
+owner = "perl-ast"
+notes = "grammar_kind_name metadata"
+
+[[site]]
+path = "crates/perl-ast/src/ast.rs"
+line = 1747
+disposition = "binder-cardinality-agnostic"
+owner = "perl-ast"
+notes = "control-flow classification list"
+
+[[site]]
+path = "crates/perl-ast/src/ast.rs"
+line = 2131
+disposition = "unrelated-with-proof"
+owner = "perl-ast"
+notes = "all_node_kinds fixture bank"
+
+[[site]]
+path = "crates/perl-ast/src/classification.rs"
+line = 208
+disposition = "binder-cardinality-agnostic"
+owner = "perl-ast"
+notes = "category flags"
+
+[[site]]
+path = "crates/perl-ast/src/classification.rs"
+line = 639
+disposition = "binder-cardinality-agnostic"
+owner = "perl-ast"
+notes = "category flags"
+
+[[site]]
+path = "crates/perl-ast/src/classification.rs"
+line = 1197
+disposition = "unrelated-with-proof"
+owner = "perl-ast"
+notes = "all_variants fixture"
+
+[[site]]
+path = "crates/perl-ast/src/classification.rs"
+line = 1762
+disposition = "unrelated-with-proof"
+owner = "perl-ast"
+notes = "all_variants_maximal fixture"
+
+[[site]]
+path = "crates/perl-ast/src/geometry_policy.rs"
+line = 849
+disposition = "unrelated-with-proof"
+owner = "perl-ast"
+notes = "geometry observation names all fields explicitly"
+
+[[site]]
+path = "crates/perl-ast/src/invariant_policy.rs"
+line = 461
+disposition = "unrelated-with-proof"
+owner = "perl-ast"
+notes = "policy fixture names all fields"
+
+[[site]]
+path = "crates/perl-ast/src/kind_schema/forms.rs"
+line = 90
+disposition = "unrelated-with-proof"
+owner = "perl-ast"
+notes = "cardinality witness fixture"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/tooling/perl_critic/native.rs"
+line = 2786
+disposition = "binder-cardinality-agnostic"
+owner = "perl-lsp-rs-core"
+notes = "loop-kind dispatch"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/testing/subtest.rs"
+line = 407
+disposition = "compatibility-projection"
+owner = "perl-lsp-rs-core"
+notes = "routes through ForeachBinderView::structural_test_children"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/navigation/type_definition.rs"
+line = 647
+disposition = "must-migrate-with-f03-f04"
+owner = "perl-lsp-rs-core"
+deferred_to = "#13325"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/unreachable_code.rs"
+line = 180
+disposition = "binder-cardinality-sensitive"
+owner = "perl-lsp-rs-core"
+notes = "visits continue_block; binders unchanged"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/diagnostics/walker.rs"
+line = 214
+disposition = "binder-cardinality-sensitive"
+owner = "perl-lsp-rs-core"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/document_highlight/mod.rs"
+line = 311
+disposition = "must-migrate-with-f03-f04"
+owner = "perl-lsp-rs-core"
+deferred_to = "#13325"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/document_highlight/mod.rs"
+line = 992
+disposition = "must-migrate-with-f03-f04"
+owner = "perl-lsp-rs-core"
+deferred_to = "#13325"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/folding/mod.rs"
+line = 289
+disposition = "binder-cardinality-agnostic"
+owner = "perl-lsp-rs-core"
+notes = "fold body only"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/eval_error_flow.rs"
+line = 57
+disposition = "binder-cardinality-agnostic"
+owner = "perl-lsp-rs-core"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/eval_error_flow.rs"
+line = 209
+disposition = "binder-cardinality-agnostic"
+owner = "perl-lsp-rs-core"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs"
+line = 206
+disposition = "binder-cardinality-sensitive"
+owner = "perl-lsp-rs-core"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/extract_variable.rs"
+line = 217
+disposition = "binder-cardinality-agnostic"
+owner = "perl-lsp-rs-core"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/loop_conversion.rs"
+line = 25
+disposition = "must-migrate-with-f03-f04"
+owner = "perl-lsp-rs-core"
+deferred_to = "#13325"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/mod.rs"
+line = 499
+disposition = "must-migrate-with-f03-f04"
+owner = "perl-lsp-rs-core"
+deferred_to = "#13325"
+
+[[site]]
+path = "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/signature_actions.rs"
+line = 240
+disposition = "must-migrate-with-f03-f04"
+owner = "perl-lsp-rs-core"
+deferred_to = "#13325"
+
+[[site]]
+path = "crates/perl-workspace/src/workspace/workspace_index.rs"
+line = 6158
+disposition = "must-migrate-with-f02"
+owner = "perl-workspace"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-workspace/src/workspace/workspace_index.rs"
+line = 6836
+disposition = "must-migrate-with-f02"
+owner = "perl-workspace"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-tdd-support/src/tdd/tdd_basic.rs"
+line = 132
+disposition = "binder-cardinality-agnostic"
+owner = "perl-tdd-support"
+
+[[site]]
+path = "crates/perl-tdd-support/src/tdd/tdd_basic.rs"
+line = 263
+disposition = "binder-cardinality-agnostic"
+owner = "perl-tdd-support"
+
+[[site]]
+path = "crates/perl-tdd-support/src/tdd/tdd_basic.rs"
+line = 290
+disposition = "binder-cardinality-agnostic"
+owner = "perl-tdd-support"
+
+[[site]]
+path = "crates/perl-tdd-support/src/tdd/tdd_basic.rs"
+line = 322
+disposition = "binder-cardinality-agnostic"
+owner = "perl-tdd-support"
+
+[[site]]
+path = "crates/perl-tdd-support/src/tdd/test_runner.rs"
+line = 210
+disposition = "binder-cardinality-agnostic"
+owner = "perl-tdd-support"
+
+[[site]]
+path = "crates/perl-tdd-support/src/tdd/test_runner.rs"
+line = 356
+disposition = "binder-cardinality-sensitive"
+owner = "perl-tdd-support"
+
+[[site]]
+path = "crates/perl-semantic-analyzer/src/analysis/semantic/node_analysis.rs"
+line = 466
+disposition = "must-migrate-with-f02"
+owner = "perl-semantic-analyzer"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-semantic-analyzer/src/analysis/symbol.rs"
+line = 887
+disposition = "must-migrate-with-f02"
+owner = "perl-semantic-analyzer"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-semantic-analyzer/src/analysis/type_inference.rs"
+line = 1652
+disposition = "binder-cardinality-agnostic"
+owner = "perl-semantic-analyzer"
+
+[[site]]
+path = "crates/perl-semantic-analyzer/src/analysis/declaration.rs"
+line = 1402
+disposition = "must-migrate-with-f02"
+owner = "perl-semantic-analyzer"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-semantic-analyzer/src/analysis/mojo_base_attributes.rs"
+line = 202
+disposition = "binder-cardinality-agnostic"
+owner = "perl-semantic-analyzer"
+
+[[site]]
+path = "crates/perl-semantic-analyzer/src/analysis/scope_analyzer/mod.rs"
+line = 914
+disposition = "binder-cardinality-agnostic"
+owner = "perl-semantic-analyzer"
+
+[[site]]
+path = "crates/perl-semantic-analyzer/src/analysis/scope_analyzer/mod.rs"
+line = 1170
+disposition = "must-migrate-with-f02"
+owner = "perl-semantic-analyzer"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-semantic-analyzer/src/analysis/dancer2_hooks.rs"
+line = 86
+disposition = "binder-cardinality-agnostic"
+owner = "perl-semantic-analyzer"
+
+[[site]]
+path = "crates/perl-pragma/src/range_builder/walk.rs"
+line = 54
+disposition = "binder-cardinality-agnostic"
+owner = "perl-pragma"
+notes = "range walk uses body/continue only"
+
+[[site]]
+path = "crates/perl-parser/src/incremental/incremental_v2.rs"
+line = 1353
+disposition = "unrelated-with-proof"
+owner = "perl-parser"
+notes = "structural kind compatibility"
+
+[[site]]
+path = "crates/perl-parser-core/src/hir/lower.rs"
+line = 1343
+disposition = "must-migrate-with-f02"
+owner = "perl-parser-core"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-parser-core/src/hir/lower.rs"
+line = 4938
+disposition = "must-migrate-with-f02"
+owner = "perl-parser-core"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-parser-core/src/hir/lower.rs"
+line = 5783
+disposition = "binder-cardinality-agnostic"
+owner = "perl-parser-core"
+
+[[site]]
+path = "crates/perl-parser-core/src/engine/parser/statements.rs"
+line = 1300
+disposition = "binder-cardinality-agnostic"
+owner = "perl-parser-core"
+
+[[site]]
+path = "crates/perl-parser-core/src/engine/parser/control_flow.rs"
+line = 362
+disposition = "must-migrate-with-f02"
+owner = "perl-parser-core"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-parser-core/src/engine/parser/control_flow.rs"
+line = 496
+disposition = "must-migrate-with-f02"
+owner = "perl-parser-core"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-parser-core/src/engine/parser/control_flow.rs"
+line = 550
+disposition = "must-migrate-with-f02"
+owner = "perl-parser-core"
+deferred_to = "#13322"
+
+[[site]]
+path = "crates/perl-lsp-rs/src/runtime/symbol_extraction.rs"
+line = 538
+disposition = "must-migrate-with-f03-f04"
+owner = "perl-lsp-rs"
+deferred_to = "#13325"
+
+[[site]]
+path = "crates/perl-lsp-rs/src/features/inlay_hints_provider.rs"
+line = 408
+disposition = "must-migrate-with-f03-f04"
+owner = "perl-lsp-rs"
+deferred_to = "#13325"
+
+[[site]]
+path = "crates/perl-lsp-rs/src/call_hierarchy_provider/mod.rs"
+line = 547
+disposition = "must-migrate-with-f03-f04"
+owner = "perl-lsp-rs"
+deferred_to = "#13325"
