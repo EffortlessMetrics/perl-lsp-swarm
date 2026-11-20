@@ -731,15 +731,69 @@ fn process_exists(pid: u32) -> io::Result<bool> {
                 .unwrap_or(false)
         }))
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
-        Ok(Command::new("kill").args(["-0", &pid.to_string()]).status()?.success())
+        let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let state =
+            stat.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next()).ok_or_else(|| {
+                io::Error::other(format!("malformed /proc/{pid}/stat process record"))
+            })?;
+        Ok(state != 'Z')
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        if !Command::new("kill").args(["-0", &pid.to_string()]).status()?.success() {
+            return Ok(false);
+        }
+        let output = Command::new("ps").args(["-p", &pid.to_string(), "-o", "stat="]).output()?;
+        if !output.status.success() {
+            return Ok(false);
+        }
+        let state = String::from_utf8_lossy(&output.stdout).trim();
+        Ok(!state.is_empty() && !state.starts_with('Z'))
     }
     #[cfg(not(any(windows, unix)))]
     {
         let _ = pid;
         Ok(false)
     }
+}
+
+/// Oracle self-test: a killed-but-unreaped child must not count as live (#17621).
+#[test]
+#[cfg(unix)]
+fn process_exists_oracle_treats_zombie_as_exited() -> io::Result<()> {
+    let mut child = Command::new("true").spawn()?;
+    let pid = child.id();
+    // Hold the `Child` handle so the exited process stays a zombie until we wait.
+    std::thread::sleep(Duration::from_millis(100));
+    if process_exists(pid)? {
+        return Err(io::Error::other(format!(
+            "zombie descendant PID {pid} must not be reported as live"
+        )));
+    }
+    let _ = child.wait();
+    Ok(())
+}
+
+/// Oracle self-test: a running descendant must still count as live (#17621).
+#[test]
+#[cfg(unix)]
+fn process_exists_oracle_treats_running_child_as_alive() -> io::Result<()> {
+    let mut child = Command::new("sleep").arg("30").spawn()?;
+    let pid = child.id();
+    if !process_exists(pid)? {
+        return Err(io::Error::other(format!(
+            "live descendant PID {pid} must be reported as alive"
+        )));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(())
 }
 
 /// Extra grace to apply past the configured `timeout` when waiting for a
