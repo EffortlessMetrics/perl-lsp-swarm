@@ -48,6 +48,9 @@ pub(super) fn handle_variable_declaration<'a>(
     // to read (yields undef) and must not trigger UninitializedVariable diagnostics.
     // `local` similarly saves and restores the global, defaulting to `undef` when no
     // initializer is given — it is safe to read.
+    // Bare aggregate declarations (`my @out;`, `my %h;`) stay uninitialized here:
+    // whole-aggregate reads of them are exempted at the use site, and an element
+    // read before any store still warns at runtime (#18765).
     let is_initialized = declarator == "state" || declarator == "local" || initializer.is_some();
 
     // `local` of a builtin special variable (e.g. `local $/`, `local $,`) temporarily

@@ -70,15 +70,20 @@ pub fn detect_dead_code(
 ) -> Vec<Diagnostic> {
     use perl_workspace::workspace_index::SymbolKind;
 
-    let unused_symbols = workspace_index.find_unused_symbols();
+    // Diagnostics surface the convention-filtered query (#18765): Moo
+    // construction hooks, Exporter-consumed variables, and export-listed
+    // names are usage-by-convention and must not be flagged.
+    //
+    // The query is scoped to the current document and compares normalized
+    // URI keys, not raw strings: the startup scan mints URIs via
+    // `Url::from_file_path`, which lowercases the Windows drive letter, while
+    // editors send `file:///F:/...`; a raw compare silently dropped every
+    // symbol from startup-indexed files. Scoping also keeps the convention
+    // filter from reading every other file's text on each publish.
+    let unused_symbols = workspace_index.find_unused_symbols_for_diagnostics_in(document_uri);
     let mut diagnostics = Vec::new();
 
     for symbol in unused_symbols {
-        // Only report diagnostics for symbols in the current document
-        if symbol.uri != document_uri {
-            continue;
-        }
-
         // Determine diagnostic code and message subject based on symbol kind
         let identity: &'static DeadCodeIdentity = match symbol.kind {
             SymbolKind::Subroutine => &SUBROUTINE_IDENTITY,
@@ -102,6 +107,19 @@ pub fn detect_dead_code(
             symbol.range.end.column,
         );
 
+        // Advice is softened for subroutines (#18765): a sub that is only
+        // ever reached through method dispatch (`$obj->method`) or dynamic
+        // dispatch has no name reference for the workspace index to see, so
+        // an unconditional "Remove" would break working code.
+        let suggestion = if matches!(symbol.kind, SymbolKind::Subroutine) {
+            format!(
+                "Before removing subroutine '{}', check for method or dynamic dispatch callers",
+                symbol.name
+            )
+        } else {
+            format!("Remove unused {} '{}'", identity.subject, symbol.name)
+        };
+
         diagnostics.push(Diagnostic {
             range: (start_byte, end_byte),
             severity: DiagnosticSeverity::Hint,
@@ -111,7 +129,7 @@ pub fn detect_dead_code(
             tags: vec![DiagnosticTag::Unnecessary],
             fixable: false,
             critic_observation: None,
-            suggestion: Some(format!("Remove unused {} '{}'", identity.subject, symbol.name)),
+            suggestion: Some(suggestion),
         });
     }
 

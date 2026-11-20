@@ -179,8 +179,11 @@ impl DeadCodeDetector {
             }
         }
 
-        // Unused symbols across workspace
-        for sym in self.workspace_index.find_unused_symbols() {
+        // Unused symbols across workspace.  Uses the diagnostics-filtered
+        // query so convention-shaped symbols (Moo construction hooks,
+        // Exporter-consumed variables, export-listed names) are not reported
+        // as dead (#18765).
+        for sym in self.workspace_index.find_unused_symbols_for_diagnostics() {
             let code_type = match sym.kind {
                 SymbolKind::Subroutine => DeadCodeType::UnusedSubroutine,
                 SymbolKind::Variable(_) => DeadCodeType::UnusedVariable,
