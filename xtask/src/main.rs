@@ -589,6 +589,13 @@ enum Commands {
         command: SyncDivergenceCommand,
     },
 
+    /// Deterministic publication-tree projection producer.
+    #[command(name = "publication-sync")]
+    PublicationSync {
+        #[command(subcommand)]
+        command: PublicationSyncCommand,
+    },
+
     /// Issue Research / Plan Review Desk tooling (report-only audit, etc.).
     #[command(name = "issue-plan")]
     IssuePlan {
@@ -5006,6 +5013,76 @@ enum SyncDivergenceCommand {
 }
 
 #[derive(Subcommand)]
+enum PublicationSyncCommand {
+    /// Project `S` into `P`, build `J0`/`J`, and write the control packet.
+    Project {
+        /// Exact publication base commit (`R`).
+        #[arg(long)]
+        base: String,
+        /// Exact prepared swarm commit (`S`).
+        #[arg(long)]
+        source: String,
+        /// Reviewed input projection manifest (JSON).
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Blocker-free reconciliation ledger (JSON).
+        #[arg(long)]
+        ledger: PathBuf,
+        /// Reviewed commit message file for `J0`/`J`.
+        #[arg(long)]
+        message_file: PathBuf,
+        /// Output directory for packet, manifest, ledger, and receipt.
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Fixed author/committer name.
+        #[arg(long)]
+        author_name: String,
+        /// Fixed author/committer email.
+        #[arg(long)]
+        author_email: String,
+        /// Fixed author/committer timestamp (Unix seconds, UTC).
+        #[arg(long)]
+        timestamp: i64,
+    },
+    /// Verify an existing audited join `J` against its committed manifest.
+    VerifyJoin {
+        /// Exact publication base commit (`R`).
+        #[arg(long)]
+        base: String,
+        /// Exact prepared swarm commit (`S`).
+        #[arg(long)]
+        source: String,
+        /// Audited PR-head join (`J`).
+        #[arg(long)]
+        join: String,
+        /// Committed projection manifest (JSON).
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Expected projected tree (`P`).
+        #[arg(long)]
+        expected_tree: String,
+    },
+    /// Verify a landed wrapper merge `M`.
+    VerifyLanded {
+        /// Exact publication base commit (`R`).
+        #[arg(long)]
+        base: String,
+        /// Exact prepared swarm commit (`S`).
+        #[arg(long)]
+        source: String,
+        /// Audited PR-head join (`J`).
+        #[arg(long)]
+        join: String,
+        /// Landed wrapper merge (`M`).
+        #[arg(long)]
+        merge: String,
+        /// Current publication head; must equal `M`.
+        #[arg(long)]
+        master: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum IntegrationCommand {
     /// Emacs support train tooling: the exact-tree context engine (CTXENG
     /// #11756) over the stable emacs_train.v1 graph, the E01R revision
@@ -6187,6 +6264,52 @@ fn run_cli(cli: Cli) -> Result<()> {
                 paginated_fixture,
                 deterministic_clock,
             }),
+        },
+        Commands::PublicationSync { command } => match command {
+            PublicationSyncCommand::Project {
+                base,
+                source,
+                manifest,
+                ledger,
+                message_file,
+                out_dir,
+                author_name,
+                author_email,
+                timestamp,
+            } => tasks::publication_sync::project(tasks::publication_sync::ProjectConfig {
+                base,
+                source,
+                manifest,
+                ledger,
+                message_file,
+                out_dir,
+                author_name,
+                author_email,
+                timestamp,
+                working_directory: None,
+            }),
+            PublicationSyncCommand::VerifyJoin { base, source, join, manifest, expected_tree } => {
+                tasks::publication_sync::verify_join(tasks::publication_sync::VerifyJoinConfig {
+                    base,
+                    source,
+                    join,
+                    manifest,
+                    expected_tree,
+                    working_directory: None,
+                })
+            }
+            PublicationSyncCommand::VerifyLanded { base, source, join, merge, master } => {
+                tasks::publication_sync::verify_landed(
+                    tasks::publication_sync::VerifyLandedConfig {
+                        base,
+                        source,
+                        join,
+                        merge,
+                        master,
+                        working_directory: None,
+                    },
+                )
+            }
         },
         Commands::SyncDivergence { command } => match command {
             SyncDivergenceCommand::Check { source, boundary, target, ledger, receipt } => {

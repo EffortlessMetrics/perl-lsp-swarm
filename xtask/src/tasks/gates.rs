@@ -8442,7 +8442,7 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
                 "unit_control_plane_bins",
                 "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: \
                  tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: \
-                 -- --test-threads=1",
+                 tasks::publication_sync:: -- --test-threads=1",
                 vec!["xtask"],
             ),
         ] {
