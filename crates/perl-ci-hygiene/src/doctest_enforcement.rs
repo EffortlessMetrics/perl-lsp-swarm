@@ -33,7 +33,12 @@
 //! 5. the inventory cannot fail open: an unreadable or unparsable member
 //!    manifest, a wildcard `workspace.members` entry, an unreadable source
 //!    file, and a directory the walk cannot enumerate are all errors, never
-//!    an empty pass.
+//!    an empty pass;
+//! 6. every `compile_fail` contract in a selected package sits in a library
+//!    module the route's feature selection actually compiles — default
+//!    features plus any `--features` / `--all-features` on the route command,
+//!    with `cfg(test)` treated as enabled because the route is `cargo test`
+//!    (#16005).
 //!
 //! # `doctest = false` is not an exclusion
 //!
@@ -58,10 +63,6 @@
 //! an unrelated reason, such as a typo in a path. Neither is detectable from
 //! the fence line, and both are called out in
 //! `docs/ci/test-evidence-lanes.md` for authors instead.
-//!
-//! Feature-gated reachability is likewise not checked: whether the route's
-//! feature selection reaches a given fence is a per-crate judgement, recorded
-//! in that crate's guidance rather than inferred here.
 //!
 //! Fence forms: the detector counts `///` and `//!` line doc comments and
 //! `/**` and `/*!` block doc comments, each with a fence delimiter of three
@@ -150,6 +151,16 @@ pub enum Violation {
         /// Where the unreachable contracts live.
         sites: Vec<ContractSite>,
     },
+    /// A contract sits behind `cfg` the route's feature selection does not
+    /// enable, so `cargo test --doc` never compiles it (#16005).
+    ContractNotReachableUnderRouteFeatures {
+        /// The selected package owning the inert contract.
+        package: String,
+        /// Where the unreachable contracts live.
+        sites: Vec<ContractSite>,
+        /// Features treated as enabled for this package on the route.
+        enabled_features: Vec<String>,
+    },
 }
 
 impl Violation {
@@ -158,9 +169,23 @@ impl Violation {
         match self {
             Self::ContractOutsideRoute { package, .. }
             | Self::SelectedPackageUnknown { package }
-            | Self::ContractInUnexecutableTarget { package, .. } => package,
+            | Self::ContractInUnexecutableTarget { package, .. }
+            | Self::ContractNotReachableUnderRouteFeatures { package, .. } => package,
         }
     }
+}
+
+/// Read the doctest route's `cargo test` command from gate policy text.
+///
+/// # Errors
+///
+/// Returns an error when the route row is missing or has no `command:` value.
+pub fn route_command(policy: &str) -> Result<String> {
+    let block = gate_block(policy, GATE_NAME).ok_or_else(|| {
+        eyre!("{GATE_POLICY_PATH} has no `{GATE_NAME}` gate row to read a command from")
+    })?;
+    gate_command(&block)
+        .ok_or_else(|| eyre!("gate `{GATE_NAME}` in {GATE_POLICY_PATH} has no `command:` value"))
 }
 
 /// Extract the packages the doctest route selects, from the route's own
@@ -371,7 +396,7 @@ fn is_compile_fail_fence_body(text: &str) -> bool {
 /// a member entry is a glob: wildcard members expand at build time, and a
 /// package admitted through one could grow a contract that this inventory
 /// never sees. Failing closed keeps a clean ratchet honest.
-fn workspace_members(root: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn workspace_members(root: &Path) -> Result<Vec<PathBuf>> {
     let manifest_path = root.join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path)
         .map_err(|error| eyre!("failed to read {}: {error}", manifest_path.display()))?;
@@ -716,6 +741,21 @@ pub fn violations(
 
     violations.sort_by(|left, right| left.package().cmp(right.package()));
     violations
+}
+
+/// Feature-gated contracts in selected packages that the route cannot compile (#16005).
+pub fn feature_reachability_violations(
+    root: &Path,
+    route_command: &str,
+    route: &BTreeSet<String>,
+    facts: &BTreeMap<String, PackageFacts>,
+) -> Result<Vec<Violation>> {
+    crate::doctest_feature_reachability::feature_reachability_violations(
+        root,
+        route_command,
+        route,
+        facts,
+    )
 }
 
 #[cfg(test)]

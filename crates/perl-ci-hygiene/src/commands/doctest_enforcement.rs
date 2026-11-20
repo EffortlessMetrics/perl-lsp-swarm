@@ -15,7 +15,8 @@ use std::path::Path;
 
 use crate::{GREEN, NC, RED, YELLOW};
 use perl_ci_hygiene::doctest_enforcement::{
-    GATE_NAME, GATE_POLICY_PATH, PackageFacts, Violation, package_facts, route_packages, violations,
+    GATE_NAME, GATE_POLICY_PATH, PackageFacts, Violation, feature_reachability_violations,
+    package_facts, route_command, route_packages, violations,
 };
 
 /// Run the ratchet against the working tree.
@@ -33,8 +34,10 @@ pub(crate) fn check(repo_root: &Path) -> Result<i32> {
     let policy = fs::read_to_string(&policy_path)
         .map_err(|error| eyre!("failed to read {}: {error}", policy_path.display()))?;
     let route = route_packages(&policy)?;
+    let command = route_command(&policy)?;
     let facts = package_facts(repo_root)?;
-    let found = violations(&route, &facts);
+    let mut found = violations(&route, &facts);
+    found.extend(feature_reachability_violations(repo_root, &command, &route, &facts)?);
 
     let enforced: Vec<&PackageFacts> =
         facts.values().filter(|facts| route.contains(&facts.name)).collect();
@@ -78,6 +81,25 @@ pub(crate) fn check(repo_root: &Path) -> Result<i32> {
                      target; `cargo test --doc` collects only the library, so selecting the \
                      package cannot execute them",
                     sites.len()
+                );
+                for site in sites {
+                    println!("    {}:{}", site.file, site.line);
+                }
+            }
+            Violation::ContractNotReachableUnderRouteFeatures {
+                package,
+                sites,
+                enabled_features,
+            } => {
+                println!(
+                    "  {YELLOW}{package}{NC}: {} compile_fail contract(s) behind `cfg` the \
+                     route's feature selection does not enable (enabled features: {})",
+                    sites.len(),
+                    if enabled_features.is_empty() {
+                        "(default only)".to_owned()
+                    } else {
+                        enabled_features.join(", ")
+                    }
                 );
                 for site in sites {
                     println!("    {}:{}", site.file, site.line);
