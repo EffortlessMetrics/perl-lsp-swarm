@@ -80,8 +80,11 @@ pub struct Attribute {
     pub accessor_name: String,
     /// Source location of the `has` declaration
     pub location: SourceLocation,
-    /// Builder method name. `builder => 1` derives `_build_<attr>`, a string names the method.
+    /// Referenced builder hook method name. `builder => 1` derives `_build_<attr>`;
+    /// Moo `is => 'lazy'` derives the same default without treating it as a provided method.
     pub builder: Option<String>,
+    /// `true` when `builder` came from an explicit `builder` option rather than lazy default.
+    pub builder_explicit: bool,
     /// Whether a coercion is applied (`coerce => 1`)
     pub coerce: bool,
     /// Predicate method name. `predicate => 1` derives `has_<attr>`.
@@ -950,6 +953,7 @@ impl ClassModelBuilder {
                 accessor_name: name,
                 location,
                 builder: None,
+                builder_explicit: false,
                 coerce: false,
                 predicate: None,
                 clearer: None,
@@ -992,6 +996,7 @@ impl ClassModelBuilder {
                     accessor_name: attr_name,
                     location,
                     builder: None,
+                    builder_explicit: false,
                     coerce: false,
                     predicate: None,
                     clearer: None,
@@ -1159,10 +1164,19 @@ impl ClassModelBuilder {
             let Some(name) = normalize_attribute_name(raw_name) else { continue };
             let accessor_name = explicit_accessor.clone().unwrap_or_else(|| name.clone());
 
-            // builder => 1 derives `_build_<attr>`; a string value names the method directly
+            // builder => 1 derives `_build_<attr>`; a string value names the method directly.
+            // Moo `is => 'lazy'` references the same default hook without providing the method.
+            let builder_explicit = options.contains_key("builder");
             let builder = options
                 .get("builder")
-                .map(|v| if v == "1" { format!("_build_{name}") } else { v.clone() });
+                .map(|v| if v == "1" { format!("_build_{name}") } else { v.clone() })
+                .or_else(|| {
+                    if is == Some(AccessorType::Lazy) {
+                        Some(format!("_build_{name}"))
+                    } else {
+                        None
+                    }
+                });
 
             // predicate => 1 derives `has_<attr>`; a string value is used directly
             let predicate = options
@@ -1183,6 +1197,7 @@ impl ClassModelBuilder {
                 accessor_name,
                 location,
                 builder,
+                builder_explicit,
                 coerce,
                 predicate,
                 clearer,
@@ -2752,6 +2767,12 @@ has 'config' => (is => 'lazy');
         let model = &models[0];
         assert_eq!(model.attributes[0].is, Some(AccessorType::Lazy));
         assert!(model.attributes[0].default, "lazy implies default");
+        assert_eq!(
+            model.attributes[0].builder.as_deref(),
+            Some("_build_config"),
+            "lazy should retain default builder hook name"
+        );
+        assert!(!model.attributes[0].builder_explicit);
     }
 
     #[test]

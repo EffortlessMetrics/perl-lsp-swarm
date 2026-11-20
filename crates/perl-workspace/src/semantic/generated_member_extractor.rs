@@ -262,10 +262,6 @@ fn emit_members_for_names(
         {
             push_member(package, &clearer, &raw_name, file_id, out);
         }
-        if let Some(builder) = option_method_name(options.get("builder"), "_build", &attribute_name)
-        {
-            push_member(package, &builder, &raw_name, file_id, out);
-        }
     }
 }
 

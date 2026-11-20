@@ -16,7 +16,7 @@
 //! | `has 'x' => (is => 'bare')`             | *(none)*                         |
 //! | `has 'x' => (predicate => 1)`           | Predicate (`has_x`)              |
 //! | `has 'x' => (clearer => 1)`             | Clearer (`clear_x`)              |
-//! | `has 'x' => (builder => 1)`             | Builder (`_build_x`)             |
+//! | `has 'x' => (builder => 1)`             | Builder hook (`_build_x`), not a provided member |
 //!
 //! All emitted members carry `provenance = FrameworkSynthesis` and
 //! `confidence = Medium`.
@@ -26,7 +26,8 @@ use crate::analysis::class_model::{
 };
 use crate::ast::Node;
 use perl_semantic_facts::{
-    AnchorId, Confidence, EntityId, FileId, GeneratedMember, GeneratedMemberKind, Provenance,
+    AnchorId, AttributeMethodHook, AttributeMethodHookKind, Confidence, EntityId, FileId,
+    GeneratedMember, GeneratedMemberKind, Provenance,
 };
 
 /// Extractor that walks an AST to produce [`GeneratedMember`] entries for
@@ -70,6 +71,28 @@ impl GeneratedMemberExtractor {
         }
 
         members
+    }
+
+    /// Convert class models into attribute method hook facts (#1649).
+    pub fn extract_hooks_from_models(
+        models: &[ClassModel],
+        package: &str,
+    ) -> Vec<AttributeMethodHook> {
+        let mut hooks = Vec::new();
+        for model in models {
+            if !is_accessor_framework(model.framework) {
+                continue;
+            }
+            let pkg = if model.name.is_empty() { package } else { &model.name };
+            collect_has_hooks(model, pkg, &mut hooks);
+        }
+        hooks
+    }
+
+    /// Walk the AST and return attribute method hook facts.
+    pub fn extract_hooks(ast: &Node, package: &str, _file_id: FileId) -> Vec<AttributeMethodHook> {
+        let models = ClassModelBuilder::new().build(ast);
+        Self::extract_hooks_from_models(&models, package)
     }
 }
 
@@ -131,16 +154,23 @@ fn collect_has_members(model: &ClassModel, package: &str, members: &mut Vec<Gene
         if let Some(clear_name) = &attr.clearer {
             members.push(make_member(clear_name, GeneratedMemberKind::Clearer, anchor_id, package));
         }
+    }
+}
 
-        // Builder method (e.g. `_build_x`).
-        if let Some(builder_name) = &attr.builder {
-            members.push(make_member(
-                builder_name,
-                GeneratedMemberKind::Builder,
-                anchor_id,
-                package,
-            ));
-        }
+fn collect_has_hooks(model: &ClassModel, package: &str, hooks: &mut Vec<AttributeMethodHook>) {
+    for attr in &model.attributes {
+        let Some(method_name) = attr.builder.as_deref() else {
+            continue;
+        };
+        let anchor_id = AnchorId(attr.location.start as u64);
+        hooks.push(make_hook(
+            package,
+            &attr.name,
+            method_name,
+            AttributeMethodHookKind::Builder,
+            anchor_id,
+            attr.builder_explicit,
+        ));
     }
 }
 
@@ -221,6 +251,29 @@ fn make_member(
     )
 }
 
+fn make_hook(
+    package: &str,
+    attribute_name: &str,
+    method_name: &str,
+    kind: AttributeMethodHookKind,
+    source_anchor_id: AnchorId,
+    explicit_name: bool,
+) -> AttributeMethodHook {
+    let entity_id =
+        deterministic_entity_id(package, &format!("hook:{method_name}"), source_anchor_id);
+    AttributeMethodHook::new(
+        entity_id,
+        package.to_string(),
+        attribute_name.to_string(),
+        method_name.to_string(),
+        kind,
+        source_anchor_id,
+        explicit_name,
+        Provenance::FrameworkSynthesis,
+        Confidence::Medium,
+    )
+}
+
 /// Produce a deterministic [`EntityId`] from the package name, member name,
 /// and source anchor offset. Uses a simple FNV-1a–style hash to avoid
 /// pulling in extra dependencies.
@@ -262,6 +315,11 @@ mod tests {
             Err(_) => return Vec::new(),
         };
         GeneratedMemberExtractor::extract(&ast, "main", FileId(1))
+    }
+
+    fn parse_code(code: &str) -> crate::ast::Node {
+        let mut parser = Parser::new(code);
+        parser.parse().expect("fixture should parse")
     }
 
     /// Helper: find all members with a given name.
@@ -324,6 +382,13 @@ mod tests {
         let matched = members_named(&members, "settings");
         assert_eq!(matched.len(), 1, "expected one member, got {}", matched.len());
         assert_eq!(matched[0].kind, GeneratedMemberKind::Getter);
+
+        let ast = parse_code(code);
+        let hooks = GeneratedMemberExtractor::extract_hooks(&ast, "MyApp::Config", FileId(1));
+        let hook = hooks.iter().find(|h| h.method_name == "_build_settings");
+        let hook = hook.ok_or("expected lazy builder hook '_build_settings'")?;
+        assert!(!hook.explicit_name);
+        assert_eq!(hook.kind, AttributeMethodHookKind::Builder);
         Ok(())
     }
 
@@ -363,9 +428,32 @@ has 'nickname' => (
         let clear = clear.ok_or("expected clearer 'clear_nickname'")?;
         assert_eq!(clear.kind, GeneratedMemberKind::Clearer);
 
-        let builder = members.iter().find(|m| m.name == "_build_nickname");
-        let builder = builder.ok_or("expected builder '_build_nickname'")?;
-        assert_eq!(builder.kind, GeneratedMemberKind::Builder);
+        assert!(
+            !members.iter().any(|m| m.name == "_build_nickname"),
+            "builder hooks must not become provided generated members: {members:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn predicate_clearer_builder_hook_facts() -> Result<(), String> {
+        let code = r#"
+package MyApp::User;
+use Moose;
+has 'nickname' => (
+    is        => 'rw',
+    predicate => 1,
+    clearer   => 1,
+    builder   => 1,
+);
+1;
+"#;
+        let ast = parse_code(code);
+        let hooks = GeneratedMemberExtractor::extract_hooks(&ast, "MyApp::User", FileId(1));
+        let builder = hooks.iter().find(|h| h.method_name == "_build_nickname");
+        let builder = builder.ok_or("expected builder hook '_build_nickname'")?;
+        assert_eq!(builder.kind, AttributeMethodHookKind::Builder);
+        assert!(builder.explicit_name);
         Ok(())
     }
 
@@ -392,8 +480,10 @@ has 'age' => (
         let clear = members.iter().find(|m| m.name == "reset_age");
         assert!(clear.is_some(), "expected custom clearer 'reset_age'");
 
-        let builder = members.iter().find(|m| m.name == "compute_age");
-        assert!(builder.is_some(), "expected custom builder 'compute_age'");
+        assert!(
+            !members.iter().any(|m| m.name == "compute_age"),
+            "custom builder hooks must not become generated members"
+        );
         Ok(())
     }
 
@@ -443,8 +533,14 @@ has '+name' => (is => 'ro', builder => 1, predicate => 1, clearer => 1);
         let getter = members.iter().find(|m| m.name == "name");
         assert!(getter.is_some(), "expected getter named `name`, got {members:?}");
         assert!(
-            members.iter().any(|m| m.name == "_build_name"),
-            "expected builder `_build_name`, got {members:?}"
+            !members.iter().any(|m| m.name == "_build_name"),
+            "builder hooks must not become generated members: {members:?}"
+        );
+        let ast = parse_code(code);
+        let hooks = GeneratedMemberExtractor::extract_hooks(&ast, "MyApp::User", FileId(1));
+        assert!(
+            hooks.iter().any(|h| h.method_name == "_build_name"),
+            "expected builder hook `_build_name`, got {hooks:?}"
         );
         assert!(
             members.iter().any(|m| m.name == "has_name"),
