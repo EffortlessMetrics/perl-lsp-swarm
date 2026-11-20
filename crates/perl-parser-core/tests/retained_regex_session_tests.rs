@@ -8,6 +8,7 @@
 use perl_parser_core::{
     Parser, RegexAnalysisAvailability, RetainedRegexSession, parse_source_with_regex_analysis,
 };
+use perl_tdd_support::{must_err_with, must_with};
 
 /// Source with one finding of each canonical class that this layer can reach:
 /// a risk advisory (nested quantifier), a dynamic boundary (embedded code), a
@@ -37,8 +38,8 @@ fn session_table(source: &str) -> perl_parser_core::RegexAnalysisTable {
     let mut parser = Parser::new(source);
     let ast = parser.parse();
     match ast {
-        Ok(mut ast) => session.finish(Some(&mut ast)),
-        Err(_) => session.finish(None),
+        Ok(mut ast) => must_with(session.finish(Some(&mut ast)), "same-source parse must bind"),
+        Err(_) => must_with(session.finish(None), "finish(None) is always bound"),
     }
 }
 
@@ -150,16 +151,13 @@ fn an_out_of_order_finish_retains_nothing_rather_than_another_sessions_geometry(
     let inner = RetainedRegexSession::begin(inner_source);
 
     let mut inner_parser = Parser::new(inner_source);
-    let inner_parsed = inner_parser.parse();
-    assert!(inner_parsed.is_ok(), "inner source must parse: {inner_parsed:?}");
-    let Ok(mut inner_ast) = inner_parsed else { return };
+    let mut inner_ast = must_with(inner_parser.parse(), "inner source must parse");
 
     // Finish the OUTER session first, while the inner one is still active.
     let mut outer_parser = Parser::new(outer_source);
-    let outer_parsed = outer_parser.parse();
-    assert!(outer_parsed.is_ok(), "outer source must parse: {outer_parsed:?}");
-    let Ok(mut outer_ast) = outer_parsed else { return };
-    let outer_table = outer.finish(Some(&mut outer_ast));
+    let mut outer_ast = must_with(outer_parser.parse(), "outer source must parse");
+    let outer_table =
+        must_with(outer.finish(Some(&mut outer_ast)), "outer tree belongs to the outer session");
 
     assert!(
         outer_table.source_matches(outer_source),
@@ -179,7 +177,8 @@ fn an_out_of_order_finish_retains_nothing_rather_than_another_sessions_geometry(
     );
 
     // The inner session is untouched and still returns its own analysis.
-    let inner_table = inner.finish(Some(&mut inner_ast));
+    let inner_table =
+        must_with(inner.finish(Some(&mut inner_ast)), "inner tree belongs to the inner session");
     assert!(
         inner_table.source_matches(inner_source),
         "the inner session keeps its own source identity"
@@ -220,33 +219,16 @@ fn a_parse_of_another_buffer_cannot_contribute_geometry() {
     let session = RetainedRegexSession::begin(session_source);
     // Deliberately parse the *other* buffer inside this session.
     let mut parser = Parser::new(parser_source);
-    let parsed = parser.parse();
-    assert!(parsed.is_ok(), "the parser source must parse: {parsed:?}");
-    let Ok(mut ast) = parsed else { return };
-    let table = session.finish(Some(&mut ast));
-
+    let mut ast = must_with(parser.parse(), "the parser source must parse");
+    let mismatch = must_err_with(
+        session.finish(Some(&mut ast)),
+        "a foreign tree must be a typed mismatch, not a table built from this source",
+    );
+    let table = mismatch.into_unbound_table();
     assert!(
         table.source_matches(session_source),
-        "the table binds the source the session was begun for"
+        "the fallback table binds the source the session was begun for"
     );
-
-    // The measured difference, and the reason this is a data-integrity bug rather
-    // than a lost finding: admitting the other buffer's geometry produces an
-    // `Analyzed` record whose body was `(x+)-b`, so the table reports a *clean*
-    // pattern for a document whose actual body is `(a+)+b`. Refusing is the honest
-    // outcome — an explicit `GeometryUnavailable` record with no analysis.
-    // The loop below is satisfied by an empty table, so require the witness first:
-    // a candidate whose geometry was rejected must still be *retained* as explicit
-    // unavailable evidence. Dropping the record entirely would also pass the loop
-    // while silently losing the record of a refusal.
-    assert!(
-        table.records.iter().any(|record| {
-            record.availability == RegexAnalysisAvailability::GeometryUnavailable
-                && record.pattern.is_none()
-        }),
-        "a foreign parse must retain explicit unavailable evidence: {table:#?}"
-    );
-
     for record in &table.records {
         assert_ne!(
             record.availability,
@@ -318,7 +300,7 @@ fn a_retained_table_reports_staleness_against_edited_source() {
 fn a_session_that_recorded_nothing_retains_no_fabricated_records() {
     let source = "my $re = qr/(a+)+b/;";
     let session = RetainedRegexSession::begin(source);
-    let table = session.finish(None);
+    let table = must_with(session.finish(None), "finish(None) is always bound");
 
     assert!(table.records.is_empty(), "nothing observed means nothing retained");
     assert!(
@@ -381,7 +363,7 @@ fn a_fatal_parse_still_retains_geometry_recorded_before_it_failed() {
     let mut parser = Parser::new(&source);
     let parsed = parser.parse();
     assert!(parsed.is_err(), "fixture must actually fail to parse, or it proves nothing");
-    let table = session.finish(None);
+    let table = must_with(session.finish(None), "finish(None) is always bound");
 
     assert!(
         !table.records.is_empty(),

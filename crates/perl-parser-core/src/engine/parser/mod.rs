@@ -503,7 +503,13 @@ impl<'a> Parser<'a> {
         if self.operation.is_pre_cancelled() {
             return Err(ParseError::Cancelled);
         }
-        self.parse_program()
+        let ast = self.parse_program()?;
+        crate::engine::regex_retention::bind_completed_parse(
+            self.src_bytes,
+            &ast,
+            self.operation.operation_id().get(),
+        );
+        Ok(ast)
     }
 
     fn begin_operation(&mut self) {
