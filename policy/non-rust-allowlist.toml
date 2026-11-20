@@ -1206,6 +1206,45 @@ review_after = "2026-11-16"
 # =============================================================================
 
 [[allow]]
+id = "non-rust-ci-xtask-artifact"
+path = "scripts/ci/xtask_artifact.py"
+kind = "ci_tooling"
+language = "python"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "The hosted bootstrap must verify the shared xtask executable before Rust code can run. This standard-library helper binds exact artifact bytes to the same run, source, workspace and compiler without carrying a Cargo target tree or credentials."
+covered_by = ["python3 -m unittest scripts/ci/test_xtask_artifact.py"]
+created = "2026-11-16"
+review_after = "2027-02-16"
+
+[[allow]]
+id = "non-rust-ci-xtask-artifact-tests"
+path = "scripts/ci/test_xtask_artifact.py"
+kind = "ci_tooling"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Executable custody and workflow refusal tests run before the shared Rust build, so bootstrap regressions fail without paying the compiler cost."
+covered_by = ["python3 -m unittest scripts/ci/test_xtask_artifact.py"]
+created = "2026-11-16"
+review_after = "2027-02-16"
+
+[[allow]]
+id = "non-rust-ci-shared-xtask-execution-proof"
+path = "scripts/ci/verify_shared_xtask_execution.py"
+kind = "ci_tooling"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Production-binary proof runs after the hosted bootstrap, using a Cargo tripwire to distinguish current-executable child dispatch from accidental rebuilds without compiling a second test harness."
+covered_by = ["python3 scripts/ci/verify_shared_xtask_execution.py --xtask target/debug/xtask"]
+created = "2026-11-16"
+review_after = "2027-02-16"
+
+[[allow]]
 id = "non-rust-candidate-meta-self-tests"
 path = "scripts/ci/test_candidate_meta_self_tests.py"
 kind = "ci_tooling"

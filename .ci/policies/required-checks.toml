@@ -263,12 +263,12 @@ producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "pr-smoke"
 workflow_result = "continue"
-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+events = ["workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
 enforcement = "neither"
-reason = "The pr_fast runner may fail selected inner gates, but its containing GitHub job continues on error and is not protected."
+reason = "The broad pr_fast rehearsal runs only on explicit manual opt-in. Its containing GitHub job continues on error and is not protected."
 
 [[checks]]
 name = "UX Regression Tests"

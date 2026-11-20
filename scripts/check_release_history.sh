@@ -195,6 +195,19 @@ done
 # ── Check 5: Active install surfaces stay aligned with current package names ─
 
 run_install_surface_check() {
+    # Hosted shards install the verified same-run executable outside Cargo's
+    # target tree. A present but unusable handoff must not fall back to Cargo
+    # or an unrelated cached binary inside this gate's short timeout.
+    if [[ "${CI_XTASK+x}" == x ]]; then
+        if [[ ! -f "$CI_XTASK" || ! -x "$CI_XTASK" || -L "$CI_XTASK" ]]; then
+            echo "Invalid verified CI_XTASK executable: $CI_XTASK" >&2
+            return 1
+        fi
+        printf 'Using verified CI_XTASK for install-surface-check: %s\n' "$CI_XTASK" >&2
+        "$CI_XTASK" install-surface-check
+        return
+    fi
+
     xtask_binary_is_fresh() {
         local bin="$1"
         [[ -x "$bin" ]] || return 1

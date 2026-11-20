@@ -94,10 +94,11 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
     def test_ci_retains_setup_compile_and_exactly_one_shared_producer(self):
         data = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8'))
         steps = data['jobs']['check-all-targets']['steps']
-        self.assertEqual(len(steps), 6)
-        self.assertEqual(steps[4]['name'], 'Compile all targets (catches integration-test + bench bit-rot)')
-        self.assertEqual(steps[4]['run'], 'just check-all-targets')
-        self.assertEqual(steps[5]['run'], 'bash scripts/ci/required-merge-surface.sh')
+        self.assertEqual(len(steps), 7)
+        self.assertEqual(steps[0]['name'], 'Require cheap prerequisite proof')
+        self.assertEqual(steps[5]['name'], 'Compile all targets (catches integration-test + bench bit-rot)')
+        self.assertEqual(steps[5]['run'], 'just check-all-targets')
+        self.assertEqual(steps[6]['run'], 'bash scripts/ci/required-merge-surface.sh')
         self.assertEqual(sum(s.get('name', '').endswith('(required merge surface)') for s in steps), 0)
 
     def test_admission_route_is_separate_from_pr_fast_and_non_skippable(self):
