@@ -168,8 +168,138 @@ fn skip_item(source: &str, mut i: usize) -> usize {
     i
 }
 
-/// Source rustc compiles for `--lib`: drop each `#[cfg(test)]` item, keep
-/// later ungated code, and ignore the marker inside comments or strings.
+fn attribute_end(rest: &str) -> Option<usize> {
+    if !rest.starts_with("#[") {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (index, ch) in rest.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `#[cfg(...)]` predicate on an item starting at `i`, or `None` for other attributes.
+fn cfg_gate_predicate(source: &str, i: usize) -> Option<(&str, usize)> {
+    let rest = rest_at(source, i);
+    if rest.starts_with("#[cfg_attr(") || !rest.starts_with("#[cfg(") {
+        return None;
+    }
+    let end_rel = attribute_end(rest)?;
+    let attr = rest.get(..=end_rel)?;
+    let predicate = attr.strip_prefix("#[cfg(")?.strip_suffix(")]")?;
+    Some((predicate, i + end_rel + 1))
+}
+
+/// Default `--lib` features for this crate (`Cargo.toml` `[features] default`).
+const PLAIN_LIB_DEFAULT_FEATURES: &[&str] = &["workspace", "incremental"];
+
+fn cfg_list_items(inner: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut start = 0usize;
+    let mut previous = '\0';
+    for (index, ch) in inner.char_indices() {
+        if in_string {
+            if ch == '"' && previous != '\\' {
+                in_string = false;
+            }
+        } else {
+            match ch {
+                '"' => in_string = true,
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    if let Some(part) = inner.get(start..index) {
+                        parts.push(part);
+                    }
+                    start = index + 1;
+                }
+                _ => {}
+            }
+        }
+        previous = ch;
+    }
+    if let Some(part) = inner.get(start..) {
+        parts.push(part);
+    }
+    parts
+}
+
+fn feature_literal_value(arm: &str) -> Option<&str> {
+    let rest = arm.trim().strip_prefix("feature")?.trim_start().strip_prefix('=')?.trim_start();
+    if let Some(raw) = rest.strip_prefix('r') {
+        let after_hashes = raw.trim_start_matches('#');
+        let hash_count = raw.len().checked_sub(after_hashes.len())?;
+        let body = after_hashes.strip_prefix('"')?;
+        let mut closing = String::with_capacity(hash_count + 1);
+        closing.push('"');
+        for _ in 0..hash_count {
+            closing.push('#');
+        }
+        return body.find(&closing).and_then(|end| body.get(..end));
+    }
+    let body = rest.strip_prefix('"')?;
+    let mut escaped = false;
+    for (index, character) in body.char_indices() {
+        match character {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => return body.get(..index),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether `arm` is known to be active in a plain `cargo build --lib` of this crate.
+fn cfg_arm_active_in_plain_lib(arm: &str) -> Option<bool> {
+    let arm = arm.trim();
+    if arm == "test" || arm == "doctest" {
+        return Some(false);
+    }
+    if let Some(name) = feature_literal_value(arm) {
+        return Some(PLAIN_LIB_DEFAULT_FEATURES.contains(&name));
+    }
+    if let Some(inner) = arm.strip_prefix("any(").and_then(|rest| rest.strip_suffix(')')) {
+        return Some(
+            cfg_list_items(inner)
+                .iter()
+                .any(|part| cfg_arm_active_in_plain_lib(part) == Some(true)),
+        );
+    }
+    if let Some(inner) = arm.strip_prefix("all(").and_then(|rest| rest.strip_suffix(')')) {
+        return Some(
+            cfg_list_items(inner)
+                .iter()
+                .all(|part| cfg_arm_active_in_plain_lib(part) == Some(true)),
+        );
+    }
+    if let Some(inner) = arm.strip_prefix("not(").and_then(|rest| rest.strip_suffix(')')) {
+        return cfg_arm_active_in_plain_lib(inner).map(|active| !active);
+    }
+    None
+}
+
+/// Whether an item carrying this `#[cfg(...)]` predicate is absent from plain `--lib` source.
+fn cfg_predicate_absent_from_plain_lib(predicate: &str) -> bool {
+    cfg_arm_active_in_plain_lib(predicate.trim()) == Some(false)
+}
+
+/// Source rustc compiles for plain `--lib`: drop items whose `#[cfg(...)]` gate is
+/// inactive there (including `#[cfg(test)]` and compound gates such as
+/// `all(test, …)` or `any(test, doctest)`), keep later ungated code, and ignore
+/// markers inside comments or strings.
 fn lib_source(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut i = 0;
@@ -179,8 +309,10 @@ fn lib_source(source: &str) -> String {
             i = end;
             continue;
         }
-        if rest_at(source, i).starts_with("#[cfg(test)]") {
-            i += "#[cfg(test)]".len();
+        if let Some((predicate, attr_end)) = cfg_gate_predicate(source, i)
+            && cfg_predicate_absent_from_plain_lib(predicate)
+        {
+            i = attr_end;
             i = skip_outer_attributes(source, i);
             i = skip_item(source, i);
             continue;
@@ -310,6 +442,94 @@ use crate::features::formatting::{FormatPosition, FormatRange};
     assert!(
         lib_source_names_format_geometry(source),
         "'{{' inside a #[cfg(test)] item must not swallow a later ungated import"
+    );
+}
+
+#[test]
+fn compound_cfg_any_test_and_test_only_feature_is_excluded_from_lib_source() {
+    let gated = r#"
+fn production() {}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+use crate::features::formatting::{FormatPosition, FormatRange};
+"#;
+    assert!(
+        !lib_source_names_format_geometry(gated),
+        "#[cfg(any(test, feature = \"expose_lsp_test_api\"))] must not count as plain --lib source"
+    );
+}
+
+#[test]
+fn compound_cfg_all_test_and_feature_is_excluded_from_lib_source() {
+    let gated = r#"
+fn production() {}
+
+#[cfg(all(test, feature = "workspace"))]
+use crate::features::formatting::{FormatPosition, FormatRange};
+"#;
+    assert!(
+        !lib_source_names_format_geometry(gated),
+        "#[cfg(all(test, feature = \"workspace\"))] must not count as plain --lib source"
+    );
+}
+
+#[test]
+fn compound_cfg_any_test_and_doctest_is_excluded_from_lib_source() {
+    let gated = r#"
+fn production() {}
+
+#[cfg(any(test, doctest))]
+use crate::features::formatting::{FormatPosition, FormatRange};
+"#;
+    assert!(
+        !lib_source_names_format_geometry(gated),
+        "#[cfg(any(test, doctest))] must not count as plain --lib source"
+    );
+}
+
+#[test]
+fn compound_cfg_any_test_and_default_feature_stays_in_lib_source() {
+    let gated = r#"
+fn production() {}
+
+#[cfg(any(test, feature = "workspace"))]
+use crate::features::formatting::{FormatPosition, FormatRange};
+"#;
+    assert!(
+        lib_source_names_format_geometry(gated),
+        "#[cfg(any(test, feature = \"workspace\"))] is active under default --lib features"
+    );
+}
+
+#[test]
+fn cfg_attr_test_does_not_drop_item_from_lib_source() {
+    let source = r#"
+fn production() {}
+
+#[cfg_attr(test, allow(dead_code))]
+use crate::features::formatting::{FormatPosition, FormatRange};
+"#;
+    assert!(
+        lib_source_names_format_geometry(source),
+        "#[cfg_attr(test, …)] must not remove the guarded item from plain --lib source"
+    );
+}
+
+#[test]
+fn compound_cfg_gate_does_not_hide_later_ungated_import() {
+    let later_production = r#"
+fn production_before() {}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+mod tests {
+    fn uses_them() {}
+}
+
+use crate::features::formatting::{FormatPosition, FormatRange};
+"#;
+    assert!(
+        lib_source_names_format_geometry(later_production),
+        "ungated imports after a compound test gate must remain --lib source"
     );
 }
 
