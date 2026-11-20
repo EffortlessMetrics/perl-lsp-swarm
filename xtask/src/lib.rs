@@ -32,6 +32,7 @@ pub mod emacs_stock_discovery;
 pub mod emacs_subject_fan_in;
 pub mod emacs_subject_manifest;
 pub mod file_identity;
+pub mod framework_attribute_generation_conformance;
 pub mod git_ancestry;
 pub mod git_environment;
 pub mod import_cleanup_train_manifest;
