@@ -23,7 +23,7 @@ pub fn create_extract_variable_action(
     let expr_text = &source[node.location.start..node.location.end];
 
     // Find the best insertion point
-    let stmt_start = helpers.find_statement_start(node.location.start);
+    let stmt_start = helpers.find_statement_start_with_ast(node.location.start, ast_root);
     let indent = helpers.get_indent_at(stmt_start);
 
     // The declaration is inserted at `stmt_start`, so any name already bound in

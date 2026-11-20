@@ -1,4 +1,6 @@
 use perl_lsp_rs_core::runtime::text_utils::TextEditHelpers;
+use perl_parser_core::Parser;
+use perl_tdd_support::must;
 
 #[test]
 fn find_statement_start_does_not_break_on_newline() {
@@ -44,6 +46,34 @@ fn finds_statement_start_after_semicolon_with_crlf() {
 
     let pos = source.find("length").unwrap_or(0);
     assert_eq!(helpers.find_statement_start(pos), 12);
+}
+
+#[test]
+fn extract_variable_inserts_outside_preceding_sub_scope() {
+    use perl_lsp_rs_core::providers::code_actions::EnhancedCodeActionsProvider;
+
+    let source = "sub other { my $r = 1; }\nmy $t = 2 + 3;";
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+
+    let provider = EnhancedCodeActionsProvider::new(source.to_string());
+    let expr_start = source.find("2 + 3").unwrap_or(0);
+    let expr_end = expr_start + "2 + 3".len();
+    let actions = provider.get_enhanced_refactoring_actions(&ast, (expr_start, expr_end));
+
+    let extract_actions: Vec<_> = actions.iter().filter(|a| a.title.contains("Extract")).collect();
+    assert!(
+        !extract_actions.is_empty(),
+        "Expected an Extract action, got: {:?}",
+        actions.iter().map(|a| &a.title).collect::<Vec<_>>()
+    );
+
+    let insert = &extract_actions[0].edit.changes[0];
+    assert_eq!(
+        insert.location.start,
+        source.find("my $t").unwrap_or(0),
+        "insertion must precede `my $t`, not land inside `sub other`"
+    );
 }
 
 #[test]
