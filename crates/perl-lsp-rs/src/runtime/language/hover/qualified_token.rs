@@ -25,8 +25,9 @@ pub(super) enum QualifiedHoverKind {
 
 /// Classify the `::`-qualified identifier spanning `offset`, if any.
 ///
-/// The scanner is ASCII-only, matching the previous package-name extractor.
-/// Unicode qualified-name bounds remain #14616 and are not widened here.
+/// The hover scanner here is still ASCII-only. Go-to-definition and find-references
+/// use the shared Unicode matcher in `navigation::get_fqn_regex` (#14616); hover
+/// widening would be a separate follow-up.
 pub(super) fn classify_qualified_hover_token(
     text: &str,
     offset: usize,
