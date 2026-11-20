@@ -8,6 +8,8 @@ members = [
     # Tier 1 leaf — no parser/workspace/LSP/DAP deps. Dependency contract
     # asserted in tests/dependency_contract.rs.
     "crates/perl-source-identity",
+    # Shared discovery observations; no LSP, DAP or parser dependencies (#19439).
+    "crates/perl-interpreter",
     # perl-evidence-envelope: evidence_envelope.v1 core types and deterministic
     # envelope identity (#15057). Tier 1 leaf — no parser/workspace/LSP/DAP
     # deps; depends on perl-source-identity for ContentDigest/ProjectId.
@@ -117,6 +119,7 @@ allow = [
     # Workspace crates needed for perl-lsp, perl-parser, and perl-dap.
 
     # Tier 1 — Leaf crates (no workspace deps)
+    "perl-interpreter",
     "perl-position-tracking",
     "perl-token",
     "perl-test-facts",
@@ -304,7 +307,7 @@ perl-corpus = { path = "crates/perl-corpus", version = "0.17.0" }
 # Batch RIPR facts exporter - deliberately depends on no LSP/server runtime or
 # workspace/LSP facade crates. Parser leaf crates are allowed for batch facts.
 perl-ripr-facts = { path = "crates/perl-ripr-facts", version = "0.17.0" }
-perl-dap = { path = "crates/perl-dap", version = "0.17.0" }
+perl-interpreter = { path = "crates/perl-interpreter", version = "0.17.0" }
 perl-core-harness-types = { path = "crates/perl-core-harness-types", version = "0.17.0" }
 perl-core-harness = { path = "crates/perl-core-harness", version = "0.17.0" }
 # (perl-feature-catalog absorbed into perl-lsp-rs-core::feature_catalog — Wave Final PR B)

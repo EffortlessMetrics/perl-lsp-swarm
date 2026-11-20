@@ -56,7 +56,7 @@ Canonical policy: `docs/reference/NATIVE_STACK_POLICY.md`.
 | `protocol.rs` | DAP request/response/event types | DAP wire contracts |
 | `breakpoints.rs` | `BreakpointStore`, `BreakpointRecord` | breakpoint replacement, hit counting, and logpoints |
 | `breakpoint/` | `AstBreakpointValidator`, `BreakpointValidator` | parser-backed breakpoint truth |
-| `platform/` | Perl/path/environment helpers | cross-platform process setup |
+| `platform/` | Perl/path/environment helpers | compatibility exports from `perl-interpreter`; DAP path normalization and launch-environment assembly |
 | `security/` | validation types and functions | path, expression, and timeout boundaries |
 
 ### Backend-neutral and external-peer seam

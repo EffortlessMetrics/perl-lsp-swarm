@@ -10,7 +10,7 @@ is a backend transport, not an editor transport.
 ## Boundaries
 
 - The native parser and source-fact stack validates breakpoints and source identities.
-- Platform and shell helpers resolve the Perl executable, normalize paths, and build launch environments.
+- `perl-interpreter` owns shared executable discovery. DAP platform and shell helpers retain path normalization and launch-environment assembly.
 - Stack, variable, value, and evaluation modules project current debugger state into DAP types.
 - The backend-neutral model supports the native runtime and explicit optional debugger peers.
 

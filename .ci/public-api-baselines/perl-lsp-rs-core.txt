@@ -1449,10 +1449,10 @@ pub fn perl_lsp_rs_core::performance::AstCache::new(max_size: usize, ttl_seconds
 pub fn perl_lsp_rs_core::performance::AstCache::put(&self, uri: alloc::string::String, content: &str, ast: alloc::sync::Arc<perl_ast::ast::Node>)
 pub fn perl_lsp_rs_core::performance::AstCache::remove(&self, uri: &str)
 pub mod perl_lsp_rs_core::platform
-pub fn perl_lsp_rs_core::platform::detect_perlbrew_perl() -> core::option::Option<std::path::PathBuf>
-pub fn perl_lsp_rs_core::platform::detect_plenv_perl() -> core::option::Option<std::path::PathBuf>
-pub fn perl_lsp_rs_core::platform::resolve_perl_path() -> anyhow::Result<std::path::PathBuf>
-pub fn perl_lsp_rs_core::platform::resolve_perl_path_with_toolchain() -> anyhow::Result<std::path::PathBuf>
+pub use perl_lsp_rs_core::platform::detect_perlbrew_perl
+pub use perl_lsp_rs_core::platform::detect_plenv_perl
+pub use perl_lsp_rs_core::platform::resolve_perl_path
+pub use perl_lsp_rs_core::platform::resolve_perl_path_with_toolchain
 pub mod perl_lsp_rs_core::product_identity
 pub enum perl_lsp_rs_core::product_identity::ArtifactRole
 pub perl_lsp_rs_core::product_identity::ArtifactRole::Archive

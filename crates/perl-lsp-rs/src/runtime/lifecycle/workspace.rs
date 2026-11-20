@@ -6,7 +6,7 @@ use super::super::session_warning_dedup::SessionWarningCode;
 #[cfg(test)]
 use super::super::*;
 use super::super::{LspServer, MessageType};
-use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter_cached};
+use perl_interpreter::{PerlInterpreterResult, find_perl_interpreter_cached};
 use perl_lsp_rs_core::config::{
     ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource, WorkspaceConfig,
     WorkspaceConfigUpdateContext,
@@ -125,8 +125,8 @@ impl LspServer {
     ///
     /// Does not alter any server state. Tracing fallback is preserved alongside user messages.
     ///
-    /// Detection is memoized per process through the shared DAP-side cache
-    /// ([`perl_dap::platform::find_perl_interpreter_cached`]), keyed on the
+    /// Detection is memoized per process through the shared interpreter-discovery cache
+    /// ([`perl_interpreter::find_perl_interpreter_cached`]), keyed on the
     /// configured path and the discovery environment (PATH, perlbrew/plenv
     /// variables, HOME/USERPROFILE, PREFIX). A configuration change that alters
     /// the interpreter path changes the cache key, so mid-session
