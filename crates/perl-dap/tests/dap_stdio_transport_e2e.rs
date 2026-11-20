@@ -33,6 +33,11 @@ const DAP_SMOKE_CLAIM_BOUNDARY: &str = concat!(
     "prove launch/debug-session semantics or platform-wide process cleanup"
 );
 
+// `run_with_io` may wait up to 5s for the event writer on healthy shutdown and
+// up to 1s while an in-flight initialize drains handler events. Loaded CI
+// schedulers can exceed a tight 5s stop oracle without a transport defect.
+const CLIENT_STDOUT_CLOSE_STOP_DEADLINE: Duration = Duration::from_secs(12);
+
 #[test]
 fn stdio_transport_attach_host_rejects_wrong_types_without_connecting() -> Result<()> {
     // A listening owned endpoint makes the old localhost fallback succeed:
@@ -1168,7 +1173,9 @@ fn stdio_transport_stops_when_client_closes_stdout_while_stdin_remains_open() ->
     let (response_tx, response_rx) = channel();
     let mut reader = Some(thread::spawn(move || {
         let mut stdout = stdout;
-        response_tx.send((read_framed_message(&mut stdout), stdout))
+        let initialize = read_framed_message(&mut stdout);
+        let initialized = read_framed_message(&mut stdout);
+        response_tx.send((initialize, initialized, stdout))
     }));
     let result = (|| -> Result<()> {
         let initialize = serde_json::to_vec(&json!({
@@ -1180,7 +1187,8 @@ fn stdio_transport_stops_when_client_closes_stdout_while_stdin_remains_open() ->
         write!(stdin, "Content-Length: {}\r\n\r\n", initialize.len())?;
         stdin.write_all(&initialize)?;
         stdin.flush()?;
-        let (initialize_result, stdout) = response_rx.recv_timeout(Duration::from_secs(3))?;
+        let (initialize_result, initialized_result, stdout) =
+            response_rx.recv_timeout(Duration::from_secs(3))?;
         let initialize_response = initialize_result
             .map_err(|error| anyhow!("stdio response reader failed: {error:?}"))?
             .ok_or_else(|| anyhow!("adapter closed stdout before initialize response"))?;
@@ -1188,6 +1196,17 @@ fn stdio_transport_stops_when_client_closes_stdout_while_stdin_remains_open() ->
             DapMessage::Response { request_seq: 1, success: true, .. } => {}
             other => {
                 return Err(anyhow!("initialize did not succeed before stdout closure: {other:?}"));
+            }
+        }
+        let initialized_event = initialized_result
+            .map_err(|error| anyhow!("stdio response reader failed: {error:?}"))?
+            .ok_or_else(|| anyhow!("adapter closed stdout before initialized event"))?;
+        match initialized_event {
+            DapMessage::Event { event, .. } if event == "initialized" => {}
+            other => {
+                return Err(anyhow!(
+                    "expected initialized event before stdout closure, got {other:?}"
+                ));
             }
         }
         if child.try_wait()?.is_some() {
@@ -1219,7 +1238,7 @@ fn stdio_transport_stops_when_client_closes_stdout_while_stdin_remains_open() ->
         {
             return Err(error);
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + CLIENT_STDOUT_CLOSE_STOP_DEADLINE;
         loop {
             if let Some(status) = child.try_wait()? {
                 if status.success() {
