@@ -48,6 +48,13 @@ local Server = require "plugins.lsp.server"
 -- capability manifest - a server capability alone never enables a command
 -- whose client consumer is absent.
 local capability_manifest = require "plugins.lsp.capability_manifest"
+-- Local patch (#8986): staged sibling module beside this file.
+local __init_dir = (function()
+  local src = debug.getinfo(1, "S").source
+  if src:sub(1, 1) == "@" then src = src:sub(2) end
+  return src:match("^(.*)[/\\]") or "."
+end)()
+local workspace_edit = dofile(__init_dir .. "/workspace_edit.lua")
 local Timer = require "plugins.lsp.timer"
 local SymbolResults = require "plugins.lsp.symbolresults"
 local MessageBox = require "libraries.widget.messagebox"
@@ -2916,14 +2923,60 @@ function lsp.request_symbol_rename(doc, line, col, new_name)
             )
             return
           end
-          if response.result and #response.result.changes then
-            for file_uri, changes in pairs(response.result.changes) do
-              core.log(file_uri .. " " .. #changes)
-              -- TODO: Finish implement textDocument/rename
-            end
+          if response.error and response.error.message then
+            core.log("[LSP] Rename failed: %s", response.error.message)
+            return
           end
-
-          core.log("%s", json.prettify(json.encode(response)))
+          local outcome, detail = workspace_edit.apply_changes(
+            server, response.result, {
+              json = json,
+              util = util,
+              log = function(message)
+                core.log("%s", message)
+              end,
+              find_open_doc = function(uri)
+                for _, open_doc in ipairs(core.docs) do
+                  if open_doc.filename
+                    and util.path_to_uri(
+                      core.project_absolute_path(open_doc.filename)
+                    ) == uri
+                  then
+                    return open_doc
+                  end
+                end
+                return nil
+              end,
+              open_doc_for_path = function(path)
+                path = common.home_expand(path)
+                local info = system.get_file_info(path)
+                if not info then
+                  return nil, "missing_target_file"
+                end
+                local opened = core.open_doc(path)
+                if opened and not opened.lsp_open then
+                  lsp.open_document(opened)
+                end
+                return opened
+              end,
+              apply_text_edit = function(srv, target_doc, text_edit)
+                return apply_edit(srv, target_doc, text_edit, false, false)
+              end,
+            })
+          if outcome == "applied" then
+            core.log("[LSP] Rename applied")
+          elseif outcome == "no_change" then
+            core.log("[LSP] Rename produced no edits")
+          elseif outcome == "unsupported" then
+            core.log(
+              "[LSP] Rename edits are unsupported: %s",
+              detail or "unsupported shape"
+            )
+          else
+            core.log(
+              "[LSP] Rename could not be applied: %s",
+              detail or "failed"
+            )
+          end
         end
       })
       return

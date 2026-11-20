@@ -400,6 +400,22 @@ function harness.new_world(options)
       end,
       open_doc = function(doc) return { doc = doc } end,
     },
+    open_doc = function(path)
+      for _, doc in ipairs(core_table.docs) do
+        if doc.abs_filename == path or doc.filename == path then
+          return doc
+        end
+      end
+      local doc = setmetatable({
+        filename = path,
+        abs_filename = path,
+        lines = { "\n" },
+        clean_change_id = 1,
+        lsp_open = false,
+      }, { __index = Doc })
+      core_table.docs[#core_table.docs + 1] = doc
+      return doc
+    end,
   }
   world.core = core_table
   package.preload["core"] = function() return core_table end
@@ -580,6 +596,8 @@ function harness.new_world(options)
   package.preload["plugins.lsp.capability_manifest"] = function()
     return dofile(manifest_module_path)
   end
+
+  -- workspace_edit is dofile'd from init.lua (#8986); no preload required.
 
   package.preload["plugins.lsp.timer"] = function()
     return function(interval, one_shot)

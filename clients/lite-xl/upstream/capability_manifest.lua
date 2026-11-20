@@ -361,12 +361,15 @@ capability_manifest.capabilities = {
     id = "rename.client_application",
     path = "client rename behavior (command lsp:rename-symbol)",
     advertised = false,
-    disposition = "unsupported",
+    disposition = "implemented",
+    owner = "workspace_edit.lua applies WorkspaceEdit.changes for "
+      .. "textDocument/rename through init.lua (#8986)",
+    proof = "clients/lite-xl/tests/workspace_edit_test.lua",
     owner_issue = "#8986",
-    limitation = "returned WorkspaceEdits are logged today; prepareRename "
-      .. "support is equally absent until application lands",
+    limitation = "WorkspaceEdit.changes rename application is staged; "
+      .. "documentChanges/resource operations and prepareRename remain absent",
     invalidation_inputs = {
-      "#8986 landing",
+      "clients/lite-xl/upstream/workspace_edit.lua",
       "clients/lite-xl/upstream/init.lua",
     },
   },
@@ -559,9 +562,7 @@ capability_manifest.commands = {
   ["lsp:rename-symbol"] = {
     request = "textDocument/rename",
     server_capability = "renameProvider",
-    consumer_disposition = "unsupported",
-    unsupported_message = "[LSP] Rename is not available: this client "
-      .. "cannot apply returned WorkspaceEdits yet (#8986).",
+    consumer_disposition = "implemented",
   },
   ["lsp:find-references"] = {
     request = "textDocument/references",
