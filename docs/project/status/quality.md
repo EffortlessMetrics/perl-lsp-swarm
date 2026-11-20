@@ -25,15 +25,15 @@
 | perl-core-harness | — | 555 |
 | perl-core-harness-types | — | 100 |
 | perl-corpus | — | 265 |
-| perl-dap | — | 1244 |
+| perl-dap | — | 1245 |
 | perl-diagnostics | — | 45 |
 | perl-evidence-envelope | — | 79 |
 | perl-incremental-parsing | — | 13 |
 | perl-lexer | — | 312 |
 | perl-line-index | — | 40 |
-| perl-lsp | — | 2695 |
+| perl-lsp | — | 2702 |
 | perl-lsp-perltidy | — | 58 |
-| perl-lsp-rs-core | — | 4711 |
+| perl-lsp-rs-core | — | 4731 |
 | perl-lsp-ux-tests | — | 274 |
 | perl-module | — | 151 |
 | perl-operation-trace | — | 142 |
@@ -59,11 +59,11 @@
 | perl-token | — | 65 |
 | perl-tree-sitter-compat | — | 13 |
 | perl-uri | — | 62 |
-| perl-workspace | — | 985 |
+| perl-workspace | — | 992 |
 | perl-workspace-core | — | 372 |
 | tree-sitter-perl-c | — | 19 |
 | tree-sitter-perl-rs | — | 57 |
-| xtask | — | 1064 |
+| xtask | — | 1073 |
 <!-- END: QUALITY_CRATE_TABLE -->
 
 ## Flaky Test Registry
