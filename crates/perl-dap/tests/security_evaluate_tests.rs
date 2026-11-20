@@ -554,6 +554,73 @@ fn inspection_refusals_do_not_prescribe_a_retry_that_is_always_refused() -> Test
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// #1746: deny-list bypass classes stay blocked in trusted REPL evaluation.
+// ---------------------------------------------------------------------------
+
+fn repl_side_effect_args(expression: &str) -> serde_json::Value {
+    json!({
+        "expression": expression,
+        "context": "repl",
+        "allowSideEffects": true
+    })
+}
+
+fn assert_repl_evaluate_blocked(adapter: &mut DebugAdapter, expression: &str) -> TestResult {
+    let response = adapter.handle_request(1, "evaluate", Some(repl_side_effect_args(expression)));
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            assert!(
+                !success,
+                "Expression '{expression}' must stay blocked in trusted REPL, got success"
+            );
+            let msg = message.unwrap_or_default();
+            assert!(
+                msg.contains("Side-effectful REPL evaluation"),
+                "Expected confinement refusal for '{expression}', got: {msg}"
+            );
+        }
+        _ => return Err("Expected Response".into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn side_effectful_repl_bypass_classes_remain_blocked() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+    for expr in
+        ["$obj->system('ls')", "&$system", "&{'sys'.'tem'}('ls')", "CORE::print 'test'", "<*.txt>"]
+    {
+        assert_repl_evaluate_blocked(&mut adapter, expr)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn side_effectful_repl_still_allows_direct_dangerous_ops() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+    for expression in ["eval('1')", "print 'test'", "system('ls')"] {
+        let args = json!({
+            "expression": expression,
+            "context": "repl",
+            "allowSideEffects": true
+        });
+
+        let response = adapter.handle_request(1, "evaluate", Some(args));
+
+        if let DapMessage::Response { message, .. } = response {
+            let msg = message.unwrap_or_default();
+            assert!(
+                !msg.contains("Side-effectful REPL evaluation"),
+                "Operation '{}' should NOT be blocked by bypass confinement, but got: {}",
+                expression,
+                msg
+            );
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn repl_side_effects_are_refused_when_trusted_repl_is_disabled() -> TestResult {
     // Product policy can withdraw the REPL execution surface entirely, and the
