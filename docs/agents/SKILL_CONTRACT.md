@@ -55,13 +55,21 @@ reviewer
 → one fixed subject and differentiated review programme
 
 root direct
-→ tiny/tightly-coupled judgment where delegation changes no evidence surface
+→ owning-session main-context work, including directed staged review
 ```
 
 A provider may use context forks, built-in workers, nested agents, dynamic workflows, or
 Teams when a specific task benefits. Those are physical execution choices, not logical
-claim-orchestration authority. No skill may require recursive orchestration, a
-subordinate orchestrator role, or a particular physical topology.
+claim-orchestration authority. Default to one owning session doing directed staged
+review inline in its main context through the named review skills. Changing evidence,
+method, or attention can challenge construction in that context; it does not create an
+independent actor. No skill may require recursive orchestration, a subordinate
+orchestrator role, or a particular physical topology except when an applicable
+requirement genuinely needs independent agent review: use a subagent inside the working
+session through the provider's `orchestrate-work` skill. External reviewers, Space
+handoffs, and routine parent approval of an exact payload are not prerequisites for
+authorized PR work. Preserve valid earlier review and refresh only affected evidence;
+actual required GitHub reviews, approvals, checks, and holds remain in force.
 
 ## Required skill shape
 
