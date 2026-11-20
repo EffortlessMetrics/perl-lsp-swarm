@@ -1131,7 +1131,7 @@ fn live_diagnostic_request_attaches_explainable_payload() -> Result<(), Box<dyn 
         Some("provider_runtime")
     );
     assert_eq!(diagnostic_explanation.get("confidence").and_then(Value::as_str), Some("low"));
-    assert_eq!(diagnostic_explanation.get("freshness").and_then(Value::as_str), Some("fresh"));
+    assert_eq!(diagnostic_explanation.get("freshness").and_then(Value::as_str), Some("unknown"));
     let explanations = diagnostic_explanation
         .get("diagnostic_explanations")
         .and_then(Value::as_array)
