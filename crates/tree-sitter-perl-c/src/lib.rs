@@ -43,6 +43,14 @@
 //! [`tree-sitter-perl-rs`]: https://docs.rs/tree-sitter-perl-rs
 #![cfg_attr(test, allow(clippy::print_stderr, clippy::print_stdout))]
 
+pub mod queries;
+
+pub use queries::{
+    FOLDS_QUERY, HIGHLIGHTS_QUERY, INJECTIONS_QUERY, MATCHUP_QUERY, folds_query_str,
+    highlights_query_str, injections_query_str, load_folds_query, load_highlights_query,
+    load_injections_query, load_matchup_query, matchup_query_str,
+};
+
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -166,55 +174,6 @@ pub fn language() -> Language {
     // cannot cause aliasing or memory-safety issues. Soundness depends on the build script
     // linking the correct, ABI-compatible parser object, which cc::Build in build.rs guarantees.
     unsafe { tree_sitter_perl() }
-}
-
-/// The vendored upstream `queries/injections.scm` source.
-///
-/// Mirrors how upstream grammar bindings embed their query files as public
-/// string constants; the copy lives inside this crate (like `c-src/`) so the
-/// published package stays self-contained. Provenance is recorded in the
-/// package's `UPSTREAM_SNAPSHOT.md` file.
-pub const INJECTIONS_QUERY: &str = include_str!("../queries/injections.scm");
-
-/// The vendored upstream `queries/highlights.scm` source.
-///
-/// See [`INJECTIONS_QUERY`] for the embedding/provenance contract. The full
-/// source is retained for snapshot comparison; it is not promised to compile
-/// until the vendored grammar and query snapshots are refreshed together.
-pub const HIGHLIGHTS_QUERY: &str = include_str!("../queries/highlights.scm");
-
-/// Compiles [`INJECTIONS_QUERY`] against the Perl language.
-///
-/// This is the public, typed entry point for consumers that previously had to
-/// locate the repository's vendored `.scm` files and call
-/// `tree_sitter::Query::new` themselves.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let query = tree_sitter_perl_c::load_injections_query()?;
-/// if !query
-///     .capture_names()
-///     .iter()
-///     .any(|name| *name == "injection.content")
-/// {
-///     return Err("expected injection.content capture".into());
-/// }
-/// # Ok(())
-/// # }
-/// ```
-///
-/// # Errors
-///
-/// Returns [`tree_sitter::QueryError`] if the embedded source stops matching
-/// the compiled grammar (a snapshot consistency fault, not caller input).
-pub fn load_injections_query() -> Result<tree_sitter::Query, tree_sitter::QueryError> {
-    load_query(INJECTIONS_QUERY)
-}
-
-fn load_query(source: &str) -> Result<tree_sitter::Query, tree_sitter::QueryError> {
-    tree_sitter::Query::new(&language(), source)
 }
 
 /// Creates a [`tree_sitter::Parser`] configured for Perl.
@@ -674,7 +633,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let code = "use Inline CPP => <<'END_CPP';\n#include <string>\nclass Greet {};\nEND_CPP\n";
         let tree = parse_perl_code(code)?;
-        let query = Query::new(&language(), INJECTIONS_QUERY)?;
+        let query = load_injections_query()?;
         let mut cursor = QueryCursor::new();
         let mut matched = false;
         let mut matches = cursor.matches(&query, tree.root_node(), code.as_bytes());
@@ -772,7 +731,7 @@ mod tests {
         // snapshot refresh resolves the delta, flip this test to the
         // positive-capture form used by the injections loader and record the
         // refreshed fingerprints in UPSTREAM_SNAPSHOT.md.
-        let Err(error) = Query::new(&language(), HIGHLIGHTS_QUERY) else {
+        let Err(error) = load_highlights_query() else {
             return Err(
                 "snapshot drift resolved: flip this tripwire to positive-capture assertions".into(),
             );
