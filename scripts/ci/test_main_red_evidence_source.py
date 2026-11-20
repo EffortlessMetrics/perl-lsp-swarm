@@ -86,6 +86,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import sys
 import tempfile
 import textwrap
@@ -473,12 +474,27 @@ def bash_script(script: str) -> str:
 
     A launched shell that times out fails the proof. Only a host where
     neither shell can be launched at all skips it.
+
+    The probe's own variable namespace is never inherited. This job's
+    first step publishes ``MAIN_RED_JOB_STARTED_EPOCH`` into the
+    environment of every later step of the job -- including the step
+    that runs these tests -- so a harness that left that value in place
+    would read a time bound it never set, and the case it is meant to
+    exercise ("no establishable remaining time") would become a bounded
+    wait. The environment the shell is given is therefore the inherited
+    one with the probe's namespace removed, so a harness's own values
+    are the only source of those variables.
     """
     failures: list[str] = []
     ran = False
     # The shipped files carry the checkout's line endings; the shell
     # reads one command per line, so the script is normalised first.
     script = script.replace("\r\n", "\n").replace("\r", "\n")
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("MAIN_RED_")
+    }
     for command in (["bash", "-s"], ["wsl", "bash", "-s"]):
         try:
             completed = subprocess.run(
@@ -487,6 +503,7 @@ def bash_script(script: str) -> str:
                 capture_output=True,
                 check=False,
                 timeout=300,
+                env=environment,
             )
         except OSError as error:  # pragma: no cover - host without bash
             failures.append(f"{command[0]}: {error}")
@@ -1667,6 +1684,13 @@ exit_code=0
 probe_dir="$(mktemp -d)"
 job_start_offset_seconds=__JOB_START_OFFSET__
 job_started_at="$(date -u -d "-${job_start_offset_seconds} seconds" +%Y-%m-%dT%H:%M:%SZ)"
+# #19567: this job's first step publishes the bound through the
+# environment, so every later step of the job inherits it. The harness
+# models that inherited value here, so a scenario that records no bound
+# of its own is exercised against an environment that carries one --
+# which is the condition CI runs in. The scenario's own line below is
+# what decides which bound the probe reads.
+MAIN_RED_JOB_STARTED_EPOCH="__INHERITED_BOUND__"
 __RECORDED_BOUND__
 exit() {
   echo "PROBE_EXIT $1"
@@ -1699,17 +1723,26 @@ run_refusal() {
   return 2
 }
 __POLL_BLOCK__
-echo "PROBE_RESULT polls=$poll_attempt final=$final_calls status=$refusal_status exit=$exit_code budget=$MAIN_RED_POLL_BUDGET_SECONDS final_seconds=$final_completed_seconds job_offset=$job_start_offset_seconds"
+echo "PROBE_RESULT polls=$poll_attempt final=$final_calls status=$refusal_status exit=$exit_code budget=$MAIN_RED_POLL_BUDGET_SECONDS final_seconds=$final_completed_seconds job_offset=$job_start_offset_seconds bound_seen=${MAIN_RED_JOB_STARTED_EPOCH:-UNSET}"
 """
         script = (
             template.replace("__POLL_BLOCK__", block)
             .replace("__SLEEP_SECONDS__", str(sleep_seconds))
             .replace("__JOB_START_OFFSET__", str(job_start_offset_seconds))
             .replace(
+                "__INHERITED_BOUND__",
+                # The value this job's environment carries: its own start,
+                # as the first step published it.
+                str(int(time.time()) - 30),
+            )
+            .replace(
                 "__RECORDED_BOUND__",
                 'MAIN_RED_JOB_STARTED_EPOCH="$(date -u -d "-${job_start_offset_seconds} seconds" +%s)"'
                 if recorded_bound
-                else "",
+                else # No bound was recorded by this job's first step, so
+                # the variable is unset rather than merely left unset:
+                # the shell must not read a value it did not set.
+                "unset MAIN_RED_JOB_STARTED_EPOCH",
             )
             .replace(
                 "__JOBS_LOOKUP__",
@@ -1828,6 +1861,57 @@ echo "PROBE_RESULT polls=$poll_attempt final=$final_calls status=$refusal_status
         # The refusal is still finalized, and still fails the step.
         self.assertEqual(result["final"], "1")
         self.assertEqual(result["exit"], "1")
+
+    def test_probe_poll_ignores_a_bound_inherited_from_the_environment(
+        self,
+    ) -> None:
+        """An inherited bound must not stand in for a recorded one.
+
+        This job's first step publishes the bound through the
+        environment, so every later step of the job inherits it --
+        including the step that runs these tests. A harness that left
+        the inherited value in place read a bound it never set, and the
+        "no establishable remaining time" case became a bounded wait:
+        the budget came back as the remaining time instead of zero.
+
+        The harness's own values are the only source of the probe's
+        variables, so a polluted environment cannot change the result.
+        """
+        block = poll_budget_block(self.workflow)
+        if block is None:
+            self.fail(
+                "the probe must bound the poll loop by elapsed wall clock; "
+                "no poll budget is declared"
+            )
+        inherited = os.environ.get("MAIN_RED_JOB_STARTED_EPOCH")
+        # A bound as old as the job's own start: the value CI publishes.
+        # A bound from the distant past would not discriminate, because a
+        # budget computed from it is clamped to zero either way.
+        os.environ["MAIN_RED_JOB_STARTED_EPOCH"] = str(int(time.time()) - 30)
+        try:
+            result = self._run_poll_block(
+                block,
+                sleep_seconds=30,
+                jobs_lookup="unavailable",
+                recorded_bound=False,
+            )
+        finally:
+            if inherited is None:
+                os.environ.pop("MAIN_RED_JOB_STARTED_EPOCH", None)
+            else:
+                os.environ["MAIN_RED_JOB_STARTED_EPOCH"] = inherited
+        # The shell the harness runs must not see a bound it did not set.
+        self.assertEqual(
+            result["bound_seen"],
+            "UNSET",
+            "the probe's shell inherited a time bound the scenario never set",
+        )
+        self.assertEqual(
+            result["budget"],
+            "0",
+            "an inherited time bound must not become this job's budget",
+        )
+        self.assertEqual(result["polls"], "0")
 
     # -- #19567: the gate-affecting exit is taken only for a current read.
 
