@@ -101,6 +101,9 @@ class CloudInstallTest(unittest.TestCase):
                     ("node", f'case "$*" in --version) echo v{version};; scripts/toolchain-doctor.js) npm --version;; *) exit 74;; esac'),
                     ("npm", 'test "$1 $2 $3" = "install --global --prefix" && test "$5" = npm@11.18.0 && mkdir -p "$4/bin" && cp "$FILES/npm" "$4/bin/npm"'),
                 ):
+                    if tool == "node" and label == "current":
+                        body = ('if [ -n "${MOCK_MISSING_LIBATOMIC:-}" ]; then '
+                                'echo "node: error loading libatomic.so.1" >&2; exit 127; fi\n' + body)
                     data = f"#!/bin/sh\n{body}\n".encode()
                     info = tarfile.TarInfo(f"{stem}/bin/{tool}")
                     info.size, info.mode = len(data), 0o755
@@ -207,6 +210,14 @@ class CloudInstallTest(unittest.TestCase):
                     self.assertNotIn("npm v26.5.0 ci", log)
                 finally:
                     shadow.unlink()
+
+    def test_latest_node_requires_runtime_even_when_image_node_runs(self):
+        self.shell(self.bin / "node", "echo v22.0.0")
+        available = subprocess.check_output(["node", "--version"], env=self.env, text=True)
+        self.assertEqual(available.strip(), "v22.0.0")
+        log = self.invoke(ok=False, MOCK_MISSING_LIBATOMIC="1", error="libatomic.so.1")
+        self.assertNotIn("npm v26.5.0 ci", log)
+        self.assertFalse((self.shared / "codex-tools/node-current-bin").exists())
 
     def test_corrupt_archive_refused(self):
         archive = next(self.files.glob("*27.1.0*.xz"))

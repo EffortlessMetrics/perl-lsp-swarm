@@ -13,7 +13,12 @@ another persistent directory, set `PERL_LSP_CLOUD_SHARED` to the same **absolute
 path in the install environment and each task shell.
 
 Use an image with Bash, Git, curl and CA certificates, GNU core utilities, tar
-with xz, Perl, and Python 3.11+ with `tomllib`. The installer reuses a discoverable
+with xz, Perl, and Python 3.11+ with `tomllib`. Official Linux Node.js binaries
+from v25 onward require the `libatomic` runtime (`libatomic1` on Debian/Ubuntu).
+Choose an image that includes it. During installation the version check runs the
+prepared Node binary directly. [Node.js binary requirements](https://github.com/nodejs/node/blob/v26.x/BUILDING.md#official-binary-platforms-and-toolchains)
+
+The installer reuses a discoverable
 rustup, saves a copy of an image-provided `just` in the prepared tools directory,
 and acquires missing tools from their upstream installers.
 Node and `just` use prebuilt binaries. For native Rust builds, the repository's [development shell](../../flake.nix)
