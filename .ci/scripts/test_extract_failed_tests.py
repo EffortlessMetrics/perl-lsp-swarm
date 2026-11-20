@@ -526,6 +526,39 @@ class ExtractFailedTestsTest(unittest.TestCase):
         self.assertEqual(receipt["verdict"], "COMPLETE_WITH_FAILURES")
         self.assertEqual(receipt["counts"]["failed"], 1)
 
+    def test_later_nonzero_suite_cannot_mask_declared_zero(self):
+        receipt = self.parse([
+            json.dumps({"type": "run", "package": "pkg", "target": "lib",
+                        "command": ["cargo", "test"]}),
+            suite_start(0), test_event("started", "mod::a"), test_event("failed", "mod::a"),
+            suite_start(2), test_event("started", "mod::b"), test_event("ok", "mod::b"),
+            suite_end("failed", 1, 1), run_end("pkg", 101),
+        ])
+        self.assertEqual(receipt["verdict"], "NOT_PROVEN")
+        self.assertEqual(receipt["exit_code"], 6)
+        self.assertFalse(receipt["success_verdict"])
+        self.assertIn("suite declared zero tests but observed test events",
+                      receipt["blocks"][0]["reasons"])
+        self.assertEqual([f["name"] for f in receipt["failures"]], ["mod::a"])
+
+    def test_consecutive_suites_reconcile_individually(self):
+        first = [envelope("pkg"), suite_start(1), test_event("ok", "a"),
+                 suite_end("ok", 1, 0)]
+        for count in (0, 1):
+            with self.subTest(count=count):
+                events = [test_event("ok", "b")] if count else []
+                receipt = self.parse(first + [suite_start(count)] + events +
+                                     [suite_end("ok", count, 0), run_end("pkg", 0)])
+                self.assertEqual(receipt["verdict"], "COMPLETE_PASS")
+                self.assertEqual(receipt["counts"]["discovered"], 1 + count)
+        unfinished = self.parse(first + [suite_start(1), run_end("pkg", 0)])
+        self.assertEqual(unfinished["verdict"], "STREAM_INCOMPLETE")
+
+    def test_orphan_test_does_not_belong_to_next_suite(self):
+        receipt = self.parse([envelope("pkg"), test_event("ok", "orphan"),
+                              suite_start(1), suite_end("ok", 1, 0), run_end("pkg", 0)])
+        self.assertFalse(receipt["success_verdict"])
+
     def test_declared_zero_with_observed_test_events_is_not_proven(self):
         """A declared-empty suite cannot be reconciled with test events."""
         for observed_event in ("ok", "failed"):

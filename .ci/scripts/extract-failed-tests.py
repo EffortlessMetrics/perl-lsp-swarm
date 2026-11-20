@@ -98,10 +98,9 @@ def _new_block(envelope, line_no):
         "end_line": None,
         "exit_status": None,
         "saw_suite_start": False,
-        "test_count": None,
-        "suite_finished": False,
-        "suite_event": None,
-        "suite_reported": {},
+        "suite_counts": None,
+        "unfinished_suite": False,
+        "saw_failed_suite": False,
         "counts": _blank_block_counts(),
         "failures": [],
         "passes": [],
@@ -135,31 +134,18 @@ def _close_block(block, truncated_no_trailer):
                 "run completed without any usable libtest suite events"
             )
         return
-    if not block["suite_finished"]:
+    if block["reasons"]:
+        block["verdict"] = "NOT_PROVEN"
+        return
+    if block["unfinished_suite"] or block["suite_counts"] is not None:
         block["verdict"] = "STREAM_INCOMPLETE"
         block["reasons"].append("suite started but never reported a final suite event")
         return
-    reported = block["suite_reported"]
-    reconciles = (
-        reported.get("passed") == counts["passed"]
-        and reported.get("failed") == counts["failed"]
-        and reported.get("ignored") == counts["ignored"]
-    )
-    if not reconciles:
-        block["verdict"] = "NOT_PROVEN"
-        block["reasons"].append(
-            "suite summary counts do not reconcile with observed test events"
-        )
-        return
-    if block["suite_event"] == "ok" and counts["failed"] > 0:
-        block["verdict"] = "NOT_PROVEN"
-        block["reasons"].append("suite reported ok but failed test events were observed")
-        return
-    if block["suite_event"] == "failed" and exit_status == 0:
+    if block["saw_failed_suite"] and exit_status == 0:
         block["verdict"] = "NOT_PROVEN"
         block["reasons"].append("suite reported failures but cargo exited 0")
         return
-    if block["suite_event"] == "failed" and exit_status not in (None, 101):
+    if block["saw_failed_suite"] and exit_status not in (None, 101):
         # libtest exits 101 for ordinary test failures. Any other exit
         # (2, 137 SIGKILL, 143 SIGTERM, ...) means the run was killed or
         # crashed, so the observed failures are not proven test results.
@@ -169,22 +155,13 @@ def _close_block(block, truncated_no_trailer):
             "only exit 101 is an ordinary test-failure exit"
         )
         return
-    if block["suite_event"] == "ok" and exit_status not in (None, 0):
+    if not block["saw_failed_suite"] and exit_status not in (None, 0):
         block["verdict"] = "NOT_PROVEN"
         block["reasons"].append(
             f"suite reported ok but cargo exited {exit_status}"
         )
         return
     if counts["discovered"] == 0:
-        observed_test_events = (
-            counts["started"] + counts["passed"] + counts["failed"] + counts["ignored"]
-        )
-        if observed_test_events:
-            block["verdict"] = "NOT_PROVEN"
-            block["reasons"].append(
-                "suite declared zero tests but observed test events"
-            )
-            return
         block["verdict"] = "NO_TESTS_DISCOVERED"
         return
     if counts["failed"] > 0:
@@ -269,22 +246,43 @@ def parse_observation_stream(lines):
             suite_event = event.get("event")
             if suite_event == "started":
                 current["saw_suite_start"] = True
-                current["test_count"] = event.get("test_count")
-                current["counts"]["discovered"] = event.get("test_count") or 0
+                if current["suite_counts"] is not None:
+                    current["unfinished_suite"] = True
+                counts = _blank_block_counts()
+                counts["discovered"] = event.get("test_count") or 0
+                current["suite_counts"] = counts
+                current["counts"]["discovered"] += counts["discovered"]
             elif suite_event in ("ok", "failed"):
-                current["suite_finished"] = True
-                current["suite_event"] = suite_event
-                current["suite_reported"] = {
-                    "passed": event.get("passed"),
-                    "failed": event.get("failed"),
-                    "ignored": event.get("ignored"),
-                }
+                counts = current["suite_counts"]
+                if counts is None:
+                    current["reasons"].append("suite ended without a matching start")
+                elif any(event.get(key) != counts[key] for key in ("passed", "failed", "ignored")):
+                    current["reasons"].append(
+                        "suite summary counts do not reconcile with observed test events"
+                    )
+                elif suite_event == "ok" and counts["failed"]:
+                    current["reasons"].append("suite reported ok but failed test events were observed")
+                if suite_event == "failed":
+                    current["saw_failed_suite"] = True
+                current["suite_counts"] = None
             # Unknown suite events (bench, ...) are tolerated, not evidence.
             continue
 
         if etype == "test":
             tevent = event.get("event")
             name = event.get("name")
+            if tevent in ("started", "ok", "failed", "ignored"):
+                counts = current["suite_counts"]
+                if counts is None:
+                    reason = "test event outside a started suite"
+                elif counts["discovered"] == 0:
+                    reason = "suite declared zero tests but observed test events"
+                else:
+                    reason = None
+                if reason and reason not in current["reasons"]:
+                    current["reasons"].append(reason)
+                if counts is not None:
+                    counts["passed" if tevent == "ok" else tevent] += 1
             if tevent == "started":
                 current["counts"]["started"] += 1
             elif tevent in ("ok", "failed", "ignored"):
