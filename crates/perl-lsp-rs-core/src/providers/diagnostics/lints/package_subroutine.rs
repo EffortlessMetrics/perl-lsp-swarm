@@ -35,7 +35,8 @@ use super::super::walker::walk_node;
 /// Check for missing package declaration (PL200).
 ///
 /// Walks the top-level statements of the `Program` node only (not recursive).
-/// If no `Package` node is found at the top level, emits a warning at position `(0, 0)`.
+/// If no `Package` or Perl 5.38+ `Class` node is found at the top level, emits a
+/// warning at position `(0, 0)`.
 ///
 /// Only the `Program` node's direct children are examined. Package declarations
 /// inside `eval` blocks or other nested constructs are not counted — they do not
@@ -55,7 +56,9 @@ pub fn check_missing_package_declaration(
         return;
     }
 
-    let has_package = statements.iter().any(|stmt| matches!(&stmt.kind, NodeKind::Package { .. }));
+    let has_package = statements
+        .iter()
+        .any(|stmt| matches!(&stmt.kind, NodeKind::Package { .. } | NodeKind::Class { .. }));
 
     if !has_package {
         diagnostics.push(Diagnostic {
@@ -228,6 +231,18 @@ mod tests {
         assert!(
             diags.iter().all(|d| d.code.as_deref() != Some("PL200")),
             "pm file with package declaration should not be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn pm_file_with_perl538_class_not_flagged() {
+        let source =
+            "use v5.38;\nclass My::Pt {\n    field $x;\n    method m { return $self; }\n}\n";
+        let path = Path::new("My::Pt.pm");
+        let diags = missing_pkg_diags(source, Some(path));
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL200")),
+            "pm file with class declaration should not be flagged as PL200: {diags:?}"
         );
     }
 
