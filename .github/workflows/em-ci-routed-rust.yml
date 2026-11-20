@@ -651,6 +651,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
+      # #19567: the main-red probe's bounded wait is measured from this
+      # job's start. The jobs API reports that start, but the lookup can
+      # fail; this step records a bound before the job's other steps run,
+      # so the probe's fallback budget is bounded by the time already
+      # spent instead of being a fresh full allowance.
+      - name: Record this job's start time
+        shell: bash
+        run: |
+          set -uo pipefail
+          started="$(date -u +%s 2>/dev/null || true)"
+          case "$started" in
+            ''|*[!0-9]*)
+              echo "::notice::this job's start time is unknown; the main-red probe will not start a fresh wait"
+              ;;
+            *)
+              echo "MAIN_RED_JOB_STARTED_EPOCH=$started" >>"$GITHUB_ENV"
+              ;;
+          esac
+
       - name: Checkout rustfmt prevention contract
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -838,6 +857,24 @@ jobs:
           response, before any row is attributed to a run: a suite
           legitimately holds rows that name other runs, and those are not
           truncation.
+
+          A truncated read of main's own suite is gate-affecting. The
+          endpoint reported check runs that were not read, so main's
+          evidence is incomplete, and an incomplete main must not read as a
+          green main. The candidate side is deliberately not changed by
+          this: a missing candidate payload is already fail-closed through
+          the pinned classifier, and a reader-level gate-affecting
+          condition on the candidate side would be a separate, deliberate
+          change.
+
+          A suite that cannot be read at all stays a non-blocking gap. The
+          reader cannot tell whether such a run reported shard jobs without
+          the shard vocabulary -- which shard names count, which
+          conclusions are red, which are retryable -- and that vocabulary
+          belongs to the pinned classifier. Deciding it in a
+          candidate-controlled reader would invert the trust boundary, so
+          the unreadable suite is reported with a warning that names it and
+          the read degrades to the missing-evidence path.
 
           Every kept row is bound to the suite it was read from and to the
           run whose suite that is. The endpoint stamps each row with the
@@ -1360,6 +1397,28 @@ jobs:
                           f"check suite {suite_id} count mismatch: the endpoint "
                           f"reported {reported} check runs but only {parsed} were read"
                       )
+                      if label == "main":
+                          # #19567: the endpoint told us this suite reports
+                          # check runs that were not read, so main's own
+                          # evidence is incomplete. An incomplete main must
+                          # not read as a green main, so the gate-affecting
+                          # status is returned for it.
+                          #
+                          # The candidate side is unchanged on purpose: a
+                          # missing candidate payload is already fail-closed
+                          # through the pinned classifier (no candidate
+                          # evidence -> the classifier waits -> the bounded
+                          # wait -> the fail-closed refusal). A reader-level
+                          # gate-affecting condition on the candidate side
+                          # would be a separate, deliberate change.
+                          print(
+                              f"::warning::{label} ci.yml check-suite evidence is "
+                              f"incomplete: {detail} (the read was truncated); an "
+                              f"incomplete {label} must not read as a green {label}",
+                              flush=True,
+                          )
+                          write_missing_payload(out_path)
+                          return GATE_AFFECTING_EXIT
                       print(
                           f"::warning::{label} canonical ci.yml {detail} "
                           f"(the read was truncated); the suite contributes nothing",
@@ -1464,19 +1523,6 @@ jobs:
               "$probe_dir/main-runs.json" \
               "main" \
               "${MAIN_EVENT}" || main_reader_status=$?
-            if [ "$main_reader_status" -eq "$MAIN_RED_GATE_AFFECTING_EXIT" ]; then
-              # #19567: main's own run reported jobs, but main's own check
-              # rows could not be read. That is a degraded main, not a green
-              # main, so the required context fails here instead of passing
-              # with warnings. This is a change to the merge gate: a main
-              # side whose canonical run reports jobs but whose check rows
-              # cannot be read now fails "Perl LSP Rust Small Result".
-              echo "::error::main-red refusal: the canonical main ci.yml run reported jobs whose own check rows could not be read; a degraded main must not read as a green main"
-              exit 1
-            fi
-            if [ "$main_reader_status" -ne 0 ]; then
-              api_ok=false
-            fi
             gh api --paginate --slurp \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -1512,6 +1558,35 @@ jobs:
             MAIN_SHA_AFTER=""
             api_ok=false
           }
+
+          # #19567: main's ref is read after the reader invocations, so
+          # the gate-affecting exit can be taken only for an observation
+          # that is still current. main's own run reported jobs, but
+          # main's own check rows could not be read: that is a degraded
+          # main, not a green main, so the required context fails here
+          # instead of passing with warnings. This is a change to the
+          # merge gate: a main side whose canonical run reports jobs but
+          # whose check rows cannot be read now fails "Perl LSP Rust
+          # Small Result".
+          #
+          # A main that moved while its evidence was read makes the
+          # observation stale, and the probe already treats a stale
+          # observation as the classifier's warning rather than as this
+          # gate's failure. The gate-affecting exit is therefore taken
+          # only while the ref still matches MAIN_SHA_BEFORE; a moved
+          # ref takes the existing stale-observation path instead.
+          if [ "${main_reader_status:-0}" -eq "$MAIN_RED_GATE_AFFECTING_EXIT" ] \
+            && [ -n "${MAIN_SHA_BEFORE:-}" ] \
+            && [ -n "${MAIN_SHA_AFTER:-}" ] \
+            && [ "$MAIN_SHA_AFTER" = "$MAIN_SHA_BEFORE" ]; then
+            echo "::error::main-red refusal: the canonical main ci.yml run reported jobs whose own check rows could not be read; a degraded main must not read as a green main"
+            exit 1
+          elif [ "${main_reader_status:-0}" -eq "$MAIN_RED_GATE_AFFECTING_EXIT" ]; then
+            echo "::warning::main-red refusal: main moved from ${MAIN_SHA_BEFORE:-unknown} to ${MAIN_SHA_AFTER:-unreadable} while its ci.yml evidence was read; the observation is stale, so the degraded main is not failed here"
+          fi
+          if [ "${main_reader_status:-0}" -ne 0 ]; then
+            api_ok=false
+          fi
 
           if [ "$api_ok" = "false" ]; then
             echo "::warning::main-red refusal API probe was incomplete; treating probe data as non-blocking"
@@ -1561,9 +1636,6 @@ jobs:
           MAIN_RED_FINAL_RESERVE_SECONDS=180
           MAIN_RED_POLL_MAX=50
           MAIN_RED_POLL_SLEEP_SECONDS=30
-          # The conservative budget used when the job's start cannot be
-          # read: it leaves the job's timeout for the final call.
-          MAIN_RED_FALLBACK_POLL_BUDGET_SECONDS=1500
           # This job's name, as the API reports it.
           MAIN_RED_JOB_NAME="Perl LSP Rust Small Result"
           job_started_epoch=""
@@ -1574,24 +1646,69 @@ jobs:
           if [ -n "$job_started_at" ]; then
             job_started_epoch="$(date -u -d "$job_started_at" +%s 2>/dev/null || true)"
           fi
+          # #19567: the bound this job's first step recorded, before the
+          # job's other steps ran. It is the fallback for the jobs API
+          # lookup: the fallback budget must be bounded by the time
+          # already spent, never a fresh full allowance, or a lookup
+          # failure late in a 35-minute job would start another 25
+          # minutes of waiting and the runner would stop the job before
+          # the final classifier call.
+          recorded_started_epoch="${MAIN_RED_JOB_STARTED_EPOCH:-}"
+          case "$recorded_started_epoch" in
+            ''|*[!0-9]*) recorded_started_epoch="" ;;
+          esac
           now_epoch="$(date -u +%s 2>/dev/null || echo 0)"
           if [ -n "$job_started_epoch" ] && [ "$now_epoch" -gt 0 ]; then
-            job_elapsed_seconds=$((now_epoch - job_started_epoch))
+            budget_started_epoch="$job_started_epoch"
+          elif [ -n "$recorded_started_epoch" ] && [ "$now_epoch" -gt 0 ]; then
+            budget_started_epoch="$recorded_started_epoch"
+          else
+            budget_started_epoch=""
+          fi
+          if [ -n "$budget_started_epoch" ]; then
+            job_elapsed_seconds=$((now_epoch - budget_started_epoch))
+            if [ "$job_elapsed_seconds" -lt 0 ]; then
+              job_elapsed_seconds=0
+            fi
             MAIN_RED_POLL_BUDGET_SECONDS=$((MAIN_RED_JOB_TIMEOUT_SECONDS - job_elapsed_seconds - MAIN_RED_FINAL_RESERVE_SECONDS))
           else
-            # The job's start could not be read: take the conservative
-            # budget, which leaves the job's timeout for the final call.
-            MAIN_RED_POLL_BUDGET_SECONDS="$MAIN_RED_FALLBACK_POLL_BUDGET_SECONDS"
+            # The remaining time cannot be established: neither the API
+            # lookup nor the recorded bound is usable. A fresh wait
+            # would not fit inside this job's timeout, so no poll runs
+            # and the refusal is finalized through the fail-closed path
+            # instead.
+            echo "::warning::main-red refusal: this job's remaining time cannot be established; the bounded wait is skipped and the refusal is finalized"
+            MAIN_RED_POLL_BUDGET_SECONDS=0
           fi
           if [ "$MAIN_RED_POLL_BUDGET_SECONDS" -lt 0 ]; then
             MAIN_RED_POLL_BUDGET_SECONDS=0
           fi
           poll_deadline=$((SECONDS + MAIN_RED_POLL_BUDGET_SECONDS))
           poll_attempt=0
+          # #19567: the cost of the last poll iteration, measured. The
+          # loop does not start an iteration it cannot finish inside the
+          # remaining budget: the measured cost is the sleep plus the
+          # API calls that iteration made, so a slow API shortens the
+          # wait instead of pushing the final classifier call past this
+          # job's timeout. The loop used to begin an iteration whenever
+          # the deadline had not passed, so the last iteration could run
+          # a whole sleep past it and the final call could land on the
+          # deadline itself. The wait is unchanged for a fast API -- 50
+          # polls of 30 seconds still fit inside the budget -- but the
+          # final call is now inside the job's hard deadline.
+          poll_iteration_seconds=0
           while [ "$refusal_status" -eq 2 ] \
             && [ "$poll_attempt" -lt "$MAIN_RED_POLL_MAX" ] \
             && [ "$SECONDS" -lt "$poll_deadline" ]; do
+            poll_cost_seconds="$poll_iteration_seconds"
+            if [ "$poll_cost_seconds" -lt "$MAIN_RED_POLL_SLEEP_SECONDS" ]; then
+              poll_cost_seconds="$MAIN_RED_POLL_SLEEP_SECONDS"
+            fi
+            if [ $((poll_deadline - SECONDS)) -lt "$poll_cost_seconds" ]; then
+              break
+            fi
             poll_attempt=$((poll_attempt + 1))
+            poll_iteration_started=$SECONDS
             echo "::notice::main-red refusal is waiting for candidate shard evidence (poll ${poll_attempt}/${MAIN_RED_POLL_MAX})"
             sleep "$MAIN_RED_POLL_SLEEP_SECONDS"
             MAIN_SHA_AFTER="$(read_main_sha)" || {
@@ -1618,6 +1735,7 @@ jobs:
             fi
             run_refusal
             refusal_status=$?
+            poll_iteration_seconds=$((SECONDS - poll_iteration_started))
           done
           if [ "$refusal_status" -eq 2 ]; then
             echo "::warning::candidate shard evidence did not become terminal before the bounded wait; applying final fail-closed refusal"

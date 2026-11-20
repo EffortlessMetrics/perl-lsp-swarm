@@ -43,6 +43,39 @@ The call sites are checked in order. The reader's arguments are a contract,
 not a set of tokens: a probe that invokes the reader with the main and
 candidate events swapped satisfies "the event variable appears somewhere"
 while binding every subject to the wrong run.
+
+Five further contracts are pinned here, all from the review round on
+``135fe3fbd56191327da21e633322852ac3519a6b``.
+
+The gate-affecting exit is taken only for a current observation. The probe
+reads main's ref after the reader invocations; a main that moved while its
+evidence was read makes the observation stale, and a stale observation is the
+classifier's warning, not this gate's failure.
+
+The poll budget is bounded by the time already spent. The jobs API lookup can
+fail, and the fallback is the job's timeout minus the elapsed time -- never a
+fresh full allowance -- and when the remaining time cannot be established at
+all the probe does not wait: it finalizes the refusal through the fail-closed
+path instead.
+
+The final classifier call completes inside the job's hard deadline. The
+poll loop does not start an iteration it cannot finish inside the remaining
+budget, and the proof records when the final call returns and asserts it
+against the job's timeout rather than against the computed budget.
+
+The candidate's poll read happens inside the poll loop. A count of two
+candidate invocations is satisfied by two calls outside the loop, and then
+the poll refreshes the candidate run list while the classifier keeps reading
+the payload the initial read wrote.
+
+A launched shell that times out fails the proof. A proof that skips when the
+poll loop does not terminate proves nothing, so only a host where neither
+shell can be launched skips.
+
+Finally, the reader's own scope is pinned: a truncated read of main's own
+suite is gate-affecting, and the shard vocabulary -- which job names are
+shards, which conclusions are red -- belongs to the pinned classifier and
+must not appear in a candidate-controlled reader.
 """
 
 from __future__ import annotations
@@ -101,6 +134,39 @@ CANDIDATE_INVOCATION_ARGS = (
 # bounds the loop with it is extracted and executed by the poll-bound
 # proof.
 POLL_BUDGET_START = "MAIN_RED_JOB_TIMEOUT_SECONDS="
+# This job's own timeout (timeout-minutes: 35) and the margin the probe
+# keeps for the final classifier call. The poll proof's hard deadline is
+# the job's timeout, not the computed budget.
+JOB_TIMEOUT_SECONDS = 2100
+FINAL_RESERVE_SECONDS = 180
+# The poll proof's fixture starts this many seconds into the job, so the
+# job's earlier steps are counted against the budget.
+JOB_START_OFFSET_SECONDS = 300
+# The gate-affecting check: the ``if`` that acts on the reader's
+# gate-affecting status.
+GATE_CHECK_PATTERN = re.compile(
+    r"(?m)^(?P<indent>[ \t]*)if .*main_reader_status.*MAIN_RED_GATE_AFFECTING_EXIT"
+)
+# The main reader invocation and the status it records.
+MAIN_READER_STATUS_MARKER = "main_reader_status=0"
+MAIN_READER_STATUS_RECORD = '"${MAIN_EVENT}" || main_reader_status=$?'
+# The read of main's ref.
+MAIN_REF_READ_MARKER = 'MAIN_SHA_AFTER="$(read_main_sha)"'
+# The shard vocabulary belongs to the pinned classifier
+# (``scripts/ci/main_red_refusal.py``): which job names are shards,
+# which conclusions are red, and which are retryable. A reader that
+# owned it would invert the trust boundary, so the reader must name
+# neither a shard nor a conclusion.
+SHARD_VOCABULARY_LITERALS = (
+    '"CI Gate shard',
+    '"failure"',
+    '"timed_out"',
+    '"startup_failure"',
+    '"action_required"',
+    '"cancelled"',
+    '"skipped"',
+    '"success"',
+)
 
 # The live counterexample, measured on the GitHub REST API: PR #19392's head
 # carries two ci.yml runs on one SHA, and the authoritative event's suite is
@@ -271,6 +337,132 @@ def poll_budget_block(workflow: str) -> str | None:
     return script[start:]
 
 
+def poll_loop_body(script: str) -> str:
+    """Return the body of the probe's poll loop.
+
+    The loop is the ``while`` the poll deadline bounds. Its body is what
+    runs inside the loop, so a reader call in the body is a poll read
+    and a reader call outside it is not.
+    """
+    lines = script.split("\n")
+    while_index = None
+    do_index = None
+    for index, line in enumerate(lines):
+        if not line.strip().startswith("while "):
+            continue
+        # The condition may span several lines; the deadline is what
+        # makes this the poll loop.
+        condition: list[str] = []
+        for candidate in lines[index:]:
+            condition.append(candidate)
+            if candidate.rstrip().endswith("; do"):
+                break
+        if not any("poll_deadline" in part for part in condition):
+            continue
+        while_index = index
+        do_index = index + len(condition) - 1
+        break
+    if while_index is None:
+        raise AssertionError("the probe must bound the poll loop by a deadline")
+    indent = len(lines[while_index]) - len(lines[while_index].lstrip())
+    body: list[str] = []
+    for line in lines[do_index + 1 :]:
+        stripped = line.strip()
+        line_indent = len(line) - len(line.lstrip())
+        if stripped == "done" and line_indent == indent:
+            return "\n".join(body)
+        body.append(line)
+    raise AssertionError("the probe's poll loop has no terminator")
+
+
+def gate_check_block(script: str) -> str:
+    """Return the probe's gate-affecting check, with its terminator.
+
+    The check is the ``if`` that acts on the reader's gate-affecting
+    status. It is extracted with the shell that follows it so the proof
+    can execute the shipped shell rather than a restatement of it.
+    """
+    match = GATE_CHECK_PATTERN.search(script)
+    if match is None:
+        raise AssertionError(
+            "the probe must act on the evidence reader's gate-affecting status"
+        )
+    indent = len(match.group("indent"))
+    lines = script[match.start() :].split("\n")
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        line_indent = len(line) - len(line.lstrip())
+        if index > 0 and stripped == "fi" and line_indent == indent:
+            return "\n".join(lines[: index + 1])
+    raise AssertionError("the probe's gate-affecting check has no terminator")
+
+
+def main_reader_chunk(script: str) -> str:
+    """Return the main reader invocation and the status it records."""
+    start = script.find(MAIN_READER_STATUS_MARKER)
+    if start < 0:
+        raise AssertionError(
+            "the probe must read main's evidence through the evidence reader"
+        )
+    end = script.find(MAIN_READER_STATUS_RECORD, start)
+    if end < 0:
+        raise AssertionError("the main reader invocation must record its status")
+    end = script.index("\n", end)
+    return script[start:end]
+
+
+def main_ref_read_chunk(script: str) -> str:
+    """Return the read of main's ref that follows the reader invocations."""
+    start = script.find(MAIN_REF_READ_MARKER)
+    if start < 0:
+        raise AssertionError("the probe must read main's ref")
+    lines = script[start:].split("\n")
+    for index, line in enumerate(lines):
+        if index > 0 and line.strip() == "}":
+            return "\n".join(lines[: index + 1])
+    raise AssertionError("the main ref read has no terminator")
+
+
+def gate_chunks(script: str) -> str:
+    """Return the shipped chunks that decide the gate-affecting exit.
+
+    The chunks are the main reader invocation, the read of main's ref and
+    the gate-affecting check, in the order the probe runs them. They are
+    concatenated verbatim, so a check that runs before the ref is read
+    stays before it in the executed shell.
+    """
+    match = GATE_CHECK_PATTERN.search(script)
+    if match is None:
+        raise AssertionError(
+            "the probe must act on the evidence reader's gate-affecting status"
+        )
+    parts = [
+        (script.find(MAIN_READER_STATUS_MARKER), main_reader_chunk(script)),
+        (script.find(MAIN_REF_READ_MARKER), main_ref_read_chunk(script)),
+        (match.start(), gate_check_block(script)),
+    ]
+    ordered = sorted(parts, key=lambda item: item[0])
+    return "\n".join(text for _, text in ordered)
+
+
+def candidate_poll_call(workflow: str) -> str:
+    """Return the poll loop's candidate reader call, as the workflow ships it.
+
+    The call is located by the one place the poll's reader invocation
+    differs from the initial one: the poll tolerates a failed read, so
+    its invocation ends with ``|| true``.
+    """
+    marker = '"${CANDIDATE_EVENT}" || true'
+    index = workflow.find(marker)
+    if index < 0:
+        raise AssertionError("the poll loop must read the candidate evidence")
+    start = workflow.rfind('python3 "$probe_dir/fetch_main_red_evidence.py"', 0, index)
+    if start < 0:
+        raise AssertionError("the poll loop must read the candidate evidence")
+    end = workflow.index("\n", index) + 1
+    return workflow[start:end]
+
+
 def bash_script(script: str) -> str:
     """Run a shell script and return its standard output.
 
@@ -278,6 +470,9 @@ def bash_script(script: str) -> str:
     WSL bash the same way. The script arrives on stdin, so it needs no
     path translation, and it is sent as bytes: text mode would rewrite
     the line endings on the way out.
+
+    A launched shell that times out fails the proof. Only a host where
+    neither shell can be launched at all skips it.
     """
     failures: list[str] = []
     ran = False
@@ -297,8 +492,16 @@ def bash_script(script: str) -> str:
             failures.append(f"{command[0]}: {error}")
             continue
         except subprocess.TimeoutExpired:  # pragma: no cover - stuck shell
-            failures.append(f"{command[0]}: timed out")
-            continue
+            # #19567: a launched shell that timed out is a failed proof,
+            # not a missing shell. Falling through to the next candidate
+            # could end with the proof reported as skipped, and a proof
+            # that skips when the poll loop does not terminate proves
+            # nothing. The skip is kept only for a host where neither
+            # shell can be launched at all.
+            raise AssertionError(
+                f"the probe harness timed out in {command[0]}; a timed-out "
+                "shell fails the proof instead of skipping it"
+            ) from None
         ran = True
         stdout = completed.stdout.decode("utf-8", "replace")
         stderr = completed.stderr.decode("utf-8", "replace")
@@ -387,6 +590,16 @@ def validate_evidence_source(workflow: str) -> None:
             raise AssertionError(
                 "the evidence reader must pass observed check-run fields through unchanged"
             )
+    # #19567: the shard vocabulary -- which job names are shards, which
+    # conclusions are red, which are retryable -- belongs to the pinned
+    # classifier. A candidate-controlled reader that owned it would
+    # invert the trust boundary.
+    for needle in SHARD_VOCABULARY_LITERALS:
+        if needle in program:
+            raise AssertionError(
+                f"the evidence reader must not own {needle}: the shard vocabulary "
+                "belongs to the pinned classifier"
+            )
     invocations = program_invocations(workflow)
     if not any('"${MAIN_SHA_BEFORE}"' in invocation for invocation in invocations):
         raise AssertionError("the probe must read main evidence through the evidence reader")
@@ -437,6 +650,20 @@ def validate_evidence_source(workflow: str) -> None:
             "for the initial read and the poll read, with the candidate subject "
             "SHA, the candidate output path, the candidate label and the "
             "candidate event, in that order"
+        )
+    # #19567: the count above is not enough. Two candidate invocations
+    # outside the poll loop satisfy it, and then the poll refreshes the
+    # candidate run list while the classifier keeps reading the payload
+    # the initial read wrote. One candidate read must happen inside the
+    # poll loop.
+    loop_arguments = [
+        invocation_arguments(match.group(0))
+        for match in INVOCATION_PATTERN.finditer(poll_loop_body(probe_script(workflow)))
+    ]
+    if CANDIDATE_INVOCATION_ARGS not in loop_arguments:
+        raise AssertionError(
+            "the probe must read the candidate evidence inside the poll loop, "
+            "so the run list the poll refreshes is the one the classifier reads"
         )
     # #19567: a suite read must be reconciled against the count the
     # endpoint reported, and every kept row must be bound to the suite it
@@ -938,6 +1165,88 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
         self.assertIn("count mismatch", stdout)
         self.assertIn(f"reported {TRUNCATED_REPORTED_COUNT} check runs", stdout)
         self.assertIn(f"only {TRUNCATED_PARSED_COUNT} were read", stdout)
+        # #19567: the candidate label keeps the ordinary non-blocking
+        # status. The candidate side is fail-closed through the pinned
+        # classifier, so the reader adds no gate-affecting condition of
+        # its own there.
+        self.assertEqual(status, 1)
+
+    def test_evidence_reader_treats_a_truncated_main_read_as_gate_affecting(self) -> None:
+        """A truncated read of main's own suite is incomplete, not green.
+
+        The endpoint reported more check runs than the read reached, so
+        main's evidence is incomplete. An incomplete main must not read
+        as a green main, so the reader returns the gate-affecting status
+        for the main label and writes the missing-evidence payload.
+
+        Discriminating assertion. It fails unless the reader tells the
+        main label apart from the candidate label on a truncated read:
+        the pre-repair reader degraded every gap the same way, so an
+        incomplete main read as a green main.
+        """
+        status, stdout, written, _ = self._run_reader_program(
+            evidence_program(self.workflow),
+            self._truncated_runs(),
+            self._truncated_suites(),
+            "pull_request",
+            label="main",
+        )
+        self.assertEqual(status, GATE_AFFECTING_EXIT)
+        self.assertNotEqual(status, 1)
+        # The payload stays the missing-evidence file, so the classifier
+        # still reads "no evidence" rather than a valid payload that
+        # merely lacks the shard.
+        self.assertEqual(written, "")
+        self.assertIn("::warning::", stdout)
+        # The warning is the reader's own and names the condition, so it
+        # is distinguishable from an ordinary gap.
+        self.assertIn("incomplete", stdout)
+        self.assertIn("count mismatch", stdout)
+        self.assertIn(f"reported {TRUNCATED_REPORTED_COUNT} check runs", stdout)
+        self.assertIn(f"only {TRUNCATED_PARSED_COUNT} were read", stdout)
+
+    def test_evidence_reader_keeps_an_unreadable_main_suite_non_blocking(self) -> None:
+        """A suite that cannot be fetched stays a non-blocking gap.
+
+        The reader cannot tell whether such a run reported shard jobs
+        without the shard vocabulary -- which job names are shards, which
+        conclusions are red, which are retryable -- and that vocabulary
+        belongs to the pinned classifier. Deciding it in a
+        candidate-controlled reader would invert the trust boundary, so
+        the unreadable suite stays a warning and the missing-evidence
+        payload.
+
+        This is the boundary control for the gate-affecting assertion
+        above: the two must not be conflated in either direction.
+        """
+        status, stdout, written, _ = self._run_reader_program(
+            evidence_program(self.workflow),
+            self._degraded_runs(),
+            {},
+            "pull_request",
+            label="main",
+        )
+        self.assertEqual(status, 1)
+        self.assertNotEqual(status, GATE_AFFECTING_EXIT)
+        self.assertEqual(written, "")
+        self.assertIn("::warning::", stdout)
+        # The warning names the suite that could not be read.
+        self.assertIn("could not be read", stdout)
+
+    def test_evidence_reader_does_not_own_the_shard_vocabulary(self) -> None:
+        """The reader must not classify by shard name or conclusion.
+
+        The shard vocabulary belongs to the pinned classifier. A
+        candidate-controlled reader that owned it would invert the trust
+        boundary, so the reader names neither a shard nor a conclusion.
+        """
+        program = evidence_program(self.workflow)
+        for needle in SHARD_VOCABULARY_LITERALS:
+            self.assertNotIn(
+                needle,
+                program,
+                f"the evidence reader must not own {needle}",
+            )
 
     def test_evidence_reader_count_reconciliation_discriminates_the_truncation(self) -> None:
         """Removing the reconciliation writes the truncated read as evidence.
@@ -1324,13 +1633,25 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "in that order"):
             validate_evidence_source(swapped)
 
-    def _run_poll_block(self, block: str, sleep_seconds: int) -> dict[str, str]:
+    def _run_poll_block(
+        self,
+        block: str,
+        sleep_seconds: int,
+        jobs_lookup: str = "api",
+        recorded_bound: bool = True,
+        job_start_offset_seconds: int = JOB_START_OFFSET_SECONDS,
+    ) -> dict[str, str]:
         """Execute the probe's poll block and return its reported values.
 
         The shipped shell is executed with the network and the classifier
         replaced by stubs, so the bound is observed rather than asserted:
         the stubbed sleep advances the shell's own clock, which is what
         the budget is measured against.
+
+        ``jobs_lookup`` selects whether the jobs API reports this job's
+        start. ``recorded_bound`` selects whether the bound this job's
+        first step recorded is available. With neither, the remaining
+        time cannot be established and the probe must not wait.
         """
         template = """set -u
 REPOSITORY="EffortlessMetrics/perl-lsp-swarm"
@@ -1341,27 +1662,30 @@ EFFECTIVE_WORKFLOW_TREE=""
 MAIN_SHA_AFTER=""
 refusal_status=2
 final_calls=0
+final_completed_seconds=""
 exit_code=0
 probe_dir="$(mktemp -d)"
-job_started_at="$(date -u -d '-300 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+job_start_offset_seconds=__JOB_START_OFFSET__
+job_started_at="$(date -u -d "-${job_start_offset_seconds} seconds" +%Y-%m-%dT%H:%M:%SZ)"
+__RECORDED_BOUND__
 exit() {
   echo "PROBE_EXIT $1"
   exit_code=$1
 }
 gh() {
   case "$*" in
-    *"/jobs?"*) printf '%s\\n' "$job_started_at" ;;
-    *) printf '%s\\n' '{"workflow_runs":[]}' ;;
+    *"/jobs?"*) __JOBS_LOOKUP__ ;;
+    *) printf '%s\n' '{"workflow_runs":[]}' ;;
   esac
 }
 sleep() {
   SECONDS=$((SECONDS + __SLEEP_SECONDS__))
 }
 read_main_sha() {
-  printf '%s\\n' "__MAIN_SHA__"
+  printf '%s\n' "__MAIN_SHA__"
 }
 read_workflow_sha() {
-  printf '%s\\n' "__WORKFLOW_SHA__"
+  printf '%s\n' "__WORKFLOW_SHA__"
 }
 python3() {
   :
@@ -1369,16 +1693,30 @@ python3() {
 run_refusal() {
   if [ "${1:-}" = "--final" ]; then
     final_calls=$((final_calls + 1))
+    final_completed_seconds=$SECONDS
     return 1
   fi
   return 2
 }
 __POLL_BLOCK__
-echo "PROBE_RESULT polls=$poll_attempt final=$final_calls status=$refusal_status exit=$exit_code budget=$MAIN_RED_POLL_BUDGET_SECONDS"
+echo "PROBE_RESULT polls=$poll_attempt final=$final_calls status=$refusal_status exit=$exit_code budget=$MAIN_RED_POLL_BUDGET_SECONDS final_seconds=$final_completed_seconds job_offset=$job_start_offset_seconds"
 """
         script = (
             template.replace("__POLL_BLOCK__", block)
             .replace("__SLEEP_SECONDS__", str(sleep_seconds))
+            .replace("__JOB_START_OFFSET__", str(job_start_offset_seconds))
+            .replace(
+                "__RECORDED_BOUND__",
+                'MAIN_RED_JOB_STARTED_EPOCH="$(date -u -d "-${job_start_offset_seconds} seconds" +%s)"'
+                if recorded_bound
+                else "",
+            )
+            .replace(
+                "__JOBS_LOOKUP__",
+                'printf \'%s\\n\' "$job_started_at"'
+                if jobs_lookup == "api"
+                else ":",
+            )
             .replace("__CANDIDATE_SHA__", "a" * 40)
             .replace("__MAIN_SHA__", "d" * 40)
             .replace("__WORKFLOW_SHA__", "e" * 40)
@@ -1413,10 +1751,269 @@ echo "PROBE_RESULT polls=$poll_attempt final=$final_calls status=$refusal_status
         self.assertLessEqual(polls * 600, budget + 600)
         # The budget leaves the job's timeout for the final call.
         self.assertLessEqual(budget, 2100 - 180)
+        # #19567: the final classifier call must COMPLETE before this
+        # job's hard deadline, not merely start inside the poll budget.
+        # The extra-poll allowance above is not that evidence: the loop
+        # used to begin an iteration whenever the deadline had not
+        # passed, so the last iteration could run a whole sleep past it
+        # and the final call could land on the deadline itself.
+        final_seconds = int(result["final_seconds"])
+        job_offset = int(result["job_offset"])
+        self.assertGreater(final_seconds, 0)
+        self.assertLess(
+            final_seconds + job_offset,
+            JOB_TIMEOUT_SECONDS,
+            "the final classifier call must complete before the job's hard deadline",
+        )
         # The final classifier call still ran, and its verdict still
         # failed the step.
         self.assertEqual(result["final"], "1")
         self.assertEqual(result["exit"], "1")
+
+    def test_probe_poll_fallback_budget_is_bounded_by_elapsed_time(self) -> None:
+        """The fallback budget is the remaining time, not a fresh allowance.
+
+        The jobs API lookup can fail. The fallback used to grant a fresh
+        25-minute wait, so a lookup that failed late in a 35-minute job
+        started a wait the job could not finish, and the runner stopped
+        the job before the final classifier call. The fallback is the
+        job's timeout minus the time already spent.
+        """
+        block = poll_budget_block(self.workflow)
+        if block is None:
+            self.fail(
+                "the probe must bound the poll loop by elapsed wall clock; "
+                "no poll budget is declared"
+            )
+        result = self._run_poll_block(
+            block,
+            sleep_seconds=30,
+            jobs_lookup="unavailable",
+            recorded_bound=True,
+            job_start_offset_seconds=1000,
+        )
+        budget = int(result["budget"])
+        remaining = JOB_TIMEOUT_SECONDS - 1000 - FINAL_RESERVE_SECONDS
+        # The budget is the remaining time, bounded by what the job has
+        # already spent. The slack covers the seconds between the
+        # fixture's recorded bound and the budget's own clock read.
+        self.assertLessEqual(budget, remaining)
+        self.assertGreaterEqual(budget, remaining - 10)
+        # It is not the retired fresh full allowance.
+        self.assertLess(budget, 1500)
+
+    def test_probe_poll_without_a_time_bound_does_not_wait(self) -> None:
+        """No establishable remaining time means no wait.
+
+        Neither the jobs API lookup nor the bound this job's first step
+        recorded is usable, so the remaining time cannot be established.
+        A fresh wait would not fit inside the job's timeout, so the probe
+        polls nothing and the refusal is finalized through the
+        fail-closed path instead.
+        """
+        block = poll_budget_block(self.workflow)
+        if block is None:
+            self.fail(
+                "the probe must bound the poll loop by elapsed wall clock; "
+                "no poll budget is declared"
+            )
+        result = self._run_poll_block(
+            block,
+            sleep_seconds=30,
+            jobs_lookup="unavailable",
+            recorded_bound=False,
+        )
+        self.assertEqual(result["budget"], "0")
+        self.assertEqual(result["polls"], "0")
+        # The refusal is still finalized, and still fails the step.
+        self.assertEqual(result["final"], "1")
+        self.assertEqual(result["exit"], "1")
+
+    # -- #19567: the gate-affecting exit is taken only for a current read.
+
+    def _run_gate_chunks(
+        self,
+        chunks: str,
+        main_status: int,
+        before: str,
+        after: str,
+        read_fails: bool = False,
+    ) -> str:
+        """Execute the shipped gate chunks and return their output.
+
+        The network and the reader are replaced by stubs, so the shipped
+        shell decides whether the required context fails.
+        """
+        template = """set -u
+probe_dir="$(mktemp -d)"
+api_ok=true
+TRUSTED_SCRIPT_AVAILABLE=false
+MAIN_SHA_BEFORE="__BEFORE__"
+MAIN_RED_GATE_AFFECTING_EXIT=3
+CANDIDATE_SHA="__CANDIDATE_SHA__"
+CANDIDATE_EVENT="pull_request"
+MAIN_EVENT="push"
+EFFECTIVE_WORKFLOW_TREE=""
+exit_code=0
+exit() {
+  exit_code=$1
+}
+gh() {
+  printf '%s\n' '{}'
+}
+read_main_sha() {
+  if [ "__READ_FAILS__" = "yes" ]; then
+    return 1
+  fi
+  printf '%s\n' "__AFTER__"
+}
+read_workflow_sha() {
+  printf '%s\n' "e"
+}
+python3() {
+  case "$*" in
+    *candidate-runs.json*) return 0 ;;
+    *main-runs.json*) return __MAIN_STATUS__ ;;
+  esac
+  return 0
+}
+__CHUNKS__
+echo "PROBE_RESULT exit=$exit_code after=$MAIN_SHA_AFTER"
+"""
+        script = (
+            template.replace("__CHUNKS__", chunks)
+            .replace("__MAIN_STATUS__", str(main_status))
+            .replace("__BEFORE__", before)
+            .replace("__AFTER__", after)
+            .replace("__READ_FAILS__", "yes" if read_fails else "no")
+            .replace("__CANDIDATE_SHA__", "a" * 40)
+        )
+        return bash_script(script)
+
+    def test_gate_affecting_exit_requires_an_unchanged_main_ref(self) -> None:
+        """A degraded main fails the required context only while it is current.
+
+        The probe reads main's ref after the reader invocations. A main
+        that moved while its evidence was read makes the observation
+        stale, and a stale observation is the classifier's warning, not
+        this gate's failure. The gate-affecting exit must therefore be
+        taken only while the ref still matches MAIN_SHA_BEFORE.
+
+        Discriminating assertion. It fails unless the shipped check
+        compares the ref it read with MAIN_SHA_BEFORE: the pre-repair
+        check acted on the reader's status alone, so a main that moved
+        during the read still failed the required context on evidence
+        that was already stale.
+        """
+        chunks = gate_chunks(probe_script(self.workflow))
+        before = "d" * 40
+        # The ref did not move: the degraded main fails the step.
+        stdout = self._run_gate_chunks(chunks, 3, before, before)
+        self.assertEqual(probe_result(stdout)["exit"], "1")
+        self.assertIn("::error::", stdout)
+        # The ref moved: the observation is stale, so the step does not
+        # fail here and the stale-observation path applies.
+        moved = self._run_gate_chunks(chunks, 3, before, "e" * 40)
+        self.assertEqual(probe_result(moved)["exit"], "0")
+        self.assertIn("stale", moved)
+
+    def test_gate_affecting_exit_needs_an_established_main_ref(self) -> None:
+        """An unreadable ref cannot establish that the observation is current.
+
+        The check fails only when the ref still matches MAIN_SHA_BEFORE.
+        A ref that could not be read is not that match, so the step does
+        not fail here; the incomplete API read is reported as non-blocking
+        instead.
+        """
+        chunks = gate_chunks(probe_script(self.workflow))
+        stdout = self._run_gate_chunks(
+            chunks, 3, "d" * 40, "", read_fails=True
+        )
+        result = probe_result(stdout)
+        self.assertEqual(result["exit"], "0")
+        self.assertEqual(result["after"], "")
+
+    def test_a_non_gate_affecting_reader_status_does_not_fail_the_step(self) -> None:
+        """The control: an ordinary evidence gap never fails the step.
+
+        The gate-affecting status is the reader's own. A non-blocking gap
+        keeps the probe passing, whatever the ref says.
+        """
+        chunks = gate_chunks(probe_script(self.workflow))
+        stdout = self._run_gate_chunks(chunks, 1, "d" * 40, "d" * 40)
+        self.assertEqual(probe_result(stdout)["exit"], "0")
+
+    def test_probe_reads_the_main_ref_before_the_gate_affecting_exit(self) -> None:
+        """The ref is read before the gate-affecting exit is taken.
+
+        The pre-repair probe acted on the reader's status before
+        MAIN_SHA_AFTER was read, so it could not tell a current
+        observation from a stale one.
+        """
+        script = probe_script(self.workflow)
+        ref_index = script.find(MAIN_REF_READ_MARKER)
+        match = GATE_CHECK_PATTERN.search(script)
+        self.assertIsNotNone(match)
+        self.assertGreater(ref_index, 0)
+        self.assertLess(
+            ref_index,
+            match.start(),
+            "the probe must read main's ref before it acts on the "
+            "gate-affecting status",
+        )
+
+    # -- #19567: the poll read must happen inside the poll loop.
+
+    def test_validator_rejects_a_poll_read_moved_outside_the_loop(self) -> None:
+        """The candidate's poll read must happen inside the poll loop.
+
+        The mutation moves the poll's reader call next to the initial
+        candidate call. Both expected argument tuples and their counts
+        are preserved, so only the placement check can reject it.
+        """
+        validate_evidence_source(self.workflow)
+        call = candidate_poll_call(self.workflow)
+        mutated = self.workflow.replace(call, "", 1)
+        marker = 'while [ "$refusal_status" -eq 2 ]'
+        index = mutated.find(marker)
+        self.assertGreater(index, 0)
+        line_start = mutated.rfind("\n", 0, index) + 1
+        # The moved call keeps the loop's indentation, so the probe
+        # script still reads as the shell the runner sees.
+        indent = mutated[line_start:index]
+        mutated = mutated[:line_start] + indent + call + mutated[line_start:]
+        self.assertNotEqual(mutated, self.workflow)
+        # The mutation preserves the invocation counts, so the rejection
+        # comes from the placement check alone.
+        self.assertEqual(
+            mutated.count('"${CANDIDATE_EVENT}"'),
+            self.workflow.count('"${CANDIDATE_EVENT}"'),
+        )
+        with self.assertRaisesRegex(AssertionError, "inside the poll loop"):
+            validate_evidence_source(mutated)
+
+    # -- #19567: a timed-out shell fails the proof instead of skipping it.
+
+    def test_probe_harness_fails_when_a_shell_times_out(self) -> None:
+        """A launched shell that times out fails the proof.
+
+        The proof must not fall through to the next shell and report the
+        result as skipped: a poll loop that does not terminate must fail
+        the contract, not skip it.
+        """
+        with mock.patch.object(
+            subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd="bash", timeout=300),
+        ):
+            with self.assertRaises(AssertionError):
+                bash_script("echo PROBE_RESULT polls=1\n")
+        # The skip is kept for a host where neither shell can launch.
+        with mock.patch.object(
+            subprocess, "run", side_effect=OSError("no bash on this host")
+        ):
+            with self.assertRaises(unittest.SkipTest):
+                bash_script("echo PROBE_RESULT polls=1\n")
 
     def test_probe_poll_loop_preserves_the_intended_wait_budget(self) -> None:
         """A fast API still gets the intended wait.
