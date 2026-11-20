@@ -151,6 +151,31 @@ pub struct SemanticAnalyzer {
     generated_members: Vec<GeneratedMember>,
 }
 
+/// The qualified-or-bare identifier token at a cursor offset, if any.
+///
+/// `:` is a token byte here so a cursor anywhere on `Other::compute_0`
+/// (including on the `::` itself) yields the whole qualified token.
+fn qualified_token_at(source: &str, offset: usize) -> Option<&str> {
+    let bytes = source.as_bytes();
+    let is_token = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b':';
+    let probe = if offset < bytes.len() && is_token(bytes[offset]) {
+        offset
+    } else if offset > 0 && bytes.get(offset - 1).is_some_and(|b| is_token(*b)) {
+        offset - 1
+    } else {
+        return None;
+    };
+    let mut start = probe;
+    while start > 0 && is_token(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = probe + 1;
+    while end < bytes.len() && is_token(bytes[end]) {
+        end += 1;
+    }
+    source.get(start..end)
+}
+
 impl SemanticAnalyzer {
     /// Create a new semantic analyzer from an AST.
     ///
@@ -275,20 +300,44 @@ impl SemanticAnalyzer {
     /// Find the definition of a symbol at a given position for Navigate workflows.
     pub fn find_definition(&self, position: usize) -> Option<&Symbol> {
         // First, find if there's a reference at this position
+        let mut saw_reference = false;
         for refs in self.symbol_table.references.values() {
             for reference in refs {
                 if reference.location.start <= position && reference.location.end >= position {
+                    saw_reference = true;
                     let symbols = self.resolve_reference_to_symbols(reference);
-                    if let Some(first_symbol) = symbols.first() {
-                        return Some(self.resolve_definition_target(first_symbol));
+                    if let Some(symbol) = self.bound_symbol(&symbols, reference) {
+                        return Some(self.resolve_definition_target(symbol));
                     }
                 }
             }
         }
+        if saw_reference {
+            // A reference at this position that binds to no declaration
+            // (it binds outward to the package global) has no definition
+            // here. Falling through to the symbol_at fallback would credit
+            // the enclosing sub, whose symbol spans the whole node (#18117).
+            return None;
+        }
 
         // If no reference found, check if we're on a definition itself
-        self.symbol_at(SourceLocation { start: position, end: position })
-            .map(|symbol| self.resolve_definition_target(symbol))
+        let definition = self
+            .symbol_at(SourceLocation { start: position, end: position })
+            .map(|symbol| self.resolve_definition_target(symbol));
+        let definition = definition?;
+        // A `use constant` statement synthesizes its constant over the whole
+        // statement span, including the RHS (`use constant V => Other::f()`)
+        // whose call the parser keeps as raw text, recording no reference.
+        // The constant name itself still resolves; a qualified call token at
+        // the cursor (`Other::f`) is unresolvable here, not the constant
+        // (#18117).
+        if definition.kind == crate::symbol::SymbolKind::Constant
+            && definition.declaration.as_deref() == Some("constant")
+            && qualified_token_at(&self.source, position).is_some_and(|token| token.contains("::"))
+        {
+            return None;
+        }
+        Some(definition)
     }
 
     /// Redirect method modifier definitions to the underlying method they modify.
@@ -1093,6 +1142,23 @@ sub fold {
             body_def.location.start, loop_offset,
             "body $x must resolve to the loop lexical, got: {body_def:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_definition_sourceless_constant_does_not_panic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Production references/rename paths build the sourceless analyzer
+        // (`SemanticAnalyzer::analyze`, empty source). A cursor on a
+        // `use constant` declaration reaches the qualified-token guard with
+        // offset > 0 against an empty byte slice; it must not panic.
+        let code = "use constant PI => 3;\nprint PI;\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze(&ast);
+        let decl_pos = code.find("PI").ok_or("constant not found")?;
+        let definition = analyzer.find_definition(decl_pos).ok_or("constant definition missing")?;
+        assert_eq!(definition.name, "PI");
         Ok(())
     }
 
