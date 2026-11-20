@@ -1,0 +1,92 @@
+schema_version = "semantic_packet_e_issue_routing.v1"
+owner_issue = 6599
+
+[[follow_ups]]
+id = "compatibility_ledger"
+owner_issue = 4736
+title = "compiler(harness): generate a SHA-bound compatibility ledger from receipts"
+
+[[follow_ups]]
+id = "fact_taxonomy"
+owner_issue = 2543
+title = "compiler(profile): publish unsupported-fact taxonomy and executable-profile receipt contract"
+
+[[follow_ups]]
+id = "capability_backlog"
+owner_issue = 2559
+title = "compiler-program: canonical implementation train for compiler-backed code intelligence"
+
+[[routes]]
+issue = 4879
+follow_up = "capability_backlog"
+rationale = "PLSP-SPEC-0025 body/flat divergence reconciliation is programme-level spec work."
+
+[[routes]]
+issue = 4736
+follow_up = "compatibility_ledger"
+rationale = "Owner issue for the compatibility ledger follow-up."
+
+[[routes]]
+issue = 4737
+follow_up = "compatibility_ledger"
+rationale = "Semantic boundary registry ownership belongs with harness receipts."
+
+[[routes]]
+issue = 4775
+follow_up = "capability_backlog"
+rationale = "EIR crate and execution model are programme capabilities, not taxonomy rows."
+
+[[routes]]
+issue = 4770
+follow_up = "fact_taxonomy"
+rationale = "Unsupported-fact catalog and cross-layer reason mapping."
+
+[[routes]]
+issue = 4810
+follow_up = "fact_taxonomy"
+rationale = "Compile-time state application and effect fact classes."
+
+[[routes]]
+issue = 3651
+follow_up = "compatibility_ledger"
+rationale = "Bootstrap and BEGIN disposition proof is harness ledger scope."
+
+[[routes]]
+issue = 3700
+follow_up = "compatibility_ledger"
+rationale = "DTrace platform boundary acceptance is harness receipt scope."
+
+[[routes]]
+issue = 3708
+follow_up = "compatibility_ledger"
+rationale = "Locale/switches/todo boundary acceptance is harness receipt scope."
+
+[[routes]]
+issue = 2660
+follow_up = "fact_taxonomy"
+rationale = "PIR-A reference roles and Exact([]) vs NoExactFacts taxonomy."
+
+[[routes]]
+issue = 2582
+follow_up = "fact_taxonomy"
+rationale = "Provider honesty and provenance surfacing extend fact taxonomy."
+
+[[routes]]
+issue = 2559
+follow_up = "capability_backlog"
+rationale = "Owner issue for the compiler programme capability backlog."
+
+[[routes]]
+issue = 2543
+follow_up = "fact_taxonomy"
+rationale = "Owner issue for unsupported-fact taxonomy follow-up."
+
+[[routes]]
+issue = 2411
+follow_up = "capability_backlog"
+rationale = "Sandboxed evaluation research feeds programme capabilities."
+
+[[routes]]
+issue = 2210
+follow_up = "capability_backlog"
+rationale = "Closed HIR wave work remains programme backlog context."

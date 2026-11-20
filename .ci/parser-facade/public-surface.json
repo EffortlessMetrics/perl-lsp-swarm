@@ -2497,6 +2497,16 @@
       "exit_condition": "Inventory row for a test-only target."
     },
     {
+      "name": "rename_transaction_validity",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#18209",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
       "name": "red_tdd_panic_on_user_input",
       "kind": "test",
       "classification": "product_composition",
