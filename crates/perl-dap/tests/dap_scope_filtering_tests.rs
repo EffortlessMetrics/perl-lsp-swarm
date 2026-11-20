@@ -5,17 +5,19 @@
 //!
 //! # What is tested
 //!
-//! The current contract admits scopes only for the exact current stopped frame.
-//! That response contains Locals and, when captured, Arguments; Package and
-//! Globals are intentionally omitted. Stale, unknown, running, terminated,
-//! cleared-session, and no-session references are honest empty responses.
+//! Scope admission is owned by `debug_adapter/frames.rs::handle_scopes`.
+//! Under #9057/#18912, the exact current stopped frame admits Locals and,
+//! when captured, Arguments. Package additionally requires observed package
+//! identity; Globals does not depend on that package observation. Scope references
+//! must be encodable. Stale, unknown, running, terminated, cleared-session, and
+//! no-session references remain honest empty responses (#10563).
 //!
-//! | Scope     | admission                         | contract                         |
-//! |-----------|-----------------------------------|----------------------------------|
-//! | Locals    | exact current stopped frame      | captured lexical values          |
-//! | Arguments | exact current stopped frame      | actually captured arguments only |
-//! | Package   | never admitted by this contract  | omitted                           |
-//! | Globals   | never admitted by this contract  | omitted                           |
+//! | Scope     | admission                                      | contract                         |
+//! |-----------|------------------------------------------------|----------------------------------|
+//! | Locals    | exact current stopped frame                    | captured lexical values          |
+//! | Arguments | exact current stopped frame, captured arguments | actually captured arguments only |
+//! | Package   | exact current stopped frame, observed package   | package-bound inspection         |
+//! | Globals   | exact current stopped frame                    | global inspection                |
 //!
 //! ## Test layers
 //!
@@ -35,8 +37,11 @@
 //!
 //! # Limitations
 //!
-//! Legacy live multi-scope tests remain ignored because Package/Globals and
-//! arbitrary-frame admission are no longer part of this contract.
+//! Ignored no-session fixtures do not establish an admitted stopped frame.
+//! Ignored live fixtures retain their historical #10563 provenance and require
+//! fixture-specific qualification under #9057/#18912 before re-enabling; scope
+//! advertisement alone proves neither value capture nor filtering. This prose
+//! update does not execute those fixtures or change their ignore status.
 
 mod common;
 
@@ -141,7 +146,7 @@ fn request_variables(adapter: &mut DebugAdapter, variables_reference: i64) -> Op
 /// Legacy three-bucket response shape; retained only as a named historical
 /// regression because handler admission now requires a stopped frame.
 #[test]
-#[ignore = "#10563: Retired: no-session handle_scopes cannot synthesize the old three-bucket response; admitted-frame coverage is in perl-dap unit tests."]
+#[ignore = "#10563; #9057/#18912: no-session fixture establishes no stopped frame, so handle_scopes returns no scopes; three buckets are not unconditional."]
 fn test_scopes_response_contains_three_named_buckets() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -221,7 +226,7 @@ fn test_scope_reference_arithmetic_locals() -> TestResult {
 
 /// The Package scope variablesReference must equal `frame_id * 10 + 2`.
 #[test]
-#[ignore = "#10563: Retired: Package is intentionally not advertised by the current-frame scope contract."]
+#[ignore = "#10563; #9057/#18912: no-session frame 3 has neither an admitted stopped frame nor observed package identity; this is not a Package advertisement prohibition."]
 fn test_scope_reference_arithmetic_package() -> TestResult {
     let frame_id: i64 = 3;
     let expected_package_ref = frame_id * 10 + 2;
@@ -247,7 +252,7 @@ fn test_scope_reference_arithmetic_package() -> TestResult {
 
 /// The Globals scope variablesReference must equal `frame_id * 10 + 3`.
 #[test]
-#[ignore = "#10563: Retired: Globals is intentionally not advertised by the current-frame scope contract."]
+#[ignore = "#10563; #9057/#18912: no-session frame 3 is not an admitted stopped frame; Globals advertisement does not require observed package identity."]
 fn test_scope_reference_arithmetic_globals() -> TestResult {
     let frame_id: i64 = 3;
     let expected_globals_ref = frame_id * 10 + 3;
@@ -273,7 +278,7 @@ fn test_scope_reference_arithmetic_globals() -> TestResult {
 
 /// All three scope variablesReferences must be distinct (no aliasing).
 #[test]
-#[ignore = "#10563: Retired: the old three-scope response is not produced for arbitrary frames."]
+#[ignore = "#10563; #9057/#18912: no-session frame 2 yields no scopes, so this fixture cannot establish three distinct admitted references."]
 fn test_scope_references_are_distinct() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -350,10 +355,10 @@ fn test_fallback_locals_scope_contains_no_package_or_global_names() -> TestResul
     Ok(())
 }
 
-/// Historical Globals fallback assertion retained only to document the retired
-/// shape; Globals is no longer handler-admitted.
+/// Historical no-session Globals fallback assertion. Reference 13 is unadmitted
+/// in this fixture; this does not characterize live Globals enumeration.
 #[test]
-#[ignore = "#10563: Retired: reference 13 is an unadmitted Globals scope; omission and zero-query rejection are covered by focused variables/frames tests."]
+#[ignore = "#10563; #9057/#18912: reference 13 is unadmitted in this no-session fixture; its empty result does not establish live Globals enumeration."]
 fn test_fallback_globals_scope_is_empty() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -440,8 +445,8 @@ fn test_unadmitted_locals_reference_is_empty_without_session() -> TestResult {
     Ok(())
 }
 
-/// Package references are never admitted, including when their wire shape is
-/// otherwise well-formed.
+/// A well-formed Package-shaped reference is rejected by this no-session fixture;
+/// it supplies neither an exact stopped frame nor observed package identity.
 #[test]
 fn test_unadmitted_package_reference_is_empty_without_session() -> TestResult {
     let mut adapter = DebugAdapter::new();
@@ -456,7 +461,8 @@ fn test_unadmitted_package_reference_is_empty_without_session() -> TestResult {
     Ok(())
 }
 
-/// Globals references are never admitted and cannot fall through to history.
+/// A Globals-shaped reference is rejected by this no-session fixture.
+/// This empty-result assertion does not characterize admitted live Globals.
 #[test]
 fn test_unadmitted_globals_reference_is_empty_without_session() -> TestResult {
     let mut adapter = DebugAdapter::new();
@@ -471,8 +477,8 @@ fn test_unadmitted_globals_reference_is_empty_without_session() -> TestResult {
     Ok(())
 }
 
-/// The scope reference modulo-10 encoding remains self-consistent for the
-/// protocol codec, even though Package/Globals are not handler-admitted.
+/// The scope-reference arithmetic has distinct modulo-10 tags.
+/// This arithmetic-only fixture does not call the codec or establish handler admission.
 #[test]
 fn test_scope_type_encoding_is_self_consistent() -> TestResult {
     // For any frame_id, the three scope refs must have distinct moduli 1, 2, 3.
@@ -523,7 +529,7 @@ const BP_INNER: u64 = 9; // my $inner_y = 20 — inside inner_sub
 /// Execution stops inside the named sub, and its Locals scope must NOT contain
 /// the outer `my $outer_var`, the `our $pkg_counter`, or built-in globals.
 #[test]
-#[ignore = "#10563: Retired: this legacy multi-scope E2E asserts omitted Package/Globals behavior; current-frame Locals/Arguments coverage is in perl-dap unit tests."]
+#[ignore = "#10563; #9057/#18912: retained live named-sub fixture requires nonempty captured Locals and name filtering; current fixture behavior is unqualified, not forbidden Package/Globals advertisement."]
 fn test_e2e_named_sub_breakpoint_excludes_outer_and_global_vars() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
@@ -677,7 +683,7 @@ fn test_e2e_globals_scope_contains_builtin_globals_not_lexicals() -> TestResult 
 /// This tests closure/scope boundary: `perl -d`'s `V . .` command for the
 /// current scope must not bleed outer lexicals into an inner sub's locals.
 #[test]
-#[ignore = "#10563: Retired: legacy cross-scope E2E expects the removed Package/Globals buckets."]
+#[ignore = "#10563; #9057/#18912: retained live fixture checks only outer-name exclusion from Locals and can pass on empty Locals; captured-value qualification is still required."]
 fn test_e2e_outer_lexical_does_not_leak_into_inner_sub_locals() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
@@ -719,10 +725,10 @@ fn test_e2e_outer_lexical_does_not_leak_into_inner_sub_locals() -> TestResult {
     Ok(())
 }
 
-/// No variable appears in multiple scopes simultaneously: Locals ∩ Package ∩
-/// Globals must all be empty when stopped at a real breakpoint.
+/// Locals and Globals must have disjoint variable names at a real breakpoint.
+/// This fixture does not query Package or require either returned set to be nonempty.
 #[test]
-#[ignore = "#10563: Retired: legacy cross-scope E2E expects the removed Package/Globals buckets."]
+#[ignore = "#10563; #9057/#18912: retained live fixture compares only Locals and Globals, not Package, and lacks nonempty-value guards; current enumeration/filtering is unqualified."]
 fn test_e2e_scopes_have_no_cross_contamination() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
@@ -794,7 +800,7 @@ fn test_e2e_scopes_have_no_cross_contamination() -> TestResult {
 ///   Line 6: my $z = $x * $y; <- BP_LEXICAL (stopped HERE — $x and $y are set)
 ///   Line 7: print "$z\n";
 #[test]
-#[ignore = "#10563: Retired: legacy lexical E2E relies on old scope routing; current-frame Locals proof is in perl-dap unit tests."]
+#[ignore = "#10563; #9057/#18912: retained #950 live fixture requires captured $x/$y names and values at line 6; scope advertisement alone does not establish that capture, which remains unqualified here."]
 fn test_e2e_locals_scope_returns_user_lexicals_not_db_internals() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
