@@ -79,6 +79,8 @@ fn git_discovery_finds_committed_and_untracked_perl_files() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn git_discovery_expands_tracked_symlinked_library_directory() -> TestResult {
+    // `git check-ignore` rejects pathspecs beyond a tracked directory symlink on
+    // common git versions (for example 2.43); discovery uses a probe-repo fallback.
     if !git_available() {
         return Ok(());
     }
