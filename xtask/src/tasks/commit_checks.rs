@@ -373,14 +373,7 @@ fn evaluate_conflict_markers<'a>(files: impl Iterator<Item = (&'a str, &'a str)>
 fn conflict_markers_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
     let paths = staged::staged_diff_paths(root, Some(&tree_oid))?;
-    let mut files = Vec::new();
-    for path in &paths {
-        if let StagedPathText::Present(text) =
-            staged::read_staged_path_text(root, path, Some(&tree_oid))?
-        {
-            files.push((path.clone(), text));
-        }
-    }
+    let files = staged::read_staged_text_batch(root, &tree_oid, &paths)?;
     let affected =
         evaluate_conflict_markers(files.iter().map(|(path, text)| (path.as_str(), text.as_str())));
 

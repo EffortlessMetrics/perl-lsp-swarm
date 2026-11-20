@@ -134,23 +134,25 @@ fn staged_path_exists_in(root: &Path, tree_oid: Option<&str>, path: &str) -> Res
 /// the TAB separator, or with incomplete `<mode> SP <type> SP <oid>`
 /// metadata, is an instrument failure (`Err`) — never a silently skipped
 /// entry — so output drift cannot turn a staged path into a clean absence.
+fn parse_ls_tree_record(record: &str) -> Result<(&str, &str, &str)> {
+    let (metadata, path) = record.split_once('\t').ok_or_else(|| {
+        eyre!("malformed `git ls-tree` record without a TAB separator: {record:?}")
+    })?;
+    let metadata: Vec<&str> = metadata.split(' ').collect();
+    let [mode, kind, oid] = metadata.as_slice() else {
+        bail!("malformed `git ls-tree` record metadata {metadata:?}: {record:?}");
+    };
+    let mode_is_octal = mode.len() == 6 && mode.bytes().all(|byte| byte.is_ascii_digit());
+    if !mode_is_octal || kind.is_empty() || oid.is_empty() {
+        bail!("malformed `git ls-tree` record metadata {metadata:?}: {record:?}");
+    }
+    Ok((kind, oid, path))
+}
+
 fn parse_ls_tree_paths(raw: &str) -> Result<Vec<String>> {
     raw.split('\0')
         .filter(|record| !record.is_empty())
-        .map(|record| {
-            let (metadata, path) = record.split_once('\t').ok_or_else(|| {
-                eyre!("malformed `git ls-tree` record without a TAB separator: {record:?}")
-            })?;
-            let metadata: Vec<&str> = metadata.split(' ').collect();
-            let [mode, kind, oid] = metadata.as_slice() else {
-                bail!("malformed `git ls-tree` record metadata {metadata:?}: {record:?}");
-            };
-            let mode_is_octal = mode.len() == 6 && mode.bytes().all(|byte| byte.is_ascii_digit());
-            if !mode_is_octal || kind.is_empty() || oid.is_empty() {
-                bail!("malformed `git ls-tree` record metadata {metadata:?}: {record:?}");
-            }
-            Ok(path.to_string())
-        })
+        .map(|record| parse_ls_tree_record(record).map(|(_, _, path)| path.to_owned()))
         .collect()
 }
 
@@ -370,6 +372,110 @@ pub fn read_staged_path_text(
     })
 }
 
+/// Read changed paths from one snapshot. Git receives object IDs on stdin,
+/// so embedded newlines and pathspec metacharacters never enter the protocol.
+pub fn read_staged_text_batch(
+    root: &Path,
+    tree: &str,
+    paths: &[String],
+) -> Result<Vec<(String, String)>> {
+    use std::collections::HashMap;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::Stdio;
+
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    if run_git_ok(root, &["cat-file", "-t", tree])?.trim() != "tree" {
+        bail!("staged snapshot `{tree}` is not a tree");
+    }
+    // Bound argv on Windows as well as Unix. Each ls-tree record is
+    // NUL-delimited and is validated before interpreting absence.
+    let mut entries = HashMap::new();
+    // A path can change from a file to a directory in the same diff.
+    // Asking ls-tree for both a tree and its child expands the parent
+    // instead of returning its entry. Query different depths separately.
+    let mut by_depth: Vec<_> = paths.iter().collect();
+    let depth = |p: &String| p.bytes().filter(|b| *b == b'/').count();
+    by_depth.sort_by_cached_key(|p| depth(p));
+    for group in by_depth.chunk_by(|a, b| depth(a) == depth(b)) {
+        let mut remaining = group;
+        while !remaining.is_empty() {
+            let mut bytes = 0;
+            let count = remaining
+                .iter()
+                .take_while(|p| {
+                    bytes += 2 * p.len() + 3;
+                    bytes <= 16000
+                })
+                .count()
+                .max(1);
+            let (chunk, rest) = remaining.split_at(count);
+            remaining = rest;
+            let mut args = vec!["--literal-pathspecs", "ls-tree", "-z", "--", tree];
+            args.extend(chunk.iter().map(|p| p.as_str()));
+            let raw = run_git_ok(root, &args)?;
+            for record in raw.split('\0').filter(|r| !r.is_empty()) {
+                let (kind, oid, name) = parse_ls_tree_record(record)?;
+                entries.insert(name.to_owned(), (kind.to_owned(), oid.to_owned()));
+            }
+        }
+    }
+    let mut child = Command::new("git")
+        .current_dir(root)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("start git cat-file --batch")?;
+    let mut input = child.stdin.take().context("missing cat-file stdin")?;
+    let mut output = BufReader::new(child.stdout.take().context("missing cat-file stdout")?);
+    let result = (|| -> Result<Vec<(String, String)>> {
+        let mut files = Vec::new();
+        for path in paths {
+            let Some((kind, oid)) = entries.get(path) else { continue };
+            if kind != "blob" {
+                // git show pretty-prints commits and trees. Keep that behavior.
+                if let StagedPathText::Present(text) =
+                    read_staged_path_text(root, path, Some(tree))?
+                {
+                    files.push((path.clone(), text));
+                }
+                continue;
+            }
+            writeln!(input, "{oid}")?;
+            let mut header = String::new();
+            output.read_line(&mut header)?;
+            let mut fields = header.split_ascii_whitespace();
+            if fields.next() != Some(oid.as_str()) || fields.next() != Some("blob") {
+                bail!("failed to read staged content for {path}: {header}");
+            }
+            let size = fields.next().context("missing cat-file size")?.parse::<u64>()?;
+            let mut data = Vec::new();
+            if output.by_ref().take(size).read_to_end(&mut data)? as u64 != size {
+                bail!("truncated staged content for {path}");
+            }
+            let mut delimiter = [0];
+            output.read_exact(&mut delimiter)?;
+            if delimiter != [b'\n'] {
+                bail!("invalid cat-file delimiter for {path}");
+            }
+            if let Ok(text) = String::from_utf8(data) {
+                files.push((path.clone(), text));
+            }
+        }
+        Ok(files)
+    })();
+    drop(input);
+    drop(output);
+    let status = child.wait()?;
+    let files = result?;
+    if !status.success() {
+        bail!("git cat-file --batch failed: {status}");
+    }
+    Ok(files)
+}
+
 /// Whether `path` exists at all in the given staged tree object — for a
 /// caller like `commit_checks::rustfmt_staged_at` that needs the STAGED
 /// version of a config file (`rustfmt.toml`) which may or may not be part of
@@ -441,6 +547,98 @@ mod tests {
             StagedPathText::Binary => bail!("expected {path} to be valid UTF-8, got Binary"),
             StagedPathText::Absent => bail!("expected {path} to be staged, got Absent"),
         }
+    }
+
+    #[test]
+    fn conflict_markers_staged_batch_matches_single_reads_on_large_snapshot() -> Result<()> {
+        // Scope Git tracing to this test process, without mutating the
+        // environment of other test threads.
+        const TRACE: &str = "XTASK_STAGED_BATCH_TRACE";
+        let Some(trace) = std::env::var_os(TRACE) else {
+            let dir = tempfile::tempdir()?;
+            let trace = dir.path().join("git-events");
+            let status = Command::new(std::env::current_exe()?)
+                .args([
+                    "conflict_markers_staged_batch_matches_single_reads_on_large_snapshot",
+                    "--nocapture",
+                ])
+                .env(TRACE, &trace)
+                .env("GIT_TRACE2_EVENT", &trace)
+                .status()?;
+            assert!(status.success());
+            return Ok(());
+        };
+        let repo = TempRepo::init()?;
+        for number in 0..500 {
+            repo.write(&format!("nested/file-{number}"), &format!("<<<<<<< staged {number}\n"))?;
+        }
+        repo.write("name with spaces", "=======\n")?;
+        #[cfg(unix)]
+        repo.write(":literal[*]\nname", ">>>>>>> staged\n")?;
+        std::fs::write(repo.root().join("binary"), [0xff])?;
+        repo.add(".")?;
+        let tree = staged_tree_oid(repo.root())?;
+        let paths = staged_diff_paths(repo.root(), Some(&tree))?;
+        repo.write("nested/file-1", "new index content")?;
+        repo.add("nested/file-1")?;
+
+        std::fs::write(&trace, "")?;
+        let start = std::time::Instant::now();
+        let actual = read_staged_text_batch(repo.root(), &tree, &paths)?;
+        let batch_time = start.elapsed();
+        let events = std::fs::read_to_string(trace)?;
+        let starts = events
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|event| event["event"] == "start")
+            .count();
+        assert!((1..=8).contains(&starts), "{starts} Git processes for {} paths", paths.len());
+        assert_eq!(actual.len(), paths.len() - 1);
+        for (path, text) in &actual {
+            if let Some(number) = path.strip_prefix("nested/file-") {
+                assert_eq!(text, &format!("<<<<<<< staged {number}\n"));
+            } else if path == "name with spaces" {
+                assert_eq!(text, "=======\n");
+            } else {
+                assert_eq!(path, ":literal[*]\nname");
+                assert_eq!(text, ">>>>>>> staged\n");
+            }
+        }
+        eprintln!("{} paths: batch {batch_time:?}, {starts} Git processes", paths.len());
+        // Enable the expensive reference measurement for deliberate comparisons.
+        if std::env::var_os("XTASK_COMPARE_STAGED_SINGLE_READS").is_some() {
+            let start = std::time::Instant::now();
+            let mut expected = Vec::new();
+            for path in &paths {
+                if let StagedPathText::Present(text) =
+                    read_staged_path_text(repo.root(), path, Some(&tree))?
+                {
+                    expected.push((path.clone(), text));
+                }
+            }
+            assert_eq!(actual, expected);
+            eprintln!("single reads {:?}", start.elapsed());
+        }
+        assert!(batch_time < std::time::Duration::from_secs(60));
+        Ok(())
+    }
+
+    #[test]
+    fn conflict_markers_staged_batch_distinguishes_missing_blob_from_absent_path() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("present", "content")?;
+        repo.add("present")?;
+        let tree = staged_tree_oid(repo.root())?;
+        let absent = vec!["absent".to_owned()];
+        assert!(read_staged_text_batch(repo.root(), &tree, &absent)?.is_empty());
+        let oid = run_git_ok(repo.root(), &["rev-parse", ":present"])?;
+        let (dir, file) = oid.trim().split_at(2);
+        std::fs::remove_file(repo.root().join(".git/objects").join(dir).join(file))?;
+        assert!(read_staged_path_text(repo.root(), "present", Some(&tree)).is_err());
+        assert!(read_staged_text_batch(repo.root(), &tree, &["present".to_owned()]).is_err());
+        Ok(())
     }
 
     struct TempRepo {
