@@ -236,16 +236,6 @@ fn test_parser_nodekind_row_is_named_and_bounded_as_project_corpus_reachability(
         "note must exclude occurrence-count meaning, got: {row}"
     );
 
-    // The extraction population is a strict subset of the counted one: corpus
-    // discovery decodes with `from_utf8_lossy` and counts a non-UTF-8 fixture,
-    // while `extract_nodekinds_from_content` reads through `read_to_string` and
-    // silently contributes no kinds. The note must name that boundary rather
-    // than imply the numerator saw every counted file.
-    assert!(
-        row.contains("extraction skips files that do not decode as UTF-8"),
-        "note must name the UTF-8 extraction boundary, got: {row}"
-    );
-
     // The row is an unversioned static projection regenerated after merge, so
     // any committed instance ages. A freshness adjective would assert exactly
     // the unearned evidence this note exists to prevent, so the note must not
@@ -306,10 +296,6 @@ fn test_parser_nodekind_row_unverified_states_scope_without_a_ratio() -> Result<
     assert!(
         !row.contains("current"),
         "unverified row must not assert freshness either, got: {row}"
-    );
-    assert!(
-        row.contains("extraction skips files that do not decode as UTF-8"),
-        "unverified row must name the same extraction boundary, got: {row}"
     );
     assert!(
         row.contains("across successfully parsed files"),

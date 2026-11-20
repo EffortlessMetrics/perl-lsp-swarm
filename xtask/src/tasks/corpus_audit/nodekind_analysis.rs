@@ -143,10 +143,17 @@ fn extract_nodekinds_from_content(path: &PathBuf) -> Vec<String> {
     use perl_parser::Parser;
     use std::fs;
 
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return vec![],
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
+        Err(err) => {
+            eprintln!(
+                "   Warning: Failed to read {} for NodeKind extraction: {err}",
+                path.display()
+            );
+            return vec![];
+        }
     };
+    let content = String::from_utf8_lossy(&bytes).into_owned();
 
     let mut parser = Parser::new(&content);
     let mut nodekinds = HashSet::new();
@@ -326,6 +333,48 @@ mod tests {
         let path = PathBuf::from(tmp.path());
         let nodekinds = extract_nodekinds_from_content(&path);
         assert!(!nodekinds.is_empty(), "should extract at least one NodeKind");
+        Ok(())
+    }
+
+    #[test]
+    fn test_extract_nodekinds_from_legacy_encoding_corpus_fixture()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_corpus/legacy_encoding.pl");
+        assert!(
+            path.is_file(),
+            "repo-owned non-UTF-8 corpus fixture must exist: {}",
+            path.display()
+        );
+        let bytes = std::fs::read(&path)?;
+        assert!(
+            std::str::from_utf8(&bytes).is_err(),
+            "legacy_encoding.pl must remain non-UTF-8 so this test exercises lossy decode"
+        );
+        let nodekinds = extract_nodekinds_from_content(&path);
+        assert!(
+            nodekinds.iter().any(|kind| kind == "Subroutine"),
+            "legacy_encoding.pl must contribute Subroutine under lossy decode, got: {nodekinds:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_extract_nodekinds_from_non_utf8_content() -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::with_suffix(".pl")?;
+        // Invalid UTF-8 byte (same class as test_corpus/legacy_encoding.pl) before valid Perl.
+        tmp.as_file().write_all(b"\xE9\nsub foo {}\n")?;
+        let path = PathBuf::from(tmp.path());
+        let nodekinds = extract_nodekinds_from_content(&path);
+        assert!(
+            !nodekinds.is_empty(),
+            "non-UTF-8 fixtures must still yield NodeKinds (lossy decode, matching corpus discovery)"
+        );
+        assert!(
+            nodekinds.iter().any(|k| k == "Subroutine"),
+            "expected Subroutine from `sub foo`, got: {nodekinds:?}"
+        );
         Ok(())
     }
 
