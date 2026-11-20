@@ -253,6 +253,30 @@ review_after = "2026-06-07"
 expires = "2026-11-07"
 
 [[lane]]
+id = "pr_fast_unblocked"
+workflow = ".github/workflows/ci.yml"
+job = "pr-fast-unblocked"
+tier = "frontdoor"
+kind = "rust"
+blocking = false
+default_pr = true
+runner = "ubuntu_24_04"
+base_lem = 4
+owner = "ci"
+intent = "Run scoped pr-fast proof with telemetry-only disk preflight."
+failure_mode = "Obvious compile, format, lint, or scoped unit-test failure."
+proof_obligation = "Run pr-fast gates selected by ci-scope."
+evidence = [
+  "target/receipts/receipt.json",
+  "target/test-results/pr-fast-junit.xml",
+]
+allowed_triggers = ["pull_request", "push", "merge_group", "workflow_dispatch"]
+expensive = false
+duplicate_of = ["pr_smoke"]
+review_after = "2026-12-20"
+expires = "2027-05-20"
+
+[[lane]]
 id = "merge_gate_shards"
 workflow = ".github/workflows/ci.yml"
 job = "merge-gate-shards"
