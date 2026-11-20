@@ -622,13 +622,13 @@ function Get-StagedProductUnitDisposition {
     )
     $server = Join-Path $ExtractDir "$Name.exe"
     $dap = Join-Path $ExtractDir "$DapName.exe"
-    if (-not (Test-Path -LiteralPath $server) -or [IO.File]::GetAttributes($server).HasFlag([IO.FileAttributes]::ReparsePoint)) {
+    if (-not (Test-Path -LiteralPath $server -PathType Leaf) -or [IO.File]::GetAttributes($server).HasFlag([IO.FileAttributes]::ReparsePoint)) {
         throw "staged product unit is missing a regular perllsp member"
     }
     if ($Mode -eq "source") {
         return "advanced_source_server_only"
     }
-    if (-not (Test-Path -LiteralPath $dap) -or [IO.File]::GetAttributes($dap).HasFlag([IO.FileAttributes]::ReparsePoint)) {
+    if (-not (Test-Path -LiteralPath $dap -PathType Leaf) -or [IO.File]::GetAttributes($dap).HasFlag([IO.FileAttributes]::ReparsePoint)) {
         throw "archive product unit requires a complete perllsp/perl-dap pair"
     }
     return "archive_pair_required"

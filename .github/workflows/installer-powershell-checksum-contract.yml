@@ -13,6 +13,7 @@ on:
       - 'scripts/tests/test-install-ps1-installed-verification.ps1'
       - 'scripts/tests/test-install-ps1-archive-safety.ps1'
       - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
+      - 'scripts/tests/test-install-ps1-staged-product-unit-disposition.ps1'
       - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
       - '.github/workflows/installer-powershell-checksum-contract.yml'
@@ -28,6 +29,7 @@ on:
       - 'scripts/tests/test-install-ps1-installed-verification.ps1'
       - 'scripts/tests/test-install-ps1-archive-safety.ps1'
       - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
+      - 'scripts/tests/test-install-ps1-staged-product-unit-disposition.ps1'
       - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
       - '.github/workflows/installer-powershell-checksum-contract.yml'
@@ -68,7 +70,8 @@ jobs:
               'scripts/tests/new-install-ps1-native-fixture.ps1',
               'scripts/tests/test-install-ps1-installed-verification.ps1',
               'scripts/tests/test-install-ps1-archive-safety.ps1',
-              'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
+              'scripts/tests/test-install-ps1-product-unit-promotion.ps1',
+              'scripts/tests/test-install-ps1-staged-product-unit-disposition.ps1'
           )) {
               $Tokens = $null
               $Errors = $null
@@ -111,6 +114,10 @@ jobs:
       - name: Run product-unit promotion controls
         shell: pwsh
         run: ./scripts/tests/test-install-ps1-product-unit-promotion.ps1
+
+      - name: Run staged product-unit disposition controls
+        shell: pwsh
+        run: ./scripts/tests/test-install-ps1-staged-product-unit-disposition.ps1
 
       - name: Run target-retention controls under PowerShell 7
         id: target-retention-pwsh7
