@@ -469,7 +469,7 @@ fix:
     {{cargo_safe}} clippy --workspace --fix --allow-dirty
 
 # Canonical local merge gate via Nix (use before merge, not as the push hook)
-ci-local:
+ci-local: python-self-tests
     @echo "Running merge gate via Nix shell..."
     @if command -v nix >/dev/null 2>&1; then \
         nix develop -c just ci-gate; \
@@ -1575,6 +1575,13 @@ ci-docs-check:
     @echo "📝 Checking missing docs baseline..."
     @cargo xtask ci-hygiene check-missing-docs
     @echo "✅ Missing docs check passed"
+
+# Check every tracked Python self-test disposition, or run one explicitly by filename.
+python-self-tests:
+    python3 scripts/ci/python_self_tests.py
+
+python-self-test filename:
+    python3 scripts/ci/python_self_tests.py --run {{quote(filename)}}
 
 # Policy and governance checks
 ci-policy:
