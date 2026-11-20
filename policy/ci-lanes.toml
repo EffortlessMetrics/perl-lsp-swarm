@@ -82,6 +82,17 @@ paths = ["crates/**", "xtask/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["target/receipts/receipt.json", "target/test-results/pr-fast-junit.xml"]
 duplicate_of = []
 
+[lane.pr_fast_unblocked]
+description = "Run the pr-fast tier with telemetry-only disk preflight."
+intent = "frontdoor mechanical proof"
+runner = "ubuntu_24_04"
+base_lem = 4
+default_pr = true
+blocking = false
+paths = ["crates/**", "xtask/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["target/receipts/receipt.json", "target/test-results/pr-fast-junit.xml"]
+duplicate_of = ["pr_smoke"]
+
 [lane.merge_gate_shards]
 description = "Run bounded required merge-gate shards."
 intent = "merge-blocking correctness"

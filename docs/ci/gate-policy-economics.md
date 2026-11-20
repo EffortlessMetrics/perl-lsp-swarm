@@ -36,17 +36,17 @@ the lane policy or the validator's mapping table.
 
 ## Mapping rule
 
-Many gates roll up under a single lane (e.g. all `pr_fast` gates contribute to the
-`pr_smoke` lane's LEM). The mapping is therefore many-to-one for most lanes, but a small
+Many gates roll up under a single lane (e.g. all `pr_fast` gates contribute to both
+advisory executor estimates, subject to scope and preflight). The mapping is therefore many-to-one for most lanes, but a small
 number of gates (e.g. `lsp_tier_a`) span two lanes.
 
 Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping.py --strict`,
-which is the authority for these counts. Last refreshed 2026-11-04
-(baseline-canonicality gate in the merge-gate meta shard; #18736):
+which is the authority for these counts. Last refreshed 2026-11-20 (#19422):
 
 - 99 gates in `.ci/gate-policy.yaml`
-- 26 lanes in `policy/ci-lanes.toml`
-- 99 / 99 gates have at least one lane mapping
+- 27 lanes in `policy/ci-lanes.toml`
+- 97 / 99 gates have a lane. The advisory merge-tier gates `policy_checks` and
+  `workflow_audit` have no workflow route.
 - 0 gates point at a non-existent lane
 
 ---
@@ -55,8 +55,9 @@ which is the authority for these counts. Last refreshed 2026-11-04
 
 | Lane | Gates |
 |---|---|
-| `pr_smoke` | `fmt`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `source_commit_api_check`, `serial_test_ratchet`, `regex_static_ratchet`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `policy_checks`, `workflow_audit`, `nested_lock_check`, `unit_routed_full`, `unit_routed_full_build`, `clippy_tests_kernel`, `ci_subject_digest_oracle`, `unit_control_plane_bins`, `inline_completion_registration`, `lsp_registration_contract`, `lsp_capability_snapshots`, `inline_completion_core`, `inline_completion_quality_receipt`, `ignored_tests_check_refs` |
-| `merge_gate_shards` | `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `public_api_baseline_canonical`, `release_history_domain6_rerender`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `parser_integration`, `parser_behavior_proof`, `unit_analysis_full`, `unit_lsp_core_full`, `unit_lsp_full`, `unit_dap_support_full`, `pending_parse_freshness`, `pull_diagnostics_freshness`, `must_context_check`, `docs_agents_contract_workflows`, `doctest_contract_proof`, `doctest_enforcement`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync`, `agent_context_coverage`, `non_rust_inventory_check`, `completion_candidate_ledger`, `lint_policy`, `msrv_authority_sync`, `compiler_concept_ledger`, `compiler_proof_policy`, `compiler_concept_proof`, `compiler_performance_receipt_contract`, `kubernetes_dap_profiles`, `postfix_capability_closure`, `release_trust_invariants`, `agent_ledgers_validate`, `unsafe_prod_check`, `code_action_generation_ledger`, `source_commit_api_check`, `serial_test_ratchet`, `regex_static_ratchet` |
+| `pr_smoke` | `fmt`, `check_conflict_markers`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `source_commit_api_check`, `serial_test_ratchet`, `regex_static_ratchet`, `ignored_tests_check_refs`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `unit_routed_full`, `unit_routed_full_build`, `clippy_tests_kernel`, `ci_subject_digest_oracle`, `unit_control_plane_bins`, `inline_completion_registration`, `lsp_registration_contract`, `lsp_capability_snapshots`, `inline_completion_core`, `inline_completion_quality_receipt`, `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `public_api_baseline_canonical`, `clippy_full`, `compile_all_targets` |
+| `pr_fast_unblocked` | `fmt`, `check_conflict_markers`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `source_commit_api_check`, `serial_test_ratchet`, `regex_static_ratchet`, `ignored_tests_check_refs`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `unit_routed_full`, `unit_routed_full_build`, `clippy_tests_kernel`, `ci_subject_digest_oracle`, `unit_control_plane_bins`, `inline_completion_registration`, `lsp_registration_contract`, `lsp_capability_snapshots`, `inline_completion_core`, `inline_completion_quality_receipt`, `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `public_api_baseline_canonical`, `clippy_full`, `compile_all_targets` |
+| `merge_gate_shards` | `source_commit_api_check`, `serial_test_ratchet`, `regex_static_ratchet`, `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `public_api_baseline_canonical`, `release_history_domain6_rerender`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `parser_integration`, `parser_behavior_proof`, `unit_analysis_full`, `unit_lsp_core_full`, `unit_lsp_full`, `unit_dap_support_full`, `pending_parse_freshness`, `pull_diagnostics_freshness`, `must_context_check`, `docs_agents_contract_workflows`, `doctest_contract_proof`, `doctest_enforcement`, `agent_ledgers_validate`, `unsafe_prod_check`, `code_action_generation_ledger`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync`, `nested_lock_check`, `agent_context_coverage`, `non_rust_inventory_check`, `completion_candidate_ledger`, `lint_policy`, `msrv_authority_sync`, `compiler_concept_ledger`, `compiler_performance_receipt_contract`, `kubernetes_dap_profiles`, `compiler_proof_policy`, `compiler_concept_proof`, `postfix_capability_closure`, `release_trust_invariants` |
 | `check_all_targets` | `compile_all_targets` |
 | `conflict_markers` | `check_conflict_markers` |
 | `ux_tests` | `lsp_smoke`, `lsp_tier_a` |
@@ -85,7 +86,7 @@ blocks the required lane even though no `CI Gate shard` context is itself a
 required check. See
 [Merge-ready protocol → the main-red refusal](./merge-ready-protocol.md#the-main-red-refusal-makes-advisory-gate-shards-de-facto-required-16196).
 
-The two lists above partition the lane set: 14 mapped + 12 unmapped = 26 lanes,
+The two lists above partition the lane set: 15 mapped + 12 unmapped = 27 lanes,
 matching the count block. Both are checkable against
 `scripts/ci/validate_gate_lane_mapping.py` and `policy/ci-lanes.toml`; if the
 arithmetic stops reconciling, this page has drifted from its stated authority.

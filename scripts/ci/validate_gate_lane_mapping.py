@@ -43,63 +43,61 @@ SCHEMA_VERSION = "gate_lane_mapping.v1"
 # both pr_smoke and merge_gate_shards).
 #
 # Gates explicitly not yet mapped to a lane carry an empty list and a reason.
+PR_FAST_LANES = ["pr_smoke", "pr_fast_unblocked"]
+
 GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
-    # pr_fast gates roll up under pr_smoke
-    "fmt": {"lanes": ["pr_smoke"]},
-    "check_conflict_markers": {"lanes": ["conflict_markers"]},
-    "release_history": {"lanes": ["pr_smoke"]},
-    "readme_heading_check": {"lanes": ["pr_smoke"]},
-    "publish_closure": {"lanes": ["pr_smoke"]},
-    "publish_manifest_check": {"lanes": ["pr_smoke"]},
-    "layer_check": {"lanes": ["pr_smoke"]},
-    "published_crate_count_pr_fast": {"lanes": ["pr_smoke"]},
-    "release_history_check": {"lanes": ["pr_smoke"]},
-    "source_commit_api_check": {"lanes": ["pr_smoke", "merge_gate_shards"]},
+    # Both advisory jobs invoke the scope-aware pr_fast planner.
+    "fmt": {"lanes": PR_FAST_LANES},
+    "check_conflict_markers": {"lanes": [*PR_FAST_LANES, "conflict_markers"]},
+    "release_history": {"lanes": PR_FAST_LANES},
+    "readme_heading_check": {"lanes": PR_FAST_LANES},
+    "publish_closure": {"lanes": PR_FAST_LANES},
+    "publish_manifest_check": {"lanes": PR_FAST_LANES},
+    "layer_check": {"lanes": PR_FAST_LANES},
+    "published_crate_count_pr_fast": {"lanes": PR_FAST_LANES},
+    "release_history_check": {"lanes": PR_FAST_LANES},
+    "source_commit_api_check": {"lanes": [*PR_FAST_LANES, "merge_gate_shards"]},
     # The serialization ratchet runs in pr-fast and again in the required
     # merge-gate policy shard, so both execution lanes own its economics.
-    "serial_test_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
+    "serial_test_ratchet": {"lanes": [*PR_FAST_LANES, "merge_gate_shards"]},
     # The regex-static ratchet (#16260) mirrors serial_test_ratchet: pr-fast
     # shift-left plus the required merge-gate meta shard, so both execution
     # lanes own its economics.
-    "regex_static_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
+    "regex_static_ratchet": {"lanes": [*PR_FAST_LANES, "merge_gate_shards"]},
     # Arrived from the release lineage in the reconciliation merge (#4976). The
     # gate was defined in .ci/gate-policy.yaml there but never mapped here, so
     # this validator failed the moment both files met. tier: pr_fast, and it is
-    # listed alongside fmt in the ci-gate group, so it rolls up under pr_smoke.
-    "ignored_tests_check_refs": {"lanes": ["pr_smoke"]},
-    "clippy_scoped": {"lanes": ["pr_smoke"]},
-    "unit_scoped": {"lanes": ["pr_smoke"]},
-    "check_tests_scoped": {"lanes": ["pr_smoke"]},
-    "unit_routed_full": {"lanes": ["pr_smoke"]},
-    "unit_routed_full_build": {"lanes": ["pr_smoke"]},
-    # The gate runs inside the existing pr-fast invocation in advisory
-    # `pr-smoke`; it is not a separate workflow or receipt-producing lane.
-    "clippy_tests_kernel": {"lanes": ["pr_smoke"]},
+    # listed alongside fmt in the ci-gate group, so it rolls up under both advisory jobs.
+    "ignored_tests_check_refs": {"lanes": PR_FAST_LANES},
+    "clippy_scoped": {"lanes": PR_FAST_LANES},
+    "unit_scoped": {"lanes": PR_FAST_LANES},
+    "check_tests_scoped": {"lanes": PR_FAST_LANES},
+    "unit_routed_full": {"lanes": PR_FAST_LANES},
+    "unit_routed_full_build": {"lanes": PR_FAST_LANES},
+    # The gate runs inside the existing pr-fast invocation in each advisory
+    # job; it is not a separate workflow or receipt-producing lane.
+    "clippy_tests_kernel": {"lanes": PR_FAST_LANES},
     # Focused control-plane owner proofs (#13698). Declared immediately before
     # `unit_routed_full` in gate-policy.yaml so a deterministic control-plane
     # defect surfaces (and short-circuits the cohort) before the broad run;
-    # both roll up under the same advisory pr_smoke lane.
-    "ci_subject_digest_oracle": {"lanes": ["pr_smoke"]},
-    "unit_control_plane_bins": {"lanes": ["pr_smoke"]},
+    # both roll up under both advisory jobs.
+    "ci_subject_digest_oracle": {"lanes": PR_FAST_LANES},
+    "unit_control_plane_bins": {"lanes": PR_FAST_LANES},
     # Former `inline_completion_contract` (&&-composite, issue #6845) split
-    # into four independent gates.  All four remain in the pr_smoke tier lane.
-    "inline_completion_registration": {"lanes": ["pr_smoke"]},
-    "lsp_registration_contract": {"lanes": ["pr_smoke"]},
-    "lsp_capability_snapshots": {"lanes": ["pr_smoke"]},
-    "inline_completion_core": {"lanes": ["pr_smoke"]},
-    "inline_completion_quality_receipt": {"lanes": ["pr_smoke"]},
+    # into four independent gates.  All four remain in both advisory jobs.
+    "inline_completion_registration": {"lanes": PR_FAST_LANES},
+    "lsp_registration_contract": {"lanes": PR_FAST_LANES},
+    "lsp_capability_snapshots": {"lanes": PR_FAST_LANES},
+    "inline_completion_core": {"lanes": PR_FAST_LANES},
+    "inline_completion_quality_receipt": {"lanes": PR_FAST_LANES},
 
     # core / foundation gates roll up under merge_gate_shards
-    "clippy_core": {"lanes": ["merge_gate_shards"]},
-    "unit_core": {"lanes": ["merge_gate_shards"]},
-    "perl_token_leaf_contract": {"lanes": ["merge_gate_shards"]},
-    # The baseline-canonicality gate (#18736) runs only in the required
-    # merge-gate meta shard. It is tier pr_fast like perl_token_leaf_contract
-    # but carries no pr-fast lane economics of its own: pr-fast is advisory,
-    # and the meta shard is the blocking placement.
-    "public_api_baseline_canonical": {"lanes": ["merge_gate_shards"]},
+    "clippy_core": {"lanes": [*PR_FAST_LANES, "merge_gate_shards"]},
+    "unit_core": {"lanes": [*PR_FAST_LANES, "merge_gate_shards"]},
+    "perl_token_leaf_contract": {"lanes": [*PR_FAST_LANES, "merge_gate_shards"]},
+    "public_api_baseline_canonical": {"lanes": [*PR_FAST_LANES, "merge_gate_shards"]},
     "release_history_domain6_rerender": {"lanes": ["merge_gate_shards"]},
-    "clippy_full": {"lanes": ["merge_gate_shards"]},
+    "clippy_full": {"lanes": [*PR_FAST_LANES, "merge_gate_shards"]},
     "unit_foundation_full": {"lanes": ["merge_gate_shards"]},
     "unit_parser_stack_full": {"lanes": ["merge_gate_shards"]},
     "parser_integration": {"lanes": ["merge_gate_shards"]},
@@ -134,7 +132,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # The code-action generation ledger ratchet runs in the required merge-gate
     # policy shard (#15764), so its economics live on this lane.
     "code_action_generation_ledger": {"lanes": ["merge_gate_shards"]},
-    "compile_all_targets": {"lanes": ["check_all_targets"]},
+    "compile_all_targets": {"lanes": [*PR_FAST_LANES, "check_all_targets"]},
     "lsp_smoke": {"lanes": ["ux_tests"]},
 
     # corpus / parser maintenance gates
@@ -147,9 +145,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
 
     # security / policy gates
     "security_audit": {"lanes": ["security_audit"]},
-    "policy_checks": {"lanes": ["pr_smoke"]},
-    "workflow_audit": {"lanes": ["pr_smoke"]},
-    "nested_lock_check": {"lanes": ["pr_smoke"]},
+    "policy_checks": {"lanes": [], "reason": "Advisory merge-tier gate without a workflow route."},
+    "workflow_audit": {"lanes": [], "reason": "Advisory merge-tier gate without a workflow route."},
+    "nested_lock_check": {"lanes": ["merge_gate_shards"]},
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
     "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
     "completion_candidate_ledger": {"lanes": ["merge_gate_shards"]},
@@ -505,12 +503,19 @@ def main() -> int:
     missing_lanes: list[tuple[str, str]] = []
     mapped: list[tuple[str, list[str]]] = []
 
+    intentionally_unrouted: dict[str, str] = {}
     for gate in gate_names:
         entry = GATE_TO_LANE_MAP.get(gate)
         if entry is None:
             unmapped_gates.append(gate)
             continue
         lanes_for_gate = entry.get("lanes") or []
+        if not lanes_for_gate:
+            if entry.get("reason") and not gate_specs[gate].get("required"):
+                intentionally_unrouted[gate] = entry["reason"]
+            else:
+                unmapped_gates.append(gate)
+            continue
         for lane in lanes_for_gate:
             if lane not in lane_ids:
                 missing_lanes.append((gate, lane))
@@ -519,6 +524,9 @@ def main() -> int:
     print(f"Gates in {args.gate_policy}: {len(gate_names)}")
     print(f"Lanes in {args.lanes}: {len(lane_ids)}")
     print(f"Mapped: {len(mapped)}")
+    print(f"Intentionally unrouted: {len(intentionally_unrouted)}")
+    for gate, reason in intentionally_unrouted.items():
+        print(f"  - {gate}: {reason}")
     print(f"Unmapped gates: {len(unmapped_gates)}")
     if unmapped_gates:
         for g in unmapped_gates[:30]:
@@ -584,6 +592,7 @@ def main() -> int:
             "gate_count": len(gate_names),
             "lane_count": len(lane_ids),
             "mapped": [{"gate": g, "lanes": l} for g, l in mapped],
+            "intentionally_unrouted": intentionally_unrouted,
             "unmapped_gates": unmapped_gates,
             "missing_lanes": [{"gate": g, "lane": l} for g, l in missing_lanes],
             "workflows": [str(path) for path in args.workflows],
