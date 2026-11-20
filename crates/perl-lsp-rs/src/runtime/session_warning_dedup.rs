@@ -60,6 +60,13 @@ use parking_lot::Mutex;
 /// bytes per family regardless of client behavior.
 pub(crate) const PER_FAMILY_ENTRY_CAP: usize = 32;
 
+/// Hard cap for the core-module goto-definition notice family.
+///
+/// The closed core-module catalog (`is_core_perl_module`) has 34 names, so
+/// the generic 32 cap would make the last two modules emit-without-retaining
+/// and repeat on every F12. 64 retains the full closed set with headroom.
+pub(crate) const CORE_MODULE_NOTICE_CAP: usize = 64;
+
 /// One governed session-warning family (#9769).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionWarningFamily {
@@ -94,6 +101,10 @@ pub(crate) enum SessionWarningFamily {
     /// that matters (#16548).
     #[cfg(not(target_arch = "wasm32"))]
     ProjectConfig,
+    /// Core-module goto-definition notices (subject: module name,
+    /// fingerprinted). Per-module, not per-session: F12 on `strict` must not
+    /// silence the notice for `warnings` (#16666).
+    CoreModuleNotice,
 }
 
 /// Stable internal reason/category for a session warning.
@@ -137,6 +148,9 @@ pub(crate) enum SessionWarningCode {
     /// each names a different remedy (PR #16566 review).
     #[cfg(not(target_arch = "wasm32"))]
     ProjectConfigVersionInvalid,
+    /// Goto-definition was requested on a Perl core module with no source
+    /// file (subject: the module name, fingerprinted).
+    CoreModuleGotoDefNotice,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
@@ -153,6 +167,8 @@ pub(crate) enum SessionWarningSubjectTag {
     ClientCriticProfile,
     /// `formatting.engine` client setting.
     ClientFormattingEngine,
+    /// A Perl core module name (fingerprinted subject).
+    CoreModuleName,
 }
 
 impl SessionWarningSubjectTag {
@@ -210,7 +226,6 @@ pub(crate) enum SessionWarningDecision {
 }
 
 /// Per-family retained identities plus pressure counters.
-#[derive(Default)]
 struct FamilyState {
     seen: HashSet<SessionWarningIdentity>,
     inserted: u64,
@@ -218,15 +233,34 @@ struct FamilyState {
     emitted_without_retaining: u64,
     cleared_by_lifecycle: u64,
     high_water_entries: usize,
+    cap: usize,
+}
+
+impl Default for FamilyState {
+    fn default() -> Self {
+        Self {
+            seen: HashSet::new(),
+            inserted: 0,
+            suppressed: 0,
+            emitted_without_retaining: 0,
+            cleared_by_lifecycle: 0,
+            high_water_entries: 0,
+            cap: PER_FAMILY_ENTRY_CAP,
+        }
+    }
 }
 
 impl FamilyState {
+    fn with_cap(cap: usize) -> Self {
+        Self { cap, ..Self::default() }
+    }
+
     fn note(&mut self, identity: SessionWarningIdentity) -> SessionWarningDecision {
         if self.seen.contains(&identity) {
             self.suppressed += 1;
             return SessionWarningDecision::Suppress;
         }
-        if self.seen.len() >= PER_FAMILY_ENTRY_CAP {
+        if self.seen.len() >= self.cap {
             self.emitted_without_retaining += 1;
             return SessionWarningDecision::EmitWithoutRetaining;
         }
@@ -259,6 +293,10 @@ struct FamilyStore {
 }
 
 impl FamilyStore {
+    fn with_cap(cap: usize) -> Self {
+        Self { state: Mutex::new(FamilyState::with_cap(cap)) }
+    }
+
     fn note(&self, identity: SessionWarningIdentity) -> SessionWarningDecision {
         self.state.lock().note(identity)
     }
@@ -286,11 +324,70 @@ impl FamilyStore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(subject: &str) -> SessionWarningIdentity {
+        SessionWarningIdentity::fingerprinted(
+            SessionWarningCode::CoreModuleGotoDefNotice,
+            SessionWarningSubjectTag::CoreModuleName,
+            subject,
+        )
+    }
+
+    #[test]
+    fn family_state_with_cap_applies_the_configured_cap_to_its_return_value() {
+        // The returned state's own decisions are the observable sink for
+        // the per-family cap: at cap 2 the third distinct identity emits
+        // without retaining, while the default cap (32) would retain it.
+        let mut state = FamilyState::with_cap(2);
+        assert_eq!(state.cap, 2, "the returned state must carry the configured cap");
+        assert_eq!(state.note(identity("strict")), SessionWarningDecision::EmitFirst);
+        assert_eq!(state.note(identity("warnings")), SessionWarningDecision::EmitFirst);
+        assert_eq!(
+            state.note(identity("utf8")),
+            SessionWarningDecision::EmitWithoutRetaining
+        );
+        assert_eq!(state.seen.len(), 2);
+        assert_eq!(state.emitted_without_retaining, 1);
+    }
+
+    #[test]
+    fn with_cap_bounds_retention_at_the_configured_cap() {
+        // The per-family cap is the seam: at cap 2 the third distinct
+        // identity emits without retaining, and a repeat of it emits
+        // without retaining again instead of suppressing. With the
+        // default cap (32) the third identity would be retained and its
+        // repeat would suppress, so this discriminates the configured
+        // cap from the default.
+        let store = FamilyStore::with_cap(2);
+        assert_eq!(
+            store.state.lock().cap,
+            2,
+            "the returned store must wrap a state carrying the configured cap"
+        );
+        assert_eq!(store.note(identity("strict")), SessionWarningDecision::EmitFirst);
+        assert_eq!(store.note(identity("warnings")), SessionWarningDecision::EmitFirst);
+        assert_eq!(
+            store.note(identity("utf8")),
+            SessionWarningDecision::EmitWithoutRetaining
+        );
+        assert_eq!(
+            store.note(identity("utf8")),
+            SessionWarningDecision::EmitWithoutRetaining
+        );
+        assert_eq!(store.note(identity("strict")), SessionWarningDecision::Suppress);
+        let counters = store.counters();
+        assert_eq!(counters.entries, 2);
+        assert_eq!(counters.emitted_without_retaining, 2);
+    }
+}
+
 /// Session-scoped warning-dedup store for the governed families.
 ///
 /// Presentation/operational state only (#9769): classification
 /// `provider_or_presentation`, semantic authority none, persistence never.
-#[derive(Default)]
 pub(crate) struct SessionWarningDedupStore {
     #[cfg(not(target_arch = "wasm32"))]
     critic: FamilyStore,
@@ -301,6 +398,24 @@ pub(crate) struct SessionWarningDedupStore {
     formatter_options: FamilyStore,
     #[cfg(not(target_arch = "wasm32"))]
     project_config: FamilyStore,
+    core_module_notice: FamilyStore,
+}
+
+impl Default for SessionWarningDedupStore {
+    fn default() -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            critic: FamilyStore::default(),
+            client_setting: FamilyStore::default(),
+            client_include_path: FamilyStore::default(),
+            ai_backend: FamilyStore::default(),
+            critic_engine_availability: FamilyStore::default(),
+            formatter_options: FamilyStore::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            project_config: FamilyStore::default(),
+            core_module_notice: FamilyStore::with_cap(CORE_MODULE_NOTICE_CAP),
+        }
+    }
 }
 
 impl SessionWarningDedupStore {
@@ -315,6 +430,7 @@ impl SessionWarningDedupStore {
             SessionWarningFamily::FormatterOptions => &self.formatter_options,
             #[cfg(not(target_arch = "wasm32"))]
             SessionWarningFamily::ProjectConfig => &self.project_config,
+            SessionWarningFamily::CoreModuleNotice => &self.core_module_notice,
         }
     }
 
@@ -541,6 +657,8 @@ pub struct SessionWarningDedupSnapshot {
     /// project-config loaders do not exist).
     #[cfg(not(target_arch = "wasm32"))]
     pub project_config: SessionWarningFamilyCounters,
+    /// Core-module goto-definition notice family counters.
+    pub core_module_notice: SessionWarningFamilyCounters,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -557,6 +675,7 @@ impl SessionWarningDedupStore {
             formatter_options: self.formatter_options.counters(),
             #[cfg(not(target_arch = "wasm32"))]
             project_config: self.project_config.counters(),
+            core_module_notice: self.core_module_notice.counters(),
         }
     }
 }

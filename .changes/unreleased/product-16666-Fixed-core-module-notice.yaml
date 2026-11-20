@@ -1,0 +1,14 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  The core-module goto-definition notice is now emitted once per core module
+  instead of once per server session, so jumping to a different core module
+  (for example `warnings` after `strict`) still explains that no source file
+  is available and hover shows its documentation, while repeats for the same
+  module stay silent.
+time: 2026-11-14T00:00:00Z
+custom:
+  PR: "16666"
+  Slug: core-module-notice-per-module
+  Breaking: "no"

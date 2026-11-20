@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 
 use super::LspServer;
 use super::session_warning_dedup::{
-    PER_FAMILY_ENTRY_CAP, SessionWarningCode, SessionWarningDecision, SessionWarningFamily,
-    SessionWarningIdentity, SessionWarningSubjectTag,
+    CORE_MODULE_NOTICE_CAP, PER_FAMILY_ENTRY_CAP, SessionWarningCode, SessionWarningDecision,
+    SessionWarningFamily, SessionWarningIdentity, SessionWarningSubjectTag,
 };
 
 fn profile_identity(profile: &str) -> SessionWarningIdentity {
@@ -222,6 +222,103 @@ fn critic_configuration_clear_preserves_the_engine_availability_identity() {
         "engine availability has not changed, so the once-per-session warning must stay suppressed"
     );
     assert_eq!(server.session_warning_dedup_snapshot().critic_engine_availability.entries, 1);
+}
+
+/// The closed core-module catalog has 34 names; the core-module family cap
+/// (64) must retain all of them, otherwise the last modules would repeat
+/// their notice on every F12 (#16666).
+#[test]
+fn core_module_notice_retains_the_full_closed_module_set() {
+    const CLOSED_MODULE_SET: [&str; 34] = [
+        "strict",
+        "warnings",
+        "warnings::register",
+        "utf8",
+        "feature",
+        "constant",
+        "vars",
+        "lib",
+        "parent",
+        "base",
+        "overload",
+        "overloading",
+        "Scalar::Util",
+        "List::Util",
+        "Carp",
+        "Exporter",
+        "POSIX",
+        "Data::Dumper",
+        "File::Basename",
+        "File::Path",
+        "File::Spec",
+        "Storable",
+        "Encode",
+        "MIME::Base64",
+        "Digest::MD5",
+        "Digest::SHA",
+        "IO::File",
+        "IO::Handle",
+        "Fcntl",
+        "Socket",
+        "Time::HiRes",
+        "Time::Local",
+        "Getopt::Long",
+        "Pod::Usage",
+    ];
+    assert!(CORE_MODULE_NOTICE_CAP >= CLOSED_MODULE_SET.len());
+    let server = LspServer::new();
+    for name in CLOSED_MODULE_SET {
+        let identity = SessionWarningIdentity::fingerprinted(
+            SessionWarningCode::CoreModuleGotoDefNotice,
+            SessionWarningSubjectTag::CoreModuleName,
+            name,
+        );
+        assert_eq!(
+            server.session_warning_dedup.note(SessionWarningFamily::CoreModuleNotice, identity),
+            SessionWarningDecision::EmitFirst,
+            "{name} must be retained, not emit-without-retaining"
+        );
+    }
+    // Every retained module suppresses on repeat.
+    for name in CLOSED_MODULE_SET {
+        let identity = SessionWarningIdentity::fingerprinted(
+            SessionWarningCode::CoreModuleGotoDefNotice,
+            SessionWarningSubjectTag::CoreModuleName,
+            name,
+        );
+        assert_eq!(
+            server.session_warning_dedup.note(SessionWarningFamily::CoreModuleNotice, identity),
+            SessionWarningDecision::Suppress,
+            "{name}"
+        );
+    }
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.core_module_notice.entries, 34);
+    assert_eq!(snapshot.core_module_notice.emitted_without_retaining, 0);
+
+    // A failed send for a core-module notice rolls back and retries.
+    let retry = SessionWarningIdentity::fingerprinted(
+        SessionWarningCode::CoreModuleGotoDefNotice,
+        SessionWarningSubjectTag::CoreModuleName,
+        "Retry::Module",
+    );
+    assert_eq!(
+        server.session_warning_dedup.emit_once_with(
+            SessionWarningFamily::CoreModuleNotice,
+            retry,
+            || false
+        ),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        server.session_warning_dedup.emit_once_with(
+            SessionWarningFamily::CoreModuleNotice,
+            retry,
+            || true
+        ),
+        SessionWarningDecision::EmitFirst,
+        "failing-writer retry must still emit"
+    );
 }
 
 #[test]

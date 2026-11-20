@@ -163,7 +163,6 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            core_module_notice_shown: Arc::new(AtomicBool::new(false)),
             module_ambiguity_notices: Arc::new(Default::default()),
             #[cfg(test)]
             module_ambiguity_probe_gate: Mutex::new(None),
@@ -384,7 +383,6 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            core_module_notice_shown: Arc::new(AtomicBool::new(false)),
             module_ambiguity_notices: Arc::new(Default::default()),
             #[cfg(test)]
             module_ambiguity_probe_gate: Mutex::new(None),
@@ -532,7 +530,6 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            core_module_notice_shown: Arc::new(AtomicBool::new(false)),
             module_ambiguity_notices: Arc::new(Default::default()),
             #[cfg(test)]
             module_ambiguity_probe_gate: Mutex::new(None),
