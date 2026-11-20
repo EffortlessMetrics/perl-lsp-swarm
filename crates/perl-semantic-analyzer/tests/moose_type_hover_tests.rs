@@ -111,6 +111,20 @@ fn moose_type_doc_num_has_description() {
 }
 
 #[test]
+fn moose_type_doc_strictnum_types_standard_constant() {
+    let doc = get_moose_type_documentation("STRICTNUM");
+    assert!(doc.is_some(), "Types::Standard::STRICTNUM should have built-in documentation");
+    let doc = must_some(doc);
+    assert_eq!(doc.signature, "STRICTNUM");
+    assert!(
+        doc.description.to_lowercase().contains("strictnum")
+            || doc.description.to_lowercase().contains("num"),
+        "STRICTNUM description should explain Num/StrictNum strictness, got: {}",
+        doc.description
+    );
+}
+
+#[test]
 fn moose_type_doc_coderef_has_description() {
     let doc = get_moose_type_documentation("CodeRef");
     assert!(doc.is_some(), "CodeRef should have documentation");

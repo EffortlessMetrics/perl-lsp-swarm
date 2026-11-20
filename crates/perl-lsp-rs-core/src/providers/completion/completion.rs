@@ -149,6 +149,7 @@ const MOOSE_TYPE_CANDIDATES: &[&str] = &[
     "Str",
     "Num",
     "Int",
+    "STRICTNUM",
     "ClassName",
     "RoleName",
     "Ref",

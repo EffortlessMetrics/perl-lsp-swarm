@@ -1094,6 +1094,11 @@ pub fn get_moose_type_documentation(type_str: &str) -> Option<BuiltinDoc> {
             signature: "Num",
             description: "Accepts any value that looks like a number (integer or float).",
         }),
+        // Types::Standard — boolean constant, not a type constraint
+        "STRICTNUM" => Some(BuiltinDoc {
+            signature: "STRICTNUM",
+            description: "Types::Standard boolean constant: true when Num is an alias for StrictNum rather than the lax Num type.",
+        }),
         "Int" => Some(BuiltinDoc {
             signature: "Int",
             description: "Accepts only integer values (no decimal point).",
