@@ -31,10 +31,10 @@ p.parse_args()
 """
 
 
-def smoke_job() -> str:
+def workflow_job(name: str) -> str:
     text = WORKFLOW.read_text(encoding="utf-8")
-    job = re.search(r"^  pr-smoke:\n(.*?)(?=^  [\w-]+:|\Z)", text, re.M | re.S)
-    assert job, "PR Smoke job missing"
+    job = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  [\w-]+:|\Z)", text, re.M | re.S)
+    assert job, f"workflow job missing: {name}"
     return job.group(1)
 
 
@@ -42,7 +42,7 @@ def smoke_step(name: str) -> tuple[str, str]:
     """Read the actual Bash body and metadata, without a YAML dependency."""
     match = re.search(
         rf"^      - name: {re.escape(name)}\n(.*?)(?=^      - |\Z)",
-        smoke_job(), re.M | re.S,
+        workflow_job("pr-smoke"), re.M | re.S,
     )
     assert match, f"workflow step missing: {name}"
     block = match.group(1)
@@ -86,6 +86,26 @@ def smoke_step_retention_days(name: str) -> int:
     match = re.search(r"^ +retention-days: (\d+)$", metadata, re.M)
     assert match, f"workflow step declares no retention-days: {name}"
     return int(match.group(1))
+
+
+class DocumentedTimeoutTests(unittest.TestCase):
+    def test_timeout_classification_matches_installed_jobs(self) -> None:
+        doc = (ROOT / "docs/reference/CI_ARCHITECTURE.md").read_text(encoding="utf-8")
+        section = doc.split("### Timeout Classification\n", 1)[1].split("\n---", 1)[0]
+        for job in ("pr-smoke", "pr-fast-unblocked", "merge-gate-shards"):
+            with self.subTest(job=job):
+                body = workflow_job(job)
+                job_minutes, = re.findall(r"^    timeout-minutes: (\d+)$", body, re.M)
+                seconds, = re.findall(
+                    r"^          timeout --signal=TERM --kill-after=\d+s (\d+)s ", body, re.M
+                )
+                rows = re.findall(
+                    rf"^\| `{re.escape(job)}` \| (\d+) \| (\d+) \|$", section, re.M
+                )
+                self.assertEqual(len(rows), 1, f"expected one timeout row for {job}")
+                outer, inner = map(int, rows[0])
+                self.assertEqual(outer, int(job_minutes), "GitHub job timeout (minutes)")
+                self.assertEqual(inner * 60, int(seconds), "runner watchdog (seconds)")
 
 
 class WorkflowGuardTests(unittest.TestCase):
