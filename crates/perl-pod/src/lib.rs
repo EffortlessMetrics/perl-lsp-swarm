@@ -8,6 +8,20 @@
 #![warn(missing_docs)]
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
+mod model;
+mod paragraph;
+mod parser;
+
+pub use model::{
+    PodBlock, PodCommand, PodDiagnostic, PodModelVersion, PodParse, PodRange, PodTextBlock,
+};
+
+/// Parse POD into ordered byte-ranged blocks without altering legacy [`extract_pod`] behavior.
+#[must_use]
+pub fn parse_pod(source: &str) -> PodParse {
+    parser::parse_pod_source(source)
+}
+
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
