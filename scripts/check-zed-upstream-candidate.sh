@@ -219,7 +219,7 @@ for path, text in zed_sections.items():
     require(
         "```json" not in text.lower()
         and "lsp.perllsp" not in text
-        and not re.search(r'"(?:perl-lsp|perllsp)"\s*:\s*\{', text),
+        and not re.search(r'"(?:perl-lsp-rs|perl-lsp|perllsp)"[ \t\r\n]*:[ \t\r\n]*\{', text),
         f"{path} must not offer runnable Zed JSON settings or the provisional settings key",
     )
 

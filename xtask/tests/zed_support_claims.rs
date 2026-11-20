@@ -119,6 +119,8 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
     let troubleshooting_zed =
         markdown_section(&troubleshooting, "## Zed Does Not Start `perllsp`", "## ")?;
     let config_zed = markdown_section(&config, "#### Zed (`settings.json`)", "#### ")?;
+    let provider_object =
+        regex::Regex::new(r#""(?:perl-lsp-rs|perl-lsp|perllsp)"[ \t\r\n]*:[ \t\r\n]*\{"#)?;
     for (path, text) in [
         ("docs/EDITORS/ZED_SETUP.md", zed.as_str()),
         ("docs/reference/CONFIG.md", config_zed),
@@ -129,8 +131,7 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
         assert!(
             !text.to_ascii_lowercase().contains("```json")
                 && !text.contains("lsp.perllsp")
-                && !text.contains("\"perl-lsp\": {")
-                && !text.contains("\"perllsp\": {"),
+                && !provider_object.is_match(text),
             "{path} must not offer runnable Zed JSON settings or the provisional settings key"
         );
     }
