@@ -833,6 +833,11 @@
         "icon": "$(pulse)"
       },
       {
+        "command": "perl-lsp.showBinaryIdentity",
+        "title": "%command.showBinaryIdentity.title%",
+        "category": "Perl"
+      },
+      {
         "command": "perl-lsp.reinstall",
         "title": "%command.reinstall.title%",
         "category": "Perl",
@@ -1037,6 +1042,10 @@
         },
         {
           "command": "perl-lsp.showStatusMenu",
+          "when": "perl-lsp.activated"
+        },
+        {
+          "command": "perl-lsp.showBinaryIdentity",
           "when": "perl-lsp.activated"
         },
         {

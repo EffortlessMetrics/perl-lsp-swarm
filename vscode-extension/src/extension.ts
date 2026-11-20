@@ -86,11 +86,12 @@ import { languageServerRuntimeHealth } from './languageServerRuntimeHealth';
 import {
   SHOW_BINARY_IDENTITY_COMMAND,
   showBinaryIdentityStatus,
+  showUnavailableBinaryIdentityStatus,
   type BinaryIdentityCommandHost,
   type BinaryIdentityCommandInput,
   type BinaryIdentityRequestClient,
 } from './binaryIdentityCommand';
-import type { BinaryIdentityAction } from './binaryIdentityStatus';
+import type { BinaryIdentityAction, SelectedBinaryRole } from './binaryIdentityStatus';
 import { registerCriticCommandGroup } from './criticCommandGroup';
 import { registerTestCommandGroup } from './testCommandGroup';
 import { registerOnboardingCommandGroup } from './onboardingCommandGroup';
@@ -273,14 +274,21 @@ export function createBinaryIdentityCommand(
   resolveInput: () => BinaryIdentityCommandInput,
   host: BinaryIdentityCommandHost,
   reportError: (message: string) => void = () => undefined,
+  ensureServer: () => Promise<void> = async () => undefined,
 ): () => Promise<unknown> {
   return async () => {
-    const activeClient = getClient();
-    if (!activeClient) {
-      return { status: 'unavailable' as const };
-    }
-
     try {
+      let activeClient = getClient();
+      if (!activeClient) {
+        // The user asked for identity explicitly, so a dormant server is
+        // started through the shared demand owner (as the health check does)
+        // before concluding that no identity can be read (#6854).
+        await ensureServer();
+        activeClient = getClient();
+      }
+      if (!activeClient) {
+        return await showUnavailableBinaryIdentityStatus(host, resolveInput());
+      }
       return await showBinaryIdentityStatus(activeClient, host, resolveInput());
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -288,6 +296,37 @@ export function createBinaryIdentityCommand(
       return { status: 'error' as const, message };
     }
   };
+}
+
+/**
+ * Attributes the resolved server binary to a role without guessing (#6854).
+ * An explicit `perl-lsp.serverPath` that is the binary actually resolved is
+ * user-supplied; a binary with an installed managed candidate manifest is
+ * managed; any other resolved binary (PATH or bundled fallback) is `unknown`.
+ * With nothing resolved, the default managed authority is the selection and
+ * the binary is reported as unresolved, unless an explicit path was
+ * configured, which keeps the user-supplied role. Filename and location are
+ * never identity evidence; the server's verdict still decides compatibility.
+ */
+export function resolveSelectedBinaryRole(input: {
+  configuredPath: string | undefined;
+  resolvedPath: string | null;
+  managedManifestPresent: boolean;
+}): { selectedRole: SelectedBinaryRole; serverBinaryResolved: boolean } {
+  const configured = input.configuredPath?.trim() ?? '';
+  if (input.resolvedPath === null) {
+    return {
+      selectedRole: configured === '' ? 'managed' : 'user_supplied',
+      serverBinaryResolved: false,
+    };
+  }
+  if (configured !== '' && path.resolve(configured) === path.resolve(input.resolvedPath)) {
+    return { selectedRole: 'user_supplied', serverBinaryResolved: true };
+  }
+  if (input.managedManifestPresent) {
+    return { selectedRole: 'managed', serverBinaryResolved: true };
+  }
+  return { selectedRole: 'unknown', serverBinaryResolved: true };
 }
 
 /**
@@ -1157,11 +1196,19 @@ async function runExtensionActivation(
       () => client ?? languageClientLifecycle?.client,
       () => {
         const installed = installedManagedIdentity();
+        const serverPath = currentServerPath;
+        // #9096 owns persistent selected-source truth; until it lands the
+        // role is attributed from the resolved binary, never assumed.
+        const role = resolveSelectedBinaryRole({
+          configuredPath: vscode.workspace.getConfiguration('perl-lsp').get<string>('serverPath'),
+          resolvedPath: serverPath,
+          managedManifestPresent:
+            serverPath !== null &&
+            readInstalledManagedCandidateManifest(path.dirname(serverPath)) !== null,
+        });
         return {
           extensionVersion: (context.extension.packageJSON.version as string) ?? 'unknown',
-          // #9096 owns persistent selected-source truth; until it lands this
-          // host can only speak for the managed role it resolves by default.
-          selectedRole: 'managed',
+          ...role,
           // Absent properties stay absent: the request builder distinguishes
           // an unset expectation from an empty one.
           ...(installed === undefined
@@ -1188,6 +1235,10 @@ async function runExtensionActivation(
       (message) => {
         outputChannel.error(`[binary-identity] ${message}`);
         void vscode.window.showErrorMessage(`Failed to read Perl LSP binary identity: ${message}`);
+      },
+      async () => {
+        await serverDemand?.ensureStarted('command:showBinaryIdentity', { retry: true });
+        syncLifecycleProjection();
       },
     ),
     runHealthCheck: async (serverPath) => {

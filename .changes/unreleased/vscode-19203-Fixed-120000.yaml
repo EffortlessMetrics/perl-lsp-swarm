@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Fixed
+body: "Perl: Show Server and DAP Identity is now in the command palette. A malformed or unrecognised identity answer is shown as not proven instead of failing or guessing, a server mismatch always asks for repair, the binary role is no longer assumed to be managed, and the copied support packet keeps only identity fields with local paths and secrets removed."
+time: 2026-11-08T21:00:00Z
+custom:
+  PR: 19203
+  Slug: binary-identity-honest-states
+  Breaking: "no"
