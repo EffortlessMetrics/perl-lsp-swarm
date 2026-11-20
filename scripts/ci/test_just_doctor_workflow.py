@@ -1,4 +1,4 @@
-"""Keep the seven real-entrypoint doctor regressions reachable in hosted CI.
+"""Keep real-entrypoint doctor and hook bootstrap regressions reachable in CI.
 
 This is a bounded contract for the existing self-test job, not a general YAML
 validator or proof of all doctor checks. No third-party Python packages needed.
@@ -21,11 +21,19 @@ PATHS = (
     "scripts/tests/test_just_doctor.py",
     "scripts/ci/test_just_doctor_workflow.py",
     ".github/workflows/ci-gate-self-tests.yml",
+    "scripts/install-githooks.sh",
+    "scripts/check-githooks.sh",
+    "scripts/githooks-bootstrap.sh",
+    "scripts/tests/test-install-githooks-wrapper.sh",
+    "scripts/tests/test_githooks_bootstrap.py",
+    ".ci/coverage-packs.toml",
 )
 COMMAND = (
-    "python3 -B -m unittest scripts.tests.test_just_doctor "
+    "python3 -B -m unittest scripts.tests.test_githooks_bootstrap "
+    "scripts.tests.test_just_doctor "
     "scripts.ci.test_just_doctor_workflow -v"
 )
+WRAPPER_COMMAND = "bash scripts/tests/test-install-githooks-wrapper.sh"
 INSTALL = """      - name: Install just for doctor regressions
         uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff
         with:
@@ -38,6 +46,7 @@ RUN = f"""      - name: Run doctor entrypoint and CI route regressions
           just --version
           git --version
           bash --version
+          {WRAPPER_COMMAND}
           {COMMAND}"""
 
 
@@ -106,6 +115,9 @@ class JustDoctorWorkflowTests(unittest.TestCase):
             (COMMAND, "# " + COMMAND),
             (COMMAND, COMMAND + " || true"),
             (COMMAND, "python3 -m unittest discover -s scripts/tests -p absent.py"),
+            (WRAPPER_COMMAND, "echo " + WRAPPER_COMMAND),
+            (WRAPPER_COMMAND, "# " + WRAPPER_COMMAND),
+            (WRAPPER_COMMAND, WRAPPER_COMMAND + " || true"),
         ):
             with self.subTest(after=after), self.assertRaises(AssertionError):
                 check_route(text.replace(before, after, 1))
@@ -118,20 +130,30 @@ class JustDoctorWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="doctor-ci-route-") as temp:
             root = Path(temp)
             log = root / "python.args"
-            for failing in (None, "just", "git", "bash", "python3"):
+            wrapper_log = root / "wrapper.args"
+            for failing in (None, "just", "git", "bash", "hook-wrapper", "python3"):
                 with self.subTest(failing=failing):
                     log.unlink(missing_ok=True)
+                    wrapper_log.unlink(missing_ok=True)
                     for tool in ("just", "git", "bash", "python3"):
                         body = '#!/bin/sh\n'
                         if tool == "python3":
                             body += 'printf "%s\\n" "$@" > "$DOCTOR_ROUTE_LOG"\n'
+                        if tool == "bash":
+                            body += (
+                                'if [ "${1:-}" = "scripts/tests/test-install-githooks-wrapper.sh" ]; then\n'
+                                '  printf "%s\\n" "$@" > "$DOCTOR_WRAPPER_ROUTE_LOG"\n'
+                                f'  exit {23 if failing == "hook-wrapper" else 0}\n'
+                                'fi\n'
+                            )
                         body += f'exit {23 if tool == failing else 0}\n'
                         executable = root / tool
                         executable.write_text(body)
                         executable.chmod(0o755)
                     result = subprocess.run(
                         [bash, "-c", script], cwd=ROOT,
-                        env={**os.environ, "PATH": temp, "DOCTOR_ROUTE_LOG": str(log)},
+                        env={**os.environ, "PATH": temp, "DOCTOR_ROUTE_LOG": str(log),
+                             "DOCTOR_WRAPPER_ROUTE_LOG": str(wrapper_log)},
                         capture_output=True, text=True, timeout=10,
                     )
                     self.assertEqual(result.returncode, 23 if failing else 0, result.stderr)
@@ -139,6 +161,10 @@ class JustDoctorWorkflowTests(unittest.TestCase):
                         self.assertEqual(log.read_text().splitlines(), COMMAND.split()[1:])
                     else:
                         self.assertFalse(log.exists(), "broken instruments must stop before tests")
+                    if failing in (None, "hook-wrapper", "python3"):
+                        self.assertEqual(wrapper_log.read_text().splitlines(), WRAPPER_COMMAND.split()[1:])
+                    else:
+                        self.assertFalse(wrapper_log.exists(), "broken instruments must stop before shell tests")
 
 
 if __name__ == "__main__":

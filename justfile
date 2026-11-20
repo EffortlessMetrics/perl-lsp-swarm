@@ -732,17 +732,36 @@ doctor:
     # ------------------------------------------------------------------
     # Check 5: pre-push hook installed
     # ------------------------------------------------------------------
-    hook_path="$main_git_dir/hooks/pre-push"
-    expected_hook="$main_root/hooks/pre-push"
+    # core.hooksPath may be relative to this worktree or an absolute path.
+    # Resolve both the active hook and its source authority from this checkout.
+    if ! hook_path=$(git rev-parse --path-format=absolute --git-path hooks/pre-push) || [ -z "$hook_path" ]; then
+        echo "❌ could not resolve the effective pre-push hook path"
+        echo "   No repair performed; resolve the Git path error and rerun just doctor."
+        exit 1
+    fi
+    if ! hook_root=$(git rev-parse --path-format=absolute --show-toplevel) || [ -z "$hook_root" ]; then
+        echo "❌ could not resolve the hook source worktree"
+        echo "   No repair performed; resolve the Git path error and rerun just doctor."
+        exit 1
+    fi
+    expected_hook="$hook_root/hooks/pre-push"
     if [ -f "$hook_path" ] && [ -x "$hook_path" ]; then
-        if [ -f "$expected_hook" ] && diff -q \
-            <(awk '{ sub(/\r$/, ""); lines[NR]=$0 } END { last=NR; while (last > 0 && lines[last] == "") last--; for (i = 1; i <= last; i++) print lines[i] }' "$hook_path") \
-            <(awk '{ sub(/\r$/, ""); lines[NR]=$0 } END { last=NR; while (last > 0 && lines[last] == "") last--; for (i = 1; i <= last; i++) print lines[i] }' "$expected_hook") >/dev/null; then
-            echo "✅ pre-push hook installed and current"
-        elif [ -f "$expected_hook" ]; then
-            echo "⚠️  pre-push hook installed but stale: $hook_path"
-            echo "   Fix: cargo xtask ci-hygiene install-githooks   # refresh from hooks/pre-push"
-            issues=$((issues + 1))
+        if [ -f "$expected_hook" ]; then
+            # Capture each reader's status; process substitution can hide a
+            # failed read behind a successful comparison of empty output.
+            if ! installed_hook=$(awk '{ sub(/\r$/, ""); lines[NR]=$0 } END { last=NR; while (last > 0 && lines[last] == "") last--; for (i = 1; i <= last; i++) print lines[i] }' "$hook_path") || \
+               ! source_hook=$(awk '{ sub(/\r$/, ""); lines[NR]=$0 } END { last=NR; while (last > 0 && lines[last] == "") last--; for (i = 1; i <= last; i++) print lines[i] }' "$expected_hook"); then
+                echo "❌ could not read pre-push hook or source authority"
+                echo "   No repair performed; resolve the read error and rerun just doctor."
+                exit 1
+            fi
+            if [ "$installed_hook" = "$source_hook" ]; then
+                echo "✅ pre-push hook installed and current"
+            else
+                echo "⚠️  pre-push hook installed but stale: $hook_path"
+                echo "   Fix: bash scripts/install-githooks.sh   # refresh from hooks/pre-push"
+                issues=$((issues + 1))
+            fi
         else
             echo "✅ pre-push hook installed"
         fi
@@ -752,7 +771,7 @@ doctor:
         issues=$((issues + 1))
     else
         echo "⚠️  pre-push hook not installed"
-        echo "   Fix: cargo xtask ci-hygiene install-githooks   # or: bash scripts/install-githooks.sh"
+        echo "   Fix: bash scripts/install-githooks.sh"
         issues=$((issues + 1))
     fi
 

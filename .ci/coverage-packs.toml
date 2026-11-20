@@ -555,10 +555,14 @@ id = "patch-coverage-install-githooks-wrapper"
 lcov = false
 files = [
   "scripts/install-githooks.sh",
+  "scripts/check-githooks.sh",
+  "scripts/githooks-bootstrap.sh",
   "scripts/tests/test-install-githooks-wrapper.sh",
+  "scripts/tests/test_githooks_bootstrap.py",
 ]
 commands = [
   "bash scripts/tests/test-install-githooks-wrapper.sh",
+  "python3 -B -m unittest scripts.tests.test_githooks_bootstrap -v",
 ]
 coverage_filters = [
   "install-githooks-wrapper",
