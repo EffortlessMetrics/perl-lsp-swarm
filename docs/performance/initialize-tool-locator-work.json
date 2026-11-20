@@ -1,0 +1,57 @@
+{
+  "issue": 10040,
+  "source_commit": "8a1bc3171e2937e5436bfb0b36dbffb4910f563a",
+  "earliest_observed_phase": "handle_initialize, after project configuration and before InitializeResult construction",
+  "call_path": [
+    "LspServer::handle_initialize",
+    "LspServer::detect_tool",
+    "execute_command::command_exists",
+    "command_exists_via",
+    "command_exists_via_key",
+    "command_exists_filesystem_state",
+    "filesystem_probe_fingerprint"
+  ],
+  "operations": [
+    {
+      "operation_id": "init.tools.perltidy_executable_detection",
+      "command": "perltidy",
+      "result_use": "Tool availability trace and runtime_flags, which ignores the availability argument."
+    },
+    {
+      "operation_id": "init.tools.perlcritic_executable_detection",
+      "command": "perlcritic",
+      "result_use": "Tool availability trace."
+    }
+  ],
+  "fixture": {
+    "platform": "Linux x86_64",
+    "compiler": "rustc 1.95.0",
+    "method": "Call command_exists_via_key once per listed command, then repeat with the same explicit PATH keys. Each key names only empty temporary directories. Count calls immediately before std::fs::metadata and calls to a fake availability probe that returns false.",
+    "count_scope": "Totals across both tool locators per pass. Each locator fingerprints each directory and its candidate filename.",
+    "observations": [
+      {
+        "path_directories": 1,
+        "cold": {
+          "metadata_calls": 4,
+          "availability_probe_calls": 2
+        },
+        "warm": {
+          "metadata_calls": 4,
+          "availability_probe_calls": 0
+        }
+      },
+      {
+        "path_directories": 3,
+        "cold": {
+          "metadata_calls": 12,
+          "availability_probe_calls": 2
+        },
+        "warm": {
+          "metadata_calls": 12,
+          "availability_probe_calls": 0
+        }
+      }
+    ]
+  },
+  "evidence": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10040#issuecomment-7038349109"
+}
