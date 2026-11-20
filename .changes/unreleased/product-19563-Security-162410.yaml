@@ -1,0 +1,19 @@
+project: product
+component: Developer experience
+kind: Security
+body: >-
+  The Cargo Deny policy-enforcement lane is green again on main: RUSTSEC-2026-0543
+  marks chrono as unmaintained with all versions affected and no safe upgrade
+  available, so the advisory is disposed explicitly in deny.toml with an accurate
+  reachability statement rather than by a dependency bump. chrono stays a direct
+  dependency of six workspace crates; no published crate other than
+  crates/perl-corpus links chrono at runtime (one use site there), plus two
+  dev-target use sites in crates/perl-lsp-rs, and every remaining chrono use
+  site is in publish = false workspace tooling. The disposition
+  records bounded maintenance-abandonment exposure rather than claiming no risk,
+  and the durable chrono migration to jiff or time is tracked separately (#19562)
+time: 2026-11-19T16:24:10Z
+custom:
+  PR: 19563
+  Slug: cargo-deny-chrono-disposition
+  Breaking: "no"
