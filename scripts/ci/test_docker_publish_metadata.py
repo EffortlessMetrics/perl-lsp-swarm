@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("docker_publish_metadata.py")
 SPEC = importlib.util.spec_from_file_location("docker_publish_metadata", MODULE_PATH)
@@ -119,17 +120,10 @@ class DiagnosticsAreNotRunnerCommands(unittest.TestCase):
         from io import StringIO
 
         out, err = StringIO(), StringIO()
-        previous = os.environ.get("VERSION_INPUT")
-        os.environ["VERSION_INPUT"] = version
-        os.environ.pop("GITHUB_OUTPUT", None)
-        try:
+        with mock.patch.dict(os.environ, {"VERSION_INPUT": version}):
+            os.environ.pop("GITHUB_OUTPUT", None)
             with redirect_stdout(out), redirect_stderr(err):
                 status = metadata.main([])
-        finally:
-            if previous is None:
-                os.environ.pop("VERSION_INPUT", None)
-            else:
-                os.environ["VERSION_INPUT"] = previous
         return status, out.getvalue()
 
     def test_rejection_exits_nonzero(self) -> None:
@@ -149,6 +143,48 @@ class DiagnosticsAreNotRunnerCommands(unittest.TestCase):
         # Encoding CR/LF before '%' would double-encode and corrupt the value.
         self.assertEqual(metadata.escape_command_data("100%\n"), "100%25%0A")
         self.assertEqual(metadata.escape_command_data("a\r\nb"), "a%0D%0Ab")
+
+    def test_run_main_restores_environment_after_repeated_calls(self) -> None:
+        # None means absent; empty and nonempty values must also survive exactly.
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "caller-output"
+            output.write_text("caller sentinel\n", encoding="utf-8")
+            for previous_version in (None, "", "caller-version"):
+                for previous_output in (None, "", str(output)):
+                    with self.subTest(version=previous_version, output=previous_output):
+                        with mock.patch.dict(os.environ):
+                            for key, value in (("VERSION_INPUT", previous_version),
+                                               ("GITHUB_OUTPUT", previous_output)):
+                                os.environ.pop(key, None)
+                                if value is not None:
+                                    os.environ[key] = value
+                            before = dict(os.environ)
+                            for version, expected in (("invalid", 1), ("1.2.3", 0),
+                                                      ("invalid", 1)):
+                                status, _ = self.run_main(version)
+                                self.assertEqual(status, expected)
+                                self.assertTrue(dict(os.environ) == before,
+                                                "test helper changed the caller environment")
+                                self.assertEqual(output.read_text(encoding="utf-8"),
+                                                 "caller sentinel\n")
+
+    def test_run_main_restores_environment_when_main_raises(self) -> None:
+        for previous in (None, "", "caller-value"):
+            with self.subTest(previous=previous), mock.patch.dict(os.environ):
+                for key in ("VERSION_INPUT", "GITHUB_OUTPUT"):
+                    os.environ.pop(key, None)
+                    if previous is not None:
+                        os.environ[key] = previous
+                before = dict(os.environ)
+                def fail(_argv):
+                    self.assertEqual(os.environ["VERSION_INPUT"], "1.2.3")
+                    self.assertNotIn("GITHUB_OUTPUT", os.environ)
+                    raise RuntimeError("injected helper failure")
+                with mock.patch.object(metadata, "main", side_effect=fail):
+                    with self.assertRaisesRegex(RuntimeError, "injected helper failure"):
+                        self.run_main("1.2.3")
+                self.assertTrue(dict(os.environ) == before,
+                                "test helper changed the caller environment on failure")
 
 
 class OutputWriting(unittest.TestCase):
