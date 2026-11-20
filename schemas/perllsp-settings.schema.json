@@ -152,15 +152,15 @@
               "enum": ["native", "off"],
               "default": "native"
             },
-            "maximumLineLength": { "type": "integer", "minimum": 0, "default": 80 },
-            "indentColumns": { "type": "integer", "minimum": 0 },
+            "maximumLineLength": { "type": "integer", "minimum": 20, "maximum": 1000, "default": 80 },
+            "indentColumns": { "type": "integer", "minimum": 1, "maximum": 16 },
             "tabs": { "type": "boolean" },
             "openingBraceOnNewLine": { "type": "boolean", "default": false },
             "cuddledElse": { "type": "boolean", "default": true },
             "spaceAfterKeyword": { "type": "boolean", "default": true },
             "addTrailingCommas": { "type": "boolean", "default": false },
             "verticalAlignment": { "type": "boolean", "default": true },
-            "blockCommentIndentation": { "type": "integer", "minimum": 0, "default": 0 },
+            "blockCommentIndentation": { "type": "integer", "minimum": 0, "maximum": 32, "default": 0 },
             "timeoutSecs": { "type": "integer", "minimum": 0, "default": 10 }
           }
         },

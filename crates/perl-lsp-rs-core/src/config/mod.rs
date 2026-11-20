@@ -21,6 +21,7 @@ use crate::tooling::perl_critic::NativeCriticProfile;
 
 mod critic_state;
 mod dependency_detection;
+mod formatting_bounds;
 mod metadata_dependencies;
 mod native_build_hints;
 pub mod perl_oracle_env;
@@ -32,6 +33,11 @@ pub use critic_state::{AcceptedCriticSnapshot, EffectiveCriticState, EffectiveNa
 use dependency_detection::{DependencyIncludeDetection, detect_dependency_include_paths_result};
 pub use dependency_detection::{
     detect_dependency_include_paths, detect_dependency_include_paths_with_declaration,
+};
+pub(crate) use formatting_bounds::{
+    FORMATTING_BLOCK_COMMENT_INDENTATION_RANGE, FORMATTING_EDITOR_TAB_SIZE_RANGE,
+    FORMATTING_INDENT_COLUMNS_RANGE, FORMATTING_MAXIMUM_LINE_LENGTH_RANGE,
+    clamp_project_formatting_u32, try_admit_formatting_u32,
 };
 pub use metadata_dependencies::{
     DeclaredDependency, DeclaredDependencySource, MetadataSourceRead,
@@ -552,10 +558,32 @@ impl ServerConfig {
             }
             // Security: do NOT honour LSP-channel formatting.profile / extraArgs (issue #5001).
             if let Some(len) = formatting.get("maximumLineLength").and_then(as_config_u64) {
-                self.perltidy_maximum_line_length = Some(len as u32);
+                match try_admit_formatting_u32(len, &FORMATTING_MAXIMUM_LINE_LENGTH_RANGE) {
+                    Some(value) => self.perltidy_maximum_line_length = Some(value),
+                    None => tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "formatting.maximumLineLength",
+                        requested = len,
+                        minimum = *FORMATTING_MAXIMUM_LINE_LENGTH_RANGE.start(),
+                        maximum = *FORMATTING_MAXIMUM_LINE_LENGTH_RANGE.end(),
+                        retained = ?self.perltidy_maximum_line_length,
+                        "formatting.maximumLineLength is out of range; keeping the previous value",
+                    ),
+                }
             }
             if let Some(indent) = formatting.get("indentColumns").and_then(as_config_u64) {
-                self.perltidy_indent_columns = Some(indent as u32);
+                match try_admit_formatting_u32(indent, &FORMATTING_INDENT_COLUMNS_RANGE) {
+                    Some(value) => self.perltidy_indent_columns = Some(value),
+                    None => tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "formatting.indentColumns",
+                        requested = indent,
+                        minimum = *FORMATTING_INDENT_COLUMNS_RANGE.start(),
+                        maximum = *FORMATTING_INDENT_COLUMNS_RANGE.end(),
+                        retained = ?self.perltidy_indent_columns,
+                        "formatting.indentColumns is out of range; keeping the previous value",
+                    ),
+                }
             }
             if let Some(tabs) = formatting.get("tabs").and_then(|v| v.as_bool()) {
                 self.perltidy_tabs = Some(tabs);
@@ -576,7 +604,18 @@ impl ServerConfig {
                 self.perltidy_vertical_alignment = Some(align);
             }
             if let Some(block) = formatting.get("blockCommentIndentation").and_then(as_config_u64) {
-                self.perltidy_block_comment_indentation = Some(block as u32);
+                match try_admit_formatting_u32(block, &FORMATTING_BLOCK_COMMENT_INDENTATION_RANGE) {
+                    Some(value) => self.perltidy_block_comment_indentation = Some(value),
+                    None => tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "formatting.blockCommentIndentation",
+                        requested = block,
+                        minimum = *FORMATTING_BLOCK_COMMENT_INDENTATION_RANGE.start(),
+                        maximum = *FORMATTING_BLOCK_COMMENT_INDENTATION_RANGE.end(),
+                        retained = ?self.perltidy_block_comment_indentation,
+                        "formatting.blockCommentIndentation is out of range; keeping the previous value",
+                    ),
+                }
             }
             if let Some(timeout) = formatting.get("timeoutSecs").and_then(as_config_u64) {
                 self.perltidy_timeout_secs = timeout;
@@ -2916,10 +2955,18 @@ impl ProjectConfig {
             config.perltidy_profile = Some(profile.clone());
         }
         if let Some(len) = self.formatting.perltidy_maximum_line_length {
-            config.perltidy_maximum_line_length = Some(len);
+            config.perltidy_maximum_line_length = Some(clamp_project_formatting_u32(
+                len,
+                &FORMATTING_MAXIMUM_LINE_LENGTH_RANGE,
+                "formatting.perltidy_maximum_line_length",
+            ));
         }
         if let Some(indent) = self.formatting.perltidy_indent_columns {
-            config.perltidy_indent_columns = Some(indent);
+            config.perltidy_indent_columns = Some(clamp_project_formatting_u32(
+                indent,
+                &FORMATTING_INDENT_COLUMNS_RANGE,
+                "formatting.perltidy_indent_columns",
+            ));
         }
         if let Some(tabs) = self.formatting.perltidy_tabs {
             config.perltidy_tabs = Some(tabs);
@@ -2940,7 +2987,11 @@ impl ProjectConfig {
             config.perltidy_vertical_alignment = Some(align);
         }
         if let Some(block) = self.formatting.perltidy_block_comment_indentation {
-            config.perltidy_block_comment_indentation = Some(block);
+            config.perltidy_block_comment_indentation = Some(clamp_project_formatting_u32(
+                block,
+                &FORMATTING_BLOCK_COMMENT_INDENTATION_RANGE,
+                "formatting.perltidy_block_comment_indentation",
+            ));
         }
         if !self.formatting.perltidy_extra_args.is_empty() {
             config.perltidy_extra_args = self.formatting.perltidy_extra_args.clone();
@@ -4355,6 +4406,43 @@ profile = "recommended"
         if config.ai_completion.max_inflight != 1 {
             return Err(std::io::Error::other("a later valid maxInflight must still apply").into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn formatting_indent_columns_out_of_range_keeps_previous_value() -> TestResult {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({ "formatting": { "indentColumns": 4 } }));
+        if config.perltidy_indent_columns != Some(4) {
+            return Err(std::io::Error::other("valid indentColumns was not accepted").into());
+        }
+
+        for rejected in [0_u64, 17, u64::from(u32::MAX), 4_294_967_296, u64::MAX] {
+            config.update_from_value(
+                &serde_json::json!({ "formatting": { "indentColumns": rejected } }),
+            );
+            if config.perltidy_indent_columns != Some(4) {
+                return Err(std::io::Error::other(format!(
+                    "indentColumns={rejected} must keep the previous valid value"
+                ))
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_perltidy_indent_columns_clamps_without_dangerous_width() -> TestResult {
+        let project = ProjectConfig {
+            formatting: ProjectFormattingConfig {
+                perltidy_indent_columns: Some(u32::MAX),
+                ..ProjectFormattingConfig::default()
+            },
+            ..ProjectConfig::default()
+        };
+        let mut server = ServerConfig::default();
+        project.apply_to_server_config(&mut server);
+        assert_eq!(server.perltidy_indent_columns, Some(16));
         Ok(())
     }
 

@@ -1,9 +1,6 @@
 use super::config::FormatConfig;
 use super::counters;
-
-const MAX_LINE_WIDTH: usize = 1_000;
-const MAX_INDENT_WIDTH: usize = 16;
-const MAX_RENDER_INDENT_COLUMNS: usize = 4_096;
+use super::layout_bounds::{effective_indent_width, effective_line_width, render_indent_columns};
 
 /// Native formatter document tree.
 ///
@@ -106,11 +103,8 @@ struct DocRenderer {
 
 impl DocRenderer {
     fn new(config: &FormatConfig) -> Self {
-        let line_width =
-            usize::try_from(config.line_width).unwrap_or(MAX_LINE_WIDTH).clamp(1, MAX_LINE_WIDTH);
-        let indent_width = usize::try_from(config.indent_width)
-            .unwrap_or(MAX_INDENT_WIDTH)
-            .clamp(1, MAX_INDENT_WIDTH);
+        let line_width = effective_line_width(config.line_width) as usize;
+        let indent_width = effective_indent_width(config.indent_width) as usize;
         Self {
             output: String::new(),
             column: 0,
@@ -174,14 +168,8 @@ impl DocRenderer {
 
     fn push_line(&mut self, indent_level: usize) {
         self.output.push('\n');
-        let indent_columns = if self.use_tabs {
-            indent_level.min(MAX_RENDER_INDENT_COLUMNS)
-        } else {
-            indent_level
-                .checked_mul(self.indent_width)
-                .unwrap_or(MAX_RENDER_INDENT_COLUMNS)
-                .min(MAX_RENDER_INDENT_COLUMNS)
-        };
+        let indent_columns =
+            render_indent_columns(indent_level, self.indent_width as u32, self.use_tabs);
         let indent =
             if self.use_tabs { "\t".repeat(indent_columns) } else { " ".repeat(indent_columns) };
         self.output.push_str(&indent);
@@ -191,6 +179,7 @@ impl DocRenderer {
 
 #[cfg(test)]
 mod tests {
+    use super::super::layout_bounds::{MAX_INDENT_WIDTH, MAX_LINE_WIDTH};
     use super::*;
 
     #[test]
@@ -200,7 +189,7 @@ mod tests {
 
         let rendered = doc.render(&config);
 
-        assert_eq!(rendered, format!("\n{}x", " ".repeat(MAX_INDENT_WIDTH)));
+        assert_eq!(rendered, format!("\n{}x", " ".repeat(MAX_INDENT_WIDTH as usize)));
     }
 
     #[test]
@@ -215,7 +204,7 @@ mod tests {
     fn renderer_bounds_extreme_line_width_for_group_decisions() {
         let config = FormatConfig { line_width: u32::MAX, ..FormatConfig::default() };
         let doc = FormatDoc::group(vec![
-            FormatDoc::text("x".repeat(MAX_LINE_WIDTH)),
+            FormatDoc::text("x".repeat(MAX_LINE_WIDTH as usize)),
             FormatDoc::SoftLine,
             FormatDoc::text("y"),
         ]);
