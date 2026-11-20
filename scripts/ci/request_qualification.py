@@ -30,6 +30,9 @@ MAX_BYTES = 1024 * 1024
 OID = re.compile(r'[0-9a-f]{40}')
 DIGEST = re.compile(r'[0-9a-f]{64}')
 REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
+RUN_RESOURCE = re.compile(
+    r'repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/([1-9][0-9]*)'
+)
 
 
 class Refused(ValueError):
@@ -94,6 +97,22 @@ class GitHub:
         self._call('POST', path, body)
 
 
+class ExactRunAPI:
+    """Bind exact run-resource responses to the run ID named in the path."""
+    def __init__(self, delegate: Any):
+        self._delegate = delegate
+
+    def get(self, path: str) -> Any:
+        result = self._delegate.get(path)
+        match = RUN_RESOURCE.fullmatch(path)
+        if match and result.get('id') != int(match.group(1)):
+            raise Refused('exact run resource returned another run identity')
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
 @dataclass(frozen=True)
 class Subject:
     repository: str
@@ -138,7 +157,8 @@ class Adapter:
     def __init__(self, api: Any, subject: Subject,
                  eligibility: Callable[[dict], Eligibility] = unavailable_eligibility):
         subject.validate()
-        self.api, self.subject, self.eligibility = api, subject, eligibility
+        self.api = ExactRunAPI(api)
+        self.subject, self.eligibility = subject, eligibility
         self.root = f'repos/{subject.repository}'
 
     def snapshot(self) -> dict:
