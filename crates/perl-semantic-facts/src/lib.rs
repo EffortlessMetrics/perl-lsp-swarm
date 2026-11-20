@@ -12,6 +12,8 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Transport-neutral direct-call resolution assessment contract (#11138).
+pub mod direct_callable;
 mod envelope;
 pub mod framework;
 /// Concrete registry-backed framework adapters built on the SDK.
