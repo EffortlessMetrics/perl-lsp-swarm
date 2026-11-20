@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 9864,
-  "reason": "Merge main onboarding and What's New packaging with the Rust 1.100 source-build minimum: out/extension.js adopts main's welcome gating and fallback logic, while the MSRV-1.100 badge adds one README byte; no files added or removed",
-  "base_baseline_file_sha256": "6fc630983acde8e559bb4e10f875f6960c5df2439dccfd09762b1b8c8c223ea3",
-  "candidate_baseline_file_sha256": "686faa5fef23a36add99101fb2ce23b8bf4d4f3dbae25142a6a5e359914725f0",
-  "base_inventory_sha256": "1f39cc7522fa37db92ab26799a3e4140dd7be06439a068c3202fe04e9d90bfbe",
-  "candidate_inventory_sha256": "eec70960e0bfaef1fcd494e7001cbccfc15624d6967143a178cd0d68ea1d9f15"
+  "owner_issue": 7461,
+  "reason": "Two merges landed without a transition: confined extension-owned workspace writes (#7461, PR #18733) grow out/extension.js 1777741 -> 1788650 bytes (extensionOwnedWorkspaceWrite.ts and its debugAdapter/gherkin call sites), and keeping 0.18.0 unreleased (#19381) drops the 0.18.0 heading from changelog.md (48426 -> 48400); no files added or removed",
+  "base_baseline_file_sha256": "686faa5fef23a36add99101fb2ce23b8bf4d4f3dbae25142a6a5e359914725f0",
+  "candidate_baseline_file_sha256": "9d4c396344a845f95b4eed4df2570257ff2c6876507cc8b17aa7a9d7a689e898",
+  "base_inventory_sha256": "eec70960e0bfaef1fcd494e7001cbccfc15624d6967143a178cd0d68ea1d9f15",
+  "candidate_inventory_sha256": "1639e0b8fd74e1bc8a12de43c4eafc32cebf6d9f63a0f0db24d843f0976c58e4"
 }
