@@ -358,18 +358,16 @@ export async function offerDebugConfigOnFirstPerlOpen(
   if (!isPerlLanguageId(document.languageId)) {
     return;
   }
-
-  const workspaceFolders = vscode.workspace.workspaceFolders;
-  if (!workspaceFolders || workspaceFolders.length === 0) {
+  if (document.uri.scheme === 'untitled') {
     return;
   }
 
-  const firstFolder = workspaceFolders[0];
-  if (!firstFolder) {
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+  if (!workspaceFolder) {
     return;
   }
 
-  const workspaceRoot = firstFolder.uri.fsPath;
+  const workspaceRoot = workspaceFolder.uri.fsPath;
   if (hasLaunchJson(workspaceRoot)) {
     return;
   }
@@ -1158,4 +1156,22 @@ export function activateDebugger(context: vscode.ExtensionContext) {
       return createDebugConfigWizard();
     }),
   );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument((document) => {
+      void offerDebugConfigOnFirstPerlOpen(document);
+    }),
+  );
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor) {
+        void offerDebugConfigOnFirstPerlOpen(editor.document);
+      }
+    }),
+  );
+
+  const activeEditor = vscode.window.activeTextEditor;
+  if (activeEditor) {
+    void offerDebugConfigOnFirstPerlOpen(activeEditor.document);
+  }
 }
