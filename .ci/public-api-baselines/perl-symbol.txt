@@ -8,6 +8,18 @@ pub perl_symbol::api::CursorSymbolKind::Subroutine
 pub fn perl_symbol::cursor::CursorSymbolKind::clone(&self) -> perl_symbol::cursor::CursorSymbolKind
 pub fn perl_symbol::cursor::CursorSymbolKind::eq(&self, other: &perl_symbol::cursor::CursorSymbolKind) -> bool
 pub fn perl_symbol::cursor::CursorSymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_symbol::api::FrameworkKind
+pub perl_symbol::api::FrameworkKind::ClassTiny
+pub perl_symbol::api::FrameworkKind::Moo
+pub perl_symbol::api::FrameworkKind::MooRole
+pub perl_symbol::api::FrameworkKind::Moose
+pub perl_symbol::api::FrameworkKind::MooseRole
+pub perl_symbol::api::FrameworkKind::RoleTiny
+pub perl_symbol::api::FrameworkKind::RoleTinyWith
+pub fn perl_symbol::framework::FrameworkKind::clone(&self) -> perl_symbol::framework::FrameworkKind
+pub fn perl_symbol::framework::FrameworkKind::eq(&self, other: &perl_symbol::framework::FrameworkKind) -> bool
+pub fn perl_symbol::framework::FrameworkKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::framework::FrameworkKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_symbol::api::SymbolKind
 pub perl_symbol::api::SymbolKind::Class
 pub perl_symbol::api::SymbolKind::Constant
@@ -114,12 +126,14 @@ pub fn perl_symbol::surface::facts::UnsupportedDeclFact::fmt(&self, f: &mut core
 pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub const perl_symbol::api::MIN_LOOSE_MATCH_QUERY_CHARS: usize
 pub fn perl_symbol::api::byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize
+pub fn perl_symbol::api::classify_framework_module(module: &str) -> core::option::Option<perl_symbol::framework::FrameworkKind>
 pub fn perl_symbol::api::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub fn perl_symbol::api::extract_symbol_from_source(position: usize, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::cursor::CursorSymbolKind)>
 pub fn perl_symbol::api::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
 pub fn perl_symbol::api::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<(usize, usize)>
 pub fn perl_symbol::api::is_modchar(byte: u8) -> bool
 pub fn perl_symbol::api::is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool
+pub fn perl_symbol::api::namespace_symbol_kind_for_framework(kind: perl_symbol::framework::FrameworkKind) -> perl_symbol::types::SymbolKind
 pub fn perl_symbol::api::symbol_decls_to_semantic_facts(decls: &[perl_symbol::surface::decl::SymbolDecl], file_id: perl_semantic_facts::FileId) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
 pub fn perl_symbol::api::symbol_refs_to_semantic_facts(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, entity_ids_by_qualified_name: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>, dispatch_only_entity_ids: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
 pub fn perl_symbol::api::token_under_cursor(text: &str, line: usize, col_utf16: usize) -> core::option::Option<alloc::string::String>
@@ -138,6 +152,21 @@ pub fn perl_symbol::cursor::get_symbol_range_at_position(position: usize, source
 pub fn perl_symbol::cursor::is_modchar(byte: u8) -> bool
 pub fn perl_symbol::cursor::is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool
 pub fn perl_symbol::cursor::token_under_cursor(text: &str, line: usize, col_utf16: usize) -> core::option::Option<alloc::string::String>
+pub mod perl_symbol::framework
+pub enum perl_symbol::framework::FrameworkKind
+pub perl_symbol::framework::FrameworkKind::ClassTiny
+pub perl_symbol::framework::FrameworkKind::Moo
+pub perl_symbol::framework::FrameworkKind::MooRole
+pub perl_symbol::framework::FrameworkKind::Moose
+pub perl_symbol::framework::FrameworkKind::MooseRole
+pub perl_symbol::framework::FrameworkKind::RoleTiny
+pub perl_symbol::framework::FrameworkKind::RoleTinyWith
+pub fn perl_symbol::framework::FrameworkKind::clone(&self) -> perl_symbol::framework::FrameworkKind
+pub fn perl_symbol::framework::FrameworkKind::eq(&self, other: &perl_symbol::framework::FrameworkKind) -> bool
+pub fn perl_symbol::framework::FrameworkKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::framework::FrameworkKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_symbol::framework::classify_framework_module(module: &str) -> core::option::Option<perl_symbol::framework::FrameworkKind>
+pub fn perl_symbol::framework::namespace_symbol_kind_for_framework(kind: perl_symbol::framework::FrameworkKind) -> perl_symbol::types::SymbolKind
 pub mod perl_symbol::index
 pub struct perl_symbol::index::SymbolIndex
 pub fn perl_symbol::index::SymbolIndex::add_symbol(&mut self, symbol: alloc::string::String)
@@ -322,6 +351,18 @@ pub perl_symbol::CursorSymbolKind::Subroutine
 pub fn perl_symbol::cursor::CursorSymbolKind::clone(&self) -> perl_symbol::cursor::CursorSymbolKind
 pub fn perl_symbol::cursor::CursorSymbolKind::eq(&self, other: &perl_symbol::cursor::CursorSymbolKind) -> bool
 pub fn perl_symbol::cursor::CursorSymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_symbol::FrameworkKind
+pub perl_symbol::FrameworkKind::ClassTiny
+pub perl_symbol::FrameworkKind::Moo
+pub perl_symbol::FrameworkKind::MooRole
+pub perl_symbol::FrameworkKind::Moose
+pub perl_symbol::FrameworkKind::MooseRole
+pub perl_symbol::FrameworkKind::RoleTiny
+pub perl_symbol::FrameworkKind::RoleTinyWith
+pub fn perl_symbol::framework::FrameworkKind::clone(&self) -> perl_symbol::framework::FrameworkKind
+pub fn perl_symbol::framework::FrameworkKind::eq(&self, other: &perl_symbol::framework::FrameworkKind) -> bool
+pub fn perl_symbol::framework::FrameworkKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::framework::FrameworkKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_symbol::SymbolKind
 pub perl_symbol::SymbolKind::Class
 pub perl_symbol::SymbolKind::Constant
@@ -428,12 +469,14 @@ pub fn perl_symbol::surface::facts::UnsupportedDeclFact::fmt(&self, f: &mut core
 pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub const perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS: usize
 pub fn perl_symbol::byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize
+pub fn perl_symbol::classify_framework_module(module: &str) -> core::option::Option<perl_symbol::framework::FrameworkKind>
 pub fn perl_symbol::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub fn perl_symbol::extract_symbol_from_source(position: usize, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::cursor::CursorSymbolKind)>
 pub fn perl_symbol::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
 pub fn perl_symbol::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<(usize, usize)>
 pub fn perl_symbol::is_modchar(byte: u8) -> bool
 pub fn perl_symbol::is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool
+pub fn perl_symbol::namespace_symbol_kind_for_framework(kind: perl_symbol::framework::FrameworkKind) -> perl_symbol::types::SymbolKind
 pub fn perl_symbol::symbol_decls_to_semantic_facts(decls: &[perl_symbol::surface::decl::SymbolDecl], file_id: perl_semantic_facts::FileId) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
 pub fn perl_symbol::symbol_refs_to_semantic_facts(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, entity_ids_by_qualified_name: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>, dispatch_only_entity_ids: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
 pub fn perl_symbol::token_under_cursor(text: &str, line: usize, col_utf16: usize) -> core::option::Option<alloc::string::String>
