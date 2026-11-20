@@ -731,6 +731,14 @@ jobs:
             merge_group) CANDIDATE_EVENT="merge_group" ;;
           esac
 
+          # #19567: the reader's gate-affecting status, named once so the
+          # probe acts on it without repeating the number. The reader
+          # returns it when the subject's own run reported jobs but the
+          # run's own check rows are absent: that condition must fail the
+          # required context rather than pass with warnings, because a
+          # degraded subject must not read as a green subject.
+          MAIN_RED_GATE_AFFECTING_EXIT=3
+
           read_main_sha() {
             gh api \
               -H "Accept: application/vnd.github+json" \
@@ -838,6 +846,26 @@ jobs:
           attempt's rows out of the current attempt's read. The row's run
           must be the run whose suite was read: a suite's rows are evidence
           about that run, not about any other admitted run.
+
+          The attempt is verified against a fresh read. The run list is
+          re-read before a suite is fetched, because a re-run keeps the run
+          id and moves the run to a new check suite: the suite that was
+          chosen from an earlier read can already be a superseded attempt,
+          and its rows name the same run id, so the run binding alone would
+          admit them as the current attempt's evidence. A suite that is no
+          longer the run's current one is stale: it contributes nothing, and
+          the run's current suite is read instead, under the same count
+          reconciliation and the same suite/run binding.
+
+          Two gaps are told apart. A run whose check suite carries no check
+          run at all never executed: that is an evidence gap, and it stays
+          a non-blocking gap. A run whose check suite carries check runs
+          but none of them name the run reported jobs whose own verdicts
+          are unreadable: that is a degraded subject, and a degraded
+          subject must not read as a green subject, so the reader returns
+          its own gate-affecting status for it. The gate-affecting status
+          is distinct from the ordinary degraded status, and the payload
+          stays the missing-evidence file in both cases.
           """
 
           from __future__ import annotations
@@ -851,6 +879,14 @@ jobs:
           from typing import Any
 
           RUN_ID_PATTERN = re.compile(r"/actions/runs/([0-9]+)(?:/|$)")
+
+          # The exit status that says the subject's own verdicts are
+          # unreadable although the subject's run reported jobs. It is
+          # distinct from 0 (evidence written) and 1 (an evidence gap that
+          # stays non-blocking) because a degraded subject must not read as
+          # a green subject: the probe turns this status into a failed
+          # required context.
+          GATE_AFFECTING_EXIT = 3
 
 
           def pages(payload: Any) -> list[Any]:
@@ -1114,6 +1150,62 @@ jobs:
               return json.loads(completed.stdout)
 
 
+          def fetch_workflow_runs(repository: str, subject_sha: str) -> Any:
+              """Re-read the ``ci.yml`` run list for one subject SHA.
+
+              The run list is re-read because a re-run keeps the run id and
+              moves the run to a new check suite: the suite that was chosen
+              from an earlier read can be a superseded attempt by the time it
+              is fetched, and the superseded attempt's rows name the same
+              run id. The re-read is the only way to learn the attempt the
+              run is on now.
+              """
+              completed = subprocess.run(
+                  [
+                      "gh",
+                      "api",
+                      "--paginate",
+                      "--slurp",
+                      "-H",
+                      "Accept: application/vnd.github+json",
+                      "-H",
+                      "X-GitHub-Api-Version: 2022-11-28",
+                      "repos/{}/actions/workflows/ci.yml/runs"
+                      "?head_sha={}&per_page=100".format(repository, subject_sha),
+                  ],
+                  capture_output=True,
+                  text=True,
+                  encoding="utf-8",
+                  check=False,
+              )
+              if completed.returncode != 0:
+                  detail = (completed.stderr or "").strip().splitlines()
+                  reason = detail[-1] if detail else f"gh api exited {completed.returncode}"
+                  raise RuntimeError(reason)
+              return json.loads(completed.stdout)
+
+
+          def current_suite_ids(
+              workflow_runs_payload: Any,
+              subject_sha: str,
+              event: str,
+          ) -> dict[int, int]:
+              """Return each authoritative run's current check suite id.
+
+              The re-read's own view of the run. A re-run keeps the run id
+              and reports a new ``check_suite_id``, so this is the attempt
+              the run is on now, and the suite it names is the only suite
+              whose rows are this attempt's evidence.
+              """
+              suites: dict[int, int] = {}
+              for run in authoritative_runs(workflow_runs_payload, subject_sha, event):
+                  run_id = run.get("id")
+                  suite_id = run.get("check_suite_id")
+                  if isinstance(run_id, int) and isinstance(suite_id, int):
+                      suites[run_id] = suite_id
+              return suites
+
+
           def write_payload(path: Path, runs: list[dict[str, Any]]) -> None:
               """Write the classifier's payload with observed check-run fields only."""
               path.write_text(json.dumps({"check_runs": runs}), encoding="utf-8")
@@ -1180,11 +1272,68 @@ jobs:
                       f"no canonical {event} ci.yml run for {subject_sha} reports a check suite"
                   )
 
+              # #19567: the suite that was chosen from the earlier read can
+              # be a superseded attempt by the time it is fetched. A re-run
+              # keeps the run id, increments run_attempt and reports a NEW
+              # check_suite_id, and the superseded attempt's rows name the
+              # same run id, so the run binding alone would admit them as
+              # the current attempt's evidence. The run list is re-read so
+              # the run's CURRENT suite can be compared with the suite that
+              # is read: a suite that is no longer the run's current one is
+              # stale, contributes nothing, and is replaced by the run's
+              # current suite.
+              try:
+                  fresh_payload = fetch_workflow_runs(repository, subject_sha)
+              except (OSError, RuntimeError, ValueError) as error:
+                  # Without the re-read the attempt cannot be verified, so
+                  # no suite can be trusted: the read fails safe into the
+                  # missing-evidence path rather than admitting an
+                  # unverified suite.
+                  return degrade(
+                      f"the canonical {event} ci.yml run list for {subject_sha} "
+                      f"could not be re-read ({error})"
+                  )
+              fresh_suites = current_suite_ids(fresh_payload, subject_sha, event)
+
               # Every reason a suite did not contribute, so the final warning
               # names the one that decided the outcome.
               problems: list[str] = []
               suite_payloads: list[Any] = []
+              # The check runs a readable suite carried. The difference
+              # between "the suite is empty" and "the suite carries rows
+              # that are not about this run" is what separates a run that
+              # never executed from a run whose own verdicts are unreadable.
+              observed_rows = 0
               for suite_id, run_id in suite_runs:
+                  current_suite_id = fresh_suites.get(run_id)
+                  if current_suite_id is None:
+                      detail = (
+                          f"the canonical {event} ci.yml run {run_id} for "
+                          f"{subject_sha} no longer reports a check suite"
+                      )
+                      print(
+                          f"::warning::{label} {detail}; the run contributes nothing",
+                          flush=True,
+                      )
+                      problems.append(detail)
+                      continue
+                  if current_suite_id != suite_id:
+                      # The suite that was read belongs to a superseded
+                      # attempt. Its rows name the same run id, so they
+                      # would be admitted as this attempt's evidence; they
+                      # are not. The run's current suite is read instead.
+                      detail = (
+                          f"check suite {suite_id} is stale for run {run_id}: "
+                          f"the current attempt reports check suite {current_suite_id}"
+                      )
+                      print(
+                          f"::warning::{label} canonical ci.yml {detail}; the stale "
+                          f"suite contributes nothing and the current suite is read "
+                          f"instead",
+                          flush=True,
+                      )
+                      problems.append(detail)
+                      suite_id = current_suite_id
                   try:
                       suite_payload = fetch_suite_check_runs(repository, suite_id)
                   except (OSError, RuntimeError, ValueError) as error:
@@ -1221,6 +1370,7 @@ jobs:
 
                   # The rows kept from this suite must belong to this suite
                   # and name this suite's run.
+                  observed_rows += parsed
                   suite_payloads.append(
                       {
                           "check_runs": select_suite_runs(
@@ -1231,6 +1381,26 @@ jobs:
 
               selected = collect_canonical_runs(suite_payloads, run_ids)
               if selected is None:
+                  if observed_rows > 0:
+                      # The run reported jobs -- its check suite carries
+                      # rows -- but none of them name the run, so the run's
+                      # own verdicts are unreadable. That is not an evidence
+                      # gap that may stay green: a degraded subject must not
+                      # read as a green subject, so the probe fails the
+                      # required context instead of passing with warnings.
+                      detail = (
+                          f"the canonical {event} ci.yml run for {subject_sha} "
+                          f"reported {observed_rows} check runs in its check suite "
+                          "but none of them named that run"
+                      )
+                      print(
+                          f"::warning::{label} ci.yml check-suite evidence is degraded "
+                          f"({detail}); a degraded {label} must not read as a green "
+                          f"{label}",
+                          flush=True,
+                      )
+                      write_missing_payload(out_path)
+                      return GATE_AFFECTING_EXIT
                   # The authoritative run exists but its suite reports no
                   # check run about it: it never executed. That is an
                   # evidence gap, and an evidence gap stays a gap -- it
@@ -1287,12 +1457,26 @@ jobs:
                 : >"$probe_dir/main-workflow-runs.json"
                 api_ok=false
               }
+            main_reader_status=0
             python3 "$probe_dir/fetch_main_red_evidence.py" \
               "$probe_dir/main-workflow-runs.json" \
               "${MAIN_SHA_BEFORE}" \
               "$probe_dir/main-runs.json" \
               "main" \
-              "${MAIN_EVENT}" || api_ok=false
+              "${MAIN_EVENT}" || main_reader_status=$?
+            if [ "$main_reader_status" -eq "$MAIN_RED_GATE_AFFECTING_EXIT" ]; then
+              # #19567: main's own run reported jobs, but main's own check
+              # rows could not be read. That is a degraded main, not a green
+              # main, so the required context fails here instead of passing
+              # with warnings. This is a change to the merge gate: a main
+              # side whose canonical run reports jobs but whose check rows
+              # cannot be read now fails "Perl LSP Rust Small Result".
+              echo "::error::main-red refusal: the canonical main ci.yml run reported jobs whose own check rows could not be read; a degraded main must not read as a green main"
+              exit 1
+            fi
+            if [ "$main_reader_status" -ne 0 ]; then
+              api_ok=false
+            fi
             gh api --paginate --slurp \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -1353,11 +1537,63 @@ jobs:
           run_refusal
           refusal_status=$?
           set -u
+          # #19567: the bounded wait is bounded in elapsed wall clock as
+          # well as in iterations. The loop was bounded by iteration count
+          # only, and each iteration sleeps 30 seconds and then performs
+          # several API calls, so with a slow API 50 iterations ran far past
+          # the job's 35-minute timeout: the job was killed mid-poll and the
+          # required context ended with no verdict at all.
+          #
+          # The budget is measured from the job's start, which the API
+          # reports, so the time this job's earlier steps consumed is
+          # counted, and the final classifier call keeps a margin inside the
+          # job's timeout. The constants are declared here rather than read
+          # from the candidate's repository: the candidate controls this
+          # file, so the wait budget must not be something the candidate can
+          # widen at runtime. SECONDS is the shell's own elapsed time.
+          #
+          # The job's own timeout (timeout-minutes: 35), the margin kept for
+          # the final classifier call, the iteration cap and the sleep
+          # between polls. The iteration cap and the sleep keep the intended
+          # wait (50 polls, 25 minutes of sleeping) unchanged; the wall
+          # clock bound only stops the loop when the job's budget runs out.
+          MAIN_RED_JOB_TIMEOUT_SECONDS=2100
+          MAIN_RED_FINAL_RESERVE_SECONDS=180
+          MAIN_RED_POLL_MAX=50
+          MAIN_RED_POLL_SLEEP_SECONDS=30
+          # The conservative budget used when the job's start cannot be
+          # read: it leaves the job's timeout for the final call.
+          MAIN_RED_FALLBACK_POLL_BUDGET_SECONDS=1500
+          # This job's name, as the API reports it.
+          MAIN_RED_JOB_NAME="Perl LSP Rust Small Result"
+          job_started_epoch=""
+          job_started_at="$(gh api \
+            "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name == "'"${MAIN_RED_JOB_NAME}"'") | .started_at' \
+            2>/dev/null | head -n 1 || true)"
+          if [ -n "$job_started_at" ]; then
+            job_started_epoch="$(date -u -d "$job_started_at" +%s 2>/dev/null || true)"
+          fi
+          now_epoch="$(date -u +%s 2>/dev/null || echo 0)"
+          if [ -n "$job_started_epoch" ] && [ "$now_epoch" -gt 0 ]; then
+            job_elapsed_seconds=$((now_epoch - job_started_epoch))
+            MAIN_RED_POLL_BUDGET_SECONDS=$((MAIN_RED_JOB_TIMEOUT_SECONDS - job_elapsed_seconds - MAIN_RED_FINAL_RESERVE_SECONDS))
+          else
+            # The job's start could not be read: take the conservative
+            # budget, which leaves the job's timeout for the final call.
+            MAIN_RED_POLL_BUDGET_SECONDS="$MAIN_RED_FALLBACK_POLL_BUDGET_SECONDS"
+          fi
+          if [ "$MAIN_RED_POLL_BUDGET_SECONDS" -lt 0 ]; then
+            MAIN_RED_POLL_BUDGET_SECONDS=0
+          fi
+          poll_deadline=$((SECONDS + MAIN_RED_POLL_BUDGET_SECONDS))
           poll_attempt=0
-          while [ "$refusal_status" -eq 2 ] && [ "$poll_attempt" -lt 50 ]; do
+          while [ "$refusal_status" -eq 2 ] \
+            && [ "$poll_attempt" -lt "$MAIN_RED_POLL_MAX" ] \
+            && [ "$SECONDS" -lt "$poll_deadline" ]; do
             poll_attempt=$((poll_attempt + 1))
-            echo "::notice::main-red refusal is waiting for candidate shard evidence (poll ${poll_attempt}/50)"
-            sleep 30
+            echo "::notice::main-red refusal is waiting for candidate shard evidence (poll ${poll_attempt}/${MAIN_RED_POLL_MAX})"
+            sleep "$MAIN_RED_POLL_SLEEP_SECONDS"
             MAIN_SHA_AFTER="$(read_main_sha)" || {
               MAIN_SHA_AFTER=""
             }
