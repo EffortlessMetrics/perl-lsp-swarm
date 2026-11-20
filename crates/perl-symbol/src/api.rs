@@ -26,6 +26,7 @@ pub use crate::index::SymbolIndex;
 // surface — full public surface
 pub use crate::surface::{
     SymbolDecl, SymbolDeclSemanticFacts, SymbolRef, SymbolRefKind, SymbolRefSemanticFacts,
-    UnsupportedDeclFact, extract_symbol_decls, extract_symbol_refs, symbol_decls_to_semantic_facts,
-    symbol_refs_to_semantic_facts,
+    UnsupportedDeclFact, extract_lexical_scope_regions, extract_symbol_decls, extract_symbol_refs,
+    symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts,
+    symbol_refs_to_semantic_facts_with_declarations,
 };
