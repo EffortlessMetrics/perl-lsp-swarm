@@ -282,10 +282,11 @@ def _read_output(path: str, idle_timeout: int) -> bool | None:
 
 
 def _start_sublime_text() -> None:
+    launcher = os.environ.get("PERLLSP_SUBLIME_LAUNCHER")
     if IS_WINDOWS:
-        subprocess.Popen(["sublime_text.exe"])
+        subprocess.Popen([launcher or "sublime_text.exe"])
     else:
-        subprocess.Popen(["subl", "--stay"], start_new_session=True)
+        subprocess.Popen([launcher or "subl", "--stay"], start_new_session=True)
 
 
 def _kill_sublime_text() -> None:
