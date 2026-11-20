@@ -337,6 +337,38 @@ cat >"${STEPS_DOCKER_GATE_FAILED}" <<'EOF'
 }
 EOF
 
+# Validation-step failures do not prove that the gate lacked its required
+# inputs. The mandatory validator also checks summaries and annotations, and
+# the advisory validator's jobs-API conclusion is masked by continue-on-error.
+# A failed gate therefore stays fail-closed even when either validator fails.
+STEPS_GATE_AND_PR_VALIDATION_FAILED="${WORK}/steps-gate-and-pr-validation-failed.json"
+cat >"${STEPS_GATE_AND_PR_VALIDATION_FAILED}" <<'EOF'
+{
+  "conclusion": "failure",
+  "steps": [
+    {"name": "Generate review guidance", "status": "completed", "conclusion": "success"},
+    {"name": "Validate PR evidence contracts", "status": "completed", "conclusion": "failure"},
+    {"name": "Validate advisory review guidance", "status": "completed", "conclusion": "success"},
+    {"name": "Enforce new RIPR gap quality gate", "status": "completed", "conclusion": "failure"},
+    {"name": "Complete job", "status": "completed", "conclusion": "success"}
+  ]
+}
+EOF
+
+STEPS_GATE_AND_ADVISORY_VALIDATION_FAILED="${WORK}/steps-gate-and-advisory-validation-failed.json"
+cat >"${STEPS_GATE_AND_ADVISORY_VALIDATION_FAILED}" <<'EOF'
+{
+  "conclusion": "failure",
+  "steps": [
+    {"name": "Generate review guidance", "status": "completed", "conclusion": "success"},
+    {"name": "Validate PR evidence contracts", "status": "completed", "conclusion": "success"},
+    {"name": "Validate advisory review guidance", "status": "completed", "conclusion": "failure"},
+    {"name": "Enforce new RIPR gap quality gate", "status": "completed", "conclusion": "failure"},
+    {"name": "Complete job", "status": "completed", "conclusion": "success"}
+  ]
+}
+EOF
+
 STEPS_CANCELLED="${WORK}/steps-cancelled.json"
 cat >"${STEPS_CANCELLED}" <<'EOF'
 {
@@ -479,6 +511,12 @@ expect_eq "API GUARD: 143 annotation + skipped gate step + no receipt still arms
 expect_eq "API GUARD: unreadable steps state with no scanned receipt fails closed"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${WORK}/does-not-exist-steps.json" "" classification)"
 
 expect_eq "API GUARD: 143 annotation + failed Docker gate step + no receipt is a genuine red"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${STEPS_DOCKER_GATE_FAILED}" "" classification)"
+
+expect_eq "API GUARD: failed PR validation + failed gate + lost communication stays a genuine red"   "ripr-failure" "$(classify_api_field "${ANN_LOST}" "${STEPS_GATE_AND_PR_VALIDATION_FAILED}" "" classification)"
+
+expect_eq "API GUARD: failed PR validation + failed gate + 143 alone stays a genuine red"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${STEPS_GATE_AND_PR_VALIDATION_FAILED}" "" classification)"
+
+expect_eq "API GUARD: advisory validation failure cannot relax the failed-gate guard"   "ripr-failure" "$(classify_api_field "${ANN_LOST}" "${STEPS_GATE_AND_ADVISORY_VALIDATION_FAILED}" "" classification)"
 
 expect_eq "API GUARD: receipt_scanned field carries into api-evidence output"   "false" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" receipt_scanned)"
 
