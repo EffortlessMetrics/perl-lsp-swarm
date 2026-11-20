@@ -1,0 +1,14 @@
+tasks::file_policy::tests::trusted_workflow_rejects_alternate_candidate_checkout_or_import
+tasks::file_policy::tests::trusted_workflow_rejects_candidate_refs_in_step_inputs_and_whitespace_variants
+tasks::file_policy::tests::trusted_workflow_rejects_duplicate_reserved_contract_id
+tasks::file_policy::tests::trusted_workflow_scans_executable_cargo_runs_not_validator_source
+tasks::check_lint_policy::tests::disposition::disallowed_fields_phase1_does_not_depend_on_required_dispositions
+tasks::check_lint_policy::tests::disposition::dropping_one_lock_guard_row_does_not_hide_behind_its_sibling
+tasks::compat_inventory::tests::the_checked_in_inventory_is_complete_and_current
+tasks::native_critic::tests::native_critic_check_keeps_false_positive_fixtures_clean
+tasks::native_critic::tests::native_critic_check_writes_receipt_and_summary
+tasks::native_tooling::tests::native_tooling_status_writes_receipt_and_markdown
+tasks::policy_cadence::clippy::tests::debt_and_deferred_rows_keep_overdue_owner_work_visible
+tasks::policy_cadence::clippy::tests::invalid_debt_row_cannot_appear_current_in_cadence
+tasks::quality_gate::tests::hosted_16619_full_receipt_does_not_clear_unrelated_raw_gaps
+tasks::rust_small_proof::tests::every_step_position_is_checked_not_just_the_ones_the_point_tests_pick
