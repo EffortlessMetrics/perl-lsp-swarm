@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Removed
+body: Remove the parser ErrorClass implementation from IncomingMessageError; typed stages, identifiers, causes and existing transport import paths remain available. This changes Rust source compatibility, not JSON-RPC wire handling.
+time: 2026-11-15T06:47:54Z
+custom:
+  PR: "19453"
+  Slug: neutral-incoming-failure-facts
+  Breaking: "yes"
