@@ -74,13 +74,31 @@ fn pull_edit_require_to_expression_and_back_toggles_pl109() -> Result<(), Box<dy
 }
 
 #[test]
-fn pull_demo_database_pm_does_not_emit_pl109_for_dbi() -> Result<(), Box<dyn std::error::Error>> {
-    let source = include_str!("../../../demo_workspace/lib/Database.pm");
-    let items = pull("file:///demo_workspace/lib/Database.pm", source)?;
-    assert!(
-        !has_pl109_for(&items, "DBI"),
-        "demo Database.pm pull diagnostics must not emit PL109 for DBI: {items:#?}"
-    );
+fn pull_begin_eval_require_dbi_honors_operand_role_in_lf_and_crlf()
+-> Result<(), Box<dyn std::error::Error>> {
+    let uri = "file:///pl109_optional_dbi.pl";
+    let fixture = include_str!("../../../testdata/diagnostics/pl109_optional_dbi.pl");
+    let crlf = fixture.replace('\n', "\r\n");
+    for (source, eol) in [(fixture, "\n"), (crlf.as_str(), "\r\n")] {
+        let items = pull(uri, source)?;
+        assert!(!has_pl109_for(&items, "DBI"), "{eol:?}: {items:#?}");
+
+        let control = format!("{source}my $x = DBI;{eol}");
+        let items = pull(uri, &control)?;
+        let ranges: Vec<_> = items
+            .iter()
+            .filter(
+                |diag| matches!(&diag.code, Some(NumberOrString::String(code)) if code == "PL109"),
+            )
+            .map(|diag| diag.range)
+            .collect();
+        let line = u32::try_from(source.lines().count())?;
+        let expression = lsp_types::Range::new(
+            lsp_types::Position::new(line, 8),
+            lsp_types::Position::new(line, 11),
+        );
+        assert_eq!(ranges, [expression], "{eol:?}: {items:#?}");
+    }
     Ok(())
 }
 
