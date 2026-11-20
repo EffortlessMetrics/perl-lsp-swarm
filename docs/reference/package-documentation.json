@@ -1,0 +1,2266 @@
+{
+  "schema_version": "package_documentation.v1",
+  "contract": "package_documentation.v1",
+  "denominator_authority": "cargo metadata workspace_members",
+  "publish_allowlist_authority": "Cargo.toml#workspace.metadata.publish.allow",
+  "package_count": 48,
+  "publish_allowlist_count": 34,
+  "root_readme_crate_table": "curated",
+  "packages": [
+    {
+      "name": "perl-ast",
+      "manifest_path": "/workspace/crates/perl-ast/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-ast"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-ast/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-ast-v2",
+      "manifest_path": "/workspace/crates/perl-ast-v2/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-ast-v2"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-ast-v2/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-ci-hygiene",
+      "manifest_path": "/workspace/crates/perl-ci-hygiene/Cargo.toml",
+      "class": "internal_tooling_test",
+      "repair_cohort": 5,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "not_applicable"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        }
+      }
+    },
+    {
+      "name": "perl-core-harness",
+      "manifest_path": "/workspace/crates/perl-core-harness/Cargo.toml",
+      "class": "internal_tooling_test",
+      "repair_cohort": 5,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "not_applicable"
+        },
+        "package_readme": {
+          "status": "fail"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        }
+      }
+    },
+    {
+      "name": "perl-core-harness-types",
+      "manifest_path": "/workspace/crates/perl-core-harness-types/Cargo.toml",
+      "class": "internal_tooling_test",
+      "repair_cohort": 5,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "not_applicable"
+        },
+        "package_readme": {
+          "status": "fail"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        }
+      }
+    },
+    {
+      "name": "perl-core-test-runner",
+      "manifest_path": "/workspace/crates/perl-core-test-runner/Cargo.toml",
+      "class": "internal_tooling_test",
+      "repair_cohort": 5,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "not_applicable"
+        },
+        "package_readme": {
+          "status": "fail"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        }
+      }
+    },
+    {
+      "name": "perl-corpus",
+      "manifest_path": "/workspace/crates/perl-corpus/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-corpus"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-corpus/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-dap",
+      "manifest_path": "/workspace/crates/perl-dap/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-dap"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-dap/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-diagnostics",
+      "manifest_path": "/workspace/crates/perl-diagnostics/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-diagnostics"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-diagnostics/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-evidence-envelope",
+      "manifest_path": "/workspace/crates/perl-evidence-envelope/Cargo.toml",
+      "class": "internal_product_crate",
+      "repair_cohort": 3,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "pass"
+        },
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        }
+      }
+    },
+    {
+      "name": "perl-incremental-parsing",
+      "manifest_path": "/workspace/crates/perl-incremental-parsing/Cargo.toml",
+      "class": "internal_product_crate",
+      "repair_cohort": 3,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "pass"
+        },
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "internal_product_claim_boundary": {
+          "status": "fail",
+          "detail": "https://docs.rs/perl-incremental-parsing",
+          "authority": "#14122 negative control 6"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        }
+      }
+    },
+    {
+      "name": "perl-lexer",
+      "manifest_path": "/workspace/crates/perl-lexer/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-lexer"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-lexer/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-line-index",
+      "manifest_path": "/workspace/crates/perl-line-index/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-line-index"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-line-index/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-lsp-perltidy",
+      "manifest_path": "/workspace/crates/perl-lsp-perltidy/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-lsp-perltidy"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-lsp-perltidy/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-lsp-rs",
+      "manifest_path": "/workspace/crates/perl-lsp-rs/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-lsp-rs"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-lsp-rs/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-lsp-rs-core",
+      "manifest_path": "/workspace/crates/perl-lsp-rs-core/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-lsp-rs-core"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-lsp-rs-core/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-lsp-ux-tests",
+      "manifest_path": "/workspace/crates/perl-lsp-ux-tests/Cargo.toml",
+      "class": "internal_tooling_test",
+      "repair_cohort": 5,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "pass"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        }
+      }
+    },
+    {
+      "name": "perl-module",
+      "manifest_path": "/workspace/crates/perl-module/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-module"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-module/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-operation-trace",
+      "manifest_path": "/workspace/crates/perl-operation-trace/Cargo.toml",
+      "class": "internal_product_crate",
+      "repair_cohort": 3,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "pass"
+        },
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        }
+      }
+    },
+    {
+      "name": "perl-parser",
+      "manifest_path": "/workspace/crates/perl-parser/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-parser"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-parser/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-parser-bench",
+      "manifest_path": "/workspace/crates/perl-parser-bench/Cargo.toml",
+      "class": "internal_tooling_test",
+      "repair_cohort": 5,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "not_applicable"
+        },
+        "internal_product_claim_boundary": {
+          "status": "fail",
+          "detail": "https://docs.rs/perl-parser-bench",
+          "authority": "#14122 negative control 6"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        }
+      }
+    },
+    {
+      "name": "perl-parser-comparison",
+      "manifest_path": "/workspace/crates/perl-parser-comparison/Cargo.toml",
+      "class": "internal_tooling_test",
+      "repair_cohort": 5,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "not_applicable"
+        },
+        "package_readme": {
+          "status": "fail"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        }
+      }
+    },
+    {
+      "name": "perl-parser-core",
+      "manifest_path": "/workspace/crates/perl-parser-core/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-parser-core"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-parser-core/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-parser-pest",
+      "manifest_path": "/workspace/crates/perl-parser-pest/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-parser-pest"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-parser-pest/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-pod",
+      "manifest_path": "/workspace/crates/perl-pod/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-pod"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-pod/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-position-tracking",
+      "manifest_path": "/workspace/crates/perl-position-tracking/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-position-tracking"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-position-tracking/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-pragma",
+      "manifest_path": "/workspace/crates/perl-pragma/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-pragma"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-pragma/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-regex",
+      "manifest_path": "/workspace/crates/perl-regex/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-regex"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-regex/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-release-readiness",
+      "manifest_path": "/workspace/crates/perl-release-readiness/Cargo.toml",
+      "class": "internal_product_crate",
+      "repair_cohort": 3,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "not_applicable"
+        },
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        }
+      }
+    },
+    {
+      "name": "perl-ripr-facts",
+      "manifest_path": "/workspace/crates/perl-ripr-facts/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-ripr-facts"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-ripr-facts/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-semantic-analyzer",
+      "manifest_path": "/workspace/crates/perl-semantic-analyzer/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-semantic-analyzer"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-semantic-analyzer/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-semantic-facts",
+      "manifest_path": "/workspace/crates/perl-semantic-facts/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-semantic-facts"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-semantic-facts/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-source-identity",
+      "manifest_path": "/workspace/crates/perl-source-identity/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-source-identity"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-source-identity/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-subprocess-runtime",
+      "manifest_path": "/workspace/crates/perl-subprocess-runtime/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-subprocess-runtime"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-subprocess-runtime/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-symbol",
+      "manifest_path": "/workspace/crates/perl-symbol/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-symbol"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-symbol/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-tdd-support",
+      "manifest_path": "/workspace/crates/perl-tdd-support/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-tdd-support"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-tdd-support/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-test-facts",
+      "manifest_path": "/workspace/crates/perl-test-facts/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-test-facts"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-test-facts/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-test-generators",
+      "manifest_path": "/workspace/crates/perl-test-generators/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "not_applicable"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-test-generators"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-test-generators/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-test-must",
+      "manifest_path": "/workspace/crates/perl-test-must/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-test-must"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-test-must/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-token",
+      "manifest_path": "/workspace/crates/perl-token/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-token"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-token/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-tree-sitter-compat",
+      "manifest_path": "/workspace/crates/perl-tree-sitter-compat/Cargo.toml",
+      "class": "internal_product_crate",
+      "repair_cohort": 3,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "pass"
+        },
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        }
+      }
+    },
+    {
+      "name": "perl-uri",
+      "manifest_path": "/workspace/crates/perl-uri/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-uri"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-uri/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-workspace",
+      "manifest_path": "/workspace/crates/perl-workspace/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perl-workspace"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perl-workspace/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "perl-workspace-core",
+      "manifest_path": "/workspace/crates/perl-workspace-core/Cargo.toml",
+      "class": "internal_product_crate",
+      "repair_cohort": 3,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "pass"
+        },
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        }
+      }
+    },
+    {
+      "name": "perllsp",
+      "manifest_path": "/workspace/crates/perllsp/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "not_applicable"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/perllsp"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/perllsp/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "tree-sitter-perl-c",
+      "manifest_path": "/workspace/crates/tree-sitter-perl-c/Cargo.toml",
+      "class": "generated_vendored_binding",
+      "repair_cohort": 4,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/tree-sitter-perl-c/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        }
+      }
+    },
+    {
+      "name": "tree-sitter-perl-rs",
+      "manifest_path": "/workspace/crates/tree-sitter-perl-rs/Cargo.toml",
+      "class": "published_library",
+      "repair_cohort": 1,
+      "in_publish_allowlist": true,
+      "requirements": {
+        "crate_root_docs": {
+          "status": "pass"
+        },
+        "docs_rs_metadata": {
+          "status": "pass"
+        },
+        "examples_surface": {
+          "status": "pass"
+        },
+        "manifest_description": {
+          "status": "pass"
+        },
+        "manifest_documentation": {
+          "status": "pass",
+          "detail": "https://docs.rs/tree-sitter-perl-rs"
+        },
+        "manifest_repository": {
+          "status": "pass",
+          "detail": "https://github.com/EffortlessMetrics/perl-lsp",
+          "authority": "https://github.com/EffortlessMetrics/perl-lsp"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "README.md"
+        },
+        "readme_path_resolves": {
+          "status": "pass",
+          "detail": "/workspace/crates/tree-sitter-perl-rs/README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        },
+        "docs_rs_build": {
+          "status": "not_proven",
+          "authority": "scripts/verify-docs-rs.sh"
+        },
+        "public_api_documented": {
+          "status": "not_proven",
+          "authority": ".ci/public-api-baselines and missing-docs policy"
+        },
+        "usable_from_docs": {
+          "status": "not_proven",
+          "authority": "docs.rs build + entrypoint review"
+        }
+      }
+    },
+    {
+      "name": "xtask",
+      "manifest_path": "/workspace/xtask/Cargo.toml",
+      "class": "internal_tooling_test",
+      "repair_cohort": 5,
+      "in_publish_allowlist": false,
+      "requirements": {
+        "contributor_guidance": {
+          "status": "pass"
+        },
+        "package_readme": {
+          "status": "pass",
+          "detail": "../README.md"
+        }
+      },
+      "observations": {
+        "builds_rustdoc": {
+          "status": "not_proven",
+          "authority": "cargo doc / scripts/verify-docs-rs.sh"
+        }
+      }
+    }
+  ]
+}
