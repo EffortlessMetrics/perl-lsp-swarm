@@ -191,6 +191,37 @@ sub world {
 
     #[test]
     #[serial_test::serial]
+    fn test_incremental_env_falsy_values_disable() {
+        for token in ["0", "false", "off"] {
+            unsafe { std::env::set_var("PERL_LSP_INCREMENTAL", token) };
+            let config = IncrementalConfig::default();
+            assert!(!config.enabled, "expected disabled for PERL_LSP_INCREMENTAL={token:?}");
+        }
+        unsafe { std::env::remove_var("PERL_LSP_INCREMENTAL") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_incremental_env_truthy_values_enable() {
+        for token in ["1", "true"] {
+            unsafe { std::env::set_var("PERL_LSP_INCREMENTAL", token) };
+            let config = IncrementalConfig::default();
+            assert!(config.enabled, "expected enabled for PERL_LSP_INCREMENTAL={token:?}");
+        }
+        unsafe { std::env::remove_var("PERL_LSP_INCREMENTAL") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_incremental_env_invalid_value_disables() {
+        unsafe { std::env::set_var("PERL_LSP_INCREMENTAL", "maybe") };
+        let config = IncrementalConfig::default();
+        assert!(!config.enabled);
+        unsafe { std::env::remove_var("PERL_LSP_INCREMENTAL") };
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn test_incremental_disabled_fallback() -> Result<(), Box<dyn std::error::Error>> {
         // Ensure incremental is disabled
         unsafe { std::env::remove_var("PERL_LSP_INCREMENTAL") };
