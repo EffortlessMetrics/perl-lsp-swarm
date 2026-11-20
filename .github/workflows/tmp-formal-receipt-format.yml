@@ -1,0 +1,86 @@
+name: Temporary formal receipt repair rehearsal
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-formal-receipt-rehearsal-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  rehearse:
+    if: github.event.pull_request.number == 19323
+    name: Rehearse and qualify formal receipt repair
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact branch head without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.95.0
+
+      - name: Apply and format reviewed source repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/tmp_formal_receipt_repair.py
+          cargo fmt --all
+          git diff --check
+
+      - name: Capture exact repair evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-receipt-repair/xtask/src/tasks
+          cp xtask/src/tasks/formal_receipt.rs target/formal-receipt-repair/xtask/src/tasks/formal_receipt.rs
+          cp xtask/src/tasks/gate_receipts.rs target/formal-receipt-repair/xtask/src/tasks/gate_receipts.rs
+          cp xtask/src/tasks/mod.rs target/formal-receipt-repair/xtask/src/tasks/mod.rs
+          git diff --binary -- xtask/src/tasks/formal_receipt.rs xtask/src/tasks/gate_receipts.rs xtask/src/tasks/mod.rs > target/formal-receipt-repair.patch
+          test -s target/formal-receipt-repair.patch
+
+      - name: Run focused formal receipt tests
+        run: cargo test -p xtask --all-targets --locked formal_receipt
+
+      - name: Run strict xtask Clippy
+        run: cargo clippy -p xtask --all-targets --locked -- -D warnings
+
+      - name: Run documentation and workflow policy checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask docs-check
+          cargo xtask workflow-policy
+
+      - name: Verify only intended source paths changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          printf '%s\n' "$changed"
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(xtask/src/tasks/formal_receipt\.rs|xtask/src/tasks/gate_receipts\.rs|xtask/src/tasks/mod\.rs)$' || true)"
+          test -z "$unexpected"
+
+      - name: Upload read-only repair evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: formal-receipt-repair-${{ github.event.pull_request.head.sha }}
+          path: |
+            target/formal-receipt-repair/
+            target/formal-receipt-repair.patch
+          if-no-files-found: error
+          retention-days: 1

@@ -4,6 +4,7 @@
 //! It validates registry membership and required/common fields, with optional
 //! JSON output for machine consumers.
 
+use super::formal_receipt::{self, FORMAL_PROOF_CHECK};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -175,16 +176,16 @@ fn validate_receipt(path: &Path, registry: &Registry) -> Result<ValidationResult
         .with_context(|| format!("invalid JSON in {}", path.display()))?;
 
     let mut errors = Vec::new();
+    let check = receipt.get("check").and_then(Value::as_str).map(ToOwned::to_owned);
 
-    // Review receipts use a different schema (kind/producer/pr/head_sha)
-    // than gate receipts (check/schema_version/event/verdict). Skip the
-    // gate-specific common-field validation for them (#2093).
+    // Review receipts and formal-proof receipts own specialized envelopes rather
+    // than the common gate event/verdict fields. Their typed validators below
+    // remain fail-closed; this only avoids applying the wrong generic schema.
     let is_review_receipt = receipt.get("kind").and_then(Value::as_str) == Some("review");
-    if !is_review_receipt {
+    let is_formal_receipt = check.as_deref() == Some(FORMAL_PROOF_CHECK);
+    if !is_review_receipt && !is_formal_receipt {
         validate_common_fields(&receipt, &mut errors);
     }
-
-    let check = receipt.get("check").and_then(Value::as_str).map(ToOwned::to_owned);
 
     let registry_map = registry_map(registry)?;
     let schema = check.as_ref().and_then(|check_name| registry_map.get(check_name)).cloned();
@@ -205,6 +206,9 @@ fn validate_receipt(path: &Path, registry: &Registry) -> Result<ValidationResult
     }
     if check.as_deref() == Some("memory-plateau") {
         validate_memory_plateau_semantics(&receipt, &mut errors);
+    }
+    if is_formal_receipt {
+        errors.extend(formal_receipt::validate_value(&receipt));
     }
 
     Ok(ValidationResult {
