@@ -107,7 +107,11 @@ REQUEST_TABLE_ROW_RE = re.compile(
     r"(?P<availability>all_frontends|native_only)\s+"
     r"(?P<variant>[A-Z][A-Za-z0-9]*)\s+"
     r'"(?P<command>[A-Za-z][A-Za-z0-9._/-]*)"\s*=>\s*'
-    r"(?P<handler>[a-z_][a-z0-9_]*)\s*\(\s*(?:arguments\s*)?\)\s*,"
+    r"(?P<handler>[a-z_][a-z0-9_]*)\s*\(\s*(?P<arity>arguments\s*)?\)\s*,"
+)
+REQUEST_ARGUMENT_FAMILIES = frozenset({"with_arguments", "without_arguments"})
+PRODUCTION_DISPATCH_DISCOVERY_PATTERN = (
+    r"\bfn\s+(?:dispatch|dispatch_request|handle_request)\s*\("
 )
 # Any string-literal match arm outside the table would be a second executable
 # authority. This is a breadth net over the rest of the file; the exclusivity
@@ -670,6 +674,9 @@ def parse_request_table(source: str) -> list[dict[str, str]]:
             raise AuthorityError(
                 f"unparsed content in the request table: {residue[:80]!r}"
             )
+        request_argument_family = (
+            "with_arguments" if match.group("arity") else "without_arguments"
+        )
         rows.append(
             {
                 "row_id": f"dap.request.{match.group('command')}",
@@ -678,6 +685,7 @@ def parse_request_table(source: str) -> list[dict[str, str]]:
                 "availability": match.group("availability"),
                 "variant": match.group("variant"),
                 "handler": match.group("handler"),
+                "request_argument_family": request_argument_family,
             }
         )
         consumed = match.end()
