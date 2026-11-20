@@ -269,16 +269,26 @@ fn add_release_results(results: &mut BTreeMap<String, ExternalResult>, dist: Opt
 /// error `note` distinguishes the two on inspection.
 fn add_docs_status_result(results: &mut BTreeMap<String, ExternalResult>) {
     let run = update_status::run(false, true, None);
-    let evidence = vec![EvidenceRef::command("cargo xtask update-status --check")];
     results.insert(
         "docs.status_current".to_string(),
-        ExternalResult::from_gate(
-            run.map_err(|e| e.to_string()),
-            evidence,
-            "Run `cargo xtask update-status --check`; regenerate with `--write` if drift is \
-             reported.",
-        ),
+        docs_status_result(run.map_err(|e| e.to_string())),
     );
+}
+
+/// Build the `docs.status_current` external result from the
+/// `update-status --check` outcome.
+///
+/// The error text is the only carrier of the outdated file names into the
+/// receipt: the per-file notices are written to stderr and never reach the
+/// receipt evidence, so an error that only counts the files loses the repair
+/// target (#18141).
+fn docs_status_result(run: std::result::Result<(), String>) -> ExternalResult {
+    ExternalResult::from_gate(
+        run,
+        vec![EvidenceRef::command("cargo xtask update-status --check")],
+        "Run `cargo xtask update-status --check`; regenerate with `--write` if drift is \
+         reported.",
+    )
 }
 
 /// The `run_critic_registry_parity` proof test, as a `cargo test` filter
@@ -458,5 +468,22 @@ mod tests {
         assert_eq!(result.status, perl_release_readiness::IndicatorStatus::Fail);
         assert!(result.remediation.expect("remediation").contains(CRITIC_PARITY_TEST));
         assert!(result.evidence.iter().any(|e| e.value.contains(&err)));
+    }
+
+    #[test]
+    fn docs_status_receipt_evidence_keeps_the_outdated_file_names() {
+        use perl_tdd_support::must_some_with;
+
+        let names = ["docs/status/lsp.md", "docs/status/tests.md"];
+        let summary = update_status::format_outdated_files(&names);
+        let result = docs_status_result(Err(summary));
+        assert_eq!(result.status, perl_release_readiness::IndicatorStatus::Fail);
+        let note = must_some_with(
+            result.evidence.iter().find(|e| e.value.contains("file(s) out of date")),
+            "receipt evidence carries the update-status error note",
+        );
+        for name in names {
+            assert!(note.value.contains(name), "receipt evidence must name {name}");
+        }
     }
 }

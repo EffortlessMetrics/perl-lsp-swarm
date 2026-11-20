@@ -135,3 +135,19 @@ fn test_update_status_is_split_into_subsystem_modules() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn outdated_file_summary_names_every_outdated_file() {
+    // Empty is the control: the count-only prefix must survive unchanged.
+    assert_eq!(format_outdated_files(&[]), "0 file(s) out of date");
+    // Single: the legacy count prefix is retained and the one name follows it.
+    assert_eq!(
+        format_outdated_files(&["docs/status/lsp.md"]),
+        "1 file(s) out of date: docs/status/lsp.md"
+    );
+    // Multiple: every name is present, in the order the subsystems collected them.
+    assert_eq!(
+        format_outdated_files(&["docs/status/lsp.md", "docs/status/tests.md"]),
+        "2 file(s) out of date: docs/status/lsp.md, docs/status/tests.md"
+    );
+}
