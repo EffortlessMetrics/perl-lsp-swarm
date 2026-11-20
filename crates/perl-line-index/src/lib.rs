@@ -587,3 +587,8 @@ mod tests {
         }
     }
 }
+
+// Keep the position-law regressions on the existing foundation --lib CI route.
+#[cfg(test)]
+#[path = "../tests/formal/position_laws.rs"]
+mod formal_position_laws;
