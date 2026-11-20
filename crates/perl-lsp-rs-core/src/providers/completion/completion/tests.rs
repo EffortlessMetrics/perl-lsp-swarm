@@ -3669,6 +3669,52 @@ al"#;
 }
 
 #[test]
+fn live_completion_visible_symbol_slice_surfaces_export_tag_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/lib/TagLib.pm")?,
+        r#"package TagLib;
+use Exporter 'import';
+our @EXPORT_OK = qw(tagged_one tagged_two);
+our %EXPORT_TAGS = (tools => [qw(tagged_one tagged_two)]);
+sub tagged_one { }
+sub tagged_two { }
+1;
+"#
+        .to_string(),
+    )?;
+
+    let importer_uri = Url::parse("file:///workspace/tag_consumer.pl")?;
+    let code = r#"package App;
+use TagLib qw(:tools);
+tagged_"#;
+    index.index_file(importer_uri.clone(), code.to_string())?;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let completions =
+        provider.get_completions_with_path(code, code.len(), Some(importer_uri.as_str()));
+
+    for expected in ["tagged_one", "tagged_two"] {
+        let item = must_some(completions.iter().find(|item| item.label == expected));
+        assert!(
+            must_some(item.sort_text.as_deref()).starts_with("2z_visible_"),
+            "{expected} should use the live visible-symbol tier; got {:?}",
+            item.sort_text
+        );
+        let detail = must_some(item.detail.as_deref());
+        assert!(
+            detail.contains("tag export") && detail.contains("TagLib"),
+            "{expected} detail should identify export-tag provenance; got {detail:?}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn live_completion_visible_symbol_slice_respects_empty_import()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
