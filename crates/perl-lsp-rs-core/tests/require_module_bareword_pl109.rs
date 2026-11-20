@@ -81,12 +81,12 @@ fn editing_require_into_expression_and_back_toggles_pl109() {
 }
 
 #[test]
-fn demo_database_pm_does_not_emit_pl109_for_dbi() {
-    let source = include_str!("../../../demo_workspace/lib/Database.pm");
+fn begin_eval_require_dbi_does_not_emit_pl109() {
+    let source = include_str!("../../../testdata/diagnostics/pl109_optional_dbi.pl");
     let diags = diagnostics_for(source);
     assert!(
         pl109_for(&diags, "DBI").is_empty(),
-        "demo Database.pm must not emit PL109 at DBI: {diags:?}"
+        "BEGIN/eval require DBI must not emit PL109: {diags:?}"
     );
 }
 
