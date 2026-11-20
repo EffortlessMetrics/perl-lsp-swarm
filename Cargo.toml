@@ -101,6 +101,7 @@ members = [
     "crates/perl-ci-hygiene",
     "crates/perl-release-readiness",
     "crates/perl-workspace-core",
+    "crates/perl-snapshot-store",
     "crates/perl-tree-sitter-compat",
     "xtask",
 ]
@@ -297,6 +298,7 @@ perl-release-readiness = { path = "crates/perl-release-readiness", version = "0.
 # perl-workspace-core: LSP-free project-facts substrate (PLSP-ADR-0006). Deliberately
 # NOT dependent on perl-workspace/lsp-types (contract in tests/dependency_contract.rs).
 perl-workspace-core = { path = "crates/perl-workspace-core", version = "0.17.0" }
+perl-snapshot-store = { path = "crates/perl-snapshot-store", version = "0.17.0" }
 # perl-tree-sitter-compat: tree-sitter-compatible output adapter over the native parser.
 perl-tree-sitter-compat = { path = "crates/perl-tree-sitter-compat", version = "0.17.0" }
 perl-pod = { path = "crates/perl-pod", version = "0.17.0" }

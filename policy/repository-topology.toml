@@ -565,6 +565,17 @@ current_integration_mode = "workspace_path"
 metadata_authority = "workspace_inherited"
 
 [[packages]]
+name = "perl-snapshot-store"
+path = "crates/perl-snapshot-store"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#4911"
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
 name = "perl-source-identity"
 path = "crates/perl-source-identity"
 current_owner = "swarm-product"
