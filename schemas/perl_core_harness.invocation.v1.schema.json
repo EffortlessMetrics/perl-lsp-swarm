@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://perl-lsp.dev/schemas/perl_core_harness.invocation.v1.schema.json",
+  "title": "perl_core_harness.invocation.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "invocation_id",
+    "authority",
+    "binding",
+    "process",
+    "tap",
+    "derived"
+  ],
+  "properties": {
+    "schema_version": { "const": "perl_core_harness.invocation.v1" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "invocation_id": { "type": "string", "minLength": 1 },
+    "authority": {
+      "type": "string",
+      "enum": ["upstream_test", "upstream_harness", "direct_probe"]
+    },
+    "binding": { "type": "object" },
+    "process": { "type": "object" },
+    "tap": { "type": "object" },
+    "semantic_record": { "type": ["object", "null"] },
+    "derived": { "type": "object" }
+  }
+}

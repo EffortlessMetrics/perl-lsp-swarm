@@ -39,6 +39,7 @@ pub(crate) mod schema_check;
 /// serde and the registered schema, while declared extension maps stay open.
 #[cfg(test)]
 mod contract_closure_tests;
+pub mod invocation_reconcile;
 mod normalization;
 pub mod public_evidence;
 mod run_authority;
