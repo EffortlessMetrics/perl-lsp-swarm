@@ -4971,9 +4971,9 @@ mod tests {
         Ok(())
     }
 
-    /// Replace `path` by writing a sibling temp file, setting the executable
-    /// bit, then renaming over the original. In-place `write` of a path that
-    /// was just `exec`'d can fail with `ETXTBSY` on Linux (#18195).
+    /// Install a staged fixture after its writer exits. If the test process
+    /// opens the file for writing, a parallel test can fork and inherit the
+    /// descriptor, causing ETXTBSY after rename even with close-on-exec (#18195).
     #[cfg(unix)]
     fn replace_unix_executable(path: &Path, contents: &str) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
@@ -4984,37 +4984,32 @@ mod tests {
                 "executable path has no parent directory",
             )
         })?;
-        let file_name = path.file_name().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "executable path has no file name",
-            )
-        })?;
-        let temp_path =
-            dir.join(format!(".{}.new-{}", file_name.to_string_lossy(), std::process::id()));
-        let result = std::fs::write(&temp_path, contents)
-            .and_then(|()| {
-                std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o700))
-            })
-            .and_then(|()| std::fs::rename(&temp_path, path));
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temp_path);
+        let staging = tempfile::tempdir_in(dir)?;
+        let staged_path = staging.path().join("fixture");
+        let writer = Command::new("/bin/sh")
+            .args(["-c", r#"printf '%s' "$1" > "$2""#, "write-fixture", contents])
+            .arg(&staged_path)
+            .output()?;
+        if !writer.status.success() {
+            return Err(std::io::Error::other(format!(
+                "fixture writer exited with {}: {}",
+                writer.status,
+                String::from_utf8_lossy(&writer.stderr).trim_end()
+            )));
         }
-        result
+        std::fs::set_permissions(&staged_path, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::rename(staged_path, path)
     }
 
     #[cfg(unix)]
     #[test]
     fn cargo_probe_failure_can_be_diagnosed_and_retried_after_repair() -> TestResult {
-        use std::os::unix::fs::PermissionsExt;
-
         let temp = tempfile::tempdir()?;
         let cargo_path = temp.path().join("cargo");
-        std::fs::write(
+        replace_unix_executable(
             &cargo_path,
             "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 87\nprintf '%s\\n' 'cargo-retry-fixture: repair local provider' >&2\nexit 29\n",
         )?;
-        std::fs::set_permissions(&cargo_path, std::fs::Permissions::from_mode(0o700))?;
         let probe = || {
             let mut command = Command::new(&cargo_path);
             command.arg("--version").current_dir(temp.path());
