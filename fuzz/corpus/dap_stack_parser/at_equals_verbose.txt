@@ -1,0 +1,1 @@
+@ = List::Util::reduce('CODE', 1, 2) called from file `/lib/Util.pm' line 30

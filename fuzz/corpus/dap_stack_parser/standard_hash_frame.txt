@@ -1,0 +1,1 @@
+  #0  main::foo at /script.pl line 42
