@@ -1123,12 +1123,12 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
         compat(
             "compat.client.jetbrains.watcherForceDisable",
             "clientInfo.name =~ /(jetbrains|intellij|idea)/i",
-            RT_INIT,
-            &["workspace.didChangeWatchedFiles.dynamicRegistration (claimed but overridden)"],
-            "#4630-era workaround; lifecycle tests initialize_disables_dynamic_registration_for_jetbrains_clients",
+            "crates/perl-lsp-rs-core/src/protocol/effective_surface.rs EffectiveLspSurface::build registration plan",
+            &["workspace.didChangeWatchedFiles.dynamicRegistration (claimed; no name override)"],
+            "#7710 retired the #4630-era name branch; effective_surface_parity_tests lsp4ij_watcher_registration_is_invariant_to_client_name_only; lsp_registration_tests lsp4ij_profile_watcher_registration_is_invariant_to_client_name_only",
             "JetBrains-family clients (name contains jetbrains/intellij/idea, case-insensitive)",
-            "their dynamic watcher registration flow is unreliable and degrades startup; forces caps.dynamic_registration_support=false regardless of declaration and queues one-time logMessage after initialized",
-            "until EffectiveLspSurface introduces typed compatibility policy (#9665)",
+            "historical workaround force-disabled dynamic watcher registration by client name alone",
+            "retired #7710 — EffectiveLspSurface registration plan owns watcher admission; identical capabilities must not diverge by name (#8584)",
         ),
         compat(
             "compat.client.opencode.pushDiagnosticsRetention",

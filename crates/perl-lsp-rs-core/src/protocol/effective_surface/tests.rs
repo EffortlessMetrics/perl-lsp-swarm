@@ -295,7 +295,7 @@ fn registration_plan_selectors_are_unique_across_the_whole_plan() {
 }
 
 #[test]
-fn watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_exception() {
+fn watcher_registration_requires_claimed_support_and_active_workspace_symbol_surface() {
     let base = || {
         let mut client = bare_client();
         client.dynamic_file_watcher_registration = ClientFact::Supported;
@@ -333,26 +333,6 @@ fn watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_
     assert_eq!(
         refused.watcher_registration_decision,
         WatcherPlanDecision::Withheld(WatcherWithholdReason::ClientUnsupported),
-    );
-
-    // With the JetBrains compatibility exception: force-disabled.
-    let mut jetbrains = base();
-    jetbrains.compatibility_exceptions.insert(KnownException::JetBrainsWatcherForceDisable);
-    let forced_off = build_ok(&jetbrains);
-    assert!(
-        forced_off.registration_plan.registrations.is_empty(),
-        "compatibility exception removes the planned registration"
-    );
-    assert_eq!(
-        forced_off.watcher_registration_decision,
-        WatcherPlanDecision::Withheld(WatcherWithholdReason::CompatibilityException {
-            exception: KnownException::JetBrainsWatcherForceDisable,
-        }),
-    );
-    assert!(
-        forced_off
-            .compatibility_exceptions_applied
-            .contains(&KnownException::JetBrainsWatcherForceDisable)
     );
 }
 
@@ -535,10 +515,7 @@ fn advertised_ids_derive_from_final_family_outcomes_not_client_unsuppressed_flag
 
 #[test]
 fn compatibility_exceptions_carry_exact_evidence_reason_and_expiry() {
-    for exception in [
-        KnownException::OpenCodePushDiagnosticsRetention,
-        KnownException::JetBrainsWatcherForceDisable,
-    ] {
+    for exception in [KnownException::OpenCodePushDiagnosticsRetention] {
         assert!(!exception.subject_evidence().is_empty());
         assert!(!exception.reason().is_empty());
         assert!(!exception.expiry().is_empty(), "exceptions are never silently permanent");

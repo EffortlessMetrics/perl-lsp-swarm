@@ -2032,20 +2032,20 @@
       "surface_id": "compat.client.jetbrains.watcherForceDisable",
       "kind": "compatibility",
       "protocol_field": "clientInfo.name =~ /(jetbrains|intellij|idea)/i",
-      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/effective_surface.rs EffectiveLspSurface::build registration plan",
       "client_capability_inputs": [
-        "workspace.didChangeWatchedFiles.dynamicRegistration (claimed but overridden)"
+        "workspace.didChangeWatchedFiles.dynamicRegistration (claimed; no name override)"
       ],
       "build_profile_config_tool_inputs": [],
       "disposition": "unadvertised",
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
-      "evidence_owner": "#4630-era workaround; lifecycle tests initialize_disables_dynamic_registration_for_jetbrains_clients",
+      "evidence_owner": "#7710 retired the #4630-era name branch; effective_surface_parity_tests lsp4ij_watcher_registration_is_invariant_to_client_name_only; lsp_registration_tests lsp4ij_profile_watcher_registration_is_invariant_to_client_name_only",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": {
         "subject": "JetBrains-family clients (name contains jetbrains/intellij/idea, case-insensitive)",
-        "reason": "their dynamic watcher registration flow is unreliable and degrades startup; forces caps.dynamic_registration_support=false regardless of declaration and queues one-time logMessage after initialized",
-        "expiry": "until EffectiveLspSurface introduces typed compatibility policy (#9665)"
+        "reason": "historical workaround force-disabled dynamic watcher registration by client name alone",
+        "expiry": "retired #7710 — EffectiveLspSurface registration plan owns watcher admission; identical capabilities must not diverge by name (#8584)"
       },
       "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,

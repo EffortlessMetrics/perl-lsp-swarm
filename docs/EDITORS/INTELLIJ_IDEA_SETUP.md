@@ -220,7 +220,7 @@ The real-host receipt owns the tested result for:
 
 ## Watched files
 
-Current server history includes a broad JetBrains-family dynamic watched-file suppression workaround. It is being retired or narrowed through #7710 using the exact supported LSP4IJ capability profile.
+Current server history included a broad JetBrains-family dynamic watched-file suppression workaround. #7710 retired that name branch; the canonical `EffectiveLspSurface` registration plan now owns watcher admission for the exact supported LSP4IJ capability profile.
 
 Treat that workaround as compatibility debt with an explicit retirement test, **not** as a permanent rule that JetBrains clients cannot use dynamic registration. Current documentation should follow the result of #7710/#7719 rather than preserving the historical assumption indefinitely.
 

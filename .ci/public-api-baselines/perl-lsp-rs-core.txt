@@ -1959,7 +1959,6 @@ pub fn perl_lsp_rs_core::protocol::effective_surface::FamilyOutcome::eq(&self, o
 pub fn perl_lsp_rs_core::protocol::effective_surface::FamilyOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::protocol::effective_surface::FamilyOutcome::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 #[non_exhaustive] pub enum perl_lsp_rs_core::protocol::effective_surface::KnownException
-pub perl_lsp_rs_core::protocol::effective_surface::KnownException::JetBrainsWatcherForceDisable
 pub perl_lsp_rs_core::protocol::effective_surface::KnownException::OpenCodePushDiagnosticsRetention
 pub fn perl_lsp_rs_core::protocol::effective_surface::KnownException::expiry(self) -> &'static str
 pub fn perl_lsp_rs_core::protocol::effective_surface::KnownException::reason(self) -> &'static str

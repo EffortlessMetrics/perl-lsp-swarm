@@ -26,7 +26,7 @@ use std::sync::atomic::Ordering;
 use perl_lsp_rs_core::protocol::effective_surface::{
     CapabilityFamily, ClientFact, EffectiveLspSurface, FamilyOutcome, FileOperationFacts,
     KnownException, PositionEncoding, RefreshSupportFacts, RuntimeAvailability, SurfaceInputs,
-    apply_disabled_feature_id_model,
+    WatcherPlanDecision, apply_disabled_feature_id_model,
 };
 
 /// Map a JSON boolean capability pointer to its normalized fact class,
@@ -75,9 +75,6 @@ fn inputs_from_params(params: &Value) -> SurfaceInputs {
         && params.pointer("/capabilities/textDocument/diagnostic").is_some()
     {
         inputs.compatibility_exceptions.insert(KnownException::OpenCodePushDiagnosticsRetention);
-    }
-    if ["jetbrains", "intellij", "idea"].iter().any(|marker| client_name.contains(marker)) {
-        inputs.compatibility_exceptions.insert(KnownException::JetBrainsWatcherForceDisable);
     }
 
     let diagnostic_refresh = {
@@ -332,18 +329,33 @@ fn opencode_push_retention_surface_matches() -> Result<(), String> {
 }
 
 #[test]
-fn jetbrains_watcher_override_surface_matches() -> Result<(), String> {
-    let surface = assert_initialize_matches_model(json!({
-        "clientInfo": { "name": "IntelliJ IDEA" },
-        "capabilities": {
-            "workspace": {
-                "didChangeWatchedFiles": { "dynamicRegistration": true }
-            }
+fn lsp4ij_watcher_registration_is_invariant_to_client_name_only() -> Result<(), String> {
+    let capabilities = json!({
+        "workspace": {
+            "workspaceFolders": true,
+            "didChangeWatchedFiles": { "dynamicRegistration": true }
         }
+    });
+    let lsp4ij = assert_initialize_matches_model(json!({
+        "clientInfo": { "name": "LSP4IJ" },
+        "capabilities": capabilities.clone()
     }))?;
-    assert!(
-        surface.registration_plan.registrations.is_empty(),
-        "JetBrains exception must suppress the watcher registration plan"
+    let vscode = assert_initialize_matches_model(json!({
+        "clientInfo": { "name": "Visual Studio Code" },
+        "capabilities": capabilities
+    }))?;
+    assert_eq!(
+        lsp4ij.registration_plan, vscode.registration_plan,
+        "identical capabilities must yield identical registration plans regardless of client name"
+    );
+    assert_eq!(
+        lsp4ij.watcher_registration_decision, vscode.watcher_registration_decision,
+        "watcher admission must not depend on client name alone"
+    );
+    assert_eq!(
+        lsp4ij.watcher_registration_decision,
+        WatcherPlanDecision::Planned,
+        "exact LSP4IJ profile with dynamic watcher support must plan registration"
     );
     Ok(())
 }
