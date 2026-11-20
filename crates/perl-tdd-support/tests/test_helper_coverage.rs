@@ -3,6 +3,7 @@
 //! Focuses on: must/must_some/must_err edge cases, panic message formatting,
 //! #[track_caller] behavior, governance quality scoring edge cases,
 //! TDD workflow state transitions, and coverage tracker boundaries.
+#![allow(deprecated, reason = "tests cover deprecated legacy workflow facades")]
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_tdd_support::governance::*;
@@ -228,7 +229,7 @@ fn test_tdd_workflow_start_cycle_message_contains_name() -> Result<(), Box<dyn s
     let mut wf = TddWorkflow::new("Test::More");
     let result = wf.start_cycle("parse_heredoc");
     assert!(result.message.contains("parse_heredoc"));
-    assert_eq!(result.state, TddState::Red);
+    assert_eq!(result.state, TddState::Idle);
     Ok(())
 }
 
@@ -312,7 +313,7 @@ fn test_tdd_workflow_repeated_cycles() -> Result<(), Box<dyn std::error::Error>>
 
     // Second cycle — verify workflow resets cleanly
     let r = wf.start_cycle("second");
-    assert_eq!(r.state, TddState::Red);
+    assert_eq!(r.state, TddState::Idle);
     assert!(r.message.contains("second"));
     wf.run_tests(true);
     wf.complete_cycle();
@@ -483,26 +484,26 @@ fn test_refactoring_analyzer_anonymous_sub() -> Result<(), Box<dyn std::error::E
 #[test]
 fn test_full_tdd_workflow_start_cycle_state() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig::default();
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
     let result = wf.start_cycle("my_feature");
     assert!(result.message.contains("my_feature"));
-    assert_eq!(result.phase, "Red");
+    assert_eq!(result.phase, "Intent");
     Ok(())
 }
 
 #[test]
 fn test_full_tdd_workflow_coverage_threshold_no_data() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig::default();
-    let wf = FullTddWorkflow::new(config);
+    let wf = FullTddWorkflow::new(config)?;
     // No coverage data => total_coverage is 0.0, threshold is 80.0
-    assert!(!wf.check_coverage_threshold());
+    assert_eq!(wf.check_coverage_threshold(), None);
     Ok(())
 }
 
 #[test]
 fn test_full_tdd_workflow_coverage_threshold_met() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig { coverage_threshold: 50.0, ..TddConfig::default() };
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
 
     // 3 covered out of 4 lines = 75% > 50% threshold
     let coverage = vec![
@@ -512,14 +513,14 @@ fn test_full_tdd_workflow_coverage_threshold_met() -> Result<(), Box<dyn std::er
         LineCoverage { line: 4, hits: 2, covered: true },
     ];
     wf.update_coverage(PathBuf::from("test.pl"), coverage);
-    assert!(wf.check_coverage_threshold());
+    assert_eq!(wf.check_coverage_threshold(), Some(true));
     Ok(())
 }
 
 #[test]
 fn test_full_tdd_workflow_coverage_threshold_not_met() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig { coverage_threshold: 90.0, ..TddConfig::default() };
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
 
     // 1 covered out of 4 = 25% < 90%
     let coverage = vec![
@@ -529,7 +530,7 @@ fn test_full_tdd_workflow_coverage_threshold_not_met() -> Result<(), Box<dyn std
         LineCoverage { line: 4, hits: 1, covered: true },
     ];
     wf.update_coverage(PathBuf::from("test.pl"), coverage);
-    assert!(!wf.check_coverage_threshold());
+    assert_eq!(wf.check_coverage_threshold(), Some(false));
     Ok(())
 }
 
@@ -537,7 +538,7 @@ fn test_full_tdd_workflow_coverage_threshold_not_met() -> Result<(), Box<dyn std
 fn test_full_tdd_workflow_inline_coverage_uncovered_lines() -> Result<(), Box<dyn std::error::Error>>
 {
     let config = TddConfig::default();
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
 
     let coverage = vec![
         LineCoverage { line: 1, hits: 3, covered: true },
@@ -558,7 +559,7 @@ fn test_full_tdd_workflow_inline_coverage_uncovered_lines() -> Result<(), Box<dy
 #[test]
 fn test_full_tdd_workflow_inline_coverage_no_file() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig::default();
-    let wf = FullTddWorkflow::new(config);
+    let wf = FullTddWorkflow::new(config)?;
     let annotations = wf.get_inline_coverage(&PathBuf::from("nonexistent.pm"));
     assert!(annotations.is_empty());
     Ok(())
@@ -567,10 +568,10 @@ fn test_full_tdd_workflow_inline_coverage_no_file() -> Result<(), Box<dyn std::e
 #[test]
 fn test_full_tdd_workflow_status_idle() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig::default();
-    let wf = FullTddWorkflow::new(config);
+    let wf = FullTddWorkflow::new(config)?;
     let status = wf.get_status();
     assert_eq!(status.state, WorkflowState::Idle);
-    assert!(status.tests_passing); // no test results = vacuously passing
+    assert_ne!(status.tests_passing, Some(true));
     Ok(())
 }
 
@@ -578,7 +579,7 @@ fn test_full_tdd_workflow_status_idle() -> Result<(), Box<dyn std::error::Error>
 fn test_full_tdd_workflow_coverage_diagnostics_for_file() -> Result<(), Box<dyn std::error::Error>>
 {
     let config = TddConfig::default();
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
 
     let coverage = vec![
         LineCoverage { line: 10, hits: 0, covered: false },
@@ -599,7 +600,7 @@ fn test_full_tdd_workflow_coverage_diagnostics_for_file() -> Result<(), Box<dyn 
 fn test_full_tdd_workflow_coverage_diagnostics_empty_file() -> Result<(), Box<dyn std::error::Error>>
 {
     let config = TddConfig::default();
-    let wf = FullTddWorkflow::new(config);
+    let wf = FullTddWorkflow::new(config)?;
     let diags = wf.generate_coverage_diagnostics(&PathBuf::from("missing.pl"));
     assert!(diags.is_empty());
     Ok(())
