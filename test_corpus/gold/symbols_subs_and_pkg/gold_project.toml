@@ -1,0 +1,37 @@
+schema = "gold_project.v1"
+project_id = "symbols_subs_and_pkg"
+topology_fingerprint = "62cebae8e521176999c0e10e1545d9221e64260e096e3a5ab458db028e9eb21a"
+content_fingerprint = "8e0ceca61c2e7831b958f648a902b3b5305a591a1de91c5c7312051c02bf3348"
+
+[[members]]
+member_id = "expected_json"
+path = "expected.json"
+role = "generated_expectation_input"
+byte_length = 75
+sha256 = "453837f0a8c45790c0989de0e9f48c61fb3e49533437f08b9e68f9d32dc4d9c6"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "expected_symbols_json"
+path = "expected_symbols.json"
+role = "generated_expectation_input"
+byte_length = 722
+sha256 = "485c31007f700933e6e9667719b5c6eae7eea81beb9fb4eaafbde924b24557e7"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 117
+sha256 = "3ec06aab95f7d33f73d2478e406e5e96a37d8ace1ae6219c8293d086aae9d524"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

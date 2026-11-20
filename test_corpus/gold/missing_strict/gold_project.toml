@@ -1,0 +1,26 @@
+schema = "gold_project.v1"
+project_id = "missing_strict"
+topology_fingerprint = "96bcd2a859a29b5a09aa5606113d07dd56ea78d3756a250df273b27ba2b0207f"
+content_fingerprint = "ec2d84aa85c1b40a20bcb89c4bc8dc42f13f88ddcad97319afa33926fcbdd6f9"
+
+[[members]]
+member_id = "expected_json"
+path = "expected.json"
+role = "generated_expectation_input"
+byte_length = 102
+sha256 = "5d5cab2630a5ff861a71bcf85e16269d53f3dd0f3b262f1744d3e3c8b04dd32c"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 65
+sha256 = "a389b011903ad18c52b6f454007dce4b0da7e219080911e78ec567ace6d255a7"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

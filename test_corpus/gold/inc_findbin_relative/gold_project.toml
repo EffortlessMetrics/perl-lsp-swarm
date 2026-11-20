@@ -1,0 +1,37 @@
+schema = "gold_project.v1"
+project_id = "inc_findbin_relative"
+topology_fingerprint = "752c5673aebb2e0d35d3a2ca8be9720b1c9bd95dc34aa09e482bebffbc21ffc1"
+content_fingerprint = "dfe455b9db2611f242630eaf87b1f9e6866cf6f64c409768287df778684af32b"
+
+[[members]]
+member_id = "expected_module_json"
+path = "expected_module.json"
+role = "generated_expectation_input"
+byte_length = 507
+sha256 = "c8a02292de44df87288411f669b26d33f18984a1fa5e00909ec11ffbca0799d9"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 138
+sha256 = "28bd1cc6c9fa7a28a9f7efa2c92b11f557671232f18fc1a2fc66c26bc3ca4284"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "lib__FindBinModule_pm"
+path = "lib/FindBinModule.pm"
+role = "support_source"
+byte_length = 84
+sha256 = "ad6bab3c9e5b16ea767bfee30ff3cfdaa4dd6f219f78cbbf72a0a74086cdaaa3"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
