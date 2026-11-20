@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -121,6 +122,39 @@ gates:
         self.assertEqual(2, report["gate_count"])
         self.assertEqual([], report["unmapped_gates"])
         self.assertEqual([], report["missing_lanes"])
+
+    def test_strict_rejects_a_mapping_left_after_gate_removal(self) -> None:
+        repo = _HERE.parents[1]
+        gate_policy = Path(".ci/gate-policy.yaml")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for path in (
+                gate_policy,
+                Path("policy/ci-lanes.toml"),
+                Path("docs/ci/gate-policy-economics.md"),
+            ):
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((repo / path).read_bytes())
+
+            command = [sys.executable, str(_HERE / "validate_gate_lane_mapping.py"), "--strict"]
+            valid = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertEqual(0, valid.returncode, valid.stdout + valid.stderr)
+
+            policy = root / gate_policy
+            without_gate, removed = re.subn(
+                r"(?ms)^  - name: whitespace_check\n.*?(?=^  - name: )",
+                "",
+                policy.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(1, removed)
+            policy.write_text(without_gate, encoding="utf-8")
+
+            stale = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertEqual(1, stale.returncode, stale.stdout + stale.stderr)
+            self.assertIn("Mappings to gates absent from .ci/gate-policy.yaml: 1", stale.stdout)
+            self.assertIn("  - whitespace_check\n", stale.stdout)
+            self.assertIn("Docs lane-enumeration drift: 0", stale.stdout)
 
     def test_must_context_check_maps_to_merge_gate_shards(self) -> None:
         status, output, report = self.run_validator(
