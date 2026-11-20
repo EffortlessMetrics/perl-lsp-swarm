@@ -1317,10 +1317,10 @@ gates:
     tier: merge_gate
     description: "Foundation token/AST workspace library tests"
     required: true
-    # `--lib` excludes tests/. 103 integration targets in these crates are
-    # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
+    # This lane runs library tests. Integration targets are selected separately
+    # by unit_routed_full for affected crates. The inventory audit (#11694)
+    # and its red-suite repairs (#11708) are closed. See #6054 for broader
+    # integration coverage.
     #   perl-ast                     14
     #   perl-ast-v2                   2
     #   perl-incremental-parsing      8
@@ -1448,10 +1448,10 @@ gates:
     tier: merge_gate
     description: "Semantic analysis, workspace, diagnostics, and refactoring library tests"
     required: true
-    # `--lib` excludes tests/. 183 integration targets in these crates are
-    # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
+    # This lane runs library tests. Integration targets are selected separately
+    # by unit_routed_full for affected crates. The inventory audit (#11694)
+    # and its red-suite repairs (#11708) are closed. See #6054 for broader
+    # integration coverage.
     #   perl-corpus                  14
     #   perl-diagnostics             11
     #   perl-module                  71
@@ -1565,12 +1565,10 @@ gates:
     tier: merge_gate
     description: "DAP, CI hygiene, test support, and tree-sitter workspace tests; Linux does not prove Windows-only pause runtime"
     required: true
-    # Keep the broad support-crate portion --lib-only because the remaining
-    # integration suites are tracked red debt (#11708). The four perl-dap
-    # test-helpers targets below are healthy and must be executed explicitly:
-    # `cargo test --tests` otherwise skips them silently when the feature is off
-    # (#14333). Recorded per #11694; flipping the broad support-crate portion to
-    # --tests is blocked on the red suites in #11708.
+    # The broad support-crate command runs library tests. See #6054 for
+    # broader integration coverage. The inventory audit (#11694) and its
+    # red-suite repairs (#11708) are closed. The separate perl-dap command
+    # enables test-helpers for the four targets that require it (#14333).
     # The fifth target, dap_entry_stop_stack_trace_18491, is not
     # feature-gated; it executes the #18491 entry-stop stackTrace regression
     # proof against a real `perl -d` session on this required lane (PR #18536
