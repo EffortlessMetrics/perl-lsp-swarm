@@ -1,5 +1,6 @@
 //! Test-driven development helpers and generators.
 
+pub mod generated_test_artifact;
 #[allow(missing_docs)]
 pub mod tdd_basic;
 pub mod tdd_workflow;

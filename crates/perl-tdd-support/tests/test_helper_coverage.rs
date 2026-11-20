@@ -1276,9 +1276,8 @@ fn test_generator_test2_framework_output() -> Result<(), Box<dyn std::error::Err
     let code = generator.generate_test("process_data", 3);
     assert!(code.contains("Test2::V0"));
     assert!(code.contains("process_data"));
-    assert!(code.contains("arg1"));
-    assert!(code.contains("arg2"));
-    assert!(code.contains("arg3"));
+    assert!(code.contains("TODO: {"));
+    assert!(!code.contains("ok("));
     assert!(code.contains("done_testing"));
     Ok(())
 }

@@ -314,8 +314,8 @@ fn basic_test_generator_test_more() -> Result<(), Box<dyn std::error::Error>> {
     let code = generator.generate_test("my_sub", 2);
     assert!(code.contains("Test::More"));
     assert!(code.contains("my_sub"));
-    assert!(code.contains("arg1"));
-    assert!(code.contains("arg2"));
+    assert!(code.contains("TODO:"));
+    assert!(!code.contains("ok(defined"));
     assert!(code.contains("done_testing"));
     Ok(())
 }
@@ -326,6 +326,8 @@ fn basic_test_generator_test2() -> Result<(), Box<dyn std::error::Error>> {
     let code = generator.generate_test("process", 0);
     assert!(code.contains("Test2::V0"));
     assert!(code.contains("process"));
+    assert!(code.contains("TODO: {"));
+    assert!(!code.contains("ok("));
     Ok(())
 }
 
@@ -342,7 +344,8 @@ fn basic_test_generator_default_framework() -> Result<(), Box<dyn std::error::Er
 fn basic_test_generator_zero_params() -> Result<(), Box<dyn std::error::Error>> {
     let generator = perl_tdd_support::tdd_basic::TestGenerator::new("Test::More");
     let code = generator.generate_test("run", 0);
-    assert!(code.contains("run()"));
+    assert!(code.contains("run"));
+    assert!(code.contains("fail("));
     Ok(())
 }
 
@@ -377,7 +380,7 @@ fn tdd_workflow_generate_test_delegates() -> Result<(), Box<dyn std::error::Erro
     let wf = TddWorkflow::new("Test::More");
     let code = wf.generate_test("add", 2);
     assert!(code.contains("add"));
-    assert!(code.contains("arg1"));
+    assert!(code.contains("TODO:"));
     Ok(())
 }
 
@@ -1155,7 +1158,11 @@ fn full_tdd_workflow_generate_test_for_function() -> Result<(), Box<dyn std::err
         TestType::Basic,
     );
     assert!(tc.code.contains("add"));
-    assert!(!tc.is_todo);
+    assert!(tc.is_todo);
+    assert_eq!(
+        tc.readiness,
+        perl_tdd_support::test_generator::GeneratedTestReadiness::DraftNeedsOracle
+    );
     Ok(())
 }
 
