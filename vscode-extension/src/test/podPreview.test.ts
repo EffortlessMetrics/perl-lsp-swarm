@@ -211,6 +211,31 @@ describe('podToHtml', () => {
     expect(html).toContain('&lt;/sub&gt;');
   });
 
+  test('escapes tag-shaped injection payloads in prose (#6030 corpus)', () => {
+    const pod =
+      '=pod\n\n<style>body{display:none}</style>\n<script>alert(1)</script>\n<img src=x onerror=alert(1)>\n\n=cut\n';
+    const html = podToHtml(pod);
+    expect(html.toLowerCase()).not.toMatch(/<style[\s>]/);
+    expect(html.toLowerCase()).not.toMatch(/<script[\s>]/);
+    expect(html.toLowerCase()).not.toMatch(/<img[\s>]/);
+    expect(html).toContain('&lt;style&gt;');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('&lt;img src=x');
+  });
+
+  test('does not turn blocked L<> targets into anchors (#6030)', () => {
+    const pod =
+      '=pod\n\nSee L<click|javascript:alert(1)> and L<data|data:text/html,x> and L<path|file:///etc/passwd>.\n\n=cut\n';
+    const html = podToHtml(pod);
+    expect(html).not.toMatch(/href="javascript:/i);
+    expect(html).not.toMatch(/href="data:/i);
+    expect(html).not.toMatch(/href="file:/i);
+    expect(html).not.toContain('<a href="#javascript:');
+    expect(html).toContain('click');
+    expect(html).toContain('data');
+    expect(html).toContain('path');
+  });
+
   test('renders inline formatting codes inside headings', () => {
     const html = podToHtml('=head1 The C<fetch> helper\n');
     expect(html).toContain('<h1>The <code>fetch</code> helper</h1>');
