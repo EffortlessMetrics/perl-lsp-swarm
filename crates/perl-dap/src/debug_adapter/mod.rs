@@ -538,16 +538,18 @@ impl DebugAdapter {
     ///   a reservation still outstanding at delivery time via
     ///   `terminated_delivery_is_current` (an old session's terminal event must
     ///   not leak into a newer client conversation), and
-    /// - re-arms the gate so the *next* client terminal request is acknowledged
-    ///   with its own `terminated` event (#383 terminate-idempotency matrix,
-    ///   re-established by #12082 after the gate landed without moving the
-    ///   matrix).
+    /// - latches the emission gate for the closed terminal generation so a
+    ///   repeated client `terminate`/`disconnect` is idempotent and cannot
+    ///   publish a second `terminated` event (#9765 / #2321 / #8691).
     ///
-    /// Without this close, a second successful `terminate` could never emit:
-    /// the first request left `emitted` latched with no live session left to
-    /// reset it (`clear_active_session_state` does not touch the gate).
+    /// A genuinely new debug session reopens the gate through
+    /// `admit_terminal_lifecycle` after launch or attach.
     pub(super) fn close_terminal_session_generation(&self, reason: &'static str) {
         self.begin_session_generation_with_reason(reason);
+        let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
+        if state.terminal_committed {
+            state.emitted = true;
+        }
     }
 
     pub(super) fn retire_pending_terminal_before_request(&self, command: &str) {
@@ -562,7 +564,9 @@ impl DebugAdapter {
     }
 
     fn admit_terminal_lifecycle(&self) {
-        lock_or_recover(&self.termination_state, "terminal_lifecycle").terminal_committed = false;
+        let mut state = lock_or_recover(&self.termination_state, "terminal_lifecycle");
+        state.terminal_committed = false;
+        state.emitted = false;
     }
 
     /// Return the current session generation for event-handler threads.
