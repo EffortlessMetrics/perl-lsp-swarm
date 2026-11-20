@@ -63,14 +63,18 @@ MAX_ANNOTATIONS = 10
 DEFAULT_RECEIPT = Path("target/receipts/receipt.json")
 
 
-def summarize(receipt: Path) -> tuple[str, list[tuple[str, str]], str | None]:
+def summarize(receipt: Path, job: str | None = None) -> tuple[str, list[tuple[str, str]], str | None]:
     """Render the gate table and select the gates worth annotating.
 
     Returns the rendered markdown, the ``(name, detail)`` pairs for gates that
     ran and did not pass, and a receipt-level problem string when the receipt
     itself was missing or unreadable.
     """
-    lines = ["### PR Smoke gate summary", ""]
+    heading = {
+        "pr-smoke": "PR Smoke gate summary",
+        "pr-fast-unblocked": "PR Fast gate summary",
+    }.get(job, "Gate summary")
+    lines = [f"### {heading}", ""]
     failing: list[tuple[str, str]] = []
     receipt_problem: str | None = None
 
@@ -220,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--summary is required when GITHUB_STEP_SUMMARY is unset")
         summary = Path(location)
 
-    rendered, failing, receipt_problem = summarize(args.receipt)
+    rendered, failing, receipt_problem = summarize(args.receipt, os.environ.get("GITHUB_JOB"))
     summary.write_text(rendered, encoding="utf-8")
     emit(rendered, failing, receipt_problem, f"pr-fast-summary-{uuid.uuid4().hex}")
     # Advisory: the gate verdict belongs to the runner, never to its reporter.

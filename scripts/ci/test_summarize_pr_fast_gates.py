@@ -248,7 +248,7 @@ class StopCommandsFenceTests(unittest.TestCase):
         self.assertLess(open_at, close_at)
         # The table sits inside the fence; the annotations sit after it.
         body = lines[open_at + 1 : close_at]
-        self.assertIn("### PR Smoke gate summary", body)
+        self.assertIn("### Gate summary", body)
         self.assertTrue(
             all(not line.startswith("::error ") for line in body),
             msg="annotations must be emitted outside the fence to be parsed",
@@ -346,6 +346,29 @@ class AnnotationCapTests(unittest.TestCase):
 
 
 class SummaryFileTests(unittest.TestCase):
+    def test_job_selects_summary_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / "summary.md"
+            receipt = Path(directory) / "missing.json"
+            for job, heading in (
+                ("pr-smoke", "### PR Smoke gate summary"),
+                ("pr-fast-unblocked", "### PR Fast gate summary"),
+                ("unknown", "### Gate summary"),
+            ):
+                with self.subTest(job=job):
+                    result = subprocess.run(
+                        [sys.executable, str(SCRIPT), "--receipt", str(receipt)],
+                        env={**os.environ, "GITHUB_JOB": job, "GITHUB_STEP_SUMMARY": str(summary)},
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    written = summary.read_text(encoding="utf-8")
+                    self.assertEqual(written.splitlines()[0], heading)
+                    self.assertIn(written, result.stdout)
+                    self.assertIn("::warning title=pr-fast receipt::", result.stdout)
+
     def test_workflow_cli_preserves_failure_timeout_and_skip_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             receipt = write_receipt(directory, [
