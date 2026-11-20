@@ -17,6 +17,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod common;
+mod common_self_tests;
 
 use common::test_reliability::{
     GracefulDegradation, HealthCheck, ResourceMonitor, TestEnvironment, TestError,
