@@ -115,6 +115,15 @@ index ba38737..fa493f7 100644
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
+@@ -302,7 +274,7 @@ producer = "repository-job"
+ workflow = ".github/workflows/ci.yml"
+ job = "merge-gate-conclusion"
+ workflow_result = "propagate"
+-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "conditional"
 @@ -355,7 +327,7 @@ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
  job = "public-api-pr"
