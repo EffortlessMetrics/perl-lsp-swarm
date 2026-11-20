@@ -2,7 +2,7 @@
 //! Property proof for the shared generated-line-ending rule (#13792).
 //!
 //! `inferred_line_ending` was previously duplicated byte-for-byte in
-//! `perl-lsp-perltidy`'s native formatter and `perl-lsp-rs-core`'s LSP
+//! `perl-tidy`'s native formatter and `perl-lsp-rs-core`'s LSP
 //! whitespace projection. These properties pin the rule itself so those two
 //! call sites cannot drift, and so a future re-derivation (for example the
 //! #10239 convergence with `source_convention`) has to argue with a stated
@@ -12,7 +12,7 @@
 //! same module, so these document-level properties deliberately do not assert
 //! its insertion-region behavior.
 
-use perl_lsp_perltidy::native::inferred_line_ending;
+use perl_tidy::native::inferred_line_ending;
 use proptest::prelude::*;
 
 /// Independent statement of the rule, formulated over string splits rather

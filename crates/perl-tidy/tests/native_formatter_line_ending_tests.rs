@@ -1,9 +1,7 @@
 #![deny(clippy::map_err_ignore)]
 
-use perl_lsp_perltidy::native::{FormatContext, FormatDisposition, FormatLineEndingDisposition};
-use perl_lsp_perltidy::{
-    FinalNewline, FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
-};
+use perl_tidy::native::{FormatContext, FormatDisposition, FormatLineEndingDisposition};
+use perl_tidy::{FinalNewline, FormatConfig, NativeFormatter, PerlFormatter};
 
 fn assert_crlf_only(text: &str) {
     assert_eq!(text.matches('\n').count(), text.matches("\r\n").count());
@@ -42,9 +40,9 @@ fn wrapped_expression_layout_preserves_crlf_for_generated_lines() {
 fn range_block_layout_preserves_crlf_in_result_and_edit() {
     let formatter = NativeFormatter::new();
     let source = concat!("my $before=1;\r\n", "while($n){next;}\r\n", "my $after=2;\r\n",);
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 16));
+    let range = byte_range(source, 1, 0, 1, 16);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.edits.len(), 1);
@@ -103,9 +101,9 @@ fn unterminated_last_line_inherits_crlf_document_convention() {
 fn range_on_unterminated_last_line_inherits_crlf_for_result_and_edit() {
     let formatter = NativeFormatter::new();
     let source = "my $before = 1;\r\nwhile($n){next;}";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 16));
+    let range = byte_range(source, 1, 0, 1, 16);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.edits.len(), 1);
@@ -132,10 +130,8 @@ fn generated_layout_keeps_lf_sources_lf_only() {
 #[test]
 fn insert_final_newline_uses_crlf_after_generated_layout() {
     let formatter = NativeFormatter::new();
-    let config = FormatConfig {
-        final_newline: perl_lsp_perltidy::FinalNewline::Insert,
-        ..FormatConfig::default()
-    };
+    let config =
+        FormatConfig { final_newline: perl_tidy::FinalNewline::Insert, ..FormatConfig::default() };
     let source = "while($n){next;}\r\n";
 
     let result = formatter.format_document(source, &config);
@@ -182,4 +178,21 @@ fn insert_final_newline_refuses_malformed_document_without_edit() {
     assert!(result.edits.is_empty());
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].code, "native.format.parse_error");
+}
+
+// These layout fixtures use ASCII body columns; geometry enters the native API as exact bytes.
+fn byte_range(
+    source: &str,
+    start_line: usize,
+    start_column: usize,
+    end_line: usize,
+    end_column: usize,
+) -> perl_tidy::SourceByteRange {
+    let starts: Vec<_> =
+        std::iter::once(0).chain(source.match_indices('\n').map(|(at, _)| at + 1)).collect();
+    perl_tdd_support::must(perl_tidy::SourceByteRange::new(
+        &perl_tidy::ExactSource::new(source),
+        starts[start_line] + start_column,
+        starts[end_line] + end_column,
+    ))
 }

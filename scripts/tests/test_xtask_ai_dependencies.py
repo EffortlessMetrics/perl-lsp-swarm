@@ -52,12 +52,43 @@ class AiDependencyBoundary(unittest.TestCase):
             with self.subTest(package=package):
                 self.assert_ai_enabled(graph(package, edges=edges))
 
-    def test_perltidy_test_graph_excludes_core_and_ai_transport(self):
-        resolved = graph("perl-lsp-perltidy", edges="normal,build,dev")
-        self.assertIn("perl-lsp-perltidy", resolved)
-        for name in ("perl-lsp-rs-core", "ureq", "rustls", "ring"):
-            with self.subTest(package="perl-lsp-perltidy", dependency=name):
+    def test_formatter_package_test_graphs_exclude_core_and_ai_transport(self):
+        for package in ("perl-tidy", "perl-tidy-perltidy", "perl-lsp-perltidy"):
+            resolved = graph(package, edges="normal,build,dev")
+            self.assertIn(package, resolved)
+            for name in ("perl-lsp-rs-core", "ureq", "rustls", "ring"):
+                with self.subTest(package=package, dependency=name):
+                    self.assertNotIn(name, resolved)
+
+    def test_native_graph_has_no_process_or_application_dependency(self):
+        resolved = graph("perl-tidy", "--no-default-features")
+        self.assertIn("perl-parser-core", resolved)
+        self.assertIn("perl-source-identity", resolved)
+        for name in ("perl-subprocess-runtime", "perl-lsp-perltidy", "perl-tidy-perltidy",
+                     "perl-lsp-rs-core", "perl-lsp-rs", "perl-workspace", "lsp-types"):
+            with self.subTest(dependency=name):
                 self.assertNotIn(name, resolved)
+
+    def test_external_adapter_has_no_native_or_parser_dependency(self):
+        resolved = graph("perl-tidy-perltidy")
+        self.assertIn("perl-subprocess-runtime", resolved)
+        for name in ("perl-tidy", "perl-lsp-perltidy", "perl-parser-core", "perl-lsp-rs-core"):
+            with self.subTest(dependency=name):
+                self.assertNotIn(name, resolved)
+
+    def test_first_party_application_graph_retires_the_compatibility_package(self):
+        for package in ("perl-lsp-rs-core", "perl-lsp-rs", "xtask"):
+            resolved = graph(package)
+            with self.subTest(package=package):
+                self.assertIn("perl-tidy", resolved)
+                self.assertIn("perl-tidy-perltidy", resolved)
+                self.assertNotIn("perl-lsp-perltidy", resolved)
+
+    def test_first_party_sources_retire_compatibility_imports(self):
+        for source_root in ("crates/perl-lsp-rs-core/src", "crates/perl-lsp-rs/src", "xtask/src"):
+            for source in (ROOT / source_root).rglob("*.rs"):
+                with self.subTest(source=source.relative_to(ROOT)):
+                    self.assertNotIn("perl_lsp_perltidy", source.read_text())
 
     def test_core_and_server_defaults_remain_ai_capable(self):
         self.assert_ai_enabled(graph("perl-lsp-rs-core"))

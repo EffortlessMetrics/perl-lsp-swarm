@@ -44,6 +44,8 @@ const MEMORY_SENSITIVE_RUST_PREFIXES: &[&str] = &[
     "crates/perl-lsp-rs/src/runtime/language/",
     "crates/perl-workspace/src/workspace/",
     "crates/perl-lsp-perltidy/src/",
+    "crates/perl-tidy/src/",
+    "crates/perl-tidy-perltidy/src/",
     "crates/perl-lsp-rs-core/src/tooling/",
     "crates/perl-dap/src/",
 ];

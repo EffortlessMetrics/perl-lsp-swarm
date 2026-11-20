@@ -1,3 +1,4 @@
+#![allow(deprecated)] // These targets prove the intentionally retained compatibility API.
 //! Offline proof for the #8048 pure terminal-sequence final-newline policy.
 //!
 //! Every historical false-pass path named by the issue is encoded as a

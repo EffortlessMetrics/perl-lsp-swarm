@@ -1,6 +1,7 @@
 //! Formatting compatibility shim for LSP.
 //!
-//! [`CodeFormatter`] owns the OS subprocess runtime adapter while delegating all
+//! [`CodeFormatter`] creates the OS subprocess runtime only for explicit external
+//! selection while delegating all
 //! formatter admission and outcome classification to `perl-lsp-rs-core`.
 
 use crate::convert::WireRange;
@@ -10,13 +11,13 @@ pub use perl_lsp_rs_core::providers::formatting::{
 };
 use perl_lsp_rs_core::tooling::OsSubprocessRuntime;
 use perl_lsp_rs_core::tooling::perltidy::FormatterMode;
-pub use perl_lsp_rs_core::tooling::perltidy::native::FormatContext;
+pub use perl_lsp_rs_core::tooling::perltidy::native::{FormatContext, NativeFormatConfig};
 use perl_subprocess_runtime::{SubprocessError, SubprocessOutput, SubprocessRuntime};
 use std::sync::Arc;
 
 const MAX_FORMATTER_TIMEOUT_SECS: u64 = 300;
 
-/// Code formatter using the OS subprocess runtime.
+/// Native-default formatter with an explicitly selected external adapter.
 pub struct CodeFormatter {
     inner: FormattingProvider<SharedSubprocessRuntime>,
 }
@@ -37,11 +38,12 @@ impl SubprocessRuntime for SharedSubprocessRuntime {
 impl CodeFormatter {
     /// Create a native-default formatter with the standard interactive timeout.
     pub fn new() -> Self {
-        Self {
-            inner: FormattingProvider::new(SharedSubprocessRuntime(Arc::new(
-                OsSubprocessRuntime::with_bounded_timeout(10, MAX_FORMATTER_TIMEOUT_SECS),
-            ))),
-        }
+        Self { inner: FormattingProvider::without_external() }
+    }
+
+    /// Create a native formatter directly from pure native policy.
+    pub fn with_native_config(config: NativeFormatConfig) -> Self {
+        Self { inner: FormattingProvider::without_external().with_native_config(config) }
     }
 
     /// Create a native formatter with perltidy-compatible style configuration.
@@ -51,14 +53,16 @@ impl CodeFormatter {
 
     /// Create a formatter with explicit configuration and requested engine mode.
     pub fn with_config_and_mode(config: PerlTidyConfig, mode: FormatterMode) -> Self {
-        let timeout = config.timeout_secs;
-        Self {
-            inner: FormattingProvider::new(SharedSubprocessRuntime(Arc::new(
-                OsSubprocessRuntime::with_bounded_timeout(timeout, MAX_FORMATTER_TIMEOUT_SECS),
-            )))
-            .with_perltidy_config(config)
-            .with_formatter_mode(mode),
-        }
+        let provider = match mode {
+            FormatterMode::Native | FormatterMode::Off => FormattingProvider::without_external(),
+            FormatterMode::ExternalLegacy => FormattingProvider::new(SharedSubprocessRuntime(
+                Arc::new(OsSubprocessRuntime::with_bounded_timeout(
+                    config.timeout_secs,
+                    MAX_FORMATTER_TIMEOUT_SECS,
+                )),
+            )),
+        };
+        Self { inner: provider.with_perltidy_config(config).with_formatter_mode(mode) }
     }
 
     /// Create a formatter with a caller-supplied runtime for bounded tests.

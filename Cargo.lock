@@ -1885,10 +1885,12 @@ dependencies = [
 name = "perl-lsp-perltidy"
 version = "0.17.0"
 dependencies = [
- "criterion",
  "perl-parser-core",
+ "perl-position-tracking",
  "perl-subprocess-runtime",
  "perl-tdd-support",
+ "perl-tidy",
+ "perl-tidy-perltidy",
  "proptest",
  "serde",
  "serde_json",
@@ -1912,7 +1914,6 @@ dependencies = [
  "perl-dap",
  "perl-diagnostics",
  "perl-lexer",
- "perl-lsp-perltidy",
  "perl-lsp-rs-core",
  "perl-lsp-ux-tests",
  "perl-module",
@@ -1963,7 +1964,6 @@ dependencies = [
  "perl-ast",
  "perl-diagnostics",
  "perl-lexer",
- "perl-lsp-perltidy",
  "perl-module",
  "perl-parser",
  "perl-parser-core",
@@ -1978,6 +1978,8 @@ dependencies = [
  "perl-tdd-support",
  "perl-test-facts",
  "perl-test-must",
+ "perl-tidy",
+ "perl-tidy-perltidy",
  "perl-uri",
  "perl-workspace",
  "proptest",
@@ -2296,6 +2298,30 @@ dependencies = [
 [[package]]
 name = "perl-test-must"
 version = "0.17.0"
+
+[[package]]
+name = "perl-tidy"
+version = "0.17.0"
+dependencies = [
+ "criterion",
+ "perl-parser-core",
+ "perl-source-identity",
+ "perl-tdd-support",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "perl-tidy-perltidy"
+version = "0.17.0"
+dependencies = [
+ "perl-subprocess-runtime",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "perl-token"

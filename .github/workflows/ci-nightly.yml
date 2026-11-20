@@ -192,6 +192,8 @@ jobs:
           2>&1 | tee benchmarks/results/real-repo-perf.txt
 
     - name: Run benchmarks (explicit Criterion targets)
+      env:
+        CARGO_TARGET_DIR: ${{ github.workspace }}/target
       run: |
         set -euo pipefail
 
@@ -243,7 +245,7 @@ jobs:
           "perl-parser:substitution_performance:"
           "perl-lsp-rs:rope_performance_benchmark:benchmarks"
           "perl-lsp-rs:lsp_stdio_roundtrip_benchmark:benchmarks"
-          "perl-lsp-perltidy:native_pipeline_benchmark:"
+          "perl-tidy:native_pipeline_benchmark:"
           "perl-lexer:lexer_benchmarks:"
           "perl-dap:dap_benchmarks:"
           "perl-incremental-parsing:incremental_parsing_benchmarks:"

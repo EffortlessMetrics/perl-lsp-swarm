@@ -1,0 +1,29 @@
+[package]
+name = "perl-tidy-perltidy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Explicit external Perl::Tidy text adapter over the contained legacy runtime"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/perl-tidy-perltidy"
+readme = "README.md"
+keywords = ["perl", "perltidy", "formatting"]
+categories = ["development-tools"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE*"]
+
+[dependencies]
+perl-subprocess-runtime = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true

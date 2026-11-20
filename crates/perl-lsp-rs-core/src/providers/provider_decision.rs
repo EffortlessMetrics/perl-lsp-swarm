@@ -35,6 +35,8 @@ pub enum ProviderDecisionProvider {
     Hover,
     /// Diagnostics provider.
     Diagnostics,
+    /// Formatting provider.
+    Formatting,
     /// Rename provider.
     Rename,
     /// Safe-delete provider.
@@ -600,6 +602,7 @@ fn provider_label(provider: ProviderDecisionProvider) -> &'static str {
         ProviderDecisionProvider::References => "References",
         ProviderDecisionProvider::Hover => "Hover",
         ProviderDecisionProvider::Diagnostics => "Diagnostics",
+        ProviderDecisionProvider::Formatting => "Formatting",
         ProviderDecisionProvider::Rename => "Rename",
         ProviderDecisionProvider::SafeDelete => "Safe delete",
         ProviderDecisionProvider::WorkspaceSymbols => "Workspace symbols",

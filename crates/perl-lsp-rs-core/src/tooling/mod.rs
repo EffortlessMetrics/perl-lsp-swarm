@@ -20,7 +20,12 @@ pub mod native_compat;
 
 /// Perltidy integration for code formatting.
 pub mod perltidy {
-    pub use perl_lsp_perltidy::*;
+    pub use perl_tidy::*;
+    pub use perl_tidy_perltidy::{
+        ExternalPerlTidyConfig, ExternalPerlTidyError, LegacyPerlTidyExecutor,
+    };
+    /// Former configuration spelling retained for application configuration.
+    pub type PerlTidyConfig = ExternalPerlTidyConfig;
 }
 
 /// Subprocess runtime abstraction.

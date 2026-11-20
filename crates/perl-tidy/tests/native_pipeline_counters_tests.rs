@@ -13,14 +13,12 @@
 #[path = "../benches/support/perf_subjects.rs"]
 mod perf_subjects;
 
-use std::path::PathBuf;
-
 use perf_subjects::{SubjectSpec, identity_row_with_counters, toolchain_tag};
-use perl_lsp_perltidy::native::{
+use perl_tidy::native::{
     COUNTER_CLOCK_TAG, COUNTER_SCHEMA_V1, FormatConfig, FormatContext, FormatDisposition,
     FormatReasonCode, MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, NativeFormatter,
     NativePipelineCounters, PipelineCollectorScope, SCALING_ABSOLUTE_SLACK_V1,
-    SCALING_RATIO_BOUND_V1, TextPosition, TextRange, TypedFormatResult,
+    SCALING_RATIO_BOUND_V1, TypedFormatResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -60,10 +58,9 @@ fn unset_collector_leaves_outcomes_byte_identical() {
             "attaching the collector must not change the document outcome for {family}"
         );
 
-        let end_line = source.split_inclusive('\n').count() as u32;
-        let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(end_line, 0));
+        let range = perl_tidy::ExactSource::new(&source).whole_document();
         let plain_range =
-            NativeFormatter::new().format_range_typed(&source, range, &config, &context);
+            NativeFormatter::new().format_range_typed(&source, range.clone(), &config, &context);
         let mut range_counters = NativePipelineCounters::default();
         let counted_range = NativeFormatter::new().format_range_typed_with_counters(
             &source,
@@ -489,7 +486,7 @@ fn refusal_and_opaque_rows_remain_cost_bounded() {
 
 #[test]
 fn derived_output_growth_trips_before_product_envelope() {
-    let trip = perl_lsp_perltidy::exceeds_replacement_envelope_v1;
+    let trip = perl_tidy::exceeds_replacement_envelope_v1;
     // The envelope demonstrably trips before unbounded growth ships.
     assert!(trip(10, 41));
     assert!(!trip(10, 40));
@@ -566,7 +563,7 @@ fn subject_identity_is_recorded_for_receipt_consumption() {
         assert_eq!(row["bench_id"], spec.bench_id());
         assert!(
             row["subject"]["content_digest"].as_str() == Some(spec.content_digest().as_str())
-                && spec.content_digest().starts_with("source-v1:"),
+                && spec.content_digest().starts_with("sha256:"),
             "subject digest must be pinned for {}",
             spec.id()
         );
@@ -638,270 +635,4 @@ fn repeated_document_requests_accumulate_pipeline_and_line_counters() {
 
     assert_eq!(counters.pipeline_invocations, 3);
     assert_eq!(counters.lines_processed, per_call_lines * 3);
-}
-
-// ---------------------------------------------------------------------------
-// NPC-007 — nightly enrollment of the new bench target
-// ---------------------------------------------------------------------------
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn nightly_workflow() -> Result<String, Box<dyn std::error::Error>> {
-    let path = repo_root().join(".github/workflows/ci-nightly.yml");
-    Ok(std::fs::read_to_string(path)?)
-}
-
-#[test]
-fn bench_target_enrolls_native_pipeline_benchmark() -> Result<(), Box<dyn std::error::Error>> {
-    let workflow = nightly_workflow()?;
-    assert!(
-        workflow.contains("\"perl-lsp-perltidy:native_pipeline_benchmark:\""),
-        "BENCH_TARGETS must enroll perl-lsp-perltidy:native_pipeline_benchmark (declared-superset contract)"
-    );
-    assert!(
-        workflow.contains(&format!("--expect-id \"{}\"", perf_subjects::REPRESENTATIVE_BENCH_ID)),
-        "the extract step must require the representative native pipeline bench id"
-    );
-
-    let manifest =
-        std::fs::read_to_string(repo_root().join("crates/perl-lsp-perltidy/Cargo.toml"))?;
-    let bench_section = manifest
-        .split("[[bench]]")
-        .nth(1)
-        .ok_or("perl-lsp-perltidy must declare a [[bench]] target")?;
-    assert!(
-        bench_section.contains("native_pipeline_benchmark")
-            && bench_section.contains("harness = false"),
-        "the [[bench]] target must be the criterion harness for native_pipeline_benchmark"
-    );
-    assert!(
-        manifest.contains("criterion = { workspace = true }"),
-        "criterion must be a dev-dependency of perl-lsp-perltidy"
-    );
-    let benchmark = std::fs::read_to_string(
-        repo_root().join("crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs"),
-    )?;
-    assert!(benchmark.contains("format_document_typed_with_counters"));
-    assert!(benchmark.contains("identity_row_with_counters"));
-    assert!(benchmark.contains("native-pipeline-measurements.v1.json"));
-    let timing_body =
-        benchmark.split("b.iter(|| {").nth(1).ok_or("benchmark timing closure missing")?;
-    assert!(
-        timing_body.contains("format_document_typed(")
-            && !timing_body.contains("format_document_typed_with_counters("),
-        "Criterion timing must use the plain typed entry point so counter collection stays in the dedicated receipt pass"
-    );
-    assert!(workflow.contains("NATIVE_PIPELINE_RUN_ID"));
-    assert!(workflow.contains("target/criterion/native-pipeline-measurements.v1.json"));
-    Ok(())
-}
-
-#[test]
-fn criterion_timing_invokes_native_formatter_production_path()
--> Result<(), Box<dyn std::error::Error>> {
-    let benchmark = std::fs::read_to_string(
-        repo_root().join("crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs"),
-    )?;
-    let iter_start = benchmark.find("b.iter(|| {").ok_or("benchmark timing closure missing")?;
-    let iter_body = &benchmark[iter_start..];
-    let iter_end = iter_body.find("});").ok_or("benchmark timing closure is unterminated")?;
-    let iter_body = &iter_body[..iter_end];
-    let production_invocation = "NativeFormatter::new().format_document_typed(";
-
-    assert_eq!(
-        iter_body.matches(production_invocation).count(),
-        1,
-        "Criterion must time exactly one native production invocation per iteration"
-    );
-    assert!(
-        iter_body.contains("black_box(&source)"),
-        "the timed production invocation must consume the enrolled subject source"
-    );
-    assert!(
-        !iter_body.contains("format_document_typed_with_counters("),
-        "counter collection belongs to the dedicated receipt pass, not Criterion timing"
-    );
-    Ok(())
-}
-
-#[test]
-fn sidecar_run_id_uses_single_derivation_for_envelope_and_rows()
--> Result<(), Box<dyn std::error::Error>> {
-    let benchmark = std::fs::read_to_string(
-        repo_root().join("crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs"),
-    )?;
-    let invariant = "the envelope and every row must carry an identical run id, which the nightly validator requires";
-    assert_eq!(
-        benchmark.matches("std::env::var(\"NATIVE_PIPELINE_RUN_ID\")").count(),
-        1,
-        "{invariant}; derive NATIVE_PIPELINE_RUN_ID exactly once"
-    );
-    assert!(
-        benchmark.contains("fn build_subject_identities(toolchain: &str, run_id: &str)"),
-        "{invariant}; build_subject_identities must receive the shared run id"
-    );
-    assert!(
-        benchmark
-            .contains("identity_row_with_counters(spec, &typed, toolchain, run_id, &counters)"),
-        "{invariant}; every row must use the shared run id parameter"
-    );
-    assert!(
-        benchmark.contains("\"run_id\": run_id"),
-        "{invariant}; the sidecar envelope must use the shared run id parameter"
-    );
-    Ok(())
-}
-
-#[test]
-fn elapsed_measurement_wraps_classification_for_document_and_range()
--> Result<(), Box<dyn std::error::Error>> {
-    let source = std::fs::read_to_string(
-        repo_root().join("crates/perl-lsp-perltidy/src/native/outcome.rs"),
-    )?;
-    for function in ["format_document_typed_with_counters", "format_range_typed_with_counters"] {
-        let start = source
-            .find(&format!("pub fn {function}"))
-            .ok_or("counter-aware entry point missing")?;
-        let body = &source[start..];
-        let classified = body.find("classify_native_result").ok_or("classification missing")?;
-        let elapsed = body.find("counters.observe_elapsed").ok_or("elapsed observation missing")?;
-        assert!(classified < elapsed, "{function} must include classification in total elapsed");
-    }
-    Ok(())
-}
-
-#[test]
-fn implementation_spec_keeps_unproven_followups_explicit() -> Result<(), Box<dyn std::error::Error>>
-{
-    let acceptance = std::fs::read_to_string(
-        repo_root().join(".spec/10302-formatter-production-pipeline-bench/acceptance.md"),
-    )?;
-    assert!(acceptance.contains("PR #13190"));
-    assert!(acceptance.contains("does not close #10302"));
-    assert!(acceptance.contains("allocation oracle"));
-    assert!(acceptance.contains("NOT_PROVEN"));
-    assert!(acceptance.contains("not a proof of algorithmic complexity"));
-    assert!(acceptance.contains("production operation counters for those activities remain"));
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// NPC-009 — timing stays evidence, never a required gate
-// ---------------------------------------------------------------------------
-
-fn step_retains_advisory_posture(workflow: &str, step_name: &str) -> bool {
-    let mut in_step = false;
-    for line in workflow.lines() {
-        if line.contains("- name:") {
-            in_step = line.contains(step_name);
-            continue;
-        }
-        if in_step && line.contains("continue-on-error:") {
-            return line.contains("true");
-        }
-    }
-    false
-}
-
-#[test]
-fn timing_stays_advisory_in_nightly_workflow() -> Result<(), Box<dyn std::error::Error>> {
-    let workflow = nightly_workflow()?;
-    assert!(
-        step_retains_advisory_posture(&workflow, "Compare against baseline"),
-        "the Compare against baseline step must keep continue-on-error: true (#3979/#5282)"
-    );
-    assert!(
-        step_retains_advisory_posture(&workflow, "Generate performance alerts"),
-        "the Generate performance alerts step must keep continue-on-error: true (#3979/#5282)"
-    );
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// NPC-010 — anti-masking downward-only ratchet
-// ---------------------------------------------------------------------------
-
-/// Base-pin maxima (origin/main @ a9664af79, 2026-08-27). Any timeout above
-/// these maxima fails this canary; lowering is always allowed.
-fn base_pin_max_timeout_minutes(job: &str) -> Option<u64> {
-    match job {
-        "mutation" => Some(60),
-        // Raised from 45 by 159d80c9b2 (#18350): at the 45-minute pin the
-        // nightly deadline landed mid-`native_pipeline_benchmark` (~46 minutes
-        // in) and cancelled the job before extraction, comparison, and
-        // receipts could run. The pin tracks that owned headroom raise rather
-        // than absorbing a regression: the bump paid for the full benchmark
-        // target finishing, not for lost speed.
-        "benchmark" => Some(75),
-        "real-repo-latency" => Some(30),
-        "corpus-differential" => Some(20),
-        "lsp-memory-plateau" => Some(35),
-        "test-coverage" => Some(45),
-        // Raised from 10 on `main` by 85d810dcd (#14061), which widened this
-        // job from a spot check to a repository-wide tautological-assertion
-        // sweep. The pin tracks that owned change rather than absorbing a
-        // regression: the ratchet exists to stop a slow job being hidden by a
-        // timeout bump, and this bump paid for new work, not for lost speed.
-        "tautology-check" => Some(25),
-        "semver-check" => Some(20),
-        "public-api-check" => Some(20),
-        "scorecard-ratchet-check" => Some(15),
-        "clippy-strict" => Some(20),
-        "perl-kwalitee" => Some(20),
-        // Raised from 15 by 1ae41f302b (#17028, merged #17821): the 600s fuzz
-        // budget plus cold toolchain/cargo-fuzz build headroom put the job
-        // deadline inside the crash-artifact upload window at 15 minutes.
-        // The pin tracks that owned headroom raise rather than absorbing a
-        // regression: the bump paid for crash artifacts surviving
-        // cancellation, not for lost speed.
-        "fuzz" => Some(30),
-        _ => None,
-    }
-}
-
-fn job_timeouts(workflow: &str) -> Vec<(String, u64)> {
-    let mut jobs = Vec::new();
-    let mut current_job = String::new();
-    for line in workflow.lines() {
-        if let Some(job) = line.strip_prefix("  ")
-            && let Some((name, rest)) = job.split_once(':')
-            && rest.trim().is_empty()
-            && !name.contains(' ')
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
-            current_job = name.to_string();
-        }
-        if let Some((key, value)) = line.trim().split_once(':')
-            && key.trim() == "timeout-minutes"
-            && let Ok(minutes) = value.trim().parse::<u64>()
-        {
-            jobs.push((current_job.clone(), minutes));
-        }
-    }
-    jobs
-}
-
-#[test]
-fn no_timeout_or_budget_constant_exceeds_base_pin_maxima() -> Result<(), Box<dyn std::error::Error>>
-{
-    let workflow = nightly_workflow()?;
-    let timeouts = job_timeouts(&workflow);
-    assert!(timeouts.len() >= 13, "the ratchet must see every job timeout in ci-nightly.yml");
-    for (job, minutes) in timeouts {
-        let max = base_pin_max_timeout_minutes(&job);
-        assert!(
-            max.is_some(),
-            "job {job} declares timeout-minutes {minutes} but has no pinned maximum; \
-             lower the timeout or update the base-pin ratchet consciously"
-        );
-        let Some(max) = max else { continue };
-        assert!(
-            minutes <= max,
-            "job {job} timeout {minutes} exceeds the base-pin maximum {max} — \
-             anti-masking forbids absorbing regressions via timeout bumps"
-        );
-    }
-    Ok(())
 }

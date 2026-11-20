@@ -43,9 +43,9 @@ pub use native_build_hints::{
     NativeBuildHintDiagnostic, NativeBuildHintLimitation, NativeBuildHintLimitationReason,
     NativeBuildHintParseReason, NativeBuildHints, NativeBuildScript, detect_native_build_hints,
 };
-pub use perl_lsp_perltidy::FormatterMode;
 #[cfg(not(target_arch = "wasm32"))]
 pub use perl_oracle_env::PerlOracleEnv;
+pub use perl_tidy::FormatterMode;
 pub use project_metadata::{
     ProjectMetadataKind, classify_project_metadata_path, project_metadata_relative_paths,
 };

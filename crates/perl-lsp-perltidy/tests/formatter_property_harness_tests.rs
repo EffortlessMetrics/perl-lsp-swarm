@@ -1,3 +1,4 @@
+#![allow(deprecated)] // These targets prove the intentionally retained compatibility API.
 //! Property/fuzz harness proof for formatter safety invariants (#10301).
 //!
 //! Rows FPH-001..FPH-010 from `.spec/10301-formatter-property-fuzz-harness/`,

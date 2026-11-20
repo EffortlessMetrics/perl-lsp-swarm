@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
-description = "Perl formatting integration with native contracts and perltidy compatibility"
+description = "Deprecated formatting compatibility facade for perl-tidy and external Perl::Tidy"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
@@ -17,20 +17,18 @@ categories = ["development-tools", "text-editors"]
 doctest = false
 
 [dependencies]
-perl-parser-core = { workspace = true }
+perl-tidy = { workspace = true }
+perl-tidy-perltidy = { workspace = true }
+perl-position-tracking = { workspace = true }
 perl-subprocess-runtime = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
-criterion = { workspace = true }
+perl-parser-core = { workspace = true }
 perl-tdd-support = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-
-[[bench]]
-name = "native_pipeline_benchmark"
-harness = false
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
