@@ -19,11 +19,31 @@ impl RegexExtendedMode {
 pub(crate) struct RegexModeState {
     pub(crate) extended: RegexExtendedMode,
     pub(crate) captures_by_default: bool,
+    /// Profile-qualified Perl 5.44 `enhanced_xx` (constant for one body scan).
+    pub(crate) profile_enhanced_class_xx: bool,
+}
+
+impl RegexModeState {
+    pub(crate) const fn new(
+        extended: RegexExtendedMode,
+        captures_by_default: bool,
+        profile_enhanced_class_xx: bool,
+    ) -> Self {
+        Self { extended, captures_by_default, profile_enhanced_class_xx }
+    }
+
+    pub(crate) const fn xx_class_formatting_active(self) -> bool {
+        matches!(self.extended, RegexExtendedMode::ExtraExtended)
+    }
+
+    pub(crate) const fn enhanced_class_active(self) -> bool {
+        self.profile_enhanced_class_xx && matches!(self.extended, RegexExtendedMode::ExtraExtended)
+    }
 }
 
 impl Default for RegexModeState {
     fn default() -> Self {
-        Self { extended: RegexExtendedMode::Off, captures_by_default: true }
+        Self::new(RegexExtendedMode::Off, true, false)
     }
 }
 
@@ -49,6 +69,23 @@ pub(crate) enum RegexCommentKind {
     Group,
     ExtendedLine,
     ExtendedWhitespace,
+    /// Horizontal space/tab ignored inside `[...]` under `/xx`.
+    CharacterClassFormattingWhitespace,
+    /// End-of-line comment inside `[...]` under profile-qualified `enhanced_xx`.
+    CharacterClassEnhancedLine,
+    /// Vertical whitespace ignored inside `[...]` under profile-qualified `enhanced_xx`.
+    CharacterClassEnhancedVerticalWhitespace,
+}
+
+/// Perl 5.44 `enhanced_xx` bracketed-class warning geometry (perldiag W regexp).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum RegexEnhancedXxWarningKind {
+    /// `#` starts a comment but is not surrounded by horizontal whitespace.
+    UnspacedCommentIntroducer,
+    /// Unescaped `#` inside an enhanced class comment.
+    HashInsideComment,
+    /// Unescaped `]` inside an enhanced class comment.
+    BracketInsideComment,
 }
 
 /// Embedded executable or runtime-pattern form.
@@ -122,6 +159,7 @@ pub(crate) enum RegexEventKind {
         closed: bool,
     },
     Comment(RegexCommentKind),
+    EnhancedXxWarning(RegexEnhancedXxWarningKind),
     GroupOpen(RegexGroupKind),
     GroupClose(RegexGroupKind),
     ModeChange,
@@ -421,8 +459,11 @@ impl<'a> EventParser<'a> {
         if self.bytes.get(cursor) == Some(&b']') {
             cursor += 1;
         }
+        let class_content_start = cursor;
 
         let mut closed = false;
+        let depth = self.stack.len();
+        let mode = self.mode;
         while cursor < self.bytes.len() {
             match self.bytes[cursor] {
                 b'\\' => {
@@ -431,6 +472,11 @@ impl<'a> EventParser<'a> {
                     } else {
                         self.bytes.len()
                     };
+                }
+                b']' => {
+                    cursor += 1;
+                    closed = true;
+                    break;
                 }
                 b'$' | b'@' => {
                     if let Some((end, interpolation_closed)) = self.interpolation_end_at(cursor) {
@@ -443,12 +489,20 @@ impl<'a> EventParser<'a> {
                         cursor = self.next_char_end(cursor);
                     }
                 }
-                b']' => {
-                    cursor += 1;
-                    closed = true;
-                    break;
+                _ => {
+                    if self.try_skip_xx_class_horizontal_whitespace(&mut cursor, depth, mode) {
+                        continue;
+                    }
+                    if self.try_consume_enhanced_class_trivia(
+                        &mut cursor,
+                        class_content_start,
+                        depth,
+                        mode,
+                    ) {
+                        continue;
+                    }
+                    cursor = self.next_char_end(cursor);
                 }
-                _ => cursor = self.next_char_end(cursor),
             }
         }
         if !closed || truncated_interpolation {
@@ -483,6 +537,169 @@ impl<'a> EventParser<'a> {
             );
         }
         true
+    }
+
+    fn try_skip_xx_class_horizontal_whitespace(
+        &mut self,
+        cursor: &mut usize,
+        depth: usize,
+        mode: RegexModeState,
+    ) -> bool {
+        if !mode.xx_class_formatting_active() {
+            return false;
+        }
+        let Some(ch) = self.pattern.get(*cursor..).and_then(|rest| rest.chars().next()) else {
+            return false;
+        };
+        if !is_horizontal_pattern_whitespace(ch) {
+            return false;
+        }
+        let start = *cursor;
+        let mut end = start;
+        while let Some(candidate) = self.pattern.get(end..).and_then(|rest| rest.chars().next()) {
+            if !is_horizontal_pattern_whitespace(candidate) {
+                break;
+            }
+            end = end.saturating_add(candidate.len_utf8());
+        }
+        *cursor = end;
+        let _ = self.emit(
+            start,
+            end,
+            RegexEventKind::Comment(RegexCommentKind::CharacterClassFormattingWhitespace),
+            mode,
+            depth,
+        );
+        true
+    }
+
+    fn try_consume_enhanced_class_trivia(
+        &mut self,
+        cursor: &mut usize,
+        class_content_start: usize,
+        depth: usize,
+        mode: RegexModeState,
+    ) -> bool {
+        if !mode.enhanced_class_active() {
+            return false;
+        }
+        let Some(ch) = self.pattern.get(*cursor..).and_then(|rest| rest.chars().next()) else {
+            return false;
+        };
+        if ch == '#' {
+            self.consume_enhanced_class_line_comment(cursor, class_content_start, depth, mode);
+            return true;
+        }
+        if is_vertical_pattern_whitespace(ch) {
+            let start = *cursor;
+            let mut end = start;
+            while let Some(candidate) = self.pattern.get(end..).and_then(|rest| rest.chars().next())
+            {
+                if !is_vertical_pattern_whitespace(candidate) {
+                    break;
+                }
+                end = end.saturating_add(candidate.len_utf8());
+            }
+            *cursor = end;
+            let _ = self.emit(
+                start,
+                end,
+                RegexEventKind::Comment(RegexCommentKind::CharacterClassEnhancedVerticalWhitespace),
+                mode,
+                depth,
+            );
+            return true;
+        }
+        false
+    }
+
+    fn consume_enhanced_class_line_comment(
+        &mut self,
+        cursor: &mut usize,
+        class_content_start: usize,
+        depth: usize,
+        mode: RegexModeState,
+    ) {
+        let hash_start = *cursor;
+        if !self.warn_unspaced_enhanced_class_comment_introducer(
+            hash_start,
+            class_content_start,
+            depth,
+            mode,
+        ) {
+            // budget exhausted
+        }
+        let mut end = hash_start;
+        while end < self.bytes.len() && !matches!(self.bytes[end], b'\n' | b'\r') {
+            if self.bytes[end] == b'#' && end > hash_start {
+                let inner_range = RegexRange { start: end, end: end + 1 };
+                let _ = self.emit(
+                    inner_range.start,
+                    inner_range.end,
+                    RegexEventKind::EnhancedXxWarning(
+                        RegexEnhancedXxWarningKind::HashInsideComment,
+                    ),
+                    mode,
+                    depth,
+                );
+            }
+            if self.bytes[end] == b']' {
+                let inner_range = RegexRange { start: end, end: end + 1 };
+                let _ = self.emit(
+                    inner_range.start,
+                    inner_range.end,
+                    RegexEventKind::EnhancedXxWarning(
+                        RegexEnhancedXxWarningKind::BracketInsideComment,
+                    ),
+                    mode,
+                    depth,
+                );
+            }
+            end = self.next_char_end(end);
+        }
+        *cursor = end;
+        let _ = self.emit(
+            hash_start,
+            end,
+            RegexEventKind::Comment(RegexCommentKind::CharacterClassEnhancedLine),
+            mode,
+            depth,
+        );
+    }
+
+    fn warn_unspaced_enhanced_class_comment_introducer(
+        &mut self,
+        hash_start: usize,
+        class_content_start: usize,
+        depth: usize,
+        mode: RegexModeState,
+    ) -> bool {
+        if hash_start == class_content_start {
+            return self.emit(
+                hash_start,
+                hash_start + 1,
+                RegexEventKind::EnhancedXxWarning(
+                    RegexEnhancedXxWarningKind::UnspacedCommentIntroducer,
+                ),
+                mode,
+                depth,
+            );
+        }
+        let Some(prev) = self.pattern[..hash_start].chars().next_back() else {
+            return true;
+        };
+        if is_horizontal_pattern_whitespace(prev) {
+            return true;
+        }
+        self.emit(
+            hash_start,
+            hash_start + 1,
+            RegexEventKind::EnhancedXxWarning(
+                RegexEnhancedXxWarningKind::UnspacedCommentIntroducer,
+            ),
+            mode,
+            depth,
+        )
     }
 
     fn parse_extended_trivia(&mut self) -> bool {
@@ -1001,7 +1218,12 @@ impl<'a> EventParser<'a> {
             b')' => InlineModifierTerminator::Change,
             _ => return None,
         };
-        let mut mode = if reset { RegexModeState::default() } else { self.mode };
+        let profile_enhanced_class_xx = self.mode.profile_enhanced_class_xx;
+        let mut mode = if reset {
+            RegexModeState::new(RegexExtendedMode::Off, true, profile_enhanced_class_xx)
+        } else {
+            self.mode
+        };
         if disable_x {
             mode.extended = RegexExtendedMode::Off;
         } else if enable_x >= 2 {
@@ -1211,6 +1433,29 @@ fn is_pattern_whitespace(ch: char) -> bool {
     )
 }
 
+fn is_horizontal_pattern_whitespace(ch: char) -> bool {
+    matches!(ch, '\u{0009}' | '\u{0020}')
+}
+
+fn is_vertical_pattern_whitespace(ch: char) -> bool {
+    is_pattern_whitespace(ch) && !is_horizontal_pattern_whitespace(ch)
+}
+
+pub(crate) fn mode_state_from_effective_extended(
+    extended: crate::analyzer::ExtendedMode,
+    captures_by_default: bool,
+) -> RegexModeState {
+    use crate::analyzer::{ExtendedMode, FeatureState};
+    let (extended_mode, profile_enhanced_class_xx) = match extended {
+        ExtendedMode::Off => (RegexExtendedMode::Off, false),
+        ExtendedMode::Extended => (RegexExtendedMode::Extended, false),
+        ExtendedMode::ExtraExtended { enhanced } => {
+            (RegexExtendedMode::ExtraExtended, enhanced == FeatureState::Enabled)
+        }
+    };
+    RegexModeState::new(extended_mode, captures_by_default, profile_enhanced_class_xx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1252,8 +1497,7 @@ mod tests {
     #[test]
     fn extended_comments_and_local_mode_changes_are_source_backed()
     -> Result<(), Box<dyn std::error::Error>> {
-        let initial =
-            RegexModeState { extended: RegexExtendedMode::Extended, captures_by_default: true };
+        let initial = RegexModeState::new(RegexExtendedMode::Extended, true, false);
         let stream = parse_regex_events("# hidden (?{ x })\n(?-x:#(?{ y }))", initial);
         let embedded = stream
             .events
@@ -1263,6 +1507,57 @@ mod tests {
         assert_eq!(embedded.len(), 1);
         assert!(embedded[0].range.start > 20);
         assert!(!embedded[0].mode.extended.enabled());
+        Ok(())
+    }
+
+    #[test]
+    fn enhanced_xx_class_comment_and_vertical_whitespace_emit_body_events()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{RegexCommentKind, mode_state_from_effective_extended};
+        use crate::analyzer::{ExtendedMode, FeatureState};
+        let mode = mode_state_from_effective_extended(
+            ExtendedMode::ExtraExtended { enhanced: FeatureState::Enabled },
+            true,
+        );
+        let pattern = "[a # comment\nb]";
+        let stream = parse_regex_events(pattern, mode);
+        let comment = stream
+            .events
+            .iter()
+            .find(|event| {
+                matches!(
+                    event.kind,
+                    RegexEventKind::Comment(RegexCommentKind::CharacterClassEnhancedLine)
+                )
+            })
+            .ok_or("missing enhanced class line comment event")?;
+        assert_eq!(comment.range.start, pattern.find('#').ok_or("hash")?);
+        assert_eq!(comment.range.end, pattern.find('\n').ok_or("newline")?);
+        assert!(stream.events.iter().any(|event| matches!(
+            event.kind,
+            RegexEventKind::Comment(RegexCommentKind::CharacterClassEnhancedVerticalWhitespace)
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn xx_class_formatting_emits_horizontal_whitespace_events()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::RegexCommentKind;
+        let mode = RegexModeState::new(RegexExtendedMode::ExtraExtended, true, false);
+        let pattern = "[a b]";
+        let stream = parse_regex_events(pattern, mode);
+        let formatting = stream
+            .events
+            .iter()
+            .find(|event| {
+                matches!(
+                    event.kind,
+                    RegexEventKind::Comment(RegexCommentKind::CharacterClassFormattingWhitespace)
+                )
+            })
+            .ok_or("missing horizontal formatting whitespace event")?;
+        assert_eq!(formatting.range.start, pattern.find(' ').ok_or("space")?);
         Ok(())
     }
 

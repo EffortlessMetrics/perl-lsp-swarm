@@ -10,10 +10,10 @@ pub use model::{
 };
 
 use crate::{
-    analyzer::{CaptureLanguageProfile, CaptureMode, EffectiveModifiers, ExtendedMode},
+    analyzer::{CaptureLanguageProfile, CaptureMode, EffectiveModifiers},
     syntax::event::{
         RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexExtendedMode, RegexGroupKind,
-        RegexModeState, parse_regex_events,
+        RegexModeState, mode_state_from_effective_extended, parse_regex_events,
     },
     validator::{RegexAnalysisBudget, RegexRange},
 };
@@ -249,15 +249,10 @@ fn public_mode(mode: RegexModeState) -> PatternModeState {
 }
 
 fn initial_mode(modifiers: EffectiveModifiers) -> RegexModeState {
-    let extended = match modifiers.extended {
-        ExtendedMode::Off => RegexExtendedMode::Off,
-        ExtendedMode::Extended => RegexExtendedMode::Extended,
-        ExtendedMode::ExtraExtended { .. } => RegexExtendedMode::ExtraExtended,
-    };
-    RegexModeState {
-        extended,
-        captures_by_default: matches!(modifiers.captures, CaptureMode::CapturingByDefault),
-    }
+    mode_state_from_effective_extended(
+        modifiers.extended,
+        matches!(modifiers.captures, CaptureMode::CapturingByDefault),
+    )
 }
 
 fn map_budget(budget: RegexEventBudget) -> RegexAnalysisBudget {

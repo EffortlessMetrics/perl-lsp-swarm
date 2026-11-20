@@ -1,7 +1,7 @@
 use crate::{
-    analyzer::{CaptureMode, EffectiveModifiers, ExtendedMode},
+    analyzer::{CaptureMode, EffectiveModifiers},
     syntax::event::{
-        RegexEventBudget, RegexEventKind, RegexExtendedMode, RegexModeState, parse_regex_events,
+        RegexEventBudget, RegexEventKind, mode_state_from_effective_extended, parse_regex_events,
     },
 };
 
@@ -55,6 +55,13 @@ pub(crate) fn analyze(
                 range: event.range,
             });
         }
+        if let RegexEventKind::EnhancedXxWarning(kind) = event.kind {
+            diagnostics.push(RegexDiagnostic::new(
+                enhanced_xx_warning_code(kind),
+                event.range,
+                None,
+            ));
+        }
     }
 
     facts.dynamic_regions.sort_by_key(|region| (region.range.start, region.range.end));
@@ -91,15 +98,27 @@ pub(crate) fn first_compatibility_diagnostic(analysis: &RegexAnalysis) -> Option
     analysis.diagnostics.iter().min_by_key(|diagnostic| compatibility_priority(diagnostic))
 }
 
-fn initial_mode(modifiers: EffectiveModifiers) -> RegexModeState {
-    let extended = match modifiers.extended {
-        ExtendedMode::Off => RegexExtendedMode::Off,
-        ExtendedMode::Extended => RegexExtendedMode::Extended,
-        ExtendedMode::ExtraExtended { .. } => RegexExtendedMode::ExtraExtended,
-    };
-    RegexModeState {
-        extended,
-        captures_by_default: matches!(modifiers.captures, CaptureMode::CapturingByDefault),
+fn initial_mode(modifiers: EffectiveModifiers) -> crate::syntax::event::RegexModeState {
+    mode_state_from_effective_extended(
+        modifiers.extended,
+        matches!(modifiers.captures, CaptureMode::CapturingByDefault),
+    )
+}
+
+fn enhanced_xx_warning_code(
+    kind: crate::syntax::event::RegexEnhancedXxWarningKind,
+) -> RegexDiagnosticCode {
+    use crate::syntax::event::RegexEnhancedXxWarningKind;
+    match kind {
+        RegexEnhancedXxWarningKind::UnspacedCommentIntroducer => {
+            RegexDiagnosticCode::EnhancedXxUnspacedCommentIntroducer
+        }
+        RegexEnhancedXxWarningKind::HashInsideComment => {
+            RegexDiagnosticCode::EnhancedXxHashInsideComment
+        }
+        RegexEnhancedXxWarningKind::BracketInsideComment => {
+            RegexDiagnosticCode::EnhancedXxBracketInsideComment
+        }
     }
 }
 
