@@ -1,0 +1,803 @@
+{
+  "schema": "completion-source-context-conformance/v1",
+  "owner_issue": 13246,
+  "authority": [
+    "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13246",
+    "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13241",
+    "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4956"
+  ],
+  "rows": [
+    {
+      "id": "pod.for.blank_line.stays_pod",
+      "family": "pod_boundary",
+      "intent": "Blank line after =for must not resume code",
+      "source": "use HTTP::Tiny;\n=for comment\ndocumentation\n\nmy $http = HTTP::Tiny->new;\n$http->po",
+      "probe_marker": "->po",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "opposite": "pod.for.after_cut.allow",
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "pod.for.after_cut.allow",
+      "family": "pod_boundary",
+      "intent": "=cut after =for resumes code",
+      "source": "=for comment\ndocs\n\n=cut\nmy $after = 1;\n$after",
+      "probe_marker": "$after",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "opposite": "pod.for.blank_line.stays_pod"
+    },
+    {
+      "id": "pod.begin_end.stays_pod",
+      "family": "pod_boundary",
+      "intent": "=end must not resume code without =cut",
+      "source": "=begin comment\ndocumentation\n=end comment\n\n$http = HTTP::Tiny->new;\n$http->po",
+      "probe_marker": "->po",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "pod.begin_end.after_cut.allow",
+      "family": "pod_boundary",
+      "intent": "=cut after =begin/=end resumes code",
+      "source": "=begin comment\ndocs\n=end comment\n=cut\nmy $after = 1;\n$after",
+      "probe_marker": "$after",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "pod.cut.exit.bare",
+      "family": "pod_boundary",
+      "intent": "column-zero =cut exits POD",
+      "source": "=pod\ndocs\n=cut\nmy $code = 1;\n$code",
+      "probe_marker": "$code",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "pod.cut.exit.tab",
+      "family": "pod_boundary",
+      "intent": "=cut followed by tab exits POD",
+      "source": "=pod\ndocs\n=cut\t\nmy $code = 1;\n$code",
+      "probe_marker": "$code",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "pod.cut.exit.semicolon",
+      "family": "pod_boundary",
+      "intent": "=cut; exits POD (non-identifier continuation)",
+      "source": "=pod\ndocs\n=cut;\nmy $code = 1;\n$code",
+      "probe_marker": "$code",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "pod.cut.exit.hyphen",
+      "family": "pod_boundary",
+      "intent": "=cut-lt exits POD",
+      "source": "=pod\ndocs\n=cut-lt\nmy $code = 1;\n$code",
+      "probe_marker": "$code",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "pod.cut.stays.cutlery",
+      "family": "pod_boundary",
+      "intent": "=cutlery stays POD",
+      "source": "=pod\ndocs\n=cutlery\nmy $code = 1;\n$code",
+      "probe_marker": "$code",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "pod.cut.stays.cut1",
+      "family": "pod_boundary",
+      "intent": "=cut1 canonical stays POD; completion bridge exits",
+      "source": "=pod\ndocs\n=cut1\nmy $code = 1;\n$code",
+      "probe_marker": "$code",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "pod.cut.stays.cut_extra",
+      "family": "pod_boundary",
+      "intent": "=cut_extra stays POD (identifier continuation)",
+      "source": "=pod\ndocs\n=cut_extra\nmy $code = 1;\n$trail",
+      "probe_marker": "$trail",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241,
+      "completion_policy_mismatch_owner": 13241
+    },
+    {
+      "id": "pod.indented_cut.stays_pod",
+      "family": "pod_boundary",
+      "intent": "indented =cut does not close POD",
+      "source": "=pod\ndocumentation\n  =cut\nstill documentation\n$http->po",
+      "probe_marker": "->po",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "pod.eof_before_cut",
+      "family": "pod_boundary",
+      "intent": "EOF before =cut stays POD",
+      "source": "=for comment\ndocumentation\n",
+      "probe_marker": "documentation",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "pod.unknown_command.stays_pod",
+      "family": "pod_boundary",
+      "intent": "unknown alphabetic =command stays opaque",
+      "source": "=foobar custom\nmy $http = HTTP::Tiny->new;\n$http->po",
+      "probe_marker": "->po",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "pod.encoding.starts_pod",
+      "family": "pod_boundary",
+      "intent": "=encoding starts POD",
+      "source": "=encoding utf8\ndocumentation\n$http->po",
+      "probe_marker": "->po",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "pod.in_string_ignored",
+      "family": "pod_boundary",
+      "intent": "POD markers inside string do not flip outer state",
+      "source": "my $text = \"\n=pod\n=cut\n\";\nmy $code = 1;\n$code",
+      "probe_marker": "$code",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "comment.full_line.suppress",
+      "family": "comment_hash",
+      "intent": "full-line comment suppresses generic completion",
+      "source": "use HTTP::Tiny;\n# real comment\n$http->po",
+      "probe_marker": "# real",
+      "canonical": {
+        "region_kind": "LineComment",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "comment.trailing_code_eligible",
+      "family": "comment_hash",
+      "intent": "code before trailing comment stays eligible",
+      "source": "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new; # note\n$http->po",
+      "probe_marker": "->po",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "hash.in_string_not_comment",
+      "family": "comment_hash",
+      "intent": "literal # in string does not comment-out following code",
+      "source": "my $s = 'text # not comment';\nmy $x = 1;\n$x",
+      "probe_marker": "$x",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "hash.in_single_string_not_comment",
+      "family": "comment_hash",
+      "intent": "# inside single-quoted string body",
+      "source": "my $s = '# hash';\nmy $x = 1;\n$x",
+      "probe_marker": "# hash",
+      "canonical": {
+        "region_kind": "StringLiteral",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "comment.apostrophe_package",
+      "family": "comment_hash",
+      "intent": "apostrophe in comment must not eat constructor evidence",
+      "source": "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new(\n    # don't set a proxy\n    timeout => 10,\n);\n$ua->re",
+      "probe_marker": "->re",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "string.double.suppress_generic",
+      "family": "string_quote",
+      "intent": "double-quoted open literal suppresses generic completion",
+      "source": "my $x = \"hello $me",
+      "probe_marker": "$me",
+      "canonical": {
+        "region_kind": "StringLiteral",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "string.q_literal.tail_code",
+      "family": "string_quote",
+      "intent": "closed q{} then code is eligible",
+      "source": "my $text = q{literal}; my $x = 1;\n$x",
+      "probe_marker": "$x",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "regex.pattern.suppress_sigil",
+      "family": "string_quote",
+      "intent": "regex pattern suppresses sigil generic completion",
+      "source": "my $pattern = qr{match $m",
+      "probe_marker": "$m",
+      "canonical": {
+        "region_kind": "RegexLike",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "regex"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy"
+      ],
+      "owner": 13246,
+      "canonical_mismatch_owner": 13241
+    },
+    {
+      "id": "heredoc.body.suppress",
+      "family": "heredoc",
+      "intent": "heredoc body suppresses generic completion",
+      "source": "my $text = <<'EOF';\nbody line\nEOF\nmy $x = 1;\n$x",
+      "probe_marker": "body",
+      "canonical": {
+        "region_kind": "Heredoc",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "heredoc.after_terminator.allow",
+      "family": "heredoc",
+      "intent": "code after heredoc terminator is eligible",
+      "source": "my $text = <<'EOF';\nbody\nEOF\nmy $x = 1;\n$x",
+      "probe_marker": "$x",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "data.section.suppress",
+      "family": "data_end",
+      "intent": "__DATA__ tail suppresses generic completion",
+      "source": "1;\n__DATA__\nline one\n",
+      "probe_marker": "line",
+      "canonical": {
+        "region_kind": "DataSection",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy"
+      ],
+      "owner": 13246,
+      "completion_policy_mismatch_owner": 13241
+    },
+    {
+      "id": "end.marker.in_string_ignored",
+      "family": "data_end",
+      "intent": "__END__ inside literal does not terminate code",
+      "source": "my $s = '__END__';\nmy $x = 1;\n$x",
+      "probe_marker": "$x",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    },
+    {
+      "id": "positive.code.variable",
+      "family": "positive_control",
+      "intent": "ordinary code admits variable completion",
+      "source": "my $count = 1;\n$cou",
+      "probe_marker": "$cou",
+      "canonical": {
+        "region_kind": "Code",
+        "evidence_strength": "proven_code_complete_partition"
+      },
+      "completion_policy": {
+        "broad": "allow",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "nonempty_or_exact_empty"
+      },
+      "layers": [
+        "canonical",
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246,
+      "opposite": "string.double.suppress_generic"
+    },
+    {
+      "id": "product.http_tiny.pod_quiet",
+      "family": "product_regression",
+      "intent": "constructor mention inside POD stays quiet",
+      "source": "use HTTP::Tiny;\n=pod\nHTTP::Tiny->new\n=cut\nmy $http = HTTP::Tiny->new;\n$http->po",
+      "probe_marker": "->new",
+      "canonical": {
+        "region_kind": "Pod",
+        "evidence_strength": "proven_non_code"
+      },
+      "completion_policy": {
+        "broad": "suppress",
+        "specialized": "none"
+      },
+      "lsp_result": {
+        "class": "suppressed"
+      },
+      "layers": [
+        "completion_policy",
+        "lsp"
+      ],
+      "owner": 13246
+    }
+  ],
+  "mutations": [
+    {
+      "id": "mut.resume_after_for_blank",
+      "description": "resume code after =for blank line",
+      "row": "pod.for.blank_line.stays_pod",
+      "field": "completion_policy.broad",
+      "wrong": "allow"
+    },
+    {
+      "id": "mut.cutlery_exits_pod",
+      "description": "treat =cutlery as =cut",
+      "row": "pod.cut.stays.cutlery",
+      "field": "completion_policy.broad",
+      "wrong": "allow"
+    },
+    {
+      "id": "mut.literal_hash_comments_out",
+      "description": "treat string hash as comment",
+      "row": "hash.in_string_not_comment",
+      "field": "completion_policy.broad",
+      "wrong": "suppress"
+    }
+  ],
+  "denominator": {
+    "row_ids": [
+      "pod.for.blank_line.stays_pod",
+      "pod.for.after_cut.allow",
+      "pod.begin_end.stays_pod",
+      "pod.begin_end.after_cut.allow",
+      "pod.cut.exit.bare",
+      "pod.cut.exit.tab",
+      "pod.cut.exit.semicolon",
+      "pod.cut.exit.hyphen",
+      "pod.cut.stays.cutlery",
+      "pod.cut.stays.cut1",
+      "pod.cut.stays.cut_extra",
+      "pod.indented_cut.stays_pod",
+      "pod.eof_before_cut",
+      "pod.unknown_command.stays_pod",
+      "pod.encoding.starts_pod",
+      "pod.in_string_ignored",
+      "comment.full_line.suppress",
+      "comment.trailing_code_eligible",
+      "hash.in_string_not_comment",
+      "hash.in_single_string_not_comment",
+      "comment.apostrophe_package",
+      "string.double.suppress_generic",
+      "string.q_literal.tail_code",
+      "regex.pattern.suppress_sigil",
+      "heredoc.body.suppress",
+      "heredoc.after_terminator.allow",
+      "data.section.suppress",
+      "end.marker.in_string_ignored",
+      "positive.code.variable",
+      "product.http_tiny.pod_quiet"
+    ],
+    "mutation_ids": [
+      "mut.resume_after_for_blank",
+      "mut.cutlery_exits_pod",
+      "mut.literal_hash_comments_out"
+    ]
+  }
+}
