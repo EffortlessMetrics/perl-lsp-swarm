@@ -78,6 +78,15 @@ fn emitted_packets_conform_to_published_schema() -> std::io::Result<()> {
          if it does, the conformance check is vacuous"
     );
 
+    // Negative control (#17251): the producer only emits `partial` or
+    // `unavailable`; `complete` must not validate against the published schema.
+    let mut complete_status = build_packet(root, None);
+    complete_status["packet_status"] = serde_json::json!("complete");
+    assert!(
+        validator.validate(&complete_status).is_err(),
+        "packet_status `complete` is not emitted and must be rejected by the schema"
+    );
+
     let _ = std::fs::remove_dir_all(root);
     Ok(())
 }
