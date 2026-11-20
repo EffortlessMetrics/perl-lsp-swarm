@@ -24,6 +24,9 @@ pub mod hook;
 /// Dependency-neutral versioned contracts for interprocedural composition
 /// (#12672).
 pub mod interprocedural;
+/// Canonical package identity, declaration contribution, and resolution
+/// states for package topology (#8913).
+pub mod package_topology;
 /// Transport-neutral reachability operation, work-budget, and
 /// terminal-outcome contract (#11553).
 pub mod reachability_operation;
