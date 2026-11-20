@@ -144,12 +144,14 @@ cache memoizes re-runs of the same head — the dominant rerun cost measured in 
 
 Compensating controls, each contract-checked:
 
-1. **Exact content identity in the key.** Toolchain version, exact head sha, and the
-   suppression-ledger hash pin the receipt's full input identity; only a run of the
-   same head, toolchain, and suppressions can collide with the entry.
+1. **Source and analyzer identity in the key.** Analyzer version, exact head sha,
+   and the suppression-ledger hash separate expected receipt entries. The key is
+   not proof of every ambient analysis input; full verification on restoration
+   supplies that boundary.
 2. **The cached bytes self-identify and are re-validated on every consumption.** The
    receipt embeds `head: <current checkout>` (`xtask/src/tasks/ripr_evidence.rs`,
-   `current_head` / packet `head`), `ripr-plus --check` byte-compares the file, and
+   `current_head` / packet `head`), `ripr-plus --check --checkpoint` recomputes both
+   source sensors and byte-compares the file before creating a same-run checkpoint, and
    the quality gate marks a receipt `stale` / `ripr_receipt_not_current` unless its
    head matches the evaluated head (`xtask/src/tasks/quality_gate.rs`,
    `assert_current`). A wrong or drifted entry therefore fails closed exactly like a
@@ -163,6 +165,17 @@ Compensating controls, each contract-checked:
 4. **Only freshly produced output is published.** A freshness marker written by the
    produce branch guards the save, so a restored receipt is never re-saved, and a run
    that failed before the receipt step publishes nothing.
+
+The same-run checkpoint introduced in #19326 is separate from this cache. It lives
+in the runner's external freshness handoff, is never cached or uploaded, and binds
+the run token, repository inputs, sensor working directory, producer and consumer
+executables, policy, and receipt digest. Both working directory and analysis root
+must resolve to the repository root. The rendered root and policy argument
+spellings are bound as well. Fresh generation checks its written bytes against
+the computed packet before creating it. Later `--check-generated` validation refuses changed
+inputs or receipt bytes without repeating both repo-wide sensors. A cache restore
+cannot mint this checkpoint from the receipt's own claims: its first consumption
+still runs the ordinary source-recomputing `--check`, with no regeneration retry.
 
 ---
 

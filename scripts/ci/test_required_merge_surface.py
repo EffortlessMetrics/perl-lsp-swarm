@@ -7,12 +7,43 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = '032468df9b9912ab847e5f5243b7f4897b8465b9'
 SCRIPT = ROOT / 'scripts/ci/required-merge-surface.sh'
+RIPR_CHECKPOINT_SUFFIX = r'''
+# Same-run RIPR+ checkpoint runtime controls.
+set -o pipefail
+cargo test -p xtask --bin xtask --locked -- \
+  --exact \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_analysis_environment_and_external_cargo_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_ignored_and_untracked_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_readback_refuses_wrong_written_bytes \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_rejects_external_input_and_cached_checkpoint \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_requires_repository_root_subject \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_binds_rendered_root_and_policy_spellings \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_refuses_input_mutation_during_analysis \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics \
+  --test-threads=1 --color never | tee "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+grep -Eq '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in ' \
+  "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+for test_name in \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_analysis_environment_and_external_cargo_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_ignored_and_untracked_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_readback_refuses_wrong_written_bytes \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_rejects_external_input_and_cached_checkpoint \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_requires_repository_root_subject \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_binds_rendered_root_and_policy_spellings \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_refuses_input_mutation_during_analysis \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics; do
+  grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+done
+'''.strip()
 
 
 def original_steps():
@@ -68,8 +99,9 @@ def run_with_tools(script, tools, extra_env=None):
 
 
 class RequiredMergeSurfaceTests(unittest.TestCase):
-    def test_original_commands_are_an_unchanged_ordered_prefix(self):
+    def test_original_commands_and_reviewed_ripr_suffix_are_exact(self):
         expected = [step['run'].strip() for step in original_steps()]
+        expected[17] += '\n\n' + RIPR_CHECKPOINT_SUFFIX
         actual = producer_commands()
         self.assertEqual(actual[:len(expected)], expected)
         self.assertGreaterEqual(len(actual), 38)
@@ -136,12 +168,17 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         keeper = tempfile.TemporaryDirectory()
         self.addCleanup(keeper.cleanup)
         altered = Path(keeper.name) / 'required-merge-surface.sh'
-        text = SCRIPT.read_text(encoding='utf-8').replace(
+        original = SCRIPT.read_text(encoding='utf-8')
+        body = producer_commands()[0]
+        changed = body.replace(
             '  --test-threads=1 --color never', '  --test-threads=2 --color never', 1,
         )
-        self.assertNotEqual(text, SCRIPT.read_text(encoding='utf-8'))
+        self.assertNotEqual(body, changed)
+        text = original.replace(body, changed, 1)
+        self.assertNotEqual(text, original)
         altered.write_text(text, encoding='utf-8')
         expected = [step['run'].strip() for step in original_steps()]
+        expected[17] += '\n\n' + RIPR_CHECKPOINT_SUFFIX
         self.assertNotEqual(producer_commands(altered)[:len(expected)], expected)
 
     def test_missing_runner_temp_is_intentional_not_proven(self):
@@ -150,6 +187,43 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 80)
         self.assertIn('RUNNER_TEMP must name an existing artifact directory', result.stderr)
         self.assertIn('NOT_PROVEN', result.stderr)
+
+    def test_original_guard_refuses_changed_ripr_or_other_original_group(self):
+        source = SCRIPT.read_text(encoding='utf-8')
+        guard = source.split(
+            '# Reject a filtered or edited original command even if its marker survives.', 1
+        )[1].split("python3 - <<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
+        baseline = subprocess.check_output([
+            'git', '-C', str(ROOT), 'show', f'{BASELINE}:.github/workflows/ci.yml',
+        ])
+        commands = producer_commands()
+        original_ripr = original_steps()[17]['run'].strip()
+        ripr = commands[17]
+        mutations = [
+            ('missing original RIPR command', ripr, RIPR_CHECKPOINT_SUFFIX),
+            ('changed original RIPR command', ripr, ripr.replace(
+                original_ripr, original_ripr + ' omitted_test', 1)),
+            ('missing checkpoint suffix', ripr, original_ripr),
+            ('unreviewed checkpoint suffix', ripr, ripr + '\n: unreviewed'),
+            ('wrong checkpoint count', ripr, ripr.replace('9 passed;', '8 passed;', 1)),
+            ('missing checkpoint pipefail', ripr, ripr.replace('set -o pipefail\n', '', 1)),
+        ]
+        mutations.extend(
+            (f'changed original group {index + 1}', body, body + '\n: unreviewed')
+            for index, body in enumerate(commands[:38]) if index != 17
+        )
+        # Execute the real admission guard with the actual historical baseline;
+        # only its candidate-file read is supplied by each isolated mutant.
+        with mock.patch('subprocess.check_output', return_value=baseline):
+            with mock.patch('pathlib.Path.read_text', return_value=source):
+                exec(guard, {})
+            for name, old, new in mutations:
+                with self.subTest(name=name):
+                    mutated = source.replace(old, new, 1)
+                    self.assertNotEqual(mutated, source)
+                    with mock.patch('pathlib.Path.read_text', return_value=mutated):
+                        with self.assertRaisesRegex(SystemExit, 'original command missing or edited'):
+                            exec(guard, {})
 
     def test_untracked_and_ignored_foreign_inputs_are_not_green(self):
         for relative in [

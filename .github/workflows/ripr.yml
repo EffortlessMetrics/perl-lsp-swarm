@@ -508,7 +508,7 @@ jobs:
               # Generation phase: keep going on individual failures so we can
               # still upload whatever artifacts were produced.
               cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
-              cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
+              cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --checkpoint "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json" || RIPR_FAILED=1
               mkdir -p target/receipts/quality
               printf '\''{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n'\'' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
               cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || true
@@ -521,7 +521,7 @@ jobs:
 
               # Validation phase.
               cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
-              cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+              cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check-generated "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"
               cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check || true
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
               cargo xtask ripr-pr-summary --check
@@ -841,7 +841,7 @@ jobs:
                 printf "changed_rust_line_limit=%s\npartial_line_budget=%s\npartial_file_budget=%s\nfindings_byte_budget=%s\nreview_guidance_max_index_files=%s\n" "$RIPR_MAX_DIFF_CHANGED_RUST_LINES" "$RIPR_PARTIAL_DIFF_LINE_BUDGET" "$RIPR_PARTIAL_DIFF_FILE_BUDGET" "$RIPR_CHECK_FINDINGS_BYTES" "$RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES"
                 printf "%s\n%s\n" "$rustc_version" "$cargo_version"
               } >> target/ripr/pr/ripr-measurement-config.txt
-              bash scripts/ci/observe-xtask-build.sh container "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --locked
+              bash scripts/ci/observe-xtask-build.sh container "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --bin xtask --locked
               ripr doctor
               set +e
               timeout --signal=TERM --kill-after=30s 25m /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt cargo xtask ripr-pr --base "$base_arg" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA"
@@ -862,15 +862,14 @@ jobs:
 
       # Build host artifacts after the container writes the shared target tree.
       - name: Build xtask
-        run: bash scripts/ci/observe-xtask-build.sh host-initial "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --locked
+        run: bash scripts/ci/observe-xtask-build.sh host-initial "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --bin xtask --locked
 
-      # #16431: the repo-wide RIPR+ receipt is a function of the checked-out
-      # HEAD tree alone -- it embeds `head: <current_head>` and every consumer
-      # head-binds it (`ripr-plus --check` byte-compares; the quality gate
-      # marks a receipt `stale` unless its head matches) -- so a re-run of the
-      # same head can restore the receipt instead of recomputing the
-      # whole-workspace seam/closure scan (~44m on 2026-09-25 against ~33s
-      # warm). The key pins the full content identity: toolchain version,
+      # #16431: the repo-wide RIPR+ receipt includes the checked-out HEAD and
+      # analyzed source, tool, environment and policy inputs. Restored bytes still
+      # undergo a full source-recomputing `ripr-plus --check` before use.
+      # #19326 avoids repeating that scan again during this run: fresh
+      # generation or successful full verification creates an ephemeral
+      # checkpoint outside the checkout. The key pins toolchain version,
       # exact head sha, suppression-ledger hash. The `restore-keys` prefix
       # mirrors the fact-cache shape above, but a prefix hit restores a
       # DIFFERENT head's receipt, so only an exact-key hit may be consumed --
@@ -909,19 +908,25 @@ jobs:
 
       - name: Generate repo-wide RIPR+ baseline receipt
         if: always()
+        env:
+          # Keep the analyzer's Cargo environment identical with or without
+          # the observer, including its early diagnostic pass-through paths.
+          CARGO_LOG: cargo::core::compiler::fingerprint=trace
         # #16431: consume the memoized receipt only on an exact-head hit;
-        # otherwise produce fresh. Either way the mandatory handshake stays
-        # the `ripr-plus --check` byte-compare in "Validate PR evidence
-        # contracts" below -- any byte drift or head mismatch fails closed
-        # exactly as before, with no auto-regenerate-and-retry. The freshness
+        # otherwise produce fresh. A restored receipt must pass the ordinary
+        # source-recomputing --check before it earns a same-run checkpoint.
+        # Later validation checks unchanged inputs, tools, policy and receipt
+        # bytes without repeating both sensors. No auto-regenerate-and-retry.
+        # The checkpoint is never cached or uploaded. The freshness
         # marker records "this run produced the receipt itself" so the save
         # step at the end of the job never re-publishes a restored receipt.
         run: |
           if [ -f target/receipts/quality/ripr-plus.json ] && [ "${RIPR_RECEIPT_CACHE_HIT:-}" = "true" ]; then
             echo "head-memoized receipt restored; validating"
             rm -f target/receipts/quality/.ripr-plus-fresh
+            cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check --checkpoint "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"
           else
-            bash scripts/ci/observe-xtask-build.sh host-baseline "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+            bash scripts/ci/observe-xtask-build.sh host-baseline "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --checkpoint "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"
             mkdir -p target/receipts/quality
             printf 'produced-fresh head=%s\n' "$(git rev-parse HEAD)" > target/receipts/quality/.ripr-plus-fresh
           fi
@@ -992,6 +997,8 @@ jobs:
 
       - name: Validate PR evidence contracts
         if: always()
+        env:
+          CARGO_LOG: cargo::core::compiler::fingerprint=trace
         run: |
           marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
           if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$RIPR_FRESHNESS_TOKEN" ]; then
@@ -1000,7 +1007,7 @@ jobs:
           fi
           bash scripts/ci/require-ripr-subject.sh
           cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
-          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check-generated "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
@@ -1231,7 +1238,7 @@ jobs:
         run: cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
       - name: Build xtask
-        run: cargo build -p xtask --locked
+        run: cargo build -p xtask --bin xtask --locked
 
       - name: Run ripr doctor
         run: ripr doctor
@@ -1241,7 +1248,7 @@ jobs:
 
       # #16431: exact-head memoization of the repo-wide RIPR+ receipt -- same
       # restore/adjudicate/guard contract as the primary hosted lane above.
-      # The receipt is a function of the checked-out HEAD tree (it embeds
+      # The receipt binds the checked-out HEAD and analyzed inputs (it embeds
       # `head: <current_head>` and every consumer head-binds it), the key
       # pins toolchain version + exact head sha + suppression-ledger hash,
       # and only an exact-key hit (`cache-hit` output) may be consumed: a
@@ -1280,18 +1287,20 @@ jobs:
       - name: Generate repo-wide RIPR+ baseline receipt
         if: always()
         # #16431: consume the memoized receipt only on an exact-head hit;
-        # otherwise produce fresh. Either way the mandatory handshake stays
-        # the `ripr-plus --check` byte-compare in "Validate PR evidence
-        # contracts" below -- any byte drift or head mismatch fails closed
-        # exactly as before, with no auto-regenerate-and-retry. The freshness
+        # otherwise produce fresh. A restored receipt must pass the ordinary
+        # source-recomputing --check before it earns a same-run checkpoint.
+        # Later validation checks unchanged inputs, tools, policy and receipt
+        # bytes without repeating both sensors. No auto-regenerate-and-retry.
+        # The checkpoint is never cached or uploaded. The freshness
         # marker records "this run produced the receipt itself" so the save
         # step at the end of the job never re-publishes a restored receipt.
         run: |
           if [ -f target/receipts/quality/ripr-plus.json ] && [ "${RIPR_RECEIPT_CACHE_HIT:-}" = "true" ]; then
             echo "head-memoized receipt restored; validating"
             rm -f target/receipts/quality/.ripr-plus-fresh
+            cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check --checkpoint "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"
           else
-            cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+            cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --checkpoint "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"
             mkdir -p target/receipts/quality
             printf 'produced-fresh head=%s\n' "$(git rev-parse HEAD)" > target/receipts/quality/.ripr-plus-fresh
           fi
@@ -1357,7 +1366,7 @@ jobs:
           fi
           bash scripts/ci/require-ripr-subject.sh
           cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
-          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check-generated "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json"
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
@@ -1513,7 +1522,7 @@ jobs:
         run: cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
       - name: Build xtask
-        run: cargo build -p xtask --locked
+        run: cargo build -p xtask --bin xtask --locked
 
       # #16126: ripr derives its fact cache from the workspace root, so it
       # lands inside the per-run checkout and never survives. Point it at the
