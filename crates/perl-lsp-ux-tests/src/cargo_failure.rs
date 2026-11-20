@@ -115,20 +115,92 @@ impl FailureBlock {
     }
 }
 
-/// Whether this module's patterns compiled, named if one did not.
+/// Fixed inputs that must keep matching after any regex edit (#17107).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PatternWitnessTable {
+    /// Doctest-shaped libtest name with spaces.
+    pub doctest_name: &'static str,
+    /// Ordinary test name on a CRLF-terminated result line.
+    pub crlf_failed_test: &'static str,
+    /// Pre-1.73 panic with a quoted message before the path.
+    pub legacy_quoted_panic_line: &'static str,
+    /// Panic whose path token contains a space (still parsed structurally).
+    pub spaced_path_panic_line: &'static str,
+}
+
+impl PatternWitnessTable {
+    /// Witness set aligned with the spaced-name and CRLF cases on main.
+    pub const MAIN: Self = Self {
+        doctest_name: "src/lib.rs - foo (line 3)",
+        crlf_failed_test: "tasks::a::b",
+        legacy_quoted_panic_line: "thread 'x' panicked at 'assertion failed: x == y', src/module.rs:42:5",
+        spaced_path_panic_line: "panicked at ./ something:100:200",
+    };
+}
+
+/// Behavioural self-check for the shared reader (#17107).
 ///
-/// A reader whose pattern failed to build answers "no failing test" and "no
-/// panic" — indistinguishable from a clean run. Consumers that must fail loud
-/// rather than report a false clean call this first.
-pub fn validate_patterns() -> Result<(), String> {
-    for (name, pattern) in
-        [("cargo result line", &*RESULT_LINE_RE), ("cargo failure block", &*FAILURE_BLOCK_RE)]
-    {
-        if let Err(error) = pattern {
-            return Err(format!("{name} pattern failed to compile: {error}"));
+/// Callers that need to falsify detection pass alternate regexes (unit tests);
+/// production uses the module statics after verifying they compiled.
+pub(crate) fn validate_pattern_witnesses(
+    result_line_re: &Regex,
+    failure_block_re: &Regex,
+    table: &PatternWitnessTable,
+) -> Result<(), String> {
+    let doctest_result = format!("test {} ... FAILED", table.doctest_name);
+    match result_line_re.captures(&doctest_result) {
+        Some(caps) if caps.get(1).is_some_and(|m| m.as_str() == table.doctest_name) => {}
+        _ => {
+            return Err("cargo result line pattern did not capture spaced doctest name".into());
         }
     }
+
+    let crlf_line = format!("test {} ... FAILED\r", table.crlf_failed_test);
+    match result_line_re.captures(&crlf_line) {
+        Some(caps) if caps.get(1).is_some_and(|m| m.as_str() == table.crlf_failed_test) => {}
+        _ => {
+            return Err("cargo result line pattern did not capture CRLF result line".into());
+        }
+    }
+
+    let block_raw = format!("---- {} stdout ----\nbody\n", table.doctest_name);
+    match failure_block_re.captures(&block_raw) {
+        Some(caps) if caps.get(1).is_some_and(|m| m.as_str() == table.doctest_name) => {}
+        _ => {
+            return Err("cargo failure block pattern did not capture spaced doctest header".into());
+        }
+    }
+
+    let legacy = panic_location(table.legacy_quoted_panic_line)
+        .ok_or_else(|| "panic reader did not parse legacy quoted panic line".to_string())?;
+    if legacy.path != "src/module.rs" || legacy.line != 42 || legacy.column != Some(5) {
+        return Err("panic reader misread legacy quoted panic line".into());
+    }
+
+    let spaced = panic_location(table.spaced_path_panic_line)
+        .ok_or_else(|| "panic reader did not parse panic line with spaced path".to_string())?;
+    if spaced.path != "./ something" || spaced.line != 100 || spaced.column != Some(200) {
+        return Err("panic reader misread panic line with spaced path".into());
+    }
+
     Ok(())
+}
+
+/// Whether this module's patterns compiled and still detect the witness shapes,
+/// named if one did not.
+///
+/// A reader whose pattern failed to build answers "no failing test" and "no
+/// panic" — indistinguishable from a clean run. A pattern that compiles but
+/// matches nothing is the same failure mode (#17107). Consumers that must fail
+/// loud rather than report a false clean call this first.
+pub fn validate_patterns() -> Result<(), String> {
+    let result_line_re = RESULT_LINE_RE
+        .as_ref()
+        .map_err(|error| format!("cargo result line pattern failed to compile: {error}"))?;
+    let failure_block_re = FAILURE_BLOCK_RE
+        .as_ref()
+        .map_err(|error| format!("cargo failure block pattern failed to compile: {error}"))?;
+    validate_pattern_witnesses(result_line_re, failure_block_re, &PatternWitnessTable::MAIN)
 }
 
 /// One stdout block per `---- <name> stdout ----` header, in log order.
@@ -280,6 +352,24 @@ mod tests {
     fn patterns_compile() {
         assert!(RESULT_LINE_RE.is_ok());
         assert!(FAILURE_BLOCK_RE.is_ok());
+    }
+
+    #[test]
+    fn validate_patterns_ok_on_main_witnesses() {
+        validate_patterns().expect("main reader patterns must compile and match witnesses");
+    }
+
+    #[test]
+    fn validate_pattern_witnesses_rejects_whitespace_hostile_result_line_regex() {
+        let hostile = Regex::new(r"(?m)^[ \t]*test[ \t]+(\S+)[ \t]+\.\.\.[ \t]+FAILED[ \t\r]*$")
+            .expect("test regex must compile");
+        let block_re = FAILURE_BLOCK_RE.as_ref().expect("block regex must compile");
+        let error = validate_pattern_witnesses(&hostile, block_re, &PatternWitnessTable::MAIN)
+            .expect_err("whitespace-hostile capture must fail the spaced doctest witness");
+        assert!(
+            error.contains("cargo result line pattern"),
+            "error must name the pattern: {error}"
+        );
     }
 
     /// A doctest's name is `<file> - <path> (line N)`. Capturing a single
