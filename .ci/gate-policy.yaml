@@ -1153,7 +1153,7 @@ gates:
     tier: pr_fast
     description: "Compile the routed integration-test targets without executing assertions"
     required: true
-    command: cargo build -p perllsp --locked && env PERL_LSP_BIN="$PWD/target/debug/perllsp" cargo test --locked --tests {package_args} --no-run
+    command: cargo build -p perllsp --locked && env PERL_LSP_BIN="$PWD/target/debug/perllsp" cargo test --locked --tests {package_args} --no-fail-fast --no-run
     # The retained main artifact spent 45s on perllsp plus 21m45s compiling
     # test targets. Reuse the existing 25m gate bound, not a larger job budget.
     timeout_seconds: 1500
@@ -1202,7 +1202,17 @@ gates:
     # does), and without the export such a suite can never pass under this
     # gate even though the matching binary is already on disk (#16194). The
     # env-wrapped shape keeps is_cargo_test_command recognition intact.
-    command: cargo build -p perllsp --locked && env PERL_LSP_BIN="$PWD/target/debug/perllsp" cargo test --locked --tests {package_args}
+    #
+    # `--no-fail-fast` (#17151): cargo exits after the first failing test
+    # executable, so without this flag one red target in an
+    # alphabetically-earlier crate silently skips every later crate's whole
+    # `tests/` suite while the receipt still shows only that first failure.
+    # The routed package list is a BTreeSet, so the skip is systematic, not
+    # incidental. This flag makes the sweep report every selected target and
+    # every failure. Compilation is prepared by the paired build gate, but
+    # whole-scope execution duration remains unqualified. Keep the existing
+    # 1500s bound; a timeout is red and does not establish a complete sweep.
+    command: cargo build -p perllsp --locked && env PERL_LSP_BIN="$PWD/target/debug/perllsp" cargo test --locked --tests {package_args} --no-fail-fast
     # PR #1585 produced timeout-only receipts at 600s and 900s for the
     # perl-lsp-rs/perl-lsp-rs-core/xtask route. Keep the required --tests proof
     # bounded while matching the PR Smoke watchdog for the heavier routed path.

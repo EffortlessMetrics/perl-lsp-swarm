@@ -609,6 +609,7 @@ mod tests {
                 metrics: None,
                 artifacts: None,
                 first_failure: None,
+                selected_target_accounting: None,
                 command_started: true,
             }],
             summary: ReceiptSummary {
