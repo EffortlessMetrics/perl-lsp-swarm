@@ -198,7 +198,9 @@ jobs:
 
       - name: Publish all crates
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # A dry run only packages crates locally; withhold the registry
+          # token so it reaches the runner only when publishing (#6231).
+          CARGO_REGISTRY_TOKEN: ${{ github.event.inputs.dry_run != 'true' && secrets.CARGO_REGISTRY_TOKEN || '' }}
           CRATES_JSON: ${{ needs.compute-order.outputs.crates }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
