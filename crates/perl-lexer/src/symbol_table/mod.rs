@@ -714,16 +714,28 @@ fn start_quote_like(
     }
 }
 
-fn quote_like_closes(source: &str, mut quote_like: QuoteLikeState) -> bool {
-    let mut chars = source.chars();
+fn line_comment_start(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() && matches!(bytes[index], b' ' | b'\t') {
+        index += 1;
+    }
+    bytes.get(index).filter(|&&byte| byte == b'#').map(|_| index)
+}
 
+fn line_opens_pod_block(line: &str) -> bool {
+    starts_pod(line) || is_pod_cut(line)
+}
+
+fn quote_like_closes_on_line(line: &str, quote_like: &mut QuoteLikeState) -> Option<bool> {
+    let mut chars = line.chars();
     while let Some(ch) = chars.next() {
         if quote_like.phase == QuoteLikePhase::AwaitingPairedBody {
             if ch.is_whitespace() {
                 continue;
             }
             if ch.is_alphanumeric() || ch == '_' {
-                return false;
+                return Some(false);
             }
             quote_like.begin_paired_body(ch);
             continue;
@@ -749,11 +761,68 @@ fn quote_like_closes(source: &str, mut quote_like: QuoteLikeState) -> bool {
 
         quote_like.bodies_remaining = quote_like.bodies_remaining.saturating_sub(1);
         if quote_like.bodies_remaining == 0 {
-            return true;
+            return Some(true);
         }
         if quote_like.paired {
             quote_like.phase = QuoteLikePhase::AwaitingPairedBody;
         }
+    }
+
+    None
+}
+
+/// Whether the quote-like construct that begins at `source` closes before EOF.
+///
+/// Lookahead must not treat `#` comments, POD blocks, or `__DATA__`/`__END__`
+/// regions as part of the body; a closer character there must not make a
+/// malformed opener look closed (#10210).
+fn quote_like_closes(source: &str, quote_like: QuoteLikeState) -> bool {
+    let mut quote_like = quote_like;
+    let bytes = source.as_bytes();
+    let mut line_start = 0usize;
+    let mut first_body_line = true;
+
+    while line_start < bytes.len() {
+        let (line_end, next_line_start) = line_bounds(bytes, line_start);
+        let line = &source[line_start..line_end];
+
+        if is_data_marker(line) {
+            return false;
+        }
+
+        if !first_body_line && line_opens_pod_block(line) {
+            line_start = next_line_start;
+            while line_start < bytes.len() {
+                let (pod_line_end, pod_next) = line_bounds(bytes, line_start);
+                let pod_line = &source[line_start..pod_line_end];
+                if is_data_marker(pod_line) {
+                    return false;
+                }
+                if is_pod_cut(pod_line) {
+                    line_start = pod_next;
+                    break;
+                }
+                line_start = pod_next;
+            }
+            first_body_line = false;
+            continue;
+        }
+
+        let scan_line = if first_body_line {
+            line
+        } else {
+            match line_comment_start(line) {
+                Some(comment_start) => &line[..comment_start],
+                None => line,
+            }
+        };
+
+        if let Some(closed) = quote_like_closes_on_line(scan_line, &mut quote_like) {
+            return closed;
+        }
+
+        first_body_line = false;
+        line_start = next_line_start;
     }
 
     false
@@ -1943,6 +2012,22 @@ print($fh <<E);
         let table = LocalSymbolTable::scan_subs(source);
 
         assert!(table.is_known_sub("emit"));
+    }
+
+    #[test]
+    fn quote_like_closes_ignores_closer_characters_in_line_comments() {
+        let source = concat!("my $x = q(unclosed\n", "# note with ) closer\n", "sub real { }\n",);
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("real"));
+    }
+
+    #[test]
+    fn quote_like_closes_ignores_closer_characters_in_pod_blocks() {
+        let source = concat!("my $x = q(unclosed\n", "=pod\n", ")\n", "=cut\n", "sub real { }\n",);
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("real"));
     }
 
     #[test]
