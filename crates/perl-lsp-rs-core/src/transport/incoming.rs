@@ -15,6 +15,7 @@
 //! continue / respond / close disposition. Exact shipped-process wire and
 //! exit behavior remain #6720 / #7004.
 
+use super::document_symbol_probe;
 use super::framing::{ContentLengthFramer, FramingError, MAX_FRAME_SIZE};
 use crate::protocol::{JSONRPC_VERSION, JsonRpcId, JsonRpcRequest};
 use serde_json::{Value, json};
@@ -319,13 +320,14 @@ fn log_incoming_rejection(error: &IncomingMessageError) {
 #[derive(Default)]
 pub struct ContentLengthMessageReader {
     framer: ContentLengthFramer,
+    probe_read_offset: u64,
 }
 
 impl ContentLengthMessageReader {
     /// Create a new reader with empty frame state.
     #[must_use]
     pub fn new() -> Self {
-        Self { framer: ContentLengthFramer::new() }
+        Self { framer: ContentLengthFramer::new(), probe_read_offset: 0 }
     }
 
     /// Read the next completed-frame outcome from the underlying byte stream.
@@ -347,14 +349,63 @@ impl ContentLengthMessageReader {
 
         loop {
             match self.framer.try_next() {
-                Ok(Some(body)) => return Ok(Some(decode_incoming_body(&body))),
+                Ok(Some(body)) => {
+                    let outcome = decode_incoming_body(&body);
+                    document_symbol_probe::emit("decoded_body", || match &outcome {
+                        Ok(request) => {
+                            let method_class = match request.method.as_str() {
+                                "textDocument/didOpen" => "did_open",
+                                "textDocument/documentSymbol" => "document_symbol",
+                                CLIENT_RESPONSE_METHOD => "client_response",
+                                _ => "other",
+                            };
+                            let numeric_id = request.id.as_ref().and_then(|id| match id {
+                                JsonRpcId::Integer(id) => Some(*id),
+                                _ => None,
+                            });
+                            json!({ "frame_sequence": self.framer.probe_frame_sequence(),
+                                    "body_bytes": body.len(), "outcome": "accepted",
+                                    "method_class": method_class, "numeric_id": numeric_id,
+                                    "id_omitted": request.id.is_some() && numeric_id.is_none() })
+                        }
+                        Err(error) => json!({
+                            "frame_sequence": self.framer.probe_frame_sequence(),
+                            "body_bytes": body.len(), "outcome": "rejected",
+                            "rejection_stage": error.stage().as_str(),
+                        }),
+                    });
+                    return Ok(Some(outcome));
+                }
                 Ok(None) => {}
                 Err(error) => {
+                    document_symbol_probe::emit(
+                        "framing_rejected",
+                        || json!({ "rejection_stage": "framing" }),
+                    );
                     return Ok(Some(Err(IncomingMessageError::Framing(error))));
                 }
             }
 
-            let bytes_read = reader.read(&mut chunk)?;
+            let bytes_read = match reader.read(&mut chunk) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    document_symbol_probe::emit(
+                        "read_failed",
+                        || json!({ "io_error_kind": format!("{:?}", error.kind()) }),
+                    );
+                    return Err(error);
+                }
+            };
+            if document_symbol_probe::active() {
+                let start = self.probe_read_offset;
+                self.probe_read_offset = start.saturating_add(bytes_read as u64);
+                document_symbol_probe::emit("stream_read", || {
+                    json!({
+                        "stream_start": start, "stream_end": self.probe_read_offset,
+                        "accepted_bytes": bytes_read,
+                    })
+                });
+            }
             if bytes_read == 0 {
                 return Ok(None);
             }
@@ -536,5 +587,124 @@ pub fn read_message(reader: &mut dyn BufRead) -> io::Result<Option<JsonRpcReques
             Ok(None)
         }
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod document_symbol_transport_controls {
+    use super::super::framing::frame;
+    use super::*;
+    use std::io::Cursor;
+
+    struct Fragmented(Cursor<Vec<u8>>);
+    impl io::Read for Fragmented {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let limit = bytes.len().min(7);
+            io::Read::read(&mut self.0, &mut bytes[..limit])
+        }
+    }
+
+    fn assert_fragmented_read_ranges(records: &[Value], input_bytes: usize) {
+        let reads: Vec<_> =
+            records.iter().filter(|record| record["stage"] == "stream_read").collect();
+        assert_eq!(reads.len(), input_bytes.div_ceil(7) + 1);
+        for (index, read) in reads.iter().enumerate() {
+            let start = (index * 7).min(input_bytes);
+            let accepted = (input_bytes - start).min(7);
+            assert_eq!(read["metadata"]["stream_start"], start);
+            assert_eq!(read["metadata"]["accepted_bytes"], accepted);
+            assert_eq!(read["metadata"]["stream_end"], start + accepted);
+        }
+    }
+
+    #[test]
+    fn interleaved_reply_header_loses_open_while_atomic_frames_keep_it() -> io::Result<()> {
+        let reply =
+            json!({ "jsonrpc": "2.0", "id": "synthetic-server-id", "result": [] }).to_string();
+        let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": "file:///fixture.pm", "version": 1, "languageId": "perl", "text": "sub alpha {}\n" }
+        }}).to_string();
+        let query = json!({ "jsonrpc": "2.0", "id": 116, "method": "textDocument/documentSymbol",
+            "params": { "textDocument": { "uri": "file:///fixture.pm" } }})
+        .to_string();
+        let mut interleaved = format!("Content-Length: {}\r\n\r\n", reply.len()).into_bytes();
+        let reply_header_bytes = interleaved.len();
+        interleaved.extend(frame(open.as_bytes()));
+        interleaved.extend(reply.as_bytes());
+        interleaved.extend(frame(query.as_bytes()));
+        let query_start = interleaved.len() - frame(query.as_bytes()).len();
+        let stream_bytes = interleaved.len();
+        let (result, records) = document_symbol_probe::capture(|| -> io::Result<()> {
+            let mut reader = ContentLengthMessageReader::new();
+            let mut stream = Fragmented(Cursor::new(interleaved));
+            assert!(matches!(
+                reader.read_next_outcome(&mut stream)?,
+                Some(Err(IncomingMessageError::MalformedJson { .. }))
+            ));
+            assert!(matches!(reader.read_next_outcome(&mut stream)?, Some(Ok(request))
+            if request.method == "textDocument/documentSymbol" && request.id == Some(JsonRpcId::Integer(116))));
+            assert!(
+                reader.read_next_outcome(&mut stream)?.is_none(),
+                "original didOpen was lost during resynchronization"
+            );
+            Ok(())
+        });
+        result?;
+        assert_fragmented_read_ranges(&records, stream_bytes);
+        for (index, record) in records.iter().enumerate() {
+            assert_eq!(record["event_sequence"], index + 1);
+        }
+        let extractions: Vec<_> =
+            records.iter().filter(|record| record["stage"] == "body_extracted").collect();
+        assert_eq!(extractions.len(), 2);
+        assert_eq!(extractions[0]["metadata"]["stream_start"], 0);
+        assert_eq!(extractions[0]["metadata"]["stream_end"], reply_header_bytes + reply.len());
+        assert_eq!(extractions[1]["metadata"]["stream_start"], query_start);
+        assert_eq!(extractions[1]["metadata"]["stream_end"], stream_bytes);
+        let discarded: Vec<_> =
+            records.iter().filter(|record| record["stage"] == "prefix_discarded").collect();
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(discarded[0]["metadata"]["stream_start"], reply_header_bytes + reply.len());
+        assert_eq!(discarded[0]["metadata"]["stream_end"], query_start);
+        let decoded: Vec<_> =
+            records.iter().filter(|record| record["stage"] == "decoded_body").collect();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0]["metadata"]["outcome"], "rejected");
+        assert_eq!(decoded[1]["metadata"]["outcome"], "accepted");
+        assert_eq!(decoded[1]["metadata"]["method_class"], "document_symbol");
+        assert_eq!(decoded[1]["metadata"]["numeric_id"], 116);
+        assert!(!serde_json::to_string(&records)?.contains("synthetic-server-id"));
+
+        let mut atomic = frame(reply.as_bytes());
+        atomic.extend(frame(open.as_bytes()));
+        atomic.extend(frame(query.as_bytes()));
+        let atomic_bytes = atomic.len();
+        let (result, records) = document_symbol_probe::capture(|| -> io::Result<()> {
+            let mut reader = ContentLengthMessageReader::new();
+            let mut stream = Fragmented(Cursor::new(atomic));
+            for expected in
+                [CLIENT_RESPONSE_METHOD, "textDocument/didOpen", "textDocument/documentSymbol"]
+            {
+                assert!(
+                    matches!(reader.read_next_outcome(&mut stream)?, Some(Ok(request)) if request.method == expected)
+                );
+            }
+            assert!(reader.read_next_outcome(&mut stream)?.is_none());
+            Ok(())
+        });
+        result?;
+        assert_fragmented_read_ranges(&records, atomic_bytes);
+        assert_eq!(records.iter().filter(|record| record["stage"] == "body_extracted").count(), 3);
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record["stage"] == "decoded_body"
+                    && record["metadata"]["outcome"] == "accepted")
+                .count(),
+            3
+        );
+        assert!(!records.iter().any(|record| record["stage"] == "prefix_discarded"
+            || record["metadata"]["outcome"] == "rejected"));
+        Ok(())
     }
 }

@@ -66,12 +66,48 @@ impl LspServer {
     /// Handle a JSON-RPC request
     pub fn handle_request(&self, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
         let context = preflight::RequestContext::from_request(&request);
+        self.emit_document_symbol_lifecycle_probe(
+            "dispatch_entered",
+            &request.method,
+            request.params.as_ref(),
+            request.id.as_ref(),
+            None,
+            None,
+        );
 
         match preflight::prepare_request(self, &request, &context) {
             preflight::PreflightOutcome::Continue => {}
-            preflight::PreflightOutcome::NotificationHandled => return None,
-            preflight::PreflightOutcome::Respond(response) => return Some(response),
+            preflight::PreflightOutcome::NotificationHandled => {
+                self.emit_document_symbol_lifecycle_probe(
+                    "preflight_notification_handled",
+                    &request.method,
+                    request.params.as_ref(),
+                    request.id.as_ref(),
+                    None,
+                    None,
+                );
+                return None;
+            }
+            preflight::PreflightOutcome::Respond(response) => {
+                self.emit_document_symbol_lifecycle_probe(
+                    "preflight_response",
+                    &request.method,
+                    request.params.as_ref(),
+                    request.id.as_ref(),
+                    None,
+                    response.error.as_ref().map(|error| error.code),
+                );
+                return Some(response);
+            }
         }
+        self.emit_document_symbol_lifecycle_probe(
+            "preflight_continue",
+            &request.method,
+            request.params.as_ref(),
+            request.id.as_ref(),
+            None,
+            None,
+        );
 
         let routed =
             formatting_policy::route(self, &request, context.id.clone(), context.should_respond)
