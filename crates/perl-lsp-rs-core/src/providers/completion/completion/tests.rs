@@ -9947,6 +9947,15 @@ fn test_signature_param_visible_in_body_only() {
         labels.iter().any(|l| l.contains("param_len")),
         "signature parameter must be visible in its own sub body; got {labels:?}"
     );
+    let param_detail = completions
+        .iter()
+        .find(|item| item.label.as_ref().contains("param_len"))
+        .and_then(|item| item.detail.as_deref());
+    assert_eq!(
+        param_detail,
+        Some("Signature Parameter"),
+        "signature parameters must carry Signature Parameter detail"
+    );
 
     let sibling_code = concat!(
         "sub sized ($param_len) {\n",
