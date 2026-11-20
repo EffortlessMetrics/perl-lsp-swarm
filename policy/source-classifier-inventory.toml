@@ -1,0 +1,341 @@
+# Checked inventory of production Perl source classifiers and geometry
+# reconstructors (#7300 R1 authority, controlling row #13993).
+#
+# Machine authority for dispositions. Generated review map:
+#   docs/architecture/source-classifier-inventory.md
+# Validated by:
+#   cargo xtask source-context inventory --check
+#   cargo xtask source-context explain <site-id|path>
+
+schema_version = "source_classifier_inventory.v1"
+controller_issue = 7300
+inventory_row_issue = 13993
+last_reviewed_commit = "7376312a363c2d83d082221d2ea585eef4452c44"
+production_scan_crates = [
+  "perl-parser-core",
+  "perl-lsp-rs-core",
+  "perl-lsp-rs",
+]
+
+[[site]]
+id = "canonical-source-region-index-build"
+path = "crates/perl-parser-core/src/syntax/source_context/index.rs"
+symbol = "build"
+consumer_surface = "canonical SourceRegionIndex producer"
+mechanism = "generation-bound lexical region collection"
+source_classes = ["Code", "LineComment", "Pod", "StringLiteral", "QuoteLike", "RegexLike", "Heredoc", "DataSection"]
+reachability = "production_reachable"
+reachability_evidence = "SourceRegionIndex::build consumed by rename, hover, semantic-token, and completion-adjacent paths on current main"
+canonical_dependency = "perl-parser-core syntax/source_context collectors (#5003)"
+status = "canonical_producer"
+owner_issue = 13989
+reason = "Bounded transitional canonical producer; not the final geometry authority train (#13976–#13991)."
+exit_condition = "Final producer train retires transitional collectors without duplicate downstream classifiers."
+review_after = "2026-12-01"
+positive_fixtures = ["crates/perl-parser-core/tests/source_context_basic.rs"]
+
+[[site]]
+id = "producer-heredoc-scan-regions"
+path = "crates/perl-parser-core/src/syntax/source_context/collector/literal_scan.rs"
+symbol = "scan_heredoc_regions"
+consumer_surface = "SourceRegionIndex heredoc collector"
+mechanism = "line-local heredoc opener/body scanning"
+source_classes = ["Heredoc"]
+reachability = "production_reachable"
+reachability_evidence = "Called from source_context collector during SourceRegionIndex::build"
+canonical_dependency = "self (producer path)"
+status = "canonical_producer"
+owner_issue = 13418
+reason = "Producer-side heredoc geometry with known limitations (#5456); not evidence that downstream consumers migrated."
+exit_condition = "#13418 closes false-opener/limitation debt and lands generation-bound heredoc geometry."
+review_after = "2026-12-01"
+
+[[site]]
+id = "producer-legacy-heredoc-marker-fallback"
+path = "crates/perl-parser-core/src/syntax/source_context/collector/literal_scan.rs"
+symbol = "legacy_heredoc_marker"
+consumer_surface = "SourceRegionIndex heredoc collector fallback"
+mechanism = "legacy first-textual-<< fallback on quote-like lines"
+source_classes = ["Heredoc"]
+reachability = "production_reachable"
+reachability_evidence = "Selected from scan_heredoc_regions carry/resume path on current main"
+canonical_dependency = "scan_heredoc_regions"
+status = "bounded_compatibility_adapter"
+owner_issue = 13418
+reason = "Explicit producer limitation; must remain visible until heredoc convergence lands."
+exit_condition = "Remove fallback when #13418 proves opener detection without legacy marker bail-out."
+review_after = "2026-11-15"
+negative_fixtures = ["xtask/tests/source_context_inventory.rs"]
+
+[[site]]
+id = "completion-lexical-is-in-string"
+path = "crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs"
+symbol = "is_in_string"
+consumer_surface = "textDocument/completion"
+mechanism = "quote/heredoc/POD literal state scan over raw source"
+source_classes = ["StringLiteral", "QuoteLike", "Heredoc", "Pod"]
+reachability = "production_reachable"
+reachability_evidence = "CompletionProvider derives in_string via lexical_context on live completion path"
+canonical_dependency = "SourceRegionIndex (#5003/#13244)"
+status = "must_retire"
+owner_issue = 13244
+reason = "Live provider-local recognizer; #4956 fixed a narrow comment bug only."
+exit_condition = "#13244/#7424 consume canonical request context and delete local literal scan."
+review_after = "2026-11-01"
+positive_fixtures = ["crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs"]
+
+[[site]]
+id = "completion-lexical-is-in-comment"
+path = "crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs"
+symbol = "is_in_comment"
+consumer_surface = "textDocument/completion"
+mechanism = "line/quote-aware comment classification"
+source_classes = ["LineComment"]
+reachability = "production_reachable"
+reachability_evidence = "Live completion context uses is_in_comment before constructing CompletionContext"
+canonical_dependency = "SourceRegionIndex (#13244)"
+status = "must_retire"
+owner_issue = 13244
+reason = "Independent comment recognizer despite historical #4956 regression coverage."
+exit_condition = "Completion reads comment/POD regions only through supplied canonical index."
+review_after = "2026-11-01"
+
+[[site]]
+id = "completion-lexical-is-in-regex"
+path = "crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs"
+symbol = "is_in_regex"
+consumer_surface = "textDocument/completion"
+mechanism = "regex body/flag heuristic scan"
+source_classes = ["RegexLike"]
+reachability = "production_reachable"
+reachability_evidence = "CompletionProvider sets in_regex from lexical_context"
+canonical_dependency = "SourceRegionIndex (#13244)"
+status = "must_retire"
+owner_issue = 13244
+reason = "Regex eligibility must not be a second Perl lexer."
+exit_condition = "Regex/modifier policy consumes canonical regex regions only."
+review_after = "2026-11-01"
+
+[[site]]
+id = "completion-lexical-is-in-heredoc"
+path = "crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs"
+symbol = "is_in_heredoc"
+consumer_surface = "textDocument/completion"
+mechanism = "heredoc delimiter queue/body scan"
+source_classes = ["Heredoc"]
+reachability = "production_reachable"
+reachability_evidence = "Used by completion lexical gating and quiet-block rejection"
+canonical_dependency = "SourceRegionIndex (#13244)"
+status = "must_retire"
+owner_issue = 13244
+reason = "Heredoc delimiter/body logic duplicates producer geometry."
+exit_condition = "Delete local heredoc queue when canonical heredoc regions drive completion policy."
+review_after = "2026-11-01"
+
+[[site]]
+id = "completion-lexical-is-in-pod"
+path = "crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs"
+symbol = "is_in_pod"
+consumer_surface = "textDocument/completion"
+mechanism = "local PodState column-zero directive scan (#13241 bridge)"
+source_classes = ["Pod"]
+reachability = "production_reachable"
+reachability_evidence = "prepare_context / rejects_lexical_block consult is_in_pod on live path"
+canonical_dependency = "SourceRegionIndex (#13244/#13241)"
+status = "must_retire"
+owner_issue = 13244
+reason = "Local POD state must not remain authoritative after canonical opaque regions land."
+exit_condition = "POD opaque regions come only from canonical index; local PodState removed."
+review_after = "2026-11-01"
+
+[[site]]
+id = "completion-runtime-comment-naive"
+path = "crates/perl-lsp-rs/src/runtime/language/navigation.rs"
+symbol = "is_in_comment_naive"
+consumer_surface = "textDocument/completion enrichment"
+mechanism = "first-# naive comment guard on raw document text"
+source_classes = ["LineComment"]
+reachability = "production_reachable"
+reachability_evidence = "completion.rs calls navigation::is_in_comment_naive during live enrichment"
+canonical_dependency = "SourceRegionIndex (#13244)"
+status = "must_retire"
+owner_issue = 13244
+reason = "Runtime duplicate of comment classification outside lexical_context row."
+exit_condition = "Completion enrichment stops importing naive navigation comment scan."
+review_after = "2026-11-01"
+
+[[site]]
+id = "rename-runtime-qualified-text-scan"
+path = "crates/perl-lsp-rs/src/runtime/language/rename.rs"
+symbol = "add_qualified_document_rename_edits"
+consumer_surface = "textDocument/rename workspace edits"
+mechanism = "match_indices text scan filtered by SourceRegionIndex classify_range"
+source_classes = ["Code"]
+reachability = "production_reachable"
+reachability_evidence = "Workspace rename path still discovers qualified names via source.match_indices"
+canonical_dependency = "SourceRegionIndex::build on same source (#4964/#13422)"
+status = "must_retire"
+owner_issue = 13422
+reason = "Textual discovery remains edit-producing authority even where regions filter matches."
+exit_condition = "#13422 moves rename occurrence proof off raw scans."
+review_after = "2026-11-15"
+
+[[site]]
+id = "rename-runtime-request-region-build"
+path = "crates/perl-lsp-rs/src/runtime/language/rename.rs"
+symbol = "handle_prepare_rename"
+consumer_surface = "textDocument/prepareRename"
+mechanism = "SourceRegionIndex::build on request document for guard paths"
+source_classes = ["Code", "LineComment", "StringLiteral", "Pod"]
+reachability = "production_reachable"
+reachability_evidence = "prepareRename builds SourceRegionIndex from &request_doc.text for region guards"
+canonical_dependency = "SourceRegionIndex (#13425)"
+status = "bounded_compatibility_adapter"
+owner_issue = 13425
+reason = "Index built from live text without generation binding is a compatibility adapter, not thin canonical consumption."
+exit_condition = "#13425 binds rename guards to generation-bound canonical snapshots."
+review_after = "2026-11-15"
+
+[[site]]
+id = "selection-raw-string-span"
+path = "crates/perl-lsp-rs-core/src/providers/selection_range/mod.rs"
+symbol = "string_span"
+consumer_surface = "textDocument/selectionRange"
+mechanism = "raw quote scan for string span reconstruction"
+source_classes = ["StringLiteral"]
+reachability = "production_reachable"
+reachability_evidence = "selection_ranges uses string_span over &doc.text on live handler path"
+canonical_dependency = "AST/source-region geometry (#1695)"
+status = "must_retire"
+owner_issue = 1695
+reason = "Raw-text selectionRange implementation; distinct from AST compatibility helper."
+exit_condition = "#1695 wires selectionRange to canonical current-generation geometry."
+review_after = "2026-12-01"
+
+[[site]]
+id = "selection-raw-hash-access-span"
+path = "crates/perl-lsp-rs-core/src/providers/selection_range/mod.rs"
+symbol = "hash_access_span"
+consumer_surface = "textDocument/selectionRange"
+mechanism = "raw brace balancing for subscript spans"
+source_classes = ["Code"]
+reachability = "production_reachable"
+reachability_evidence = "Called from selection_ranges over document text"
+canonical_dependency = "canonical geometry (#1695)"
+status = "must_retire"
+owner_issue = 1695
+reason = "Delimiter counting as syntax authority."
+exit_condition = "Retire with raw-text selectionRange path under #1695."
+review_after = "2026-12-01"
+
+[[site]]
+id = "selection-raw-sub-definition-span"
+path = "crates/perl-lsp-rs-core/src/providers/selection_range/mod.rs"
+symbol = "sub_definition_span"
+consumer_surface = "textDocument/selectionRange"
+mechanism = "sub/search + paren/brace balancing"
+source_classes = ["Code"]
+reachability = "production_reachable"
+reachability_evidence = "Live selection_ranges sub span reconstruction"
+canonical_dependency = "canonical geometry (#1695)"
+status = "must_retire"
+owner_issue = 1695
+reason = "Sub definition selection from raw text."
+exit_condition = "AST/source-region backed selectionRange under #1695."
+review_after = "2026-12-01"
+
+[[site]]
+id = "selection-raw-selection-ranges"
+path = "crates/perl-lsp-rs-core/src/providers/selection_range/mod.rs"
+symbol = "selection_ranges"
+consumer_surface = "textDocument/selectionRange"
+mechanism = "statement/block boundaries from raw ; and {} scans"
+source_classes = ["Code"]
+reachability = "production_reachable"
+reachability_evidence = "LspServer::handle_selection_range calls selection_ranges(&doc.text, ...)"
+canonical_dependency = "canonical geometry (#1695)"
+status = "must_retire"
+owner_issue = 1695
+reason = "Entry point for raw-text selectionRange authority."
+exit_condition = "Replace with canonical consumer under #1695."
+review_after = "2026-12-01"
+
+[[site]]
+id = "selection-raw-word-span"
+path = "crates/perl-lsp-rs-core/src/providers/selection_range/mod.rs"
+symbol = "word_span"
+consumer_surface = "textDocument/selectionRange"
+mechanism = "identifier/sigil/:: scan"
+source_classes = ["Code"]
+reachability = "production_reachable"
+reachability_evidence = "Used inside selection_ranges chain construction"
+canonical_dependency = "canonical geometry (#1695)"
+status = "must_retire"
+owner_issue = 1695
+reason = "Callable/word selection from raw bytes."
+exit_condition = "Retire with #1695 selectionRange migration."
+review_after = "2026-12-01"
+
+[[site]]
+id = "selection-ast-selection-chain"
+path = "crates/perl-lsp-rs-core/src/providers/lsp_compat/selection_range.rs"
+symbol = "selection_chain"
+consumer_surface = "selectionRange compatibility export"
+mechanism = "AST parent-map walk for signature/body ranges"
+source_classes = ["Code"]
+reachability = "not_proven"
+reachability_evidence = "Public helper exported; bounded source search found no production caller on reviewed main"
+canonical_dependency = "AST + parent map (not source-region index)"
+status = "bounded_compatibility_adapter"
+owner_issue = 1695
+reason = "Separate compatibility surface from live raw-text selectionRange module."
+exit_condition = "Either wire as thin canonical consumer with reachability proof or delete."
+review_after = "2026-12-01"
+
+[[site]]
+id = "selection-allowed-byte-offset"
+path = "crates/perl-lsp-rs-core/src/providers/selection_range/mod.rs"
+symbol = "byte_offset"
+consumer_surface = "textDocument/selectionRange"
+mechanism = "UTF-16/byte position conversion only"
+source_classes = []
+reachability = "production_reachable"
+reachability_evidence = "Position conversion helper; does not classify Perl source"
+canonical_dependency = "none (line/position index boundary)"
+status = "presentation_only"
+owner_issue = 7300
+reason = "False-neighbor control: line/position mapping must not be flagged as a classifier."
+exit_condition = "Permanent allowed boundary."
+review_after = "2027-01-01"
+
+[[site]]
+id = "semantic-tokens-find-bytes-controlled"
+path = "crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs"
+symbol = "find_bytes_at_controlled"
+consumer_surface = "textDocument/semanticTokens"
+mechanism = "controlled substring search for token geometry"
+source_classes = ["StringLiteral", "QuoteLike"]
+reachability = "production_reachable"
+reachability_evidence = "Used while painting semantic tokens when AST payload offsets need recovery"
+canonical_dependency = "parser-emitted spans (#6730/#1653)"
+status = "must_retire"
+owner_issue = 6730
+reason = "Geometry reconstruction from mutable document text."
+exit_condition = "Semantic tokens consume canonical payload offsets without find()-based recovery."
+review_after = "2026-12-01"
+
+[[site]]
+id = "hover-fallback-state-trace"
+path = "crates/perl-lsp-rs-core/src/providers/navigation/hover_shadow.rs"
+symbol = "hover_result_fallback_state"
+consumer_surface = "textDocument/hover"
+mechanism = "generic fallback trace when canonical evidence incomplete"
+source_classes = ["Code"]
+reachability = "production_reachable"
+reachability_evidence = "Hover shadow path records fallback state for entity traces"
+canonical_dependency = "SourceRegionIndex / semantic facts (#4967)"
+status = "must_retire"
+owner_issue = 4967
+reason = "Generic fallback must not treat uncovered producer evidence as clean code."
+exit_condition = "#4967 removes generic fallback without whole-token source gate."
+review_after = "2026-12-01"
