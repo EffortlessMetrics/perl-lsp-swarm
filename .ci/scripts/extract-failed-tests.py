@@ -262,6 +262,8 @@ def parse_observation_stream(lines):
                     )
                 elif suite_event == "ok" and counts["failed"]:
                     current["reasons"].append("suite reported ok but failed test events were observed")
+                elif suite_event == "failed" and not counts["failed"]:
+                    current["reasons"].append("suite reported failure without a failed test event")
                 if suite_event == "failed":
                     current["saw_failed_suite"] = True
                 current["suite_counts"] = None

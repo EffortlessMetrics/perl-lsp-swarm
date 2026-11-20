@@ -554,6 +554,16 @@ class ExtractFailedTestsTest(unittest.TestCase):
         unfinished = self.parse(first + [suite_start(1), run_end("pkg", 0)])
         self.assertEqual(unfinished["verdict"], "STREAM_INCOMPLETE")
 
+    def test_failed_suite_followed_by_healthy_suite(self):
+        for observed, verdict in ((True, "COMPLETE_WITH_FAILURES"), (False, "NOT_PROVEN")):
+            with self.subTest(observed=observed):
+                events = [test_event("failed", "a")] if observed else []
+                receipt = self.parse([envelope("pkg"), suite_start(1)] + events + [
+                    suite_end("failed", 0, int(observed)), suite_start(1),
+                    test_event("ok", "b"), suite_end("ok", 1, 0), run_end("pkg", 101),
+                ])
+                self.assertEqual(receipt["verdict"], verdict)
+
     def test_orphan_test_does_not_belong_to_next_suite(self):
         receipt = self.parse([envelope("pkg"), test_event("ok", "orphan"),
                               suite_start(1), suite_end("ok", 1, 0), run_end("pkg", 0)])
