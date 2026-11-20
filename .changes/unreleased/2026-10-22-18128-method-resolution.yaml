@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Method lookups for simple local receivers respect lexical bindings and recognize literal bless classes. Unresolved ordinary receivers no longer fall back to the surrounding package, while references retain bounded text matches for those calls."
+time: 2026-10-22T00:00:00Z
+custom:
+  PR: "18128"
+  Slug: method-resolution
+  Breaking: "no"
