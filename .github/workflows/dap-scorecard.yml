@@ -219,7 +219,7 @@ jobs:
       # run identity. Nothing between that validation and here writes the packet.
       - name: Upload exact scorecard packet
         if: success()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: dap-scorecard-${{ env.DAP_SCORECARD_CANDIDATE_SHA }}
           path: |
@@ -233,7 +233,7 @@ jobs:
       # diagnostic artifact can never be mistaken for accepted candidate proof.
       - name: Upload failed-run diagnostics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: dap-scorecard-diagnostic-${{ env.DAP_SCORECARD_CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
