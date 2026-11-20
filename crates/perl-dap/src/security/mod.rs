@@ -17,11 +17,14 @@ use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_pat
 use std::path::{Path, PathBuf};
 
 pub mod launch_authority;
+pub mod launch_execution;
 
 pub use launch_authority::{
     LaunchAuthority, LaunchAuthorityError, LaunchAuthorityMode, LaunchAuthorityReceipt,
-    LaunchAuthoritySource, LaunchAuthorityStartup, TrustedRoot, UnboundedAcknowledgement,
+    LaunchAuthoritySource, LaunchAuthorityStartup, LaunchExecutionStartup, TrustedRoot,
+    UnboundedAcknowledgement,
 };
+pub use launch_execution::{AdmittedLaunchExecution, LaunchExecutionError, LaunchExecutionPolicy};
 
 /// Security validation errors
 #[derive(Debug, PartialEq, thiserror::Error)]

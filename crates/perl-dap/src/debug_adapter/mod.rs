@@ -480,6 +480,29 @@ impl DebugAdapter {
             .and_then(|authority| authority.root_for_program(program))
     }
 
+    /// Resolve and admit the launch interpreter and environment (#14601).
+    pub(super) fn admit_launch_execution(
+        &self,
+        launch_args: &Value,
+        requested_interpreter: &str,
+        env_overrides: std::collections::HashMap<String, String>,
+    ) -> Result<crate::security::AdmittedLaunchExecution, String> {
+        if let Some(authority) =
+            lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority").as_ref()
+        {
+            return authority.admit_launch_execution(
+                launch_args,
+                requested_interpreter,
+                env_overrides,
+            );
+        }
+        crate::security::launch_execution::admit_launch_without_execution_policy(
+            requested_interpreter,
+            launch_args,
+            env_overrides,
+        )
+    }
+
     /// Start a new session generation and reset its terminal-event gate.
     ///
     /// Advancing the session settles every pending broker operation as
