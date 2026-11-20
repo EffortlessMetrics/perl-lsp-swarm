@@ -52,8 +52,11 @@ impl StackParseError {
 /// - `Package::func(file.pl:42):`
 /// - `main::(script.pl):42:`
 static CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    // File paths may contain spaces, parentheses, and `:` (including a Windows
+    // drive prefix). Lazy `.+?` expands to the final `:<line>` delimiter, mirroring
+    // `debug_adapter/patterns.rs::context_re`.
     Regex::new(
-        r"^(?:(?P<func>[A-Za-z_][\w:]*+?)::(?:\((?P<file>[^:)]+):(?P<line>\d+)\):?|__ANON__)|main::(?:\((?P<file2_paren>[^)]+)\)|(?P<file2>[^:]+)):(?P<line2>\d+):?)",
+        r"^(?:(?P<func>[A-Za-z_][\w:]*+?)(?:::)?(?:\((?P<file>.+?):(?P<line>\d+)\):?|__ANON__)|main::(?:\((?P<file2_paren>.+?)\)|(?P<file2>.+?)):(?P<line2>\d+):?)",
     )
 });
 
@@ -104,9 +107,8 @@ static BARE_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
 /// Pattern for eval context in stack traces.
 /// Matches formats like:
 /// - `(eval 10)[/path/file.pm:42]`
-static EVAL_CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
-    Regex::new(r"^\(eval\s+(?P<eval_num>\d+)\)\[(?P<file>[^\]:]+):(?P<line>\d+)\]")
-});
+static EVAL_CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^\(eval\s+(?P<eval_num>\d+)\)\[(?P<file>.+?):(?P<line>\d+)\]"));
 
 /// Pattern for extracting a best-effort function name from stack-like lines
 /// that do not include source location information.
@@ -492,7 +494,8 @@ impl PerlStackParser {
     pub fn parse_context(&self, line: &str) -> Option<(String, String, i64)> {
         let line = line.trim();
         if let Some(caps) = context_re().and_then(|re| re.captures(line)) {
-            let func = caps.name("func").map_or("main", |m| m.as_str()).to_string();
+            let func_raw = caps.name("func").map_or("main", |m| m.as_str());
+            let func = func_raw.strip_suffix("::").unwrap_or(func_raw).to_string();
             let file = caps
                 .name("file")
                 .or_else(|| caps.name("file2_paren"))
@@ -633,6 +636,36 @@ mod tests {
         assert!(frame.name.contains("eval 10"));
         assert_eq!(frame.line, 42);
         assert!(frame.source.as_ref().is_some_and(|s| s.is_eval()));
+    }
+
+    #[test]
+    fn test_parse_context_windows_drive_letter_in_parens() {
+        use perl_tdd_support::must_some;
+        let parser = PerlStackParser::new();
+        let (func, file, line) = must_some(parser.parse_context(r"main::(C:\proj\script.pl:10):"));
+        assert_eq!(func, "main");
+        assert_eq!(file, r"C:\proj\script.pl");
+        assert_eq!(line, 10);
+    }
+
+    #[test]
+    fn test_parse_context_package_func_windows_drive_path() {
+        use perl_tdd_support::must_some;
+        let parser = PerlStackParser::new();
+        let (func, file, line) = must_some(parser.parse_context(r"Foo::bar(C:\x\y.pm:3):"));
+        assert_eq!(func, "Foo::bar");
+        assert_eq!(file, r"C:\x\y.pm");
+        assert_eq!(line, 3);
+    }
+
+    #[test]
+    fn test_parse_eval_context_windows_drive_path() {
+        use perl_tdd_support::must_some;
+        let mut parser = PerlStackParser::new();
+        let frame = must_some(parser.parse_frame(r"(eval 4)[C:\proj\s.pl:25]", 0));
+        assert!(frame.name.contains("eval 4"));
+        assert_eq!(frame.line, 25);
+        assert_eq!(frame.file_path(), Some(r"C:\proj\s.pl"));
     }
 
     #[test]
