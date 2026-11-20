@@ -933,30 +933,40 @@ impl LspServer {
 
     /// Hold the real indexing thread after it enters `Building` until the
     /// probe has issued its pre-index request.
+    ///
+    /// # Errors
+    /// Returns an error if this gate is already pending or its lock is poisoned.
     #[cfg(feature = "workspace")]
     pub fn test_gate_workspace_indexing_start(
         &self,
         started: std::sync::mpsc::Sender<()>,
         release: std::sync::mpsc::Receiver<()>,
-    ) {
-        super::readiness::set_workspace_indexing_start_gate(
+    ) -> Result<(), &'static str> {
+        super::readiness::register_workspace_indexing_gate(
             &self.workspace_indexing_start_gate,
             started,
             release,
-        );
+        )
     }
 
     /// Pause the real background scan inside its per-file commit critical
     /// section, after `indexing_transition_lock` is acquired (#13308). The
     /// gate fires once, at the first indexed file, and holds the scan — and
     /// the transition lock — until `release` fires or the gate times out.
+    ///
+    /// # Errors
+    /// Returns an error if this gate is already pending or its lock is poisoned.
     #[cfg(feature = "workspace")]
     pub fn test_gate_indexing_commit(
         &self,
         started: std::sync::mpsc::Sender<()>,
         release: std::sync::mpsc::Receiver<()>,
-    ) {
-        super::readiness::set_indexing_commit_gate(&self.indexing_commit_gate, started, release);
+    ) -> Result<(), &'static str> {
+        super::readiness::register_workspace_indexing_gate(
+            &self.indexing_commit_gate,
+            started,
+            release,
+        )
     }
 
     /// Hold a workspace-folder transition after membership/index mutation and

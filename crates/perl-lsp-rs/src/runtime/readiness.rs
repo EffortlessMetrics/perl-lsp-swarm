@@ -602,15 +602,18 @@ pub(crate) fn set_workspace_readiness_receipt_observer(
     WorkspaceReadinessReceiptObserverGuard { id }
 }
 
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
-pub(crate) fn set_workspace_indexing_start_gate(
+#[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+pub(crate) fn register_workspace_indexing_gate(
     gate: &std::sync::Mutex<Option<WorkspaceIndexingStartGate>>,
     started: std::sync::mpsc::Sender<()>,
     release: std::sync::mpsc::Receiver<()>,
-) {
-    if let Ok(mut gate) = gate.lock() {
-        *gate = Some(WorkspaceIndexingStartGate { started, release });
+) -> Result<(), &'static str> {
+    let mut slot = gate.lock().map_err(|_| "workspace indexing gate lock poisoned")?;
+    if slot.is_some() {
+        return Err("workspace indexing gate already registered");
     }
+    *slot = Some(WorkspaceIndexingStartGate { started, release });
+    Ok(())
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -626,17 +629,6 @@ pub(crate) fn notify_workspace_indexing_started(
                 "readiness indexing start gate was not released before timeout"
             );
         }
-    }
-}
-
-#[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
-pub(crate) fn set_indexing_commit_gate(
-    gate: &std::sync::Mutex<Option<WorkspaceIndexingStartGate>>,
-    started: std::sync::mpsc::Sender<()>,
-    release: std::sync::mpsc::Receiver<()>,
-) {
-    if let Ok(mut gate) = gate.lock() {
-        *gate = Some(WorkspaceIndexingStartGate { started, release });
     }
 }
 

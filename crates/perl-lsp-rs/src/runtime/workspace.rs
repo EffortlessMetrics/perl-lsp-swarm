@@ -6074,7 +6074,7 @@ mod tests {
         ))?;
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        server.test_gate_workspace_indexing_start(started_tx, release_rx);
+        server.test_gate_workspace_indexing_start(started_tx, release_rx)?;
 
         server.start_workspace_indexing();
         started_rx.recv_timeout(SCAN_GATE_WAIT)?;
@@ -6179,10 +6179,10 @@ mod tests {
         let (cancelled_started_tx, cancelled_started_rx) = std::sync::mpsc::channel();
         let (cancelled_release_tx, cancelled_release_rx) = std::sync::mpsc::channel();
         cancelled_server
-            .test_gate_workspace_indexing_start(cancelled_started_tx, cancelled_release_rx);
+            .test_gate_workspace_indexing_start(cancelled_started_tx, cancelled_release_rx)?;
         let (other_started_tx, other_started_rx) = std::sync::mpsc::channel();
         let (other_release_tx, other_release_rx) = std::sync::mpsc::channel();
-        other_server.test_gate_workspace_indexing_start(other_started_tx, other_release_rx);
+        other_server.test_gate_workspace_indexing_start(other_started_tx, other_release_rx)?;
         let mut cancelled_scan = cancelled_server.test_observe_indexing_scan()?;
         let mut other_scan = other_server.test_observe_indexing_scan()?;
         cancelled_server.start_workspace_indexing();
@@ -6382,7 +6382,7 @@ mod tests {
             .store(receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        server.test_gate_workspace_indexing_start(started_tx, release_rx);
+        server.test_gate_workspace_indexing_start(started_tx, release_rx)?;
 
         server.start_workspace_indexing();
         started_rx.recv_timeout(SCAN_GATE_WAIT)?;
@@ -6464,6 +6464,72 @@ mod tests {
                 .with_path(dir.path().to_path_buf()),
         );
         Ok(server)
+    }
+
+    #[cfg(feature = "workspace")]
+    fn assert_duplicate_gate_preserves_owner(
+        register: impl Fn(
+            &LspServer,
+            std::sync::mpsc::Sender<()>,
+            std::sync::mpsc::Receiver<()>,
+        ) -> Result<(), &'static str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::mpsc::{TryRecvError, channel};
+
+        let first_dir = tempfile::tempdir()?;
+        let peer_dir = tempfile::tempdir()?;
+        for dir in [&first_dir, &peer_dir] {
+            std::fs::write(dir.path().join("Gate.pm"), "package Gate;\n1;\n")?;
+        }
+        let first = gated_scan_server(&first_dir)?;
+        let peer = gated_scan_server(&peer_dir)?;
+        let (first_started, first_wait) = channel();
+        let (release_first, first_release) = channel();
+        register(&first, first_started, first_release)?;
+        let (peer_started, peer_wait) = channel();
+        let (release_peer, peer_release) = channel();
+        register(&peer, peer_started, peer_release)?;
+
+        let (duplicate_started, duplicate_wait) = channel();
+        let (release_duplicate, duplicate_release) = channel();
+        let duplicate = register(&first, duplicate_started, duplicate_release);
+        assert_eq!(first_wait.try_recv(), Err(TryRecvError::Empty), "first owner was displaced");
+        assert!(duplicate.is_err(), "duplicate pending gate was accepted");
+        assert_eq!(duplicate_wait.try_recv(), Err(TryRecvError::Disconnected));
+        assert!(release_duplicate.send(()).is_err());
+
+        first.start_workspace_indexing();
+        first_wait.recv_timeout(SCAN_GATE_WAIT)?;
+        assert_eq!(peer_wait.try_recv(), Err(TryRecvError::Empty));
+        peer.start_workspace_indexing();
+        peer_wait.recv_timeout(SCAN_GATE_WAIT)?;
+        drop(release_peer);
+        wait_for_indexing_completion(&peer)?;
+        release_first.send(())?;
+        wait_for_indexing_completion(&first)?;
+        assert_eq!(first_wait.try_recv(), Err(TryRecvError::Disconnected));
+
+        // Once consumed, this server's slot accepts the next scan's owner.
+        let (next_started, next_wait) = channel();
+        let (release_next, next_release) = channel();
+        register(&first, next_started, next_release)?;
+        first.start_workspace_indexing();
+        next_wait.recv_timeout(SCAN_GATE_WAIT)?;
+        release_next.send(())?;
+        wait_for_indexing_completion(&first)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn duplicate_start_gate_preserves_owner() -> Result<(), Box<dyn std::error::Error>> {
+        assert_duplicate_gate_preserves_owner(LspServer::test_gate_workspace_indexing_start)
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn duplicate_commit_gate_preserves_owner() -> Result<(), Box<dyn std::error::Error>> {
+        assert_duplicate_gate_preserves_owner(LspServer::test_gate_indexing_commit)
     }
 
     /// Shared harness variant: the workspace folder carries an explicit
@@ -6561,7 +6627,7 @@ mod tests {
 
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.test_gate_indexing_commit(started_tx, release_rx)?;
         server.start_workspace_indexing();
         // The scan is now paused at the first file's commit seam, before
         // `zzz_swapped.pm` is read.
@@ -6608,7 +6674,7 @@ mod tests {
 
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.test_gate_indexing_commit(started_tx, release_rx)?;
         server.start_workspace_indexing();
         // The scan is now paused holding `indexing_transition_lock` at the
         // first file's commit seam, before `zzz_swapped_script` is read.
@@ -6749,7 +6815,7 @@ mod tests {
         // window and the seam reclassification actually fires.
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.test_gate_indexing_commit(started_tx, release_rx)?;
         server.start_workspace_indexing();
         started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         std::fs::write(&script_path, "#!/bin/sh\npackage Hook;\nsub hook_symbol { 1 }\n1;\n")?;
@@ -7255,7 +7321,7 @@ mod tests {
         let server = gated_scan_server(&dir)?;
         let (started, receiver) = std::sync::mpsc::channel();
         let (_release, release_receiver) = std::sync::mpsc::channel();
-        server.test_gate_indexing_commit(started, release_receiver);
+        server.test_gate_indexing_commit(started, release_receiver)?;
         let mut observation = server.test_observe_indexing_scan()?;
         server.start_workspace_indexing();
         observation.wait_for_exit(SCAN_GATE_WAIT);
@@ -7285,7 +7351,7 @@ mod tests {
         let mut first = server.test_observe_indexing_scan()?;
         let (started, receiver) = std::sync::mpsc::channel();
         let (release, release_receiver) = std::sync::mpsc::channel();
-        server.test_gate_workspace_indexing_start(started, release_receiver);
+        server.test_gate_workspace_indexing_start(started, release_receiver)?;
         server.start_workspace_indexing();
         if let Err(error) = receiver.recv_timeout(SCAN_GATE_WAIT) {
             let _ = release.send(());
@@ -7331,7 +7397,7 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.test_gate_indexing_commit(started_tx, release_rx)?;
         let mut observation = server.test_observe_indexing_scan()?;
         server.start_workspace_indexing();
         let wait_started = std::time::Instant::now();
@@ -7552,7 +7618,7 @@ mod tests {
 
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        server.test_gate_workspace_indexing_start(started_tx, release_rx);
+        server.test_gate_workspace_indexing_start(started_tx, release_rx)?;
         server.start_workspace_indexing();
         started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         server.test_apply_did_open(&active_uri, active_text, 1)?;
@@ -7665,7 +7731,7 @@ mod tests {
 
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        server.test_gate_workspace_indexing_start(started_tx, release_rx);
+        server.test_gate_workspace_indexing_start(started_tx, release_rx)?;
         let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
         let receipt_observer_guard =
             crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
