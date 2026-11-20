@@ -731,6 +731,39 @@ class AdmissionTests(unittest.TestCase):
         finally:
             os.chdir(previous)
 
+    @unittest.skipUnless(os.name == "posix", "frozen POSIX path mapping")
+    def test_explicit_subject_preserves_frozen_posix_mapping(self):
+        env = {"DEVPLANE": "/fixture/plane", "CARGO_HOME": "/fixture/cargo", "TMPDIR": "/fixture/tmp"}
+        with patch.object(safe.socket, "gethostname", return_value="fixture-host"), \
+             patch.object(safe.sys, "platform", "linux"), \
+             patch.object(safe, "native_path", side_effect=Path):
+            worktree, slot, paths = safe.resource_plan_for("/fixture/worktree", "/fixture/repo.git", env)
+        expected_slot = Path("/fixture/plane/fixture-host-linux-1f5afa5fbce5c465")
+        member = expected_slot / "worktrees/295c246528d70d978a1687532b367341426cfa2753ea21e54bafccd7d1289e9f"
+        self.assertEqual(worktree, Path("/fixture/worktree"))
+        self.assertEqual(slot, expected_slot)
+        self.assertEqual(paths, {"target": member / "target", "build": member / "build",
+                                 "cargo_home": Path("/fixture/cargo"), "temp": Path("/fixture/tmp")})
+
+    def test_explicit_subject_composition_matches_invocation_and_separates_siblings(self):
+        env = {"DEVPLANE": str(self.root / "plane"), "CARGO_HOME": str(self.root / "cargo")}
+        common = self.root / "repo.git"
+        first, sibling = self.root / "one" / "same", self.root / "two" / "same"
+        with patch.object(safe.subprocess, "check_output", side_effect=[git_output(first), git_output(common)]):
+            current = safe.resource_plan(env)
+        with patch.object(safe.subprocess, "check_output", side_effect=AssertionError("composition must not invoke Git")):
+            self.assertEqual(safe.resource_plan_for(first, common, env), current)
+            other = safe.resource_plan_for(sibling, common, env)
+            self.assertEqual(current[1], other[1])
+            for role, variable in (("target", "CARGO_TARGET_DIR"), ("build", "CARGO_BUILD_BUILD_DIR")):
+                self.assertNotEqual(current[2][role], other[2][role])
+                with self.assertRaises(safe.Denied):
+                    safe.resource_plan_for(sibling, common, dict(env, **{variable: str(current[2][role])}))
+            for variable in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+                with self.assertRaises(safe.Denied):
+                    safe.resource_plan_for(first, common, dict(env, **{variable: ""}))
+        self.assertFalse(current[1].exists())
+
     def test_same_named_worktrees_and_stale_shared_overrides(self):
         env = {"DEVPLANE": str(self.root / "plane"), "CARGO_HOME": str(self.root / "cargo")}
         common = str(self.root / "repo.git")
