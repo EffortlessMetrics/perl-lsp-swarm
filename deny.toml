@@ -49,13 +49,19 @@ ignore = [
     # >= 0.21.0. CI installs cargo-deny through a SHA-pinned
     # taiki-e/install-action whose bundled manifest resolves 0.20.2 (it holds
     # no 0.21+ entry), so the effective version is chosen by this repository
-    # and stays at 0.20.2 until that pin is bumped or an explicit `version:`
-    # is passed. A run observed on 2026-11-19 resolved 0.20.2, which rejects
-    # the field.
+    # and stays at 0.20.2 until that pin is bumped or the install is spelled
+    # `tool: cargo-deny@<version>` (the action has no `version:` input). A run
+    # observed on 2026-11-19 resolved 0.20.2, which rejects the field.
     # Independently of the tool version, the current direct-dependent set
     # includes procfs 0.18.0 and procfs-core 0.18.0 -- registry crates reached
-    # through xtask -> procfs -> procfs-core -> chrono that no repo decision
-    # can remove -- so an allow list would not yet constrain anything.
+    # through xtask -> procfs -> procfs-core -> chrono. Those edges are
+    # removable by a repository decision: an isolated locked Linux comparison
+    # on #19562 dropped chrono from the entire lock by disabling procfs
+    # default features while keeping the RSS path working. That is a tooling
+    # follow-on, not a validated workspace lock change, so the allow list is
+    # still deferred -- but it would constrain something useful: an allowlist
+    # reports a NEW direct chrono dependent that is not listed, and only
+    # misses a new path through an already allowed dependent.
     # `expiry` is likewise not set; whether dispositions expire is policy
     # owned by #19551.
     { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono; all versions affected and no safe upgrade exists; no CVE and no exploit path, so the risk is maintenance abandonment; no published crate other than crates/perl-corpus links chrono at runtime (one site there), plus two dev-target sites in crates/perl-lsp-rs; the remaining chrono use sites are in publish = false workspace tooling; durable fix tracked in #19562" },
