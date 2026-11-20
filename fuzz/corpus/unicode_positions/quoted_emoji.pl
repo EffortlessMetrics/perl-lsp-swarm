@@ -1,0 +1,1 @@
+my $var = q{🚀 test};
