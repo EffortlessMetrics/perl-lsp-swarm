@@ -43,6 +43,7 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-ast` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-ast-v2` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-ci-hygiene` | swarm-product | private | `workspace_path` | #7369 |
+| `perl-code-intelligence` | _pending_ | private | `workspace_path` | #8582 |
 | `perl-core-harness` | _pending_ | private | `workspace_path` | #7400 |
 | `perl-core-harness-types` | _pending_ | private | `workspace_path` | #7400 |
 | `perl-core-test-runner` | _pending_ | private | `workspace_path` | #7400 |
@@ -127,12 +128,13 @@ _No package currently lives here._
 
 ## Unresolved placement
 
-17 package(s) have no accepted future owner. Each names the issue that owns the
+18 package(s) have no accepted future owner. Each names the issue that owns the
 decision and the exact question, so unresolved placement stays visible instead of
 becoming a false final answer.
 
 | Package | Owner issue | Open question |
 | --- | --- | --- |
+| `perl-code-intelligence` | #8582 | Public pre-1.0 package publication proof and external-consumer evidence remain open under #8582; session/provider migration continues under #6957 / #7218–#7222. |
 | `perl-core-harness` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-core-harness-types` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-core-test-runner` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |

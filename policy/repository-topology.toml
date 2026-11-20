@@ -246,6 +246,17 @@ current_integration_mode = "workspace_path"
 metadata_authority = "workspace_inherited"
 
 [[packages]]
+name = "perl-code-intelligence"
+path = "crates/perl-code-intelligence"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#8582"
+placement_question = "Public pre-1.0 package publication proof and external-consumer evidence remain open under #8582; session/provider migration continues under #6957 / #7218–#7222."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
 name = "perl-core-harness"
 path = "crates/perl-core-harness"
 current_owner = "swarm-product"
