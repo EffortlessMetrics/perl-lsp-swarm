@@ -22,10 +22,7 @@ fn test_variable_completion_mid_token_client_edits() -> Result<(), Box<dyn std::
         ("my @items = (); print ", "@it", "ems", ";", "@items"),
         ("my @items = (); print ", "@it", "ems", "[0];", "@items"),
         ("my $count = 42; print ", "$co", "unté_123", " + $count;", "$count"),
-        // #18462: `"$count's"` is one lexer token — perl interpolates
-        // `"$dog's"` as `$dog::s` — so the folded segment stays inside the
-        // edit and accepting the candidate replaces it whole.
-        ("my $count = 42; print \"the ", "$co", "unt's", " bowl\";", "$count"),
+        ("my $count = 42; print \"the ", "$co", "unt", "'s bowl\";", "$count"),
         ("use utf8; my $count = 42; print ", "$co", "unt\u{301}_123", ";", "$count"),
         ("my $count = 42; print ", "$co", "unt𐐀_123", ";", "$count"),
         ("my $count = 42; print \"🦀 ", "$co", "unt", "\";", "$count"),
@@ -62,21 +59,13 @@ fn test_variable_completion_mid_token_client_edits() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn test_variable_completion_edit_matches_lexer_token_at_apostrophe()
--> Result<(), Box<dyn std::error::Error>> {
-    // #18462: the replacement end must stop where the lexer's variable token
-    // stops. Real perl (5.42.2) folds `'` into a name only as an old-style
-    // package separator with a further name segment behind it: in a
-    // double-quoted string `"$dog's bowl"` interpolates `$dog::s`, while
-    // `print $dog'9` fails to parse because the apostrophe opens a string.
-    // The extension therefore covers `$count's`/`$count'Bar` whole and ends
-    // before the apostrophe in `$count'9` / `$count'`.
+fn test_variable_completion_edit_at_apostrophe() -> Result<(), Box<dyn std::error::Error>> {
     for (source, typed, token_tail, why) in [
         (
             "my $count = 42; print \"the $count's bowl\";",
             "$co",
-            "'s",
-            "folded separator segment stays inside the edit",
+            "",
+            "unqualified completion preserves a possessive",
         ),
         (
             "my $count = 42; print $count'Bar;",

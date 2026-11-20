@@ -75,17 +75,6 @@ pub fn add_variable_completions(
     // Accepting a name in the middle of a variable replaces the remaining
     // identifier too. Keep punctuation and adjacent expressions outside the edit,
     // and leave the non-sigil inventory's insertion geometry unchanged.
-    //
-    // #18462: the extension must stop exactly where the lexer's variable token
-    // ends. `is_perl_identifier_continue` accepts `'` unconditionally (it
-    // serves bareword identifiers), but the lexer folds an apostrophe into a
-    // name only as an old-style package separator with a further name segment
-    // behind it (`consume_qualified_identifier_in_string`), matching real
-    // perl, where `print $dog'9` fails to parse because the apostrophe opens
-    // a string instead of joining the name. So `$dog'9` and `$dog'` end the
-    // token at `$dog` and the apostrophe stays outside the edit, while
-    // `$dog's` and `$Foo'Bar` are one variable token (perl interpolates
-    // `"$dog's"` as `$dog::s`) and the extension covers them whole.
     let edit_end = if context.prefix.starts_with(['$', '@', '%']) {
         let rest = source.get(context.position..).unwrap_or_default();
         let mut extension = 0usize;
@@ -106,6 +95,23 @@ pub fn add_variable_completions(
         context.position + extension
     } else {
         context.position
+    };
+
+    // When editing before an ambiguous terminal 's in a string, selecting
+    // a simple scalar changes just its name. A qualified selection still
+    // replaces the full token, as does editing within the final segment.
+    let token = &source[context.prefix_start..edit_end];
+    let simple_end = match token.strip_suffix("'s") {
+        Some(stem)
+            if context.in_string
+                && sigil == "$"
+                && !stem.contains(['\'', ':'])
+                && context.position <= context.prefix_start + stem.len()
+                && !source[edit_end..].starts_with("::") =>
+        {
+            context.prefix_start + stem.len()
+        }
+        _ => edit_end,
     };
 
     for (name, symbols) in &symbol_table.symbols {
@@ -129,7 +135,8 @@ pub fn add_variable_completions(
                     .trim()
                     .to_string();
             let mut item = variable_item(context, symbol_table, symbol, name, sigil, '1', detail);
-            item.text_edit_range = Some((context.prefix_start, edit_end));
+            let end = if name.contains(['\'', ':']) { edit_end } else { simple_end };
+            item.text_edit_range = Some((context.prefix_start, end));
             completions.push(item);
         }
     }

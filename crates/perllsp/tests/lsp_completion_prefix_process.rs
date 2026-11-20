@@ -110,11 +110,11 @@ fn assert_edit(item: &Value, line: u32, start: u32, end: u32, new_text: &str) ->
                           "end": {"line": line, "character": end}},
                 "newText": new_text
             }),
-        "completion must replace only the typed method token: {item}"
+        "unexpected completion edit: {item}"
     );
     ensure!(
         item.get("additionalTextEdits").is_none_or(|edits| edits == &json!([])),
-        "method completion must not add unrelated edits: {item}"
+        "completion must not add unrelated edits: {item}"
     );
     Ok(())
 }
@@ -244,26 +244,50 @@ fn method_completion_applies_whole_token_at_midpoint_and_end() -> Result<()> {
 }
 
 #[test]
-fn variable_completion_edit_matches_lexer_token_at_apostrophe() -> Result<()> {
-    // #18462: the completion replacement range must stop where the lexer's
-    // variable token stops. Real perl (5.42.2) folds `'` into a name only as
-    // an old-style package separator with a further name segment behind it —
-    // `"$dog's bowl"` interpolates `$dog::s`, while `print $dog'9` fails to
-    // parse because the apostrophe opens a string. So the edit for
-    // `$count'9` ends before the apostrophe and leaves the suffix in place.
-    let source =
-        "my $count = 42;\nmy $t = \"the $count'9 bowl\";\nmy $u = \"the $count's bowl\";\n";
-    let mut client = start(source)?;
-    // Line 1: `my $t = "the $count'9 bowl";` — cursor after `$co` (char 16).
-    // The lexer's Variable part is `$count` [13..19]; `'9` stays literal, so
-    // the edit is 13..19 and the client keeps `'9 bowl`.
-    let items = complete(&mut client, json!("apostrophe-digit"), 1, 16)?;
-    assert_edit(item(&items, "$count")?, 1, 13, 19, "$count")?;
-    // Line 2: `my $u = "the $count's bowl";` — `$count's` is one lexer token
-    // (perl interpolates `$dog::s`), so the edit covers the folded segment
-    // whole: 13..21.
-    let items = complete(&mut client, json!("apostrophe-fold"), 2, 16)?;
-    assert_edit(item(&items, "$count")?, 2, 13, 21, "$count")?;
+fn variable_completion_applies_exact_edits() -> Result<()> {
+    let declarations = "my $count = 42;\nmy $counter = 5;\n";
+    // Each row pins both the range and the result of applying the server edit.
+    for (line, start_col, end_col, expected) in [
+        (r#"print "the $count's bowl";"#, 11, 17, r#"print "the $counter's bowl";"#),
+        (r#"print "😀 $count's bowl";"#, 10, 16, r#"print "😀 $counter's bowl";"#),
+        (r#"print "the $count'9 bowl";"#, 11, 17, r#"print "the $counter'9 bowl";"#),
+        (r#"print "the $count\'s bowl";"#, 11, 17, r#"print "the $counter\'s bowl";"#),
+        ("print $count'9;", 6, 12, "print $counter'9;"),
+        ("print $count';", 6, 12, "print $counter';"),
+        ("print $count;", 6, 12, "print $counter;"),
+        ("print $count's;", 6, 14, "print $counter;"),
+        ("print $count'Bar;", 6, 16, "print $counter;"),
+        (r#"print "the $count'size";"#, 11, 22, r#"print "the $counter";"#),
+    ] {
+        let source = format!("{declarations}{line}\n");
+        let mut client = start(&source)?;
+        let items = complete(&mut client, json!("variable-edit"), 2, start_col + 3)?;
+        for label in ["$count", "$counter"] {
+            let candidate = item(&items, label)?;
+            assert_edit(candidate, 2, start_col, end_col, label)?;
+            let edit = &candidate["textEdit"];
+            let column = |side: &str| -> Result<usize> {
+                let value = edit["range"][side]["character"]
+                    .as_u64()
+                    .ok_or_else(|| anyhow!("missing column"))?;
+                Ok(usize::try_from(value)?)
+            };
+            let mut units: Vec<_> = line.encode_utf16().collect();
+            let text = edit["newText"].as_str().ok_or_else(|| anyhow!("missing newText"))?;
+            units.splice(column("start")?..column("end")?, text.encode_utf16());
+            let applied = format!("{declarations}{}\n", String::from_utf16(&units)?);
+            let expected_line = expected.replace("$counter", label);
+            ensure!(applied == format!("{declarations}{expected_line}\n"), "{line} -> {applied}");
+        }
+        finish(client)?;
+    }
+    let mut client = start(
+        "package Pkg;\nour $variable = 1;\nour $variant = 2;\npackage main;\nprint $Pkg::variable;\nprint \"$Pkg::variable\";\n",
+    )?;
+    for (line, start_col) in [(4, 6), (5, 7)] {
+        let items = complete(&mut client, json!("package-member"), line, start_col + 9)?;
+        assert_edit(item(&items, "$variant")?, line, start_col, start_col + 14, "$Pkg::variant")?;
+    }
     finish(client)
 }
 

@@ -215,7 +215,9 @@ outcome_owner = "#10230"
 # The later request-dispatch and Dancer2 edits are behavior-preserving Rust 1.100
 # lint repairs. The same 41 files, 60 producers, 18 classes, and existing evidence,
 # identity, completeness, and migration ceilings remain current.
-source_digest = "sha256:21e0f9b8d51e0b5c955651f6e6b54fab424dbf58c8307c34c8b5c23345108094"
+# #18462 changes the replacement range for an existing scalar item. Its producer,
+# append channel, entry route and finalizer are unchanged.
+source_digest = "sha256:4b6ebf88bf9ae57da348908c5cc2a1bcf48454ea52ab7393509a7557162eea19"
 
 [[delegations]]
 module = "dancer2"
