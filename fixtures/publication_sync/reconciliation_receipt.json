@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "subjects": {
+    "source": {
+      "role": "patch_equivalence_upstream",
+      "input": "origin/main",
+      "commit": "1111111111111111111111111111111111111111"
+    },
+    "boundary": {
+      "role": "history_limit",
+      "input": "sync-boundary-0.17",
+      "commit": "3333333333333333333333333333333333333333"
+    },
+    "target": {
+      "role": "release_head",
+      "input": "release/master",
+      "commit": "2222222222222222222222222222222222222222"
+    }
+  },
+  "ledger": "docs/swarm/source-syncs/0.18.0-reconciliation.json",
+  "verdict": "pass",
+  "population_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "target_unique_commits": [],
+  "excluded_merge_commits": [],
+  "excluded_merge_ancestry": [],
+  "excluded_release_lineage_commits": [],
+  "accepted_commits": [],
+  "unresolved_commits": [],
+  "errors": []
+}

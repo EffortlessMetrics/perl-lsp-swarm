@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/source_sync_manifest.v1.schema.json",
+  "title": "source_sync_manifest.v1",
+  "description": "Staged non-release source profile (#17225). Shape is not admission. Shares projection rows with #14570; all producer authentication and exact product qualification remain required. This profile cannot publish or certify a release.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile",
+    "direction",
+    "source_repository",
+    "source_ref",
+    "destination_repository",
+    "destination_ref",
+    "reconciliation_base_sha",
+    "destination_base_sha",
+    "swarm_source_sha",
+    "planned_at",
+    "default_action",
+    "inputs",
+    "paths",
+    "expected_projected_tree",
+    "blockers",
+    "published_channels",
+    "release_cut"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "source_sync_manifest.v1"
+    },
+    "profile": {
+      "const": "source"
+    },
+    "direction": {
+      "const": "swarm_to_public"
+    },
+    "source_repository": {
+      "const": "EffortlessMetrics/perl-lsp-swarm"
+    },
+    "source_ref": {
+      "const": "refs/heads/main"
+    },
+    "destination_repository": {
+      "const": "EffortlessMetrics/perl-lsp"
+    },
+    "destination_ref": {
+      "const": "refs/heads/master"
+    },
+    "reconciliation_base_sha": {
+      "$ref": "#/$defs/commit_sha"
+    },
+    "destination_base_sha": {
+      "$ref": "#/$defs/commit_sha"
+    },
+    "swarm_source_sha": {
+      "$ref": "#/$defs/commit_sha"
+    },
+    "planned_at": {
+      "type": "string",
+      "format": "date",
+      "minLength": 10,
+      "maxLength": 10
+    },
+    "default_action": {
+      "const": "take_swarm"
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/source_input"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "const": "reconciliation"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "const": "product_proof"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "const": "projection_policy"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "const": "protected_source_controls"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "paths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/path_row"
+      },
+      "description": "Existing projection rows and operations; R remains the destination base even where the legacy field is named release_base_digest."
+    },
+    "expected_projected_tree": {
+      "$ref": "#/$defs/commit_sha"
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/blocker"
+      }
+    },
+    "published_channels": {
+      "type": "array",
+      "maxItems": 0
+    },
+    "release_cut": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "commit_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "minLength": 40,
+      "maxLength": 40
+    },
+    "digest": {
+      "$ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/publication_sync_manifest.v1.schema.json#/$defs/digest"
+    },
+    "repository_path": {
+      "$ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/publication_sync_manifest.v1.schema.json#/$defs/repository_path"
+    },
+    "path_row": {
+      "$ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/publication_sync_manifest.v1.schema.json#/$defs/path_row"
+    },
+    "blocker": {
+      "$ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/publication_sync_manifest.v1.schema.json#/$defs/blocker"
+    },
+    "source_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "digest"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "reconciliation",
+            "product_proof",
+            "projection_policy",
+            "protected_source_controls"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/repository_path"
+        },
+        "digest": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ],
+          "minLength": 71,
+          "maxLength": 71
+        }
+      }
+    }
+  }
+}
