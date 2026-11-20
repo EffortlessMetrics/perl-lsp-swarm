@@ -176,6 +176,8 @@ pub mod session_plan;
 
 /// Breakpoint storage and management for the DAP adapter.
 pub mod breakpoints;
+/// Schema-derived standard initialize `Capabilities` projection (#9534).
+pub(crate) mod initialize_capability_schema;
 /// Inline value extraction for DAP `inlineValues` requests.
 pub mod inline_values;
 /// DAP protocol types following the JSON-RPC 2.0 message format.

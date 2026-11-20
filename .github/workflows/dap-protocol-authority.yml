@@ -8,9 +8,12 @@ on:
       - 'crates/perl-dap/**'
       - 'scripts/ci/dap_protocol_authority.py'
       - 'scripts/ci/dap_nullability_inventory.py'
+      - 'scripts/ci/dap_initialize_capability_schema.py'
       - 'scripts/tests/test_dap_nullability_inventory.py'
+      - 'scripts/tests/test_dap_initialize_capability_schema.py'
       - '.ci/dap/upstream-debugAdapterProtocol.json'
       - '.ci/dap/nullability-inventory.v1.json'
+      - '.ci/dap/initialize-capability-schema.v1.json'
       - 'scripts/ci/dap_authority_*.py'
       - 'scripts/tests/test_dap_protocol_authority.py'
       - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
@@ -23,9 +26,12 @@ on:
       - 'crates/perl-dap/**'
       - 'scripts/ci/dap_protocol_authority.py'
       - 'scripts/ci/dap_nullability_inventory.py'
+      - 'scripts/ci/dap_initialize_capability_schema.py'
       - 'scripts/tests/test_dap_nullability_inventory.py'
+      - 'scripts/tests/test_dap_initialize_capability_schema.py'
       - '.ci/dap/upstream-debugAdapterProtocol.json'
       - '.ci/dap/nullability-inventory.v1.json'
+      - '.ci/dap/initialize-capability-schema.v1.json'
       - 'scripts/ci/dap_authority_*.py'
       - 'scripts/tests/test_dap_protocol_authority.py'
       - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
@@ -94,6 +100,12 @@ jobs:
 
       - name: Enforce the committed nullability inventory
         run: python3 scripts/ci/dap_nullability_inventory.py --check
+
+      - name: Run initialize-capability-schema falsifiers
+        run: python3 scripts/tests/test_dap_initialize_capability_schema.py
+
+      - name: Enforce the committed initialize capability schema
+        run: python3 scripts/ci/dap_initialize_capability_schema.py --check
 
       - name: Publish authority summary
         shell: bash
