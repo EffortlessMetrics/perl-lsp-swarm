@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/command_line_oneliner_corpus.v1.schema.json",
+  "title": "Licensed command-line one-liner fixture corpus manifest v1",
+  "description": "Metadata-bearing corpus for Perl command-line invocations. Hermetic parser/static tests only unless a fixture explicitly marks bounded oracle evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest",
+    "owner",
+    "status",
+    "updated",
+    "runner",
+    "default_claim_boundary",
+    "ratchet_generation",
+    "falsifier_matrix",
+    "coverage_dimensions",
+    "fixtures"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "command_line_oneliner_corpus.v1"
+    },
+    "manifest": {
+      "const": "licensed-command-line-oneliner-fixtures"
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "const": "seed-corpus"
+    },
+    "updated": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runner": {
+      "const": "none"
+    },
+    "default_claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ratchet_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "falsifier_matrix": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/falsifier_tag"
+      },
+      "minItems": 5,
+      "uniqueItems": true
+    },
+    "coverage_dimensions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 6,
+      "uniqueItems": true
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fixture"
+      },
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "proof_layer": {
+      "type": "string",
+      "enum": [
+        "structured_argv",
+        "source_composition",
+        "fragment_provenance_mapping",
+        "switch_compile_runtime_context",
+        "parser_result_diagnostics",
+        "lsp_editor_behavior"
+      ]
+    },
+    "execution_risk_class": {
+      "type": "string",
+      "enum": ["static_only", "bounded_oracle_safe", "unbounded_execution"]
+    },
+    "evidence_mode": {
+      "type": "string",
+      "enum": [
+        "static_parse",
+        "static_diagnostics",
+        "bounded_perl_differential",
+        "declaration_only",
+        "none"
+      ]
+    },
+    "license_status": {
+      "type": "string",
+      "enum": ["repo_authored", "licensed_third_party", "synthetic_negative"]
+    },
+    "fixture_kind": {
+      "type": "string",
+      "enum": ["positive", "negative", "near_neighbor", "boundary_control"]
+    },
+    "invocation_disposition": {
+      "type": "string",
+      "enum": [
+        "parse_clean",
+        "expected_syntax_error",
+        "unsupported_switch",
+        "declaration_only"
+      ]
+    },
+    "parser_outcome_disposition": {
+      "type": "string",
+      "enum": [
+        "clean_parse",
+        "recoverable_error",
+        "blocking_error",
+        "not_applicable"
+      ]
+    },
+    "falsifier_tag": {
+      "type": "string",
+      "enum": [
+        "wrong_fragment_joining",
+        "lost_provenance",
+        "ignored_double_dash",
+        "switch_bundle_mistake",
+        "utf16_mapping_error"
+      ]
+    },
+    "source_fragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fragment_id", "text"],
+      "properties": {
+        "fragment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "argv": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["switch_tokens", "fragments"],
+      "properties": {
+        "switch_tokens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "fragments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_fragment"
+          }
+        },
+        "operands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stdin_mode": {
+          "type": "string",
+          "enum": ["none", "implicit_diamond", "explicit_redirect"]
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "license_status"],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "minLength": 1
+        },
+        "license_status": {
+          "$ref": "#/$defs/license_status"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "parser_outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition"],
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/parser_outcome_disposition"
+        },
+        "source_map_anchors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "diagnostic_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "purpose",
+        "argv",
+        "provenance",
+        "proof_layer",
+        "features_exercised",
+        "operators_exercised",
+        "expected_invocation_disposition",
+        "expected_parser_outcome",
+        "target_perl_profile",
+        "execution_risk_class",
+        "allowed_evidence_modes",
+        "fixture_kind",
+        "falsifier_tags",
+        "expectation_tier"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "proof_layer": {
+          "$ref": "#/$defs/proof_layer"
+        },
+        "features_exercised": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "operators_exercised": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected_invocation_disposition": {
+          "$ref": "#/$defs/invocation_disposition"
+        },
+        "expected_parser_outcome": {
+          "$ref": "#/$defs/parser_outcome"
+        },
+        "target_perl_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_risk_class": {
+          "$ref": "#/$defs/execution_risk_class"
+        },
+        "allowed_evidence_modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence_mode"
+          },
+          "minItems": 1
+        },
+        "fixture_kind": {
+          "$ref": "#/$defs/fixture_kind"
+        },
+        "falsifier_tags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/falsifier_tag"
+          }
+        },
+        "expectation_tier": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parser_corpus_test": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "oracle_disposition": {
+          "type": "string",
+          "enum": ["forbidden", "opt_in_bounded", "not_applicable"]
+        }
+      }
+    }
+  }
+}
