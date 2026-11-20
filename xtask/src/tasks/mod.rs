@@ -187,6 +187,7 @@ pub mod release_trust_invariants;
 pub mod release_turnkey;
 pub mod repo_hygiene;
 pub mod repository_topology;
+pub mod repository_topology_cargo;
 pub mod review_receipts;
 pub mod ripr_evidence;
 pub mod rust_small_proof;

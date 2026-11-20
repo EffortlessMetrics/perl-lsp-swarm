@@ -70,6 +70,38 @@ created = "2026-08-29"
 review_after = "2026-11-27"
 
 [[allow]]
+id = "generated-workspace-cargo-topology-json"
+path = "docs/architecture/workspace-cargo-topology.v1.json"
+kind = "policy_artifact"
+generated_by = "cargo xtask repo-topology"
+regenerate = "cargo xtask repo-topology"
+owner = "release/ci"
+reason = "Locked Cargo metadata projection of workspace members, versions, publication disposition joined to policy/repository-topology.toml, and direct dependency edges (#8412)."
+covered_by = [
+  "cargo test -p xtask --bin xtask repository_topology_cargo",
+  "cargo xtask repo-topology --check",
+  "cargo xtask check-generated",
+]
+created = "2026-11-02"
+review_after = "2026-12-02"
+
+[[allow]]
+id = "generated-workspace-cargo-topology-md"
+path = "docs/architecture/workspace-cargo-topology.md"
+kind = "status_page"
+generated_by = "cargo xtask repo-topology"
+regenerate = "cargo xtask repo-topology"
+owner = "release/ci"
+reason = "Reviewer-readable workspace Cargo topology table derived with workspace-cargo-topology.v1.json (#8412)."
+covered_by = [
+  "cargo test -p xtask --bin xtask repository_topology_cargo",
+  "cargo xtask repo-topology --check",
+  "cargo xtask check-generated",
+]
+created = "2026-11-02"
+review_after = "2026-12-02"
+
+[[allow]]
 id = "generated-oneliner-capability-matrix"
 path = "docs/project/status/oneliner_capability_matrix.md"
 kind = "status_page"

@@ -4,8 +4,10 @@
 //! It answers "which repository owns this package, in which migration state, and
 //! under which integration mode" without moving source or changing a dependency.
 //! Static Cargo/dependency enforcement is #7683, package-isolation execution is
-//! #7688, and CI routing plus state promotion is #7695.
+//! #7688, and CI routing plus state promotion is #7695. Workspace package/version/
+//! dependency views for architecture docs are #8412 (`repository_topology_cargo`).
 
+use crate::tasks::repository_topology_cargo;
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::Deserialize;
@@ -198,6 +200,8 @@ pub fn run(check: bool) -> Result<()> {
     let excludes = read_workspace_excludes(&root)?;
     validate(&topology, &manifests, &excludes)?;
 
+    repository_topology_cargo::write_or_check_cargo_topology(check, &topology, &manifests)?;
+
     let projection = render(&topology);
     let projection_path = root.join(PROJECTION_PATH);
 
@@ -229,7 +233,7 @@ pub fn run(check: bool) -> Result<()> {
     Ok(())
 }
 
-fn load(root: &Path) -> Result<Topology> {
+pub(crate) fn load(root: &Path) -> Result<Topology> {
     let path = root.join(TOPOLOGY_PATH);
     let text =
         fs::read_to_string(&path).wrap_err_with(|| format!("failed to read {TOPOLOGY_PATH}"))?;
@@ -240,7 +244,7 @@ pub fn parse(text: &str) -> Result<Topology> {
     toml::from_str(text).wrap_err_with(|| format!("failed to parse {TOPOLOGY_PATH}"))
 }
 
-fn normalize_newlines(text: &str) -> String {
+pub(crate) fn normalize_newlines(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
@@ -808,7 +812,7 @@ struct CargoPackage {
 }
 
 /// Directories the root workspace deliberately excludes.
-fn read_workspace_excludes(root: &Path) -> Result<BTreeSet<String>> {
+pub fn read_workspace_excludes(root: &Path) -> Result<BTreeSet<String>> {
     let manifest_path = root.join("Cargo.toml");
     let text = fs::read_to_string(&manifest_path)
         .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
