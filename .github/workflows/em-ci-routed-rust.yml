@@ -770,6 +770,13 @@ jobs:
           # canonical check run can be found at all, the failure degrades to a
           # non-blocking evidence gap -- an empty payload file plus a warning
           # -- never to a block and never to a silent green.
+          #
+          # A suite read is also reconciled against the count the endpoint
+          # reported: the endpoint returns total_count beside its rows, so a
+          # read that parsed fewer rows than were reported was truncated. A
+          # truncated suite is unreadable rather than partially good and
+          # contributes nothing. Every kept row is bound to the suite it was
+          # read from and to the run whose suite that is.
           cat >"$probe_dir/fetch_main_red_evidence.py" <<'MAIN_RED_EVIDENCE_PY'
           """Read the canonical ci.yml run's check-suite evidence (#19565).
 
@@ -811,6 +818,26 @@ jobs:
           ``run_attempt``, and the run object reports the current attempt's
           own ``check_suite_id``, so the highest attempt the payload carries
           is the current one and its suite is the only authoritative suite.
+
+          A read is reconciled against the count the endpoint reported. The
+          check-runs endpoint returns ``total_count`` beside its rows, so a
+          read that parsed fewer rows than the endpoint reported was
+          truncated. A truncated suite is unreadable rather than partially
+          good: it contributes nothing, and when no other suite yields
+          evidence the reader degrades to the missing-evidence path with a
+          warning that names the mismatch. A silently short read must never
+          read as a complete verdict. The counts are taken over the whole
+          response, before any row is attributed to a run: a suite
+          legitimately holds rows that name other runs, and those are not
+          truncation.
+
+          Every kept row is bound to the suite it was read from and to the
+          run whose suite that is. The endpoint stamps each row with the
+          check suite it came from, so a row naming another suite is not a
+          row of the suite that was read -- that is what keeps a superseded
+          attempt's rows out of the current attempt's read. The row's run
+          must be the run whose suite was read: a suite's rows are evidence
+          about that run, not about any other admitted run.
           """
 
           from __future__ import annotations
@@ -896,6 +923,33 @@ jobs:
               }
 
 
+          def canonical_suite_runs(
+              workflow_runs_payload: Any,
+              subject_sha: str,
+              event: str,
+          ) -> list[tuple[int, int]]:
+              """Return the ``(suite id, run id)`` pairs the canonical runs report.
+
+              The suite id is read from the run object, so the canonical run's
+              own suite is identified without scanning the commit's suites.
+              Only the authoritative event's current attempt contributes.
+
+              Each suite is paired with the run whose suite it is. That pair is
+              the binding every kept row is checked against: a suite's rows
+              are evidence about that run, not about any other admitted run.
+              """
+              pairs: list[tuple[int, int]] = []
+              for run in authoritative_runs(workflow_runs_payload, subject_sha, event):
+                  suite_id = run.get("check_suite_id")
+                  run_id = run.get("id")
+                  if not isinstance(suite_id, int) or not isinstance(run_id, int):
+                      continue
+                  pair = (suite_id, run_id)
+                  if pair not in pairs:
+                      pairs.append(pair)
+              return pairs
+
+
           def canonical_suites(
               workflow_runs_payload: Any,
               subject_sha: str,
@@ -903,14 +957,14 @@ jobs:
           ) -> list[int]:
               """Return the check suite ids the canonical ``ci.yml`` runs report.
 
-              The suite id is read from the run object, so the canonical run's
-              own suite is identified without scanning the commit's suites.
-              Only the authoritative event's current attempt contributes.
+              A projection of :func:`canonical_suite_runs`: the same suite ids,
+              each paired there with the run whose suite it is.
               """
               suite_ids: list[int] = []
-              for run in authoritative_runs(workflow_runs_payload, subject_sha, event):
-                  suite_id = run.get("check_suite_id")
-                  if isinstance(suite_id, int) and suite_id not in suite_ids:
+              for suite_id, _run_id in canonical_suite_runs(
+                  workflow_runs_payload, subject_sha, event
+              ):
+                  if suite_id not in suite_ids:
                       suite_ids.append(suite_id)
               return suite_ids
 
@@ -926,6 +980,71 @@ jobs:
                       continue
                   runs.extend(run for run in page_runs if isinstance(run, dict))
               return runs
+
+
+          def suite_count_reconciliation(suite_payload: Any) -> tuple[int, int]:
+              """Return the parsed and reported check-run counts of one suite read.
+
+              ``reported`` is the endpoint's ``total_count`` for the suite and
+              ``parsed`` is the number of check-run rows the read returned. A
+              reported count the read did not reach means the read was
+              truncated: the suite is unreadable, not partially good.
+
+              The counts are taken over the whole response, before any row is
+              attributed to a run or a suite. A suite legitimately holds rows
+              that name another run -- the endpoint's own rows include check
+              runs that are not workflow jobs -- and those are not truncation.
+              """
+              parsed = 0
+              reported = 0
+              for page in pages(suite_payload):
+                  if not isinstance(page, dict):
+                      continue
+                  page_runs = page.get("check_runs")
+                  if isinstance(page_runs, list):
+                      parsed += sum(1 for row in page_runs if isinstance(row, dict))
+                  total = page.get("total_count")
+                  if isinstance(total, int) and total > reported:
+                      reported = total
+              return parsed, reported
+
+
+          def row_suite_id(row: dict[str, Any]) -> int | None:
+              """Return the check suite the endpoint says a row came from."""
+              suite = row.get("check_suite")
+              if not isinstance(suite, dict):
+                  return None
+              suite_id = suite.get("id")
+              return suite_id if isinstance(suite_id, int) else None
+
+
+          def select_suite_runs(
+              suite_payload: Any,
+              suite_id: int,
+              run_id: int,
+          ) -> list[dict[str, Any]]:
+              """Return the rows of one suite read that are evidence about one run.
+
+              Two bindings are verified for every kept row.
+
+              The suite: the endpoint stamps each row with the check suite it
+              came from, so a row that names another suite is not a row of the
+              suite that was read. That is what keeps a superseded attempt's
+              rows out of the current attempt's read.
+
+              The run: the row must name the run whose suite was read. A
+              suite's rows are evidence about that run, not about any other
+              admitted run, so a row naming a different run is dropped.
+              """
+              selected: list[dict[str, Any]] = []
+              for row in suite_check_runs(suite_payload):
+                  if row_suite_id(row) != suite_id:
+                      continue
+                  match = RUN_ID_PATTERN.search(str(row.get("details_url") or ""))
+                  if match is None or int(match.group(1)) != run_id:
+                      continue
+                  selected.append(row)
+              return selected
 
 
           def select_canonical_runs(
@@ -1055,18 +1174,19 @@ jobs:
               run_ids = canonical_run_ids(workflow_runs_payload, subject_sha, event)
               if not run_ids:
                   return degrade(f"no canonical {event} ci.yml run for {subject_sha}")
-              suite_ids = canonical_suites(workflow_runs_payload, subject_sha, event)
-              if not suite_ids:
+              suite_runs = canonical_suite_runs(workflow_runs_payload, subject_sha, event)
+              if not suite_runs:
                   return degrade(
                       f"no canonical {event} ci.yml run for {subject_sha} reports a check suite"
                   )
 
+              # Every reason a suite did not contribute, so the final warning
+              # names the one that decided the outcome.
+              problems: list[str] = []
               suite_payloads: list[Any] = []
-              for suite_id in suite_ids:
+              for suite_id, run_id in suite_runs:
                   try:
-                      suite_payloads.append(
-                          fetch_suite_check_runs(repository, suite_id)
-                      )
+                      suite_payload = fetch_suite_check_runs(repository, suite_id)
                   except (OSError, RuntimeError, ValueError) as error:
                       # One unreadable suite must not discard the evidence of
                       # the others: a superseded run leaves a suite that can
@@ -1076,13 +1196,50 @@ jobs:
                           f"could not be read ({error}); the remaining suites still count",
                           flush=True,
                       )
+                      problems.append(
+                          f"check suite {suite_id} could not be read ({error})"
+                      )
+                      continue
+
+                  parsed, reported = suite_count_reconciliation(suite_payload)
+                  if parsed < reported:
+                      # The read did not reach the count the endpoint
+                      # reported, so it was truncated. A truncated suite is
+                      # unreadable, not partially good: it contributes
+                      # nothing at all rather than a short population.
+                      detail = (
+                          f"check suite {suite_id} count mismatch: the endpoint "
+                          f"reported {reported} check runs but only {parsed} were read"
+                      )
+                      print(
+                          f"::warning::{label} canonical ci.yml {detail} "
+                          f"(the read was truncated); the suite contributes nothing",
+                          flush=True,
+                      )
+                      problems.append(detail)
+                      continue
+
+                  # The rows kept from this suite must belong to this suite
+                  # and name this suite's run.
+                  suite_payloads.append(
+                      {
+                          "check_runs": select_suite_runs(
+                              suite_payload, suite_id, run_id
+                          )
+                      }
+                  )
 
               selected = collect_canonical_runs(suite_payloads, run_ids)
               if selected is None:
                   # The authoritative run exists but its suite reports no
-                  # check run: it never executed. That is an evidence gap,
-                  # and an evidence gap stays a gap -- it never becomes
-                  # another event's verdicts.
+                  # check run about it: it never executed. That is an
+                  # evidence gap, and an evidence gap stays a gap -- it
+                  # never becomes another event's verdicts.
+                  if problems:
+                      return degrade(
+                          f"the canonical {event} ci.yml run for {subject_sha} "
+                          f"yielded no usable check run: {'; '.join(problems)}"
+                      )
                   return degrade(
                       f"the canonical {event} ci.yml run for {subject_sha} "
                       "reported no check run in its check suite"

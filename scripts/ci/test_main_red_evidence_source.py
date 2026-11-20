@@ -73,6 +73,21 @@ LIVE_DISPATCH_SUITE = 120361149362
 LIVE_RERUN_RUN = 43985707605
 LIVE_RERUN_SUPERSEDED_SUITE = 119075331084
 LIVE_RERUN_CURRENT_SUITE = 119075337920
+# A suite read that did not reach the count the endpoint reported. The
+# endpoint returns total_count beside its rows, so a suite that grows past
+# one page would be truncated exactly this way, and the loss is invisible
+# unless the reported count is reconciled against the rows actually read.
+TRUNCATED_SUITE = 120361150443
+TRUNCATED_RUN = 44464451999
+TRUNCATED_REPORTED_COUNT = 24
+TRUNCATED_PARSED_COUNT = 3
+# Two canonical runs of one subject and event. A suite can hold rows that
+# name the other run, and those rows are not evidence about the run whose
+# suite it is.
+OWN_RUN = 44464452000
+OWN_SUITE = 120361150445
+FOREIGN_RUN = 44464452100
+FOREIGN_SUITE = 120361150446
 
 
 def step_block(workflow: str, step_name: str) -> str:
@@ -229,6 +244,18 @@ def validate_evidence_source(workflow: str) -> None:
         raise AssertionError(
             "the probe must bind the candidate's evidence to the event that produced it"
         )
+    # #19567: a suite read must be reconciled against the count the
+    # endpoint reported, and every kept row must be bound to the suite it
+    # was read from and to the run whose suite that is. A read that did not
+    # reach the reported count was truncated, and a truncated suite is
+    # unreadable rather than partially good.
+    for needle in (
+        "suite_count_reconciliation",
+        "row_suite_id",
+        "select_suite_runs",
+    ):
+        if needle not in program:
+            raise AssertionError(f"the evidence reader must use {needle}")
 
 
 def shard_run(
@@ -236,9 +263,14 @@ def shard_run(
     run_id: int,
     conclusion: str = "success",
     head_sha: str = "a" * 40,
+    suite_id: int | None = None,
 ) -> dict:
-    """Return one observed check run in the API's own shape."""
-    return {
+    """Return one observed check run in the API's own shape.
+
+    The endpoint stamps every row with the check suite it came from, so a
+    row the reader would keep from a suite read must carry that suite.
+    """
+    row = {
         "name": name,
         "status": "completed",
         "conclusion": conclusion,
@@ -246,6 +278,9 @@ def shard_run(
         "head_sha": head_sha,
         "app": {"id": 15368, "slug": "github-actions"},
     }
+    if suite_id is not None:
+        row["check_suite"] = {"id": suite_id}
+    return row
 
 
 class MainRedEvidenceSourceTests(unittest.TestCase):
@@ -379,11 +414,13 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
                         "CI Gate shard (meta)",
                         LIVE_DISPATCH_RUN,
                         head_sha=LIVE_SHA,
+                        suite_id=LIVE_DISPATCH_SUITE,
                     ),
                     shard_run(
                         "CI Gate shard (policy)",
                         LIVE_DISPATCH_RUN,
                         head_sha=LIVE_SHA,
+                        suite_id=LIVE_DISPATCH_SUITE,
                     ),
                 ]
             },
@@ -609,6 +646,191 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
             namespace["canonical_suites"](payload, LIVE_SHA, "pull_request"),
             [LIVE_RERUN_SUPERSEDED_SUITE],
         )
+
+    # -- #19567: a suite read is reconciled against the count it reported.
+
+    @staticmethod
+    def _truncated_runs() -> dict:
+        """Return the workflow-run payload of a subject with one suite."""
+        return {
+            "workflow_runs": [
+                {
+                    "id": TRUNCATED_RUN,
+                    "event": "pull_request",
+                    "head_sha": LIVE_SHA,
+                    "check_suite_id": TRUNCATED_SUITE,
+                    "run_attempt": 1,
+                }
+            ]
+        }
+
+    @staticmethod
+    def _truncated_suites() -> dict:
+        """Return a suite response that reports more runs than it carries."""
+        return {
+            TRUNCATED_SUITE: {
+                "check_runs": [
+                    shard_run(
+                        f"CI Gate shard (shard{index})",
+                        TRUNCATED_RUN,
+                        head_sha=LIVE_SHA,
+                        suite_id=TRUNCATED_SUITE,
+                    )
+                    for index in range(TRUNCATED_PARSED_COUNT)
+                ],
+                "total_count": TRUNCATED_REPORTED_COUNT,
+            }
+        }
+
+    def test_evidence_reader_rejects_a_truncated_suite_read(self) -> None:
+        """A read that did not reach the reported count is unreadable.
+
+        The endpoint reports ``total_count`` beside its rows. A read that
+        parsed fewer rows than the endpoint reported was truncated, and a
+        truncated suite is unreadable rather than partially good: it must
+        contribute nothing and must not be written as valid evidence.
+
+        Discriminating assertion. It fails unless the reader reconciles the
+        reported count against the rows it parsed: without the
+        reconciliation the surviving rows are written as the candidate's
+        evidence, so the truncation reads as a complete verdict.
+        """
+        status, stdout, written, fetched = self._run_reader_program(
+            evidence_program(self.workflow),
+            self._truncated_runs(),
+            self._truncated_suites(),
+            "pull_request",
+        )
+        self.assertIn(TRUNCATED_SUITE, fetched)
+        # The truncated suite contributes nothing: the reader degrades to
+        # the missing-evidence payload rather than writing a short
+        # population as a valid observation.
+        self.assertEqual(written, "")
+        self.assertNotEqual(status, 0)
+        self.assertIn("::warning::", stdout)
+        # The warning names the count mismatch, so the gap is
+        # distinguishable from a suite that was simply empty.
+        self.assertIn("count mismatch", stdout)
+        self.assertIn(f"reported {TRUNCATED_REPORTED_COUNT} check runs", stdout)
+        self.assertIn(f"only {TRUNCATED_PARSED_COUNT} were read", stdout)
+
+    def test_evidence_reader_count_reconciliation_discriminates_the_truncation(self) -> None:
+        """Removing the reconciliation writes the truncated read as evidence.
+
+        The mutation drops the count check, so a short read is written as
+        the candidate's evidence. This proves the assertion above
+        discriminates the reconciliation rather than the fixture.
+        """
+        program = evidence_program(self.workflow)
+        mutated = program.replace("if parsed < reported:", "if False:")
+        if mutated == program:
+            self.fail(
+                "the count-reconciliation mutation did not apply; update the mutation anchor"
+            )
+        status, _, written, _ = self._run_reader_program(
+            mutated,
+            self._truncated_runs(),
+            self._truncated_suites(),
+            "pull_request",
+        )
+        self.assertEqual(status, 0)
+        self.assertIsNotNone(written)
+        self.assertIn("CI Gate shard", written)
+
+    # -- #19567: a suite's rows are evidence about its own run.
+
+    @staticmethod
+    def _foreign_rows_runs() -> dict:
+        """Return the workflow-run payload of a subject with two runs."""
+        return {
+            "workflow_runs": [
+                {
+                    "id": OWN_RUN,
+                    "event": "pull_request",
+                    "head_sha": LIVE_SHA,
+                    "check_suite_id": OWN_SUITE,
+                    "run_attempt": 1,
+                },
+                {
+                    "id": FOREIGN_RUN,
+                    "event": "pull_request",
+                    "head_sha": LIVE_SHA,
+                    "check_suite_id": FOREIGN_SUITE,
+                    "run_attempt": 1,
+                },
+            ]
+        }
+
+    @staticmethod
+    def _foreign_rows_suites() -> dict:
+        """Return a suite holding rows that name the other run."""
+        return {
+            OWN_SUITE: {
+                "check_runs": [
+                    shard_run(
+                        "CI Gate shard (meta)",
+                        FOREIGN_RUN,
+                        head_sha=LIVE_SHA,
+                        suite_id=OWN_SUITE,
+                    )
+                ]
+            },
+            FOREIGN_SUITE: {"check_runs": []},
+        }
+
+    def test_evidence_reader_drops_rows_that_name_another_run(self) -> None:
+        """A suite's rows are evidence about the run whose suite it is.
+
+        The suite read for the canonical run holds a row that names the
+        other admitted run. That row is not evidence about the canonical
+        run, so it must be dropped, and the reader must degrade to the
+        missing-evidence path rather than write it as the canonical run's
+        verdicts.
+
+        Discriminating assertion. It fails unless the reader verifies each
+        fetched suite against its own run: without the verification the
+        foreign row is written as the canonical run's evidence, because the
+        foreign run is itself admitted.
+        """
+        status, stdout, written, _ = self._run_reader_program(
+            evidence_program(self.workflow),
+            self._foreign_rows_runs(),
+            self._foreign_rows_suites(),
+            "pull_request",
+        )
+        self.assertEqual(written, "")
+        self.assertNotEqual(status, 0)
+        self.assertIn("::warning::", stdout)
+        # The foreign row is not in the payload: the payload is the
+        # missing-evidence file, not a short observation.
+        self.assertNotIn("CI Gate shard", written)
+
+    def test_evidence_reader_run_binding_discriminates_the_foreign_rows(self) -> None:
+        """Removing the run binding writes the foreign rows as evidence.
+
+        The mutation keeps the suite binding and drops the run binding, so
+        a row that names another admitted run is written as the canonical
+        run's evidence. This proves the assertion above discriminates the
+        per-suite run binding rather than the fixture.
+        """
+        program = evidence_program(self.workflow)
+        mutated = program.replace(
+            "if match is None or int(match.group(1)) != run_id:",
+            "if match is None:",
+        )
+        if mutated == program:
+            self.fail(
+                "the per-suite run-binding mutation did not apply; update the mutation anchor"
+            )
+        status, _, written, _ = self._run_reader_program(
+            mutated,
+            self._foreign_rows_runs(),
+            self._foreign_rows_suites(),
+            "pull_request",
+        )
+        self.assertEqual(status, 0)
+        self.assertIsNotNone(written)
+        self.assertIn("CI Gate shard (meta)", written)
 
     def _run_reader(self, directory: Path, subject_sha: str, environment=None):
         """Run the shipped reader and return (completed, output payload text)."""
