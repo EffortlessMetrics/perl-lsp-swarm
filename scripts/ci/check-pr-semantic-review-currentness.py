@@ -57,6 +57,12 @@ RESULT_ITEM_RE = re.compile(r"^[ \t]*[-*][ \t]*([A-Z_]+)\b", re.MULTILINE)
 # `finalised_at` key) is observable at the consumer side rather than silent.
 SCHEMA_VERSION = "semantic_review_currentness.v1"
 FIXTURE_ENV = "SEMANTIC_REVIEW_TEST_FIXTURE"
+GH_MINIMUM_VERSION = (2, 63, 0)
+GH_PREREQUISITE = (
+    "GitHub CLI gh >= 2.63.0 is required for baseRefOid and --paginate --slurp. "
+    "Update GitHub CLI via https://cli.github.com/ and rerun gh --version. "
+    "This verifies CLI compatibility only; provider access remains NOT_PROVEN."
+)
 
 
 class Review(NamedTuple):
@@ -80,12 +86,17 @@ class CurrentnessError(RuntimeError):
     """Instrument or repository-object failure; not a semantic verdict."""
 
 
+class GhPrerequisiteError(CurrentnessError):
+    """Public guidance constructed only from local numeric version/exit facts."""
+
+
 def _run(
     args: list[str],
     *,
     cwd: Path,
     check: bool = True,
     text: bool = True,
+    timeout: Optional[float] = None,
 ) -> subprocess.CompletedProcess[Any]:
     """Run a child process, decoding text output as UTF-8 regardless of host locale.
 
@@ -113,6 +124,7 @@ def _run(
         text=text,
         encoding=encoding,
         errors=errors,
+        timeout=timeout,
     )
 
 
@@ -612,6 +624,53 @@ def _flatten_pages(value: Any) -> list[Mapping[str, Any]]:
     return rows
 
 
+def require_gh_prerequisite(root: Path) -> None:
+    """Probe only the local CLI; never infer provider access from its version."""
+    try:
+        output = _run(["gh", "--version"], cwd=root, timeout=5).stdout
+    except FileNotFoundError as error:
+        raise GhPrerequisiteError(f"GitHub CLI executable gh was not found. {GH_PREREQUISITE}") from error
+    except subprocess.CalledProcessError as error:
+        raise GhPrerequisiteError(
+            f"Local gh --version failed with exit {error.returncode}. {GH_PREREQUISITE}"
+        ) from error
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
+        raise GhPrerequisiteError(f"Cannot complete local gh --version probe. {GH_PREREQUISITE}") from error
+    first_line = output.splitlines()[0] if isinstance(output, str) and output else ""
+    match = re.fullmatch(
+        r"gh version ([0-9]{1,5})\.([0-9]{1,5})\.([0-9]{1,5})(?: \([^\r\n]*\))?",
+        first_line,
+    )
+    if match is None:
+        raise GhPrerequisiteError(f"Cannot verify a stable local gh version. {GH_PREREQUISITE}")
+    version = tuple(int(part) for part in match.groups())
+    if version < GH_MINIMUM_VERSION:
+        observed = ".".join(match.groups())
+        missing = "baseRefOid and --slurp" if version < (2, 48, 0) else "baseRefOid"
+        raise GhPrerequisiteError(f"Observed gh {observed} lacks {missing}. {GH_PREREQUISITE}")
+
+
+def acquisition_error_detail(error: Exception) -> str:
+    """Expose fixed diagnostic facts, never raw tool output or command arguments."""
+    if isinstance(error, GhPrerequisiteError):
+        return str(error)[:512]
+    if isinstance(error, subprocess.CalledProcessError):
+        diagnostic = error.stderr if isinstance(error.stderr, str) else ""
+        if re.search(r"\bforbidden\b", diagnostic, re.IGNORECASE):
+            observation = "Provider reported Forbidden; access remains NOT_PROVEN."
+        elif 'Unknown JSON field: "baseRefOid"' in diagnostic:
+            observation = f"CLI rejected required baseRefOid. {GH_PREREQUISITE}"
+        elif "unknown flag: --slurp" in diagnostic:
+            observation = f"CLI rejected required --slurp. {GH_PREREQUISITE}"
+        else:
+            observation = "Inspect the failed command locally; no live review verdict was acquired."
+        return f"Canonical command failed with exit {error.returncode}. {observation}"
+    if isinstance(error, CurrentnessError):
+        return "Review subject or inventory could not be verified; inspect local inputs and command diagnostics."
+    # Exception strings can include arbitrary JSON, paths, argv or tool output.
+    return f"Currentness instrument failed ({type(error).__name__}); inspect the local input or tool."
+
+
 def fetch_pr_identity(repo: str, pr: int, root: Path) -> tuple[str, str]:
     metadata_raw = _run(
         [
@@ -640,6 +699,7 @@ def fetch_pr_identity(repo: str, pr: int, root: Path) -> tuple[str, str]:
 
 
 def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
+    require_gh_prerequisite(root)
     current_head, base_head = fetch_pr_identity(repo, pr, root)
 
     reviews_raw = _run(
@@ -814,7 +874,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             {
                 "classification": "NOT_PROVEN",
                 "reason": "instrument_failure",
-                "detail": str(error),
+                "detail": acquisition_error_detail(error),
                 "pr": args.pr,
             }
         )

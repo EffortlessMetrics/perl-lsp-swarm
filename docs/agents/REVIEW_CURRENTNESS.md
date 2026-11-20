@@ -168,6 +168,20 @@ or unreadable acquisition remains `NOT_PROVEN`. Those capability and enforcement
 predicates remain under #17573/#17494; #17495, #15010, #15001 and #16958 retain their
 existing ownership.
 
+Before live acquisition, the helper probes local `gh --version` and requires a
+stable **gh >= 2.63.0**. The exact command contract needs `baseRefOid` (added in
+[gh 2.63](https://github.com/cli/cli/releases/tag/v2.63.0)) and `--slurp` (added in
+[gh 2.48](https://github.com/cli/cli/releases/tag/v2.48.0)). Missing, failed,
+unparseable or older probes return exit 2 / `NOT_PROVEN` before any PR/review
+request, with bounded prerequisite guidance; update through the official
+[GitHub CLI instructions](https://cli.github.com/) and verify the local version.
+The helper never installs a tool or changes sign-in/scopes. Fixture selectors
+still refuse marker emission before even this local probe. A compatible version
+establishes CLI compatibility only: a later `Forbidden` remains an access
+observation and `NOT_PROVEN`, with no alternate acquisition or retry. This does
+not qualify provider access or the immutable tool bundle (#15001), and does not
+replace #17923's separate session/network runbook work.
+
 The digest covers `git diff --binary --full-index <merge-base> <reviewed-head>`. The
 marker is not a requirement to re-review merely because a SHA changed. It makes the
 reviewed subject falsifiable and lets the pre-merge guard distinguish a real cumulative
