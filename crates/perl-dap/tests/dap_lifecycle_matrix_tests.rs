@@ -262,12 +262,9 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
 /// Package and Globals for the exact current stopped frame — and that the Locals
 /// scope contains a REAL named lexical variable from the user script.
 ///
-/// The DAP spec requires a `scopes` response for each frame. #10563 retired
-/// Package/Globals from the advertised contract; #9057 (implemented by #18912)
-/// re-enabled them for the exact current stopped frame once that frame's package
-/// identity is observed, and bound their perl5db `V` queries to the observed
-/// package identity instead of to the DAP frame integer. This journey stops in
-/// package `main`, so all three scopes are advertised.
+/// For the exact current stopped frame, Package uses the observed package
+/// identity for its perl5db query. Globals independently queries `V main`.
+/// This fixture stops in package `main`, so it exercises both scopes.
 ///
 /// A frame whose package identity cannot be observed omits Package; that
 /// negative case is covered by `package_scope_with_unknown_frame_package_performs_zero_queries`
@@ -350,17 +347,8 @@ fn test_lifecycle_scopes_locals_contract() -> TestResult {
         frame_info.frame_id
     );
 
-    // #9057 scope contract: the exact current stopped frame advertises Locals,
-    // plus Package and Globals once the frame's package identity is observed.
-    // #18912 re-enabled Package/Globals for the exact current stopped frame and
-    // bound their perl5db `V` queries to the observed package identity rather
-    // than to the DAP frame integer. This journey stops in package `main`, so
-    // the observed identity is `main` and all three scopes are advertised.
-    //
-    // The assertion discriminates in both directions: on the pre-#18912 tree,
-    // where Package and Globals were not advertised at all, it fails; on the
-    // current tree it passes. It therefore pins the re-enablement rather than
-    // merely restating whatever the adapter happens to return.
+    // This stop has an observed package identity, so Package is available.
+    // Globals is available independently for the exact current stopped frame.
     let scopes_resp = session.request("scopes", Some(json!({"frameId": frame_info.frame_id})));
     let scopes_body = session.expect_success(&scopes_resp, "scopes")?;
     let advertised: Vec<&str> = scopes_body
