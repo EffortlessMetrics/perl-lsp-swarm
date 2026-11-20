@@ -16,7 +16,9 @@ include = ["src/**", "tests/**", "examples/**", "benches/**", "README.md", "LICE
 
 [dependencies]
 # Core dependencies
-unicode-ident = "1.0.22"
+# Pin below unicode-ident 1.0.25 (Unicode 18.0.0). Perl 5.44 binds to
+# Unicode 17.0; 1.0.22–1.0.24 expose UNICODE_VERSION = (17, 0, 0).
+unicode-ident = ">=1.0.22, <1.0.25"
 memchr = "2.8.1"
 phf = { version = "0.14.0", features = ["macros"] }
 tracing.workspace = true
