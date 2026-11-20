@@ -29,6 +29,8 @@ claim owns its placement and this file does not move it.
 
 from __future__ import annotations
 
+import copy
+import re
 import shlex
 import unittest
 from pathlib import Path
@@ -340,6 +342,98 @@ def validate_rust_small_route_contract(workflow_text: str) -> None:
             f"{CONTRACT_TEST_FILE} so a silent revert of the canonical-route "
             "consolidation fails a required check (#8407)"
         )
+
+
+# The hosted jobs currently have separate namespaces. A main push taking the
+# primary route can seed primary consumers, but cannot warm a preflight fallback.
+# Keep that distinction visible until fallback measurements justify sharing.
+HOSTED_CACHE_FAMILIES = {
+    "rust-small-github": "perl-lsp-rust-small",
+    "rust-small-fallback": "perl-lsp-rust-small-fallback",
+}
+CACHE_KEY_SUFFIX = "-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}"
+MAIN_SAVE = "${{ github.ref == 'refs/heads/main' }}"
+
+
+def validate_hosted_cache(job_id: str, steps: list[dict]) -> None:
+    """Guard the two direct cache sites. The action pin is in the cache inventory."""
+    caches = [
+        step for step in steps
+        if step.get("uses", "").split("@")[0].lower() in {
+            "swatinem/rust-cache", "actions/cache", "actions/cache/save", "actions/cache/restore"
+        }
+    ]
+    if len(caches) != 1 or not re.fullmatch(
+        r"Swatinem/rust-cache@[0-9a-f]{40}", caches[0]["uses"]
+    ):
+        raise AssertionError(f"{job_id} must use one pinned rust-cache site")
+    cache = caches[0]
+    expected = {
+        "shared-key": HOSTED_CACHE_FAMILIES[job_id] + CACHE_KEY_SUFFIX,
+        "save-if": MAIN_SAVE,
+    }
+    if cache.get("with") != expected or "if" in cache or "env" in cache:
+        raise AssertionError(f"{job_id} must keep its cache family and main-only save authority")
+
+    # A main ref can still check out another repository or a dispatch-supplied
+    # revision. The current writer builds the implicit event checkout in place.
+    checkouts = [step for step in steps if step.get("uses", "").lower().startswith("actions/checkout@")]
+    if len(checkouts) != 1 or steps.index(checkouts[0]) > steps.index(cache):
+        raise AssertionError(f"{job_id} must check out the event tree before caching")
+    checkout = checkouts[0]
+    if (
+        not re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout["uses"])
+        or "if" in checkout
+        or not set(checkout.get("with", {})) <= {"fetch-depth", "persist-credentials"}
+    ):
+        raise AssertionError(f"{job_id} must use the event checkout for both cache and proof")
+
+
+class HostedCacheContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.workflow = yaml.load(load_workflow_text(), Loader=yaml.BaseLoader)
+
+    def test_hosted_cache_sites(self) -> None:
+        # A ref-only save guard relies on the trigger context. In particular a
+        # pull_request_target event can have a main ref and candidate inputs.
+        self.assertLessEqual(
+            set(self.workflow["on"]), {"pull_request", "merge_group", "push", "workflow_dispatch"}
+        )
+        for job_id in HOSTED_CACHE_FAMILIES:
+            with self.subTest(site=job_id):
+                validate_hosted_cache(job_id, self.workflow["jobs"][job_id]["steps"])
+
+    def test_hosted_cache_refuses_writer_or_family_drift_per_route(self) -> None:
+        for job_id, family in HOSTED_CACHE_FAMILIES.items():
+            other_family = next(
+                other for other in HOSTED_CACHE_FAMILIES.values() if other != family
+            )
+            for label, override in (
+                ("implicit save", {"shared-key": family + CACHE_KEY_SUFFIX}),
+                ("candidate save", {"shared-key": family + CACHE_KEY_SUFFIX, "save-if": "true"}),
+                ("other route", {"shared-key": other_family + CACHE_KEY_SUFFIX, "save-if": MAIN_SAVE}),
+                ("lockfile omitted", {"shared-key": family + "-${{ env.RUST_VERSION }}", "save-if": MAIN_SAVE}),
+            ):
+                with self.subTest(site=job_id, mutation=label):
+                    steps = copy.deepcopy(self.workflow["jobs"][job_id]["steps"])
+                    cache = next(
+                        step for step in steps if step.get("uses", "").startswith("Swatinem/rust-cache@")
+                    )
+                    cache["with"] = override
+                    with self.assertRaisesRegex(AssertionError, job_id):
+                        validate_hosted_cache(job_id, steps)
+
+    def test_main_dispatch_cannot_redirect_the_cache_checkout(self) -> None:
+        for job_id in HOSTED_CACHE_FAMILIES:
+            with self.subTest(site=job_id):
+                steps = copy.deepcopy(self.workflow["jobs"][job_id]["steps"])
+                checkout = next(
+                    step for step in steps if step.get("uses", "").startswith("actions/checkout@")
+                )
+                checkout["with"]["ref"] = "${{ inputs.candidate }}"
+                with self.assertRaisesRegex(AssertionError, job_id):
+                    validate_hosted_cache(job_id, steps)
 
 
 class RustSmallRouteContractTests(unittest.TestCase):
