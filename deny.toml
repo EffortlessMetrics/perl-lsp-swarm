@@ -124,10 +124,12 @@ skip = [
     { crate = "bitflags@1.3.2", reason = "fluent-uri (lsp-types transitive) pins bitflags 1.x" },
 
     # windows-sys: three-way split across 0.52/0.60/0.61 (Windows-only).
-    # 0.52.0 — ring 0.17 (rustls/ureq TLS) pins the old windows-sys 0.52.
+    # 0.52.0 — ring 0.17 (rustls/ureq TLS) pins the old windows-sys 0.52; rustix
+    # 1.1.6+ also hard-requires windows-sys 0.52, so its tempfile/errno/os_pipe/
+    # winapi-util dependents resolve onto this copy too.
     # 0.60.2 — notify and shared_child (duct) pin 0.60.
-    # 0.61.2 — clap/anstyle, console, tokio/mio, errno/rustix (the current mainstream).
-    { crate = "windows-sys@0.52.0", reason = "ring 0.17 (rustls/ureq TLS) pins old windows-sys 0.52" },
+    # 0.61.2 — clap/anstyle, console, tokio/mio (the current mainstream).
+    { crate = "windows-sys@0.52.0", reason = "ring 0.17 (rustls/ureq TLS) pins old windows-sys 0.52; rustix 1.1.6+ also requires windows-sys 0.52" },
     { crate = "windows-sys@0.60.2", reason = "notify/shared_child (duct) transitives pin 0.60" },
     { crate = "windows-targets@0.52.6", reason = "older windows-sys 0.52 transitive (ring 0.17 tree)" },
 
