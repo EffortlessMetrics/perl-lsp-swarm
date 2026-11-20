@@ -484,9 +484,25 @@ fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
         // Only admissible (absolute) components are searched: a relative or
         // empty component would be resolved here against the *parent's*
         // current directory while the eventual launch resolves it against the
-        // child's `current_dir`.
-        admissible_search_paths(Some(path)).into_iter().any(|dir| dir.join(command).is_file())
+        // child's `current_dir`. A regular file without any execute bit is not
+        // a launchable `execvp` candidate, so keep searching later entries.
+        admissible_search_paths(Some(path))
+            .into_iter()
+            .any(|dir| unix_path_command_candidate_is_admissible(&dir.join(command)))
     }
+}
+
+/// Whether a Unix PATH candidate is a regular file with at least one execute bit.
+///
+/// Uses `metadata` (follows symlinks) so a symlink to an executable file is
+/// admissible and a symlink to a non-file or non-executable target is not.
+/// This is discovery-only: ACLs, `noexec` mounts, and spawn-time races remain
+/// authoritative at launch.
+#[cfg(not(windows))]
+fn unix_path_command_candidate_is_admissible(candidate: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(candidate)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 /// Pure candidate generator for the Windows probe, mirroring the executable
