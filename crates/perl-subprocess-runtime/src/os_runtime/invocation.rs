@@ -6,6 +6,33 @@ use super::windows::{
 use crate::SubprocessError;
 use std::process::Command;
 
+/// cmd.exe dynamic variables expanded on the `/C` command line even when absent
+/// from the parent environment (command extensions enabled by default; we never
+/// pass `/E:OFF`). See #17437.
+#[cfg(any(windows, test))]
+const CMD_DYNAMIC_VARIABLES: &[&str] = &[
+    "CD",
+    "DATE",
+    "TIME",
+    "RANDOM",
+    "ERRORLEVEL",
+    "CMDEXTVERSION",
+    "CMDCMDLINE",
+    "HIGHESTNUMANODENUMBER",
+];
+
+/// Whether cmd.exe would treat `name` as defined for `%NAME%` command-line expansion.
+///
+/// `env_lookup` mirrors `std::env::var_os(name).is_some()` at the production call
+/// site; dynamic cmd.exe variables are accepted in addition (#17437).
+#[cfg(any(windows, test))]
+fn is_cmd_defined(name: &str, env_lookup: impl Fn(&str) -> bool) -> bool {
+    if env_lookup(name) {
+        return true;
+    }
+    CMD_DYNAMIC_VARIABLES.iter().any(|dynamic| dynamic.eq_ignore_ascii_case(name))
+}
+
 /// Resolve `(program, args)` into a spawnable [`Command`], failing closed on
 /// Windows when the program cannot be resolved to a safe absolute path.
 ///
@@ -60,14 +87,15 @@ pub(crate) fn resolve_command_invocation(
                      name: {resolved_program}"
                 ))
             })?;
-            // cmd.exe expands a `%NAME%` span on the /C line when NAME is a
-            // defined environment variable, and `%` has no command-line escape.
-            // Pass such arguments through and the tool silently receives the
-            // substituted text — fail closed with the offending argument named
-            // instead (#17371).
+            // cmd.exe expands a `%NAME%` span on the /C line when NAME is defined
+            // in the environment or is one of cmd.exe's dynamic variables, and `%`
+            // has no command-line escape. Pass such arguments through and the tool
+            // silently receives the substituted text — fail closed with the
+            // offending argument named instead (#17371, #17437).
             for arg in std::iter::once(resolved_program.as_str()).chain(args.iter().copied()) {
-                if windows_has_expandable_percent_ref(arg, |name| std::env::var_os(name).is_some())
-                {
+                if windows_has_expandable_percent_ref(arg, |name| {
+                    is_cmd_defined(name, |n| std::env::var_os(n).is_some())
+                }) {
                     return Err(SubprocessError::new(format!(
                         "argument contains a %...% reference that cmd.exe would substitute \
                          with an environment variable, and % has no command-line escape: \
@@ -109,5 +137,42 @@ pub(crate) fn resolve_command_invocation(
         let mut cmd = Command::new(program);
         cmd.args(args);
         Ok(cmd)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_cmd_defined;
+
+    #[test]
+    fn is_cmd_defined_accepts_environment_via_lookup() {
+        let env = ["MY_TOOL", "other"];
+        let lookup = |name: &str| env.iter().any(|e| e.eq_ignore_ascii_case(name));
+        assert!(is_cmd_defined("MY_TOOL", lookup));
+        assert!(is_cmd_defined("my_tool", lookup));
+        assert!(!is_cmd_defined("NOT_SET", lookup));
+    }
+
+    #[test]
+    fn is_cmd_defined_accepts_cmd_dynamic_variables_without_env_entry() {
+        let lookup = |_name: &str| false;
+        for name in [
+            "CD",
+            "cd",
+            "DATE",
+            "TIME",
+            "RANDOM",
+            "ERRORLEVEL",
+            "CMDEXTVERSION",
+            "CMDCMDLINE",
+            "HIGHESTNUMANODENUMBER",
+        ] {
+            assert!(
+                is_cmd_defined(name, lookup),
+                "{name} must be treated as cmd-defined even when absent from the environment"
+            );
+        }
+        assert!(!is_cmd_defined("TEMP", lookup));
+        assert!(!is_cmd_defined("f", lookup));
     }
 }
