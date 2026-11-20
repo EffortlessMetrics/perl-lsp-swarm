@@ -13,30 +13,35 @@ receipts converge on one exact external subject.
 
 ## Product identities
 
+The proposed EffortlessMetrics provider ID is `perl-lsp-rs`
+([#10842](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10842)).
+It would launch `perllsp --stdio` for `EffortlessMetrics/perl-lsp`. Each
+provider has its own ID, and dispatch must reject unknown IDs.
+
+The historical fixture recorded these registrations. In this block, `perllsp`
+is the legacy, fixture-only server ID. The native executable is also named
+`perllsp`.
+
 ```text
 perlnavigator-server -> Perl Navigator
 perl-lsp             -> tree-sitter-perl/perl-tree-sitter-lsp
 perllsp              -> EffortlessMetrics/perl-lsp
 ```
 
-The IDs are not aliases. The proposed `perllsp` route must start exact
-`perllsp --stdio`; unknown server IDs must fail instead of falling through to
-another provider.
-
-## Current captured subject
+## Captured legacy fixture subject
 
 | Subject | Captured identity |
 | --- | --- |
 | Extension repository | `tree-sitter-perl/zed-perl` |
 | Base commit | `eb27a19e69fed8a041b706b23a1f42fbafb29fd8` |
-| Public extension version | `0.4.0` |
+| Captured extension version | `0.4.0` |
 | Extension API | `0.7.0` |
 | Candidate source | `.ci/fixtures/zed-perl-upstream/zed-perl/` |
 
-These identities are a working basis, not a permanent submission target.
-#7909 must refresh the upstream branch, version, API, grammar references, and
-license immediately before packet freeze. A patch that applies with fuzz is not
-current.
+This table identifies the base captured by the staged fixture. Before freezing
+the submission packet, #7909 must refresh the upstream branch, version, API,
+grammar references, and license, and bind the adopted provider ID. A patch that
+applies with fuzz is not current.
 
 ## Fan-in
 
@@ -63,7 +68,7 @@ or submission-order field is absent. The staged PR body also contains explicit
 
 ## Candidate application
 
-The current extension candidate can be applied to its exact captured base with:
+Apply the legacy fixture to its exact captured base with:
 
 ```bash
 bash scripts/apply-zed-perl-upstream.sh /path/to/zed-perl
@@ -75,7 +80,7 @@ verification commands.
 
 ## Intended upstream diff
 
-The reviewed candidate currently expects only:
+The legacy fixture records this planned upstream file set:
 
 ```text
 extension.toml
@@ -91,8 +96,10 @@ the changed-file map and requires deliberate review.
 
 ## Companion Zed change
 
-A separate `zed-industries/zed` packet under #7908 keeps the current default
-provider enabled and both alternatives dormant:
+The historical defaults fixture for the companion `zed-industries/zed`
+packet (#7908) keeps the default provider enabled and both alternatives dormant.
+This snippet preserves the legacy fixture ID `!perllsp`. The proposed provider's
+entry would be `!perl-lsp-rs`.
 
 ```jsonc
 {
