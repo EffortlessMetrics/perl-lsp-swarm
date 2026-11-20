@@ -854,18 +854,9 @@ impl TypeInferenceEngine {
     fn refresh_accessor_return_facts(&mut self, ast: &Node) {
         self.accessor_return_facts.clear();
 
-        for model in ClassModelBuilder::new().build(ast) {
-            for attr in model.attributes {
-                if !attribute_generates_reader(attr.is) {
-                    continue;
-                }
-                let Some(package) = package_like_isa(attr.isa.as_deref()) else {
-                    continue;
-                };
-                let method = attr.accessor_name.clone();
-                let fact = accessor_return_fact(&method, &attr.name, &package);
-                self.accessor_return_facts.insert((model.name.clone(), method), fact);
-            }
+        for ((package, method), (field, isa_package)) in accessor_isa_index(ast) {
+            let fact = accessor_return_fact(&method, &field, &isa_package);
+            self.accessor_return_facts.insert((package, method), fact);
         }
     }
 
@@ -1677,6 +1668,38 @@ fn node_mentions_variable(node: &Node, name: &str) -> bool {
 
 fn attribute_generates_reader(mode: Option<AccessorType>) -> bool {
     !matches!(mode, Some(AccessorType::Bare))
+}
+
+/// The class-model accessor→`isa` facts a file proves, keyed
+/// `(declaring package, accessor name)` and valued `(attribute name, isa package)`.
+///
+/// Only attributes that generate a reader and whose `isa` is a plausible
+/// package name (`package_like_isa`) produce a fact; a `has` without a
+/// package-like `isa` yields no entry, so consumers fail closed.
+///
+/// Shared by the TypeInferenceEngine's accessor-return facts
+/// (`refresh_accessor_return_facts`) and the declaration path's chained-receiver
+/// resolution (`declaration::infer_chained_receiver_package`, #18761) so the two
+/// consumers of the same class-model knowledge can never drift.
+pub(crate) fn accessor_isa_index(
+    ast: &Node,
+) -> std::collections::HashMap<(String, String), (String, String)> {
+    let mut index = std::collections::HashMap::new();
+    for model in ClassModelBuilder::new().build(ast) {
+        for attr in model.attributes {
+            if !attribute_generates_reader(attr.is) {
+                continue;
+            }
+            let Some(package) = package_like_isa(attr.isa.as_deref()) else {
+                continue;
+            };
+            index.insert(
+                (model.name.clone(), attr.accessor_name.clone()),
+                (attr.name.clone(), package),
+            );
+        }
+    }
+    index
 }
 
 fn package_like_isa(isa: Option<&str>) -> Option<String> {

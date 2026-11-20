@@ -1277,6 +1277,62 @@ fn same_file_answer_package_matches(
     }
 }
 
+/// What a same-file DeclarationProvider answer for the cursor's `->method`
+/// selector may do, given what the call's receiver resolves to (#18761).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverSameFileVerdict {
+    /// Not a method selector, a resolved plain receiver, or a chain whose
+    /// receiver resolves to the package that declares the same-file target:
+    /// the same-file answer stands.
+    Keep,
+    /// The chain's receiver resolves (accessor `isa` facts) to a different
+    /// package: the same-file answer is wrong, but the workspace tier may
+    /// still find the receiver class's method in another file.
+    SkipSameFile,
+    /// The receiver's class is unknown (a sub parameter, an untyped chain):
+    /// no tier can name the right target, so the request is an honest
+    /// refusal rather than "any same-file sub with this name".
+    Refuse,
+}
+
+/// Classify a same-file DeclarationProvider answer for the cursor's
+/// `->method` selector (#18761).
+///
+/// The provider's method arm falls back to "any same-file sub with this
+/// name", so its answer is only as good as the receiver's resolution
+/// (`method_call_receiver_package_at`). An unresolved receiver refuses. A
+/// chained receiver's class is the accessor's `isa`, not the caller's
+/// package, so a chain keeps the answer only when it resolves to the package
+/// declaring the target at `target_offset`; a resolved, mismatched chain
+/// skips the same-file answer so the workspace tier can answer.
+fn method_receiver_same_file_verdict(
+    ast: &crate::ast::Node,
+    offset: usize,
+    selector: Option<&crate::declaration::MethodCallSelector>,
+    target_offset: Option<usize>,
+) -> ReceiverSameFileVerdict {
+    let Some(selector) = selector else {
+        return ReceiverSameFileVerdict::Keep;
+    };
+    let Some(receiver_package) = crate::declaration::method_call_receiver_package_at(ast, offset)
+    else {
+        return ReceiverSameFileVerdict::Refuse;
+    };
+    if !selector.receiver_is_chain {
+        // A resolved plain receiver (`$self`, a bareword class, a
+        // constructor binding) keeps the provider's answer: its package
+        // resolution and same-file inheritance are the provider's business.
+        return ReceiverSameFileVerdict::Keep;
+    }
+    if target_offset.is_some_and(|target| {
+        crate::declaration::current_package_at(ast, target) == receiver_package.as_str()
+    }) {
+        ReceiverSameFileVerdict::Keep
+    } else {
+        ReceiverSameFileVerdict::SkipSameFile
+    }
+}
+
 fn lookup_workspace_definition(
     coordinator: Option<&std::sync::Arc<crate::workspace_index::IndexCoordinator>>,
     pkg: &str,
@@ -2014,9 +2070,31 @@ impl LspServer {
                     // later on the line, while a real comment still does.
                     // Without a generation-current snapshot the naive
                     // verdict stands.
+                    //
+                    // #18761: non-code regions with no executable content gate
+                    // through the generation-bound source-region index, the
+                    // same predicate hover already answers under
+                    // (`token_fallback_is_proven_code`): heredoc bodies, POD,
+                    // `__DATA__`/`__END__` tails, and recovery-ambiguous
+                    // partial input are not navigable. String/quote-like/regex
+                    // spans stay navigable because interpolated spans can carry
+                    // real code — the index decides, not a text scan.
                     let text = &doc.text;
                     let current_parsed = doc.current_parsed();
                     if is_in_comment_for_guard(offset, text, current_parsed.as_deref(), false) {
+                        return Ok(Some(Value::Null));
+                    }
+                    if matches!(
+                        current_parsed
+                            .as_deref()
+                            .map_or(perl_parser_core::SourceRegionKind::Code, |snapshot| snapshot
+                                .source_region_index()
+                                .kind_at_offset(offset),),
+                        perl_parser_core::SourceRegionKind::Heredoc
+                            | perl_parser_core::SourceRegionKind::Pod
+                            | perl_parser_core::SourceRegionKind::DataSection
+                            | perl_parser_core::SourceRegionKind::RecoveryAmbiguous
+                    ) {
                         return Ok(Some(Value::Null));
                     }
                     let cursor_in_single_quoted_literal =
@@ -2855,6 +2933,19 @@ impl LspServer {
                         }
                     }
 
+                    // #18761: the AST classification of the cursor's
+                    // `->method` selector, shared by every same-file tier
+                    // below: the arrow bytes name the call, and a chained
+                    // receiver makes any same-file sub answer wrong.
+                    let ast_selector =
+                        crate::declaration::method_call_selector_at(ast, offset, &doc.text);
+
+                    // #18761: set when the DeclarationProvider's same-file
+                    // answer was skipped for a chained receiver of another
+                    // package; the same-file tiers after the workspace tier
+                    // would only reproduce that wrong target.
+                    let mut chained_receiver_skipped_same_file = false;
+
                     // Try DeclarationProvider first (it handles function calls properly).
                     // `current_parsed()` is guaranteed `Some` here since `ast`
                     // (above) was derived from it.
@@ -2905,7 +2996,49 @@ impl LspServer {
                                 )
                             })
                         {
-                            return Ok(Some(json!(result)));
+                            // #18761: the provider's method arm falls back to
+                            // "any same-file sub with this name"
+                            // (`find_method_declaration`), which for an
+                            // unresolved receiver (a sub parameter, an untyped
+                            // chain) is exactly the wrong target the
+                            // current-package fallback used to produce: that is
+                            // a refusal. A chain's class is the accessor's
+                            // `isa`, not this file's package, so a chain that
+                            // resolves to another package skips this answer and
+                            // lets the workspace tier look for its class's
+                            // method.
+                            match method_receiver_same_file_verdict(
+                                ast,
+                                offset,
+                                ast_selector.as_ref(),
+                                location_links.first().map(|link| link.target_selection_range.0),
+                            ) {
+                                ReceiverSameFileVerdict::Keep => {
+                                    return Ok(Some(json!(result)));
+                                }
+                                ReceiverSameFileVerdict::SkipSameFile => {
+                                    tracing::debug!(
+                                        offset,
+                                        method = ast_selector
+                                            .as_ref()
+                                            .map_or("", |selector| selector.method.as_str()),
+                                        "Skipping same-file same-name sub for a chained \
+                                         receiver of another package (#18761)"
+                                    );
+                                    chained_receiver_skipped_same_file = true;
+                                }
+                                ReceiverSameFileVerdict::Refuse => {
+                                    tracing::debug!(
+                                        offset,
+                                        method = ast_selector
+                                            .as_ref()
+                                            .map_or("", |selector| selector.method.as_str()),
+                                        "Refusing same-file same-name sub for an \
+                                         unresolved chained method receiver (#18761)"
+                                    );
+                                    return Ok(Some(json!([])));
+                                }
+                            }
                         }
                     }
 
@@ -2982,6 +3115,10 @@ impl LspServer {
                     }
                     // No coordinator: fall through to same-file semantic model
 
+                    if chained_receiver_skipped_same_file {
+                        return Ok(Some(json!([])));
+                    }
+
                     if cursor_in_single_quoted_literal {
                         return Ok(Some(json!([])));
                     }
@@ -3030,39 +3167,74 @@ impl LspServer {
                         // callable both encloses the cursor and does not
                         // carry the method's name (same-name recursion still
                         // navigates to its own declaration).
+                        //
+                        // #18761: the selector identity comes from the AST
+                        // classification first — the arrow bytes name the call
+                        // too (the text regexes find no identifier to capture
+                        // there, so a cursor on `->` used to leak the
+                        // enclosing sub), and a chained receiver makes the
+                        // enclosing sub wrong *even when the names coincide*:
+                        // same-name recursion is only a plausible intent for a
+                        // plain variable receiver, while `$self->order->total`
+                        // resolves — when it resolves at all — to the
+                        // accessor's `isa` class, never to the enclosing sub.
                         let var_method_re = get_var_method_regex()?;
-                        let cursor_method_name = regex_capture_text_at_cursor(
-                            get_arrow_method_regex()?,
-                            &text_around,
-                            cursor_in_text,
-                            2,
-                        )
-                        .or_else(|| {
-                            regex_capture_text_at_cursor(
-                                var_method_re,
-                                &text_around,
-                                cursor_in_text,
-                                2,
-                            )
-                        });
-                        if let Some(method_name) = cursor_method_name
-                            && matches!(
-                                definition.kind,
-                                crate::symbol::SymbolKind::Subroutine
-                                    | crate::symbol::SymbolKind::Method
-                            )
-                            && definition.location.start <= offset
+                        let arrow_method_re = get_arrow_method_regex()?;
+                        let cursor_method_name = ast_selector
+                            .as_ref()
+                            .map(|selector| selector.method.as_str())
+                            .or_else(|| {
+                                regex_capture_text_at_cursor(
+                                    arrow_method_re,
+                                    &text_around,
+                                    cursor_in_text,
+                                    2,
+                                )
+                            })
+                            .or_else(|| {
+                                regex_capture_text_at_cursor(
+                                    var_method_re,
+                                    &text_around,
+                                    cursor_in_text,
+                                    2,
+                                )
+                            });
+                        if matches!(
+                            definition.kind,
+                            crate::symbol::SymbolKind::Subroutine
+                                | crate::symbol::SymbolKind::Method
+                        ) && definition.location.start <= offset
                             && offset <= definition.location.end
-                            && definition.name != method_name
                         {
-                            tracing::debug!(
-                                offset,
-                                method = %method_name,
-                                enclosing = %definition.name,
-                                "Suppressing same-file enclosing-sub fallback for an \
-                                 unresolvable method call (#18110)"
-                            );
-                            return Ok(Some(json!([])));
+                            // Chained receiver: the enclosing sub is never the
+                            // method's declaration, whatever its name.
+                            if ast_selector
+                                .as_ref()
+                                .is_some_and(|selector| selector.receiver_is_chain)
+                            {
+                                tracing::debug!(
+                                    offset,
+                                    method = ast_selector
+                                        .as_ref()
+                                        .map_or("", |selector| selector.method.as_str()),
+                                    enclosing = %definition.name,
+                                    "Suppressing same-file enclosing-sub fallback for a \
+                                     chained method receiver (#18761)"
+                                );
+                                return Ok(Some(json!([])));
+                            }
+                            if let Some(method_name) = cursor_method_name
+                                && definition.name != method_name
+                            {
+                                tracing::debug!(
+                                    offset,
+                                    method = %method_name,
+                                    enclosing = %definition.name,
+                                    "Suppressing same-file enclosing-sub fallback for an \
+                                     unresolvable method call (#18110)"
+                                );
+                                return Ok(Some(json!([])));
+                            }
                         }
                         // #17252: use the typed semantic identity at this tier.
                         // An alias span starts at its assignment, not a declaration
@@ -3410,6 +3582,14 @@ impl LspServer {
                 let byte_offset = u32::try_from(offset).ok()?;
                 return Some((symbol, byte_offset));
             }
+        }
+        // #18761: an unresolved `->method` selector has no honest symbol; the
+        // bare-token fallback would let the provider-decision receipt record a
+        // same-named workspace definition the live path refuses.
+        if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
+            && crate::declaration::method_call_selector_at(ast, offset, &doc.text).is_some()
+        {
+            return None;
         }
         let symbol = token_under_cursor(&doc.text, line as usize, character as usize)?;
         if symbol.is_empty() {
@@ -5052,6 +5232,74 @@ mod tests {
         // Unreadable text falls back to the ambient comparison.
         assert!(same_file_answer_package_matches(None, "Scale03::Mod00", "Scale03::Mod00"));
         assert!(!same_file_answer_package_matches(None, "Scale00::Mod00", "Scale03::Mod00"));
+    }
+
+    /// #19042 review: the same-file chained-receiver refusal keeps an answer
+    /// whose package matches the chain's resolved receiver and refuses unknown
+    /// or mismatched receivers. Unit-level because, with a ready workspace
+    /// index, an earlier tier answers the typed chain before this guard runs.
+    #[test]
+    fn method_receiver_same_file_verdict_keeps_skips_or_refuses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use ReceiverSameFileVerdict::{Keep, Refuse, SkipSameFile};
+        let typed = "package Store::Order;\nsub total_cents { return 1; }\npackage Store::Receipt;\nuse Moo;\nhas order => (is => 'ro', isa => 'Store::Order');\nsub total_cents { return 2; }\nsub render { my ($self) = @_; return $self->order->total_cents; }\n1;\n";
+        let ast = Parser::new(typed).parse()?;
+        let call = typed.find("->total_cents").ok_or("chain call")? + 2;
+        let selector = crate::declaration::method_call_selector_at(&ast, call, typed)
+            .ok_or("selector at chain call")?;
+        assert!(selector.receiver_is_chain);
+        let order_sub = typed.find("total_cents { return 1").ok_or("Order sub")?;
+        let receipt_sub = typed.find("total_cents { return 2").ok_or("Receipt sub")?;
+        // Matching package: keep the same-file answer.
+        assert_eq!(
+            method_receiver_same_file_verdict(&ast, call, Some(&selector), Some(order_sub)),
+            Keep
+        );
+        // Resolved receiver, mismatched package (the caller's own same-named
+        // sub): skip it so the workspace tier can answer — not a refusal.
+        assert_eq!(
+            method_receiver_same_file_verdict(&ast, call, Some(&selector), Some(receipt_sub)),
+            SkipSameFile
+        );
+        // Resolved receiver, no target location: skip as well.
+        assert_eq!(
+            method_receiver_same_file_verdict(&ast, call, Some(&selector), None),
+            SkipSameFile
+        );
+
+        // Unknown receiver (no `isa`): refuse even when a same-file sub exists.
+        let untyped = typed.replace(", isa => 'Store::Order'", "");
+        let ast = Parser::new(&untyped).parse()?;
+        let call = untyped.find("->total_cents").ok_or("chain call")? + 2;
+        let selector = crate::declaration::method_call_selector_at(&ast, call, &untyped)
+            .ok_or("selector at untyped chain call")?;
+        let order_sub = untyped.find("total_cents { return 1").ok_or("Order sub")?;
+        assert_eq!(
+            method_receiver_same_file_verdict(&ast, call, Some(&selector), Some(order_sub)),
+            Refuse
+        );
+
+        // An unresolved plain receiver (a sub parameter) refuses too: the
+        // caller package's same-named sub is not its method.
+        let param = "package P;\nsub in_stock { 0 }\nsub add { my ($self, $product) = @_; return $product->in_stock; }\n1;\n";
+        let ast = Parser::new(param).parse()?;
+        let call = param.find("->in_stock").ok_or("param call")? + 2;
+        let selector =
+            crate::declaration::method_call_selector_at(&ast, call, param).ok_or("selector")?;
+        let decoy = param.find("in_stock {").ok_or("decoy sub")?;
+        assert_eq!(
+            method_receiver_same_file_verdict(&ast, call, Some(&selector), Some(decoy)),
+            Refuse
+        );
+
+        // A resolved plain receiver keeps the provider's answer.
+        let plain = "package P;\nsub go { my ($self) = @_; return $self->go; }\n1;\n";
+        let ast = Parser::new(plain).parse()?;
+        let call = plain.find("->go").ok_or("plain call")? + 2;
+        let selector =
+            crate::declaration::method_call_selector_at(&ast, call, plain).ok_or("selector")?;
+        assert_eq!(method_receiver_same_file_verdict(&ast, call, Some(&selector), Some(0)), Keep);
+        Ok(())
     }
 
     fn serde_freshness_spelling(variant: ProviderDecisionFreshness) -> Option<String> {
