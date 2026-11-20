@@ -51,7 +51,7 @@ perllsp --health
 | coc.nvim | configure `languageserver.perl-lsp` in `coc-settings.json` to launch `perllsp --stdio`; works in Neovim and Vim when the buffer filetype is `perl` | [docs/EDITORS/COC_NEOVIM_SETUP.md](../EDITORS/COC_NEOVIM_SETUP.md) |
 | Emacs | use `lsp-mode` or `eglot` with `perllsp --stdio` | [docs/EDITORS/EMACS_SETUP.md](../EDITORS/EMACS_SETUP.md) |
 | Helix | use the reviewed manual Perl 5 override; released stable and current master are separate client cohorts | [docs/EDITORS/HELIX_SETUP.md](../EDITORS/HELIX_SETUP.md) |
-| Zed | **Planned / not proven:** the public Perl extension does not register `perllsp`; do not reuse its independent `perl-lsp` ID | [docs/EDITORS/ZED_SETUP.md](../EDITORS/ZED_SETUP.md) |
+| Zed | **Planned / not proven:** the proposed `perl-lsp-rs` provider has no public setup | [docs/EDITORS/ZED_SETUP.md](../EDITORS/ZED_SETUP.md) |
 | Sublime Text | register `perllsp` in LSP package settings | [docs/EDITORS/SUBLIME_SETUP.md](../EDITORS/SUBLIME_SETUP.md) |
 | Amazon Kiro | register a Perl LSP client using `perllsp --stdio` | [docs/EDITORS/KIRO_SETUP.md](../EDITORS/KIRO_SETUP.md) |
 | Claude Code | provide a plugin `.lsp.json` pointing to `perllsp --stdio` | [docs/EDITORS/CLAUDE_CODE_SETUP.md](../EDITORS/CLAUDE_CODE_SETUP.md) |
@@ -200,20 +200,14 @@ and evidence boundaries.
 
 ### Zed
 
-**Planned / not proven.** Zed requires its Perl extension to register each
-available language-server ID. The public extension currently registers
+**Planned / not proven.** The public Perl extension registers
 `perlnavigator-server` for Perl Navigator and `perl-lsp` for
-`tree-sitter-perl/perl-tree-sitter-lsp`; it does not register EffortlessMetrics
-`perllsp`.
+`tree-sitter-perl/perl-tree-sitter-lsp`. EffortlessMetrics proposes a separate
+provider, `perl-lsp-rs`, to launch `perllsp --stdio`. Public setup requires a
+released extension that registers the dedicated provider.
 
-Do not override the existing `perl-lsp` ID to launch `perllsp`. The repository
-has prepared a separate `perllsp` registration and checked submission packet,
-but it remains a development artifact until it is submitted, accepted, released,
-and exercised in the actual host.
-
-See [docs/EDITORS/ZED_SETUP.md](../EDITORS/ZED_SETUP.md) for the product-identity
-boundary and [docs/integrations/ZED_UPSTREAM_SUBMISSION.md](../integrations/ZED_UPSTREAM_SUBMISSION.md)
-for the exact upstream candidate.
+See the [Zed integration status](../EDITORS/ZED_SETUP.md) for the source
+snapshot and evidence required for public support.
 
 ### Sublime Text
 

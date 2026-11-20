@@ -63,7 +63,8 @@ The README is a front door, not the metric source of truth. Current release post
 - **Workspace intelligence**: module resolution, symbol indexing, stale-index guards, multi-root workspaces, and workspace-aware rename.
 - **Debug adapter**: breakpoints, stepping, stack frames, variables, evaluate, and launch/attach flows.
 - **Editor integrations**: VS Code is the packaged first-class path. Generic LSP setup is documented for Neovim, Vim, Emacs, Helix, and Sublime, with actual-host evidence tracked separately from configuration prose.
-- **Zed integration: planned / not proven**: the public Perl extension does not yet register the EffortlessMetrics `perllsp` server ID. Do not repoint its independent `perl-lsp` ID to this product.
+
+**Zed integration: planned / not proven.** A dedicated provider ID, `perl-lsp-rs`, is proposed for the `perllsp` executable. See the [Zed integration status](docs/EDITORS/ZED_SETUP.md).
 
 ## Install
 
@@ -171,9 +172,9 @@ when you only need to confirm that the executable starts; it prints `ok <version
 
 Generic LSP clients can launch `perllsp --stdio` after installing a release
 binary, but each editor still needs a working registration/configuration route
-and its own evidence before this project calls that host supported. Zed is not
-currently on that list because its public Perl extension does not register
-`perllsp`.
+and its own evidence before this project calls that host supported. For Zed,
+the proposed `perl-lsp-rs` provider still requires registration in the public
+Perl extension and evidence from an installed Zed host.
 
 Native formatting and native critic diagnostics do not require `perltidy` or
 `perlcritic`. Install those tools only when a project explicitly opts into

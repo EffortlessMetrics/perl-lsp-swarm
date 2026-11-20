@@ -2,106 +2,34 @@
 
 > **Status: planned / not proven.**
 >
-> The public Zed Perl extension does **not** register `perllsp`. Installing the
-> binary alone therefore does not create a working public Zed integration, and
-> this project does not currently claim direct Zed support.
+> The proposed EffortlessMetrics provider, `perl-lsp-rs`, has no public setup.
+> The public Perl extension must register the provider before Zed settings can
+> select it.
 
-## The current product identities
+## Perl providers
 
-The public Perl extension currently exposes two independent servers:
+The [captured upstream manifest](https://github.com/tree-sitter-perl/zed-perl/blob/286bfb84548d25a95214dea92c347c56451cf14c/extension.toml)
+for the public Zed Perl extension (extension ID `perl`) registers two providers:
 
 | Zed server ID | Product |
 | --- | --- |
 | `perlnavigator-server` | Perl Navigator |
 | `perl-lsp` | `tree-sitter-perl/perl-tree-sitter-lsp` |
 
-EffortlessMetrics ships a different executable and product:
+The proposed third provider is `perl-lsp-rs`, displayed as **Perl LSP
+(EffortlessMetrics)**. Its product is `EffortlessMetrics/perl-lsp`, and its
+launch command is `perllsp --stdio`. The existing `perl-lsp` settings belong
+to the tree-sitter-perl provider. Leave its binary path assigned to that
+provider.
 
-| Intended Zed server ID | Product |
-| --- | --- |
-| `perllsp` | `EffortlessMetrics/perl-lsp` |
+## Development candidate
 
-Do not configure the existing `perl-lsp` ID to launch `perllsp`. That substitutes
-one product behind another product's identity and can make logs, downloads,
-settings, and support evidence point at the wrong server.
-
-## Why `settings.json` is not enough
-
-Zed language extensions register the server IDs available for a language. The
-`lsp` section in Zed settings can configure or override an already registered
-server, but it does not register a new arbitrary server for Perl.
-
-A correct public route therefore requires the Perl extension to register a
-third, dedicated `perllsp` server ID and dispatch it explicitly to
-`perllsp --stdio`.
-
-## Staged upstream candidate
-
-The repository carries an initial candidate under:
-
-```text
-.ci/fixtures/zed-perl-upstream/
-```
-
-It is bound to an exact `tree-sitter-perl/zed-perl` base and currently stages:
-
-- a separate `perllsp` server registration;
-- exhaustive dispatch that rejects unknown IDs instead of falling through to
-  Perl Navigator;
-- explicit binary override, PATH, and managed-download resolution;
-- managed downloads from `EffortlessMetrics/perl-lsp` for checked release
-  targets;
-- exact `--stdio` launch with non-LSP routes rejected;
-- `.PL`, `.psgi`, `.cgi`, and `.fcgi` activation while preserving the separate
-  POD language;
-- default mappings for `perllsp` custom semantic-token types;
-- a separate Zed-defaults fragment that keeps both alternative Perl servers
-  dormant until selected.
-
-That candidate is not yet submission-ready. Its settings route, public assets,
-default-selection behavior, and actual Zed host journey have separate issue and
-receipt gates under the Zed programme. See
-[ZED_UPSTREAM_SUBMISSION.md](../integrations/ZED_UPSTREAM_SUBMISSION.md) for the
-current exact-base staging material.
-
-## Expected configuration after upstream registration
-
-This is the intended future shape, not a currently supported public setup. Once
-a released Perl extension actually registers `perllsp`, select it and disable
-the other Perl servers:
-
-```json
-{
-  "languages": {
-    "Perl": {
-      "language_servers": [
-        "perllsp",
-        "!perlnavigator-server",
-        "!perl-lsp",
-        "..."
-      ]
-    }
-  }
-}
-```
-
-A user-installed binary can then be selected through the dedicated identity:
-
-```json
-{
-  "lsp": {
-    "perllsp": {
-      "binary": {
-        "path": "/absolute/path/to/perllsp",
-        "arguments": ["--stdio"]
-      }
-    }
-  }
-}
-```
-
-Until the registration exists in a released extension, that settings entry has
-no public server to configure.
+The repository stages an extension candidate under
+`.ci/fixtures/zed-perl-upstream/`. Its provisional registration belongs to the
+staged fixture. The public provider proposal is tracked in
+[#10842](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10842).
+See the [upstream submission guide](../integrations/ZED_UPSTREAM_SUBMISSION.md)
+for the exact-base staging material.
 
 ## Project configuration
 
@@ -138,31 +66,21 @@ Zed debugger support is a separate evidence surface from the language-server
 row above; its current status and earned cells are projected by the generated
 surface [ZED_DAP_SUPPORT.md](ZED_DAP_SUPPORT.md) from the committed journey
 receipts. Installing the Perl extension does not by itself prove debugging.
-The `perl-dap` adapter identity never aliases the `perllsp`, `perl-lsp`, or
-`perlnavigator-server` server IDs, that page's status never changes this
-page's LSP verdict, and an LSP change never alters the debugger cells.
+The `perl-dap` adapter has its own identity and evidence. Its status never
+changes this page's LSP verdict, and an LSP change never alters the debugger cells.
 
 ## Evidence required before promotion
 
-Merging or compiling the extension is not enough to promote the support claim.
-The first actual-host receipt must bind:
+Generic LSP operation shows that the native executable can serve a protocol
+client. A staged extension and a build establish repository-level facts.
+An exact-source development-extension receipt must then bind the actual Zed
+version and platform, the extension source and build, the selected provider,
+the binary identity, and the behavior observed in that host.
 
-```text
-Zed version and platform
-Perl extension version/ref
-perllsp path, version, build identity, and hash
-winning server ID
-workspace root/configuration behavior
-pull diagnostics after open and edit
-completion plus hover/navigation
-one edit followed by a changed re-query result
-one applied workspace edit
-shutdown, exit, and orphan-process result
-```
-
-A second receipt must repeat the journey using the released public extension
-and a public `perllsp` artifact. Only then may the support registry and generated
-documentation promote the relevant Zed cells.
+Public artifact execution and official registry publication are separate
+milestones. Public support requires an installed-host receipt using the
+released Perl extension and exact public executable, followed by projection
+of the earned cells into the support registry and generated documentation.
 
 ## Competing Perl tooling
 
