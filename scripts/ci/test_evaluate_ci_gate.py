@@ -10,6 +10,7 @@ import os
 import subprocess
 import re
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -59,9 +60,27 @@ def _merge_gate_block() -> str:
     job's own boundaries rather than by searching for a step name is what
     keeps an edit to a *different* job from silently satisfying these
     assertions.
+
+    `merge-gate` is the job that computes the verdict. The conclusion is
+    published by a second job (`merge-gate-conclusion`), sliced separately
+    below: the two are one aggregate, but they publish two different things,
+    and a claim about one is not a claim about the other.
     """
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     start = workflow.index("  merge-gate:\n")
+    end = workflow.index("  merge-gate-conclusion:\n", start)
+    return workflow[start:end]
+
+
+def _merge_gate_conclusion_block() -> str:
+    """The `merge-gate-conclusion` job's text from the real workflow file.
+
+    The job that publishes the conclusion under the historical check name
+    "CI Gate (Advisory Aggregate)". It is the surface #19036 is about: the
+    conclusion a reader of the check list, a dashboard, or an agent sees.
+    """
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    start = workflow.index("  merge-gate-conclusion:\n")
     end = workflow.index("\n  # \u2500\u2500 UX Tests", start)
     return workflow[start:end]
 
@@ -236,9 +255,8 @@ class AggregateWiringTests(unittest.TestCase):
     def _exit_status(self, needs: dict, **env: str) -> tuple[int, str]:
         """Drive `main()` end to end and return its exit code and summary.
 
-        The exit code is the whole interface between this classifier and the
-        check's colour: the aggregate job's only step is
-        `python3 scripts/ci/evaluate_ci_gate.py`. A test that asserts on
+        The exit code is the interface between this classifier and the
+        verdict job's own conclusion. A test that asserts on
         `verdict.status` alone passes identically whether or not that status
         ever reaches GitHub, so every claim about red or green is made here.
         """
@@ -267,6 +285,57 @@ class AggregateWiringTests(unittest.TestCase):
                 return line
         return None
 
+    def _exit_status_and_verdict(self, needs: dict, **env: str) -> tuple[int, str, str]:
+        """Drive `main()` end to end: exit code, summary, and step output.
+
+        The exit code is what the verdict job publishes; the step output is
+        what the conclusion job reads to decide its own conclusion. Both are
+        asserted, because a verdict that never leaves the job is a
+        classification nothing can publish.
+        """
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            github_output = Path(tmp) / "github_output"
+            environ = {
+                "NEEDS_JSON": json.dumps(needs),
+                "EVENT_NAME": "pull_request",
+                "RUN_HEAD_SHA": TESTED_HEAD,
+                "REPLACEMENT_RUN_ID": REPLACEMENT_RUN,
+                "GITHUB_OUTPUT": str(github_output),
+            }
+            environ.update(env)
+            with mock.patch.dict(os.environ, environ, clear=True):
+                with redirect_stdout(output):
+                    status = gate.main()
+            exported = (
+                github_output.read_text(encoding="utf-8")
+                if github_output.exists()
+                else ""
+            )
+        return status, output.getvalue(), exported
+
+    def test_a_draft_run_and_a_pass_run_publish_different_conclusions(self) -> None:
+        """The negative control #19036 asks for, end to end.
+
+        A scoped no-op must not leave behind the same conclusion as a real
+        pass. The exit code alone cannot show that -- both are zero -- so
+        the published conclusion is what is asserted, for both paths.
+        """
+        draft = applicable_needs(shard_result="skipped")
+        draft["draft-pr-check"]["outputs"]["run_ci"] = "false"
+        draft["preflight-latest-check"] = {"result": "skipped", "outputs": {}}
+        status, summary, exported = self._exit_status_and_verdict(
+            draft, PULL_REQUEST_DRAFT="true"
+        )
+        self.assertEqual(0, status)
+        self.assertIn("verdict=scoped_noop", exported)
+        self.assertEqual("skipped", gate.published_conclusion("scoped_noop"))
+
+        passed = applicable_needs()
+        status, summary, exported = self._exit_status_and_verdict(passed)
+        self.assertEqual(0, status)
+        self.assertIn("verdict=success", exported)
+        self.assertEqual("success", gate.published_conclusion("success"))
     def test_the_16087_case_stays_red_but_says_why(self) -> None:
         """The #16087 case: red is right, the sentence was the defect.
 
@@ -797,18 +866,27 @@ class AggregateWiringTests(unittest.TestCase):
             "both heads must be exported before the step that compares them",
         )
 
-    def test_workflow_uses_one_unconditional_job_check(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        start = workflow.index("  merge-gate:\n")
-        end = workflow.index("\n  # \u2500\u2500 UX Tests", start)
-        block = workflow[start:end]
+    def test_the_verdict_job_is_unconditional_and_classifies_the_dependencies(self) -> None:
+        """The verdict job: always reachable, and it sees what it classifies.
 
-        self.assertIn("name: CI Gate (Advisory Aggregate)", block)
+        It is unconditional on purpose. A verdict that is only computed on
+        the routes where the conclusion is interesting is a verdict nobody
+        can publish, and the scoped no-op routes are exactly where the
+        classifier has something to say.
+        """
+        block = _merge_gate_block()
+
+        self.assertIn("name: CI Gate Aggregate Verdict", block)
         self.assertIn("if: always()", block)
         self.assertIn("python3 scripts/ci/evaluate_ci_gate.py", block)
         self.assertNotIn("github.event.pull_request.head.sha", block)
         self.assertNotIn("statuses: write", block)
         self.assertNotIn("ci/merge-gate", block)
+
+        # The verdict has to leave this job: a job output is the only
+        # channel between the two jobs of one aggregate.
+        self.assertIn("outputs:", block)
+        self.assertIn("verdict: ${{ steps.gate.outputs.verdict }}", block)
 
         needs_match = re.search(
             r"\n    needs:\n(?P<items>(?:      - [^\n]+\n)+)",
@@ -821,7 +899,87 @@ class AggregateWiringTests(unittest.TestCase):
         )
         self.assertEqual(gate.EXPECTED_DEPENDENCIES, actual)
 
+    def test_the_conclusion_job_keeps_the_historical_name_and_the_read_only_scope(self) -> None:
+        """The conclusion job: the same check name, a narrower scope.
+
+        The name is the continuity contract with every existing advisory
+        consumer of "CI Gate (Advisory Aggregate)"; the scope is the security
+        contract: a pull-request-triggered workflow that could write a check
+        run could forge the conclusion instead of earning it.
+        """
+        block = _merge_gate_conclusion_block()
+
+        self.assertIn("name: CI Gate (Advisory Aggregate)", block)
+        self.assertIn(
+            "python3 scripts/ci/evaluate_ci_gate.py --publish-conclusion", block
+        )
+        self.assertNotIn("github.event.pull_request.head.sha", block)
+
+        needs_match = re.search(
+            r"\n    needs:\n(?P<items>(?:      - [^\n]+\n)+)",
+            block,
+        )
+        self.assertIsNotNone(needs_match)
+        actual = tuple(
+            line.strip()[2:]
+            for line in needs_match.group("items").splitlines()
+        )
+        self.assertEqual(("merge-gate",), actual)
+
+        permissions = re.search(
+            r"\n    permissions:\n(?P<body>(?:      \S.*\n)+)", block
+        )
+        self.assertIsNotNone(permissions)
+        self.assertNotIn("write", permissions.group("body"))
+
+    def test_the_workflow_skips_exactly_the_verdicts_the_mapping_calls_skipped(self) -> None:
+        """The workflow's condition and the classifier's table cannot drift.
+
+        `skipped` is reachable only by not running the job, so the job's
+        condition has to name every verdict the mapping publishes as
+        `skipped` -- and no others. A verdict added to the table without a
+        matching workflow condition fails here instead of publishing a
+        conclusion nobody chose.
+        """
+        skipped = {
+            status
+            for status, conclusion in gate.PUBLISHED_CONCLUSIONS.items()
+            if conclusion == "skipped"
+        }
+        self.assertEqual({"scoped_noop"}, skipped)
+
+        block = _merge_gate_conclusion_block()
+        condition = re.search(
+            r"if: always\(\) && needs\.merge-gate\.outputs\.verdict != '([^']+)'",
+            block,
+        )
+        self.assertIsNotNone(condition)
+        self.assertEqual(sorted(skipped), [condition.group(1)])
+
     def test_policy_records_advisory_hardening_without_claiming_live_enforcement(self) -> None:
+        policy = (ROOT / ".ci/policies/required-checks.toml").read_text(
+            encoding="utf-8"
+        )
+        start = policy.index('name = "CI Gate Aggregate Verdict"')
+        end = policy.index("\n[[checks]]", start)
+        row = policy[start:end]
+
+        self.assertIn('job = "merge-gate"', row)
+        self.assertIn('applicability = "always-or-scoped-noop"', row)
+        self.assertIn("required = false", row)
+        self.assertIn('policy_role = "advisory"', row)
+        self.assertIn('enforcement = "neither"', row)
+        self.assertIn("#12911", row)
+        self.assertNotIn("required-promotion", row)
+
+    def test_policy_records_the_conclusion_as_conditional_and_advisory(self) -> None:
+        """The conclusion row: conditional, advisory, and still not required.
+
+        `conditional` is the truth now. The gate does not run on a scoped
+        no-op, so it cannot claim the applicability of a job that always
+        runs -- and the enforcement contract checks exactly that pairing, so
+        the ledger and the workflow have to agree.
+        """
         policy = (ROOT / ".ci/policies/required-checks.toml").read_text(
             encoding="utf-8"
         )
@@ -829,12 +987,80 @@ class AggregateWiringTests(unittest.TestCase):
         end = policy.index("\n[[checks]]", start)
         row = policy[start:end]
 
-        self.assertIn('applicability = "always-or-scoped-noop"', row)
+        self.assertIn('job = "merge-gate-conclusion"', row)
+        self.assertIn('applicability = "conditional"', row)
         self.assertIn("required = false", row)
         self.assertIn('policy_role = "advisory"', row)
         self.assertIn('enforcement = "neither"', row)
-        self.assertIn("#12911", row)
+        self.assertIn("#19036", row)
         self.assertNotIn("required-promotion", row)
+
+
+class PublishedConclusionTests(unittest.TestCase):
+    """The conclusion the aggregate publishes, per verdict (#19036).
+
+    The verdict and the conclusion are different claims. `success` says the
+    merge-gate tier ran and passed; `skipped` says it did not run at all.
+    Before #19036 both published `success`, so a draft pull request's green
+    aggregate was indistinguishable from a validated merge-gate pass -- the
+    defect the issue reported, on the surface that matters, because the
+    conclusion is what a check list, a dashboard, or an agent reads.
+    """
+
+    def test_a_noop_is_not_indistinguishable_from_a_pass(self) -> None:
+        self.assertEqual("success", gate.published_conclusion("success"))
+        self.assertEqual("skipped", gate.published_conclusion("scoped_noop"))
+        self.assertNotEqual(
+            gate.published_conclusion("success"),
+            gate.published_conclusion("scoped_noop"),
+        )
+
+    def test_every_failing_verdict_publishes_failure(self) -> None:
+        for status in ("failure", "superseded", "no_verdict"):
+            with self.subTest(status=status):
+                self.assertEqual("failure", gate.published_conclusion(status))
+
+    def test_an_unknown_verdict_publishes_failure(self) -> None:
+        self.assertEqual("failure", gate.published_conclusion("not_a_verdict"))
+        self.assertEqual("failure", gate.published_conclusion(""))
+
+    def test_the_mapping_covers_exactly_the_statuses_the_script_produces(self) -> None:
+        """A verdict the table does not know about fails closed.
+
+        The table is an allowlist, so a status added to the classifier
+        without a decision here publishes `failure`. This test fails first,
+        so the decision is made on purpose rather than by accident.
+        """
+        source = SCRIPT.read_text(encoding="utf-8")
+        produced = set(re.findall(r'Verdict\(\s*"([a-z_]+)"', source))
+        self.assertTrue(produced)
+        self.assertEqual(produced, set(gate.PUBLISHED_CONCLUSIONS))
+
+    def test_the_conclusion_job_exits_zero_only_for_a_pass(self) -> None:
+        with mock.patch.dict(os.environ, {"AGGREGATE_VERDICT": "success"}):
+            self.assertEqual(0, gate.publish_conclusion())
+
+    def test_a_noop_that_reached_the_gate_job_fails_closed(self) -> None:
+        """The gate must not run on a scoped no-op.
+
+        If it does, the workflow's condition and the classifier disagree.
+        That disagreement fails closed instead of publishing a pass.
+        """
+        with mock.patch.dict(os.environ, {"AGGREGATE_VERDICT": "scoped_noop"}):
+            self.assertEqual(1, gate.publish_conclusion())
+
+    def test_a_missing_verdict_fails_closed(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(1, gate.publish_conclusion())
+
+    def test_the_verdict_leaves_the_job_as_a_step_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "github_output"
+            with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                gate._export_verdict("scoped_noop")
+            self.assertEqual(
+                "verdict=scoped_noop\n", output.read_text(encoding="utf-8")
+            )
 
 
 class ReplacementRunFilterTests(unittest.TestCase):

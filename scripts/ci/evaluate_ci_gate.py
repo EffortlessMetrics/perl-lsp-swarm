@@ -1,11 +1,37 @@
 #!/usr/bin/env python3
-"""Fail-closed finalizer for the existing CI Gate dependency aggregate."""
+"""Fail-closed finalizer for the existing CI Gate dependency aggregate.
+
+Two surfaces come out of this script, and they are not the same thing.
+
+The **verdict** is the classification of the aggregate's dependencies
+(`success`, `scoped_noop`, `failure`, `superseded`, `no_verdict`). It is
+computed here, in Python, from the run's own `needs` context.
+
+The **conclusion** is what GitHub records against the check, and it is what a
+reader of the check list, a dashboard, or an agent sees. `success` is a claim
+that the merge-gate tier ran and passed; `scoped_noop` is a claim that the
+tier never ran at all. #19036 is the fact that those two claims were
+indistinguishable on the conclusion surface, because `scoped_noop` was folded
+into the green set and published as `success`.
+
+GitHub gives a workflow job exactly four conclusions: `success`, `failure`,
+`cancelled` and `skipped`. There is no job conclusion for "this gate
+deliberately had nothing to do", and the Checks API that could publish one
+needs `checks: write` — which `workflow_security_ratchet.py` forbids in a
+pull-request-triggered workflow, because a candidate could then forge a
+conclusion instead of earning it. So the honest shape is the one this
+repository can actually publish: the aggregate's *gate* does not run on a
+scoped no-op, and GitHub records `skipped` for it. A skipped gate says "not
+applicable"; a green one says "the tier passed". Those are different claims,
+and only one of them is true on a draft pull request.
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -28,12 +54,40 @@ SCOPED_NOOP_ALLOWED_SKIPS = frozenset(EXPECTED_DEPENDENCIES) - {
 # exit 0 merely by existing. `main` is the only consumer.
 GREEN_STATUSES = frozenset({"success", "scoped_noop"})
 
+# The conclusion each verdict publishes, and the whole vocabulary a workflow
+# job has. An allowlist for the same reason `GREEN_STATUSES` is one: a verdict
+# nobody taught this mapping about publishes `failure`, never `success`.
+#
+# `scoped_noop` maps to `skipped`, which is reachable only by *not running*
+# the gate — a running job can publish `success` or `failure` and nothing
+# else. The workflow's gate job is therefore conditioned on the verdict this
+# script publishes, and the condition and this mapping are asserted against
+# each other in `test_evaluate_ci_gate.py` so the two cannot drift.
+PUBLISHED_CONCLUSIONS = {
+    "success": "success",
+    "scoped_noop": "skipped",
+    "failure": "failure",
+    "superseded": "failure",
+    "no_verdict": "failure",
+}
+
 
 @dataclass(frozen=True)
 class Verdict:
     status: str
     reason: str
     blockers: tuple[str, ...] = ()
+
+
+def published_conclusion(status: str) -> str:
+    """The check-run conclusion a verdict publishes.
+
+    Fail-closed, like every other mapping here: a verdict this table does
+    not know about publishes `failure`. The table is the answer to #19036 —
+    a verdict that proves nothing must not publish the conclusion that says
+    it proved everything.
+    """
+    return PUBLISHED_CONCLUSIONS.get(status, "failure")
 
 
 def _dependency(needs: Mapping[str, Any], name: str) -> Mapping[str, Any] | None:
@@ -324,7 +378,52 @@ def annotation(verdict: Verdict) -> str:
     return f"::error title=CI Gate aggregate::{text}"
 
 
-def main() -> int:
+def _export_verdict(status: str) -> None:
+    """Publish the verdict to the step output, for the gate job to read.
+
+    The verdict has to cross from the job that computes it to the job that
+    publishes the conclusion, and a job output is the only channel between
+    two jobs in one workflow run. Nothing is written when `GITHUB_OUTPUT` is
+    absent, because this script is also run outside a runner by its own
+    tests.
+    """
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path:
+        return
+    with open(output_path, "a", encoding="utf-8") as handle:
+        handle.write(f"verdict={status}\n")
+
+
+def publish_conclusion() -> int:
+    """Publish a verdict's conclusion as this job's exit code.
+
+    The gate job runs only when the route is applicable, so the conclusions
+    reachable here are `success` and `failure`. `skipped` is not reachable
+    from an exit code at all — that is the whole reason the gate is a
+    separate job. If this job is running anyway, the workflow decided the
+    route applies; a disagreement between that decision and the verdict must
+    fail closed rather than publish a pass.
+    """
+    status = os.environ.get("AGGREGATE_VERDICT", "").strip()
+    conclusion = published_conclusion(status)
+    print(
+        f"CI Gate aggregate: verdict={status or '<none>'}; "
+        f"published conclusion={conclusion}"
+    )
+    if conclusion == "success":
+        return 0
+    print(
+        "::error title=CI Gate aggregate::"
+        f"verdict={status or '<none>'}; published conclusion={conclusion}"
+    )
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--publish-conclusion" in args:
+        return publish_conclusion()
+
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     try:
         raw_needs = json.loads(os.environ.get("NEEDS_JSON", ""))
@@ -348,6 +447,7 @@ def main() -> int:
     if summary_path:
         Path(summary_path).write_text(summary, encoding="utf-8")
     print(summary, end="")
+    _export_verdict(verdict.status)
 
     # One binding for both the colour and the annotation, so they cannot
     # disagree. An annotation is emitted only on a red verdict: GitHub
