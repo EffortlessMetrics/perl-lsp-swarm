@@ -441,6 +441,38 @@ fn tampered_manifest_file_fails_closed_at_load() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn rejects_schema_version_newer_than_known_max() -> Result<()> {
+    let mut value = real_value()?;
+    value["schema_version"] = serde_json::Value::Number(2_u64.into());
+    let manifest = parse_manifest(&value)?;
+    let outcome = validate_manifest(&manifest);
+    if outcome.is_ok() {
+        bail!("schema_version newer than known max passed structural validation");
+    }
+    let message = outcome.err().map(|error| error.to_string()).unwrap_or_default();
+    if !message.contains("newer than known max") {
+        bail!("wrong failure for newer schema_version: {message}");
+    }
+    Ok(())
+}
+
+#[test]
+fn rejects_unsupported_older_schema_version() -> Result<()> {
+    let mut value = real_value()?;
+    value["schema_version"] = serde_json::Value::Number(0_u64.into());
+    let manifest = parse_manifest(&value)?;
+    let outcome = validate_manifest(&manifest);
+    if outcome.is_ok() {
+        bail!("unsupported older schema_version passed structural validation");
+    }
+    let message = outcome.err().map(|error| error.to_string()).unwrap_or_default();
+    if !message.contains("schema_version mismatch") {
+        bail!("wrong failure for unsupported schema_version: {message}");
+    }
+    Ok(())
+}
+
+#[test]
 fn current_manifest_passes_structural_laws() -> Result<()> {
     let manifest = parse_manifest(&real_value()?)?;
     assert!(validate_manifest(&manifest).is_ok(), "pinned manifest must pass structural laws");
