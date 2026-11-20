@@ -118,25 +118,9 @@ mkdir -p target/corpus-receipts
 cargo xtask cpan-corpus sweep \
   --install-dir target/cpan-corpus-bounded \
   --output target/corpus-receipts/bounded-sweep.json
-python3 - <<'PY'
-import json
-import os
-from pathlib import Path
-
-report = json.loads(
-    Path('target/corpus-receipts/bounded-sweep.json').read_text(encoding='utf-8')
-)
-total = report.get('total_files', 0)
-clean = report.get('clean_files', 0)
-pct = (clean / total * 100) if total > 0 else 0
-summary = Path(os.environ['GITHUB_STEP_SUMMARY'])
-with summary.open('a', encoding='utf-8') as handle:
-    handle.write('### CPAN Corpus (Bounded — Top 50)\n')
-    handle.write('| Metric | Value |\n| --- | ---: |\n')
-    handle.write(f'| Total .pm files | {total} |\n')
-    handle.write(f'| Parse-clean | {clean} ({pct:.1f}%) |\n')
-    handle.write(f'| Parse failures | {total - clean} |\n')
-PY"#,
+python3 .ci/scripts/read-cpan-corpus-sweep-summary.py \
+  target/corpus-receipts/bounded-sweep.json \
+  --heading '### CPAN Corpus (Bounded — Top 50)'"#,
     ),
 ];
 
