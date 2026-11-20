@@ -709,6 +709,28 @@ jobs:
 
           api_ok=true
           TRUSTED_SCRIPT_AVAILABLE=false
+
+          # #19567: bind each subject to the event that produced its
+          # verdicts. main's HEAD verdicts come from the push event: a
+          # merge commit lands on main and the push run is the producer of
+          # main's "CI Gate shard (...)" rows. A candidate's verdicts come
+          # from the event this gate itself ran under -- pull_request or
+          # merge_group -- because the candidate subject SHA is the PR head
+          # or the merge-group head, and those are the SHAs the
+          # corresponding ci.yml event ran against.
+          #
+          # A workflow_dispatch ci.yml run on the same SHA is a different
+          # subject's run. It must never stand in for the authoritative
+          # one: an authoritative run whose suite is empty because it never
+          # executed is an evidence gap, not a licence to read another
+          # event's verdicts.
+          MAIN_EVENT="push"
+          CANDIDATE_EVENT=""
+          case "${EVENT_NAME}" in
+            pull_request) CANDIDATE_EVENT="pull_request" ;;
+            merge_group) CANDIDATE_EVENT="merge_group" ;;
+          esac
+
           read_main_sha() {
             gh api \
               -H "Accept: application/vnd.github+json" \
@@ -777,6 +799,18 @@ jobs:
           found at all, the failure degrades to a non-blocking evidence gap --
           an empty payload file plus a warning -- never to a block and never to
           a silent green.
+
+          A subject is bound to the event that produced it (``#19567``). The
+          reader takes the authoritative event as an argument and admits only
+          that event's runs: a ``pull_request`` subject's evidence comes from
+          the ``pull_request`` run, ``main``'s from the ``push`` run. A
+          ``workflow_dispatch`` run on the same SHA is a different subject's
+          run, and admitting it would let an authoritative run that never
+          executed read as another event's green verdicts. The attempt is
+          bound with it: a re-run keeps the run id and increments
+          ``run_attempt``, and the run object reports the current attempt's
+          own ``check_suite_id``, so the highest attempt the payload carries
+          is the current one and its suite is the only authoritative suite.
           """
 
           from __future__ import annotations
@@ -799,39 +833,85 @@ jobs:
               return [payload]
 
 
-          def canonical_run_ids(workflow_runs_payload: Any, subject_sha: str) -> set[int]:
-              """Return the canonical ``ci.yml`` run ids for one exact subject SHA."""
-              run_ids: set[int] = set()
+          def run_attempt(run: dict[str, Any]) -> int:
+              """Return a run's attempt number (1 when the API omits it)."""
+              attempt = run.get("run_attempt")
+              return attempt if isinstance(attempt, int) else 1
+
+
+          def authoritative_runs(
+              workflow_runs_payload: Any,
+              subject_sha: str,
+              event: str,
+          ) -> list[dict[str, Any]]:
+              """Return the authoritative event's current attempt for one subject.
+
+              A subject's evidence comes from the event that produced it. A
+              ``pull_request`` subject's verdicts come from the
+              ``pull_request`` run and ``main``'s from the ``push`` run. A
+              ``workflow_dispatch`` run on the same SHA is a different
+              subject's run: it must never stand in for the authoritative one.
+              Admitting it would let an authoritative run whose suite is
+              empty -- a run that never executed -- read as another event's
+              green verdicts, which is the same "no evidence read as success"
+              defect one level down.
+
+              The attempt is bound too. A re-run keeps the run id and
+              increments ``run_attempt``, and the run object reports the
+              current attempt's own ``check_suite_id``; the superseded
+              attempt's suite is not listed for the run, so the highest
+              attempt the payload carries is the current one and its suite
+              is the only authoritative suite for that run.
+              """
+              current: dict[int, dict[str, Any]] = {}
               for page in pages(workflow_runs_payload):
                   runs = page.get("workflow_runs", []) if isinstance(page, dict) else []
                   if not isinstance(runs, list):
                       continue
                   for run in runs:
-                      if not isinstance(run, dict) or run.get("head_sha") != subject_sha:
+                      if not isinstance(run, dict):
+                          continue
+                      if run.get("head_sha") != subject_sha:
+                          continue
+                      if run.get("event") != event:
                           continue
                       run_id = run.get("id")
-                      if isinstance(run_id, int):
-                          run_ids.add(run_id)
-              return run_ids
+                      if not isinstance(run_id, int):
+                          continue
+                      previous = current.get(run_id)
+                      if previous is None or run_attempt(run) > run_attempt(previous):
+                          current[run_id] = run
+              return list(current.values())
 
 
-          def canonical_suites(workflow_runs_payload: Any, subject_sha: str) -> list[int]:
+          def canonical_run_ids(
+              workflow_runs_payload: Any,
+              subject_sha: str,
+              event: str,
+          ) -> set[int]:
+              """Return the canonical ``ci.yml`` run ids for one subject SHA."""
+              return {
+                  run["id"]
+                  for run in authoritative_runs(workflow_runs_payload, subject_sha, event)
+              }
+
+
+          def canonical_suites(
+              workflow_runs_payload: Any,
+              subject_sha: str,
+              event: str,
+          ) -> list[int]:
               """Return the check suite ids the canonical ``ci.yml`` runs report.
 
               The suite id is read from the run object, so the canonical run's
               own suite is identified without scanning the commit's suites.
+              Only the authoritative event's current attempt contributes.
               """
               suite_ids: list[int] = []
-              for page in pages(workflow_runs_payload):
-                  runs = page.get("workflow_runs", []) if isinstance(page, dict) else []
-                  if not isinstance(runs, list):
-                      continue
-                  for run in runs:
-                      if not isinstance(run, dict) or run.get("head_sha") != subject_sha:
-                          continue
-                      suite_id = run.get("check_suite_id")
-                      if isinstance(suite_id, int) and suite_id not in suite_ids:
-                          suite_ids.append(suite_id)
+              for run in authoritative_runs(workflow_runs_payload, subject_sha, event):
+                  suite_id = run.get("check_suite_id")
+                  if isinstance(suite_id, int) and suite_id not in suite_ids:
+                      suite_ids.append(suite_id)
               return suite_ids
 
 
@@ -935,10 +1015,11 @@ jobs:
 
 
           def main(argv: list[str]) -> int:
-              if len(argv) != 5:
+              if len(argv) != 6:
                   print(
                       "usage: fetch_main_red_evidence.py "
-                      "<workflow-runs.json> <subject-sha> <output.json> <label>",
+                      "<workflow-runs.json> <subject-sha> <output.json> <label> "
+                      "<authoritative-event>",
                       file=sys.stderr,
                   )
                   return 2
@@ -946,6 +1027,7 @@ jobs:
               subject_sha = argv[2]
               out_path = Path(argv[3])
               label = argv[4]
+              event = argv[5]
               repository = os.environ.get("REPOSITORY", "")
 
               def degrade(reason: str) -> int:
@@ -960,17 +1042,24 @@ jobs:
               if not repository:
                   return degrade("the repository to read from is unknown")
 
+              if not event:
+                  return degrade(
+                      f"the authoritative event for the {label} subject is unknown"
+                  )
+
               try:
                   workflow_runs_payload = json.loads(runs_path.read_text(encoding="utf-8"))
               except (OSError, ValueError) as error:
                   return degrade(f"ci.yml run payload could not be read: {error}")
 
-              run_ids = canonical_run_ids(workflow_runs_payload, subject_sha)
+              run_ids = canonical_run_ids(workflow_runs_payload, subject_sha, event)
               if not run_ids:
-                  return degrade(f"no canonical ci.yml run for {subject_sha}")
-              suite_ids = canonical_suites(workflow_runs_payload, subject_sha)
+                  return degrade(f"no canonical {event} ci.yml run for {subject_sha}")
+              suite_ids = canonical_suites(workflow_runs_payload, subject_sha, event)
               if not suite_ids:
-                  return degrade(f"no canonical ci.yml run for {subject_sha} reports a check suite")
+                  return degrade(
+                      f"no canonical {event} ci.yml run for {subject_sha} reports a check suite"
+                  )
 
               suite_payloads: list[Any] = []
               for suite_id in suite_ids:
@@ -990,8 +1079,13 @@ jobs:
 
               selected = collect_canonical_runs(suite_payloads, run_ids)
               if selected is None:
+                  # The authoritative run exists but its suite reports no
+                  # check run: it never executed. That is an evidence gap,
+                  # and an evidence gap stays a gap -- it never becomes
+                  # another event's verdicts.
                   return degrade(
-                      "no canonical ci.yml check run names the canonical run"
+                      f"the canonical {event} ci.yml run for {subject_sha} "
+                      "reported no check run in its check suite"
                   )
 
               write_payload(out_path, selected)
@@ -1040,7 +1134,8 @@ jobs:
               "$probe_dir/main-workflow-runs.json" \
               "${MAIN_SHA_BEFORE}" \
               "$probe_dir/main-runs.json" \
-              main || api_ok=false
+              "main" \
+              "${MAIN_EVENT}" || api_ok=false
             gh api --paginate --slurp \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -1053,7 +1148,8 @@ jobs:
               "$probe_dir/candidate-workflow-runs.json" \
               "${CANDIDATE_SHA}" \
               "$probe_dir/candidate-runs.json" \
-              candidate || api_ok=false
+              "candidate" \
+              "${CANDIDATE_EVENT}" || api_ok=false
             CANDIDATE_WORKFLOW_SHA=""
             if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then
               CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE" candidate)" || {
@@ -1119,7 +1215,8 @@ jobs:
               "$probe_dir/candidate-workflow-runs.json" \
               "${CANDIDATE_SHA}" \
               "$probe_dir/candidate-runs.json" \
-              candidate || true
+              "candidate" \
+              "${CANDIDATE_EVENT}" || true
             CANDIDATE_WORKFLOW_SHA=""
             if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then
               CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE" candidate)" || {

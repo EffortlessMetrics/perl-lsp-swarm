@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract tests for the main-red refusal's evidence source (#19565).
+"""Contract tests for the main-red refusal's evidence source (#19565, #19567).
 
 The commit-level check-run census (``GET /repos/{repo}/commits/{sha}/check-runs``)
 returns only the most recent 1000 check suites for a commit and silently drops
@@ -13,10 +13,22 @@ which is complete and uncapped, and it must keep the check-run schema the
 trusted classifier already consumes -- observed fields only, never a derived
 or synthesised verdict. A missing suite or a failed fetch must degrade to a
 non-blocking evidence gap, never to a block and never to a silent green.
+
+#19567 binds the subject to the event that produced its verdicts. A
+``pull_request`` subject's evidence comes from the ``pull_request`` run and
+``main``'s from the ``push`` run. Without that binding, a
+``workflow_dispatch`` run on the same SHA stands in for the authoritative
+run, so an authoritative run that never executed reads as another event's
+green verdicts -- the same "no evidence read as success" defect one level
+down. The attempt is bound with it: a re-run keeps the run id, increments
+``run_attempt`` and reports the current attempt's own ``check_suite_id``, so
+only the current attempt's suite is authoritative.
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -26,6 +38,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "em-ci-routed-rust.yml"
@@ -45,6 +58,21 @@ CENSUS_PATTERN = re.compile(r"commits/[^\s\")]*check-runs(?=$|[\"'?&])")
 INVOCATION_PATTERN = re.compile(
     r"fetch_main_red_evidence\.py\"?[ \t]*(?:\\\r?\n[ \t]*\"[^\"]*\"[ \t]*)+"
 )
+
+# The live counterexample, measured on the GitHub REST API: PR #19392's head
+# carries two ci.yml runs on one SHA, and the authoritative event's suite is
+# empty because no job ever ran.
+LIVE_SHA = "89ceda719e2e8c8d0744f6f53f62dada9d7df5b0"
+LIVE_PULL_REQUEST_RUN = 44464451758
+LIVE_PULL_REQUEST_SUITE = 120361150442
+LIVE_DISPATCH_RUN = 44464451342
+LIVE_DISPATCH_SUITE = 120361149362
+# The live re-run shape: one run id, attempt 1's suite and attempt 2's
+# suite. The list endpoint reports attempt 2 (the current attempt) and
+# attempt 1's suite is reachable only through the run's previous attempt.
+LIVE_RERUN_RUN = 43985707605
+LIVE_RERUN_SUPERSEDED_SUITE = 119075331084
+LIVE_RERUN_CURRENT_SUITE = 119075337920
 
 
 def step_block(workflow: str, step_name: str) -> str:
@@ -96,7 +124,11 @@ def evidence_program(workflow: str) -> str:
 
 def load_program(workflow: str) -> dict:
     """Execute the shipped evidence reader and return its namespace."""
-    program = evidence_program(workflow)
+    return load_program_text(evidence_program(workflow))
+
+
+def load_program_text(program: str) -> dict:
+    """Execute an evidence reader program and return its namespace."""
     namespace: dict = {
         "__name__": "probe_evidence_reader",
         "__file__": PROGRAM_NAME,
@@ -107,6 +139,33 @@ def load_program(workflow: str) -> dict:
 
 def program_invocations(workflow: str) -> list[str]:
     return [match.group(0) for match in INVOCATION_PATTERN.finditer(probe_block(workflow))]
+
+
+def select_run_ids(namespace: dict, payload: dict, subject_sha: str, event: str):
+    """Return the run ids the reader admits for one subject and event.
+
+    A reader that takes the authoritative event binds it. A reader that
+    does not take one at all admits every run on the SHA, which is the
+    defect these contracts pin. The fallback keeps the assertion about
+    the reader's behaviour rather than about its argument list, so the
+    pre-repair reader is measured on what it selects instead of failing
+    on an arity error.
+    """
+    try:
+        return namespace["canonical_run_ids"](payload, subject_sha, event)
+    except TypeError:
+        return namespace["canonical_run_ids"](payload, subject_sha)
+
+
+def select_suites(namespace: dict, payload: dict, subject_sha: str, event: str):
+    """Return the check suite ids the reader admits for one subject and event.
+
+    See :func:`select_run_ids` for the fallback's rationale.
+    """
+    try:
+        return namespace["canonical_suites"](payload, subject_sha, event)
+    except TypeError:
+        return namespace["canonical_suites"](payload, subject_sha)
 
 
 def executable_text(block: str) -> str:
@@ -150,6 +209,26 @@ def validate_evidence_source(workflow: str) -> None:
         raise AssertionError(
             "the probe must read candidate evidence through the evidence reader"
         )
+    # #19567: the reader must bind the subject to the event that produced
+    # its verdicts, and the call sites must name that event. Without the
+    # binding, a workflow_dispatch run on the subject SHA stands in for the
+    # authoritative run.
+    if 'run.get("event") != event' not in program:
+        raise AssertionError(
+            "the evidence reader must bind the subject to its authoritative event"
+        )
+    if 'run.get("run_attempt")' not in program:
+        raise AssertionError(
+            "the evidence reader must bind the subject to the current attempt"
+        )
+    if not any('"${MAIN_EVENT}"' in invocation for invocation in invocations):
+        raise AssertionError(
+            "the probe must bind main's evidence to the event that produced main's verdicts"
+        )
+    if not any('"${CANDIDATE_EVENT}"' in invocation for invocation in invocations):
+        raise AssertionError(
+            "the probe must bind the candidate's evidence to the event that produced it"
+        )
 
 
 def shard_run(
@@ -180,19 +259,29 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
         namespace = load_program(self.workflow)
         payload = {
             "workflow_runs": [
-                {"id": 43982865194, "head_sha": "a" * 40, "check_suite_id": 119067894139},
-                {"id": 44578100891, "head_sha": "b" * 40, "check_suite_id": 120669076434},
+                {
+                    "id": 43982865194,
+                    "event": "push",
+                    "head_sha": "a" * 40,
+                    "check_suite_id": 119067894139,
+                },
+                {
+                    "id": 44578100891,
+                    "event": "push",
+                    "head_sha": "b" * 40,
+                    "check_suite_id": 120669076434,
+                },
             ]
         }
         self.assertEqual(
-            namespace["canonical_suites"](payload, "a" * 40),
+            namespace["canonical_suites"](payload, "a" * 40, "push"),
             [119067894139],
         )
         self.assertEqual(
-            namespace["canonical_run_ids"](payload, "b" * 40),
+            namespace["canonical_run_ids"](payload, "b" * 40, "push"),
             {44578100891},
         )
-        self.assertEqual(namespace["canonical_suites"](payload, "c" * 40), [])
+        self.assertEqual(namespace["canonical_suites"](payload, "c" * 40, "push"), [])
 
     def test_evidence_reader_keeps_only_canonical_run_check_runs(self) -> None:
         namespace = load_program(self.workflow)
@@ -250,6 +339,277 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
             written = json.loads(out_path.read_text(encoding="utf-8"))
         self.assertEqual(written, {"check_runs": [observed]})
 
+    # -- #19567: the subject is bound to its authoritative event and attempt.
+
+    @staticmethod
+    def _counterexample_runs() -> dict:
+        """Return the live counterexample's workflow-run payload.
+
+        PR #19392's head carries two ci.yml runs: the ``pull_request`` run
+        whose suite is empty because no job ever ran, and a
+        ``workflow_dispatch`` run whose suite holds eight green shards.
+        """
+        return {
+            "workflow_runs": [
+                {
+                    "id": LIVE_PULL_REQUEST_RUN,
+                    "event": "pull_request",
+                    "head_sha": LIVE_SHA,
+                    "check_suite_id": LIVE_PULL_REQUEST_SUITE,
+                    "run_attempt": 1,
+                },
+                {
+                    "id": LIVE_DISPATCH_RUN,
+                    "event": "workflow_dispatch",
+                    "head_sha": LIVE_SHA,
+                    "check_suite_id": LIVE_DISPATCH_SUITE,
+                    "run_attempt": 1,
+                },
+            ]
+        }
+
+    @staticmethod
+    def _counterexample_suites() -> dict:
+        """Return the live counterexample's per-suite check-run payloads."""
+        return {
+            LIVE_PULL_REQUEST_SUITE: {"check_runs": []},
+            LIVE_DISPATCH_SUITE: {
+                "check_runs": [
+                    shard_run(
+                        "CI Gate shard (meta)",
+                        LIVE_DISPATCH_RUN,
+                        head_sha=LIVE_SHA,
+                    ),
+                    shard_run(
+                        "CI Gate shard (policy)",
+                        LIVE_DISPATCH_RUN,
+                        head_sha=LIVE_SHA,
+                    ),
+                ]
+            },
+        }
+
+    def _run_reader_program(
+        self,
+        program: str,
+        runs_payload: dict,
+        suites: dict,
+        event: str,
+        label: str = "candidate",
+    ):
+        """Run a reader program against fixture suites.
+
+        Returns ``(status, stdout, payload text, fetched suite ids)``. The
+        suite fetch is replaced so the test observes which suites the
+        reader chose without touching the network.
+        """
+        namespace = load_program_text(program)
+        fetched: list[int] = []
+
+        def fake_fetch(repository: str, suite_id: int):
+            fetched.append(suite_id)
+            return suites[suite_id]
+
+        namespace["fetch_suite_check_runs"] = fake_fetch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runs_path = root / "runs.json"
+            runs_path.write_text(json.dumps(runs_payload), encoding="utf-8")
+            out_path = root / "out.json"
+            argv = [
+                PROGRAM_NAME,
+                str(runs_path),
+                LIVE_SHA,
+                str(out_path),
+                label,
+                event,
+            ]
+            stdout = io.StringIO()
+            with mock.patch.dict(
+                os.environ,
+                {"REPOSITORY": "EffortlessMetrics/perl-lsp-swarm"},
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    status = namespace["main"](argv)
+                    if status == 2:
+                        # A reader that does not take the authoritative
+                        # event at all. Call it the way it wants to be
+                        # called, so the test measures what it selects
+                        # rather than failing on an arity error.
+                        status = namespace["main"](argv[:5])
+            written = out_path.read_text(encoding="utf-8") if out_path.exists() else None
+        return status, stdout.getvalue(), written, fetched
+
+    def test_evidence_reader_binds_the_subject_to_its_authoritative_event(self) -> None:
+        """The subject's evidence comes from the authoritative event's run.
+
+        Discriminating assertion. It fails unless the reader filters the
+        subject's runs by the authoritative event: without that filter the
+        pre-repair reader admitted both runs on the SHA, and the
+        ``workflow_dispatch`` run stood in for the ``pull_request`` run
+        that never executed.
+        """
+        namespace = load_program(self.workflow)
+        payload = self._counterexample_runs()
+        self.assertEqual(
+            select_run_ids(namespace, payload, LIVE_SHA, "pull_request"),
+            {LIVE_PULL_REQUEST_RUN},
+        )
+        self.assertEqual(
+            select_suites(namespace, payload, LIVE_SHA, "pull_request"),
+            [LIVE_PULL_REQUEST_SUITE],
+        )
+        # The other event's run is still readable when it is the
+        # authoritative one; it is only excluded as a substitute.
+        self.assertEqual(
+            select_run_ids(namespace, payload, LIVE_SHA, "workflow_dispatch"),
+            {LIVE_DISPATCH_RUN},
+        )
+        self.assertEqual(
+            select_suites(namespace, payload, LIVE_SHA, "workflow_dispatch"),
+            [LIVE_DISPATCH_SUITE],
+        )
+
+    def test_evidence_reader_does_not_substitute_another_event_suite(self) -> None:
+        """An empty authoritative suite stays an evidence gap.
+
+        This is the live counterexample end to end. The ``pull_request``
+        run's suite is empty because no job ever ran, and the
+        ``workflow_dispatch`` run's suite holds green shards. The reader
+        must never read the dispatch suite as the candidate's evidence:
+        that is the "no evidence read as success" defect one level down.
+
+        Discriminating assertion. It fails unless the reader binds the
+        subject to its authoritative event: with the binding removed the
+        dispatch suite is fetched and its green shards become the
+        candidate's payload, so the payload is a valid observation of
+        eight green shards instead of an evidence gap.
+        """
+        program = evidence_program(self.workflow)
+        status, stdout, written, fetched = self._run_reader_program(
+            program,
+            self._counterexample_runs(),
+            self._counterexample_suites(),
+            "pull_request",
+        )
+        # The other event's suite was never even read.
+        self.assertNotIn(LIVE_DISPATCH_SUITE, fetched)
+        self.assertIn(LIVE_PULL_REQUEST_SUITE, fetched)
+        # The authoritative run never executed: that is an evidence gap,
+        # not another event's verdicts. The payload is the empty file the
+        # trusted classifier reads as missing evidence.
+        self.assertEqual(written, "")
+        self.assertNotEqual(status, 0)
+        self.assertIn("::warning::", stdout)
+        # The warning names the authoritative event, so the gap is
+        # distinguishable from "no run at all".
+        self.assertIn("pull_request", stdout)
+        self.assertNotIn("CI Gate shard", stdout)
+
+    def test_evidence_reader_event_binding_discriminates_the_substitution(self) -> None:
+        """Removing the event binding reproduces the defect.
+
+        The mutation is the pre-repair selection rule: it drops the event
+        filter, so every run on the SHA is admitted. The reader then
+        fetches the ``workflow_dispatch`` suite and writes its green
+        shards as the candidate's payload. This proves the assertion
+        above discriminates the binding rather than the fixture.
+        """
+        program = evidence_program(self.workflow)
+        mutated = program.replace('if run.get("event") != event:', "if False:")
+        if mutated == program:
+            self.fail("the event-binding mutation did not apply; update the mutation anchor")
+        status, _, written, fetched = self._run_reader_program(
+            mutated,
+            self._counterexample_runs(),
+            self._counterexample_suites(),
+            "pull_request",
+        )
+        self.assertIn(LIVE_DISPATCH_SUITE, fetched)
+        self.assertEqual(status, 0)
+        self.assertIsNotNone(written)
+        self.assertIn("CI Gate shard (meta)", written)
+
+    def test_evidence_reader_binds_to_the_current_attempt(self) -> None:
+        """A superseded attempt's suite is not the current attempt's evidence.
+
+        A re-run keeps the run id and increments ``run_attempt``; the run
+        object reports the current attempt's own ``check_suite_id``. The
+        live list endpoint reports only the current attempt (run 43985707605
+        appears with ``run_attempt`` 2 and suite 119075337920, and attempt
+        1's suite 119075331084 is reachable only through the run's previous
+        attempt), so reading the suite off the run object is the binding
+        itself and no second attempt endpoint is needed.
+
+        Discriminating assertion. It fails unless the reader keeps the
+        highest attempt per run id: the pre-repair reader admitted every
+        suite the payload carried for the run.
+        """
+        namespace = load_program(self.workflow)
+        payload = {
+            "workflow_runs": [
+                {
+                    "id": LIVE_RERUN_RUN,
+                    "event": "pull_request",
+                    "head_sha": LIVE_SHA,
+                    "check_suite_id": LIVE_RERUN_SUPERSEDED_SUITE,
+                    "run_attempt": 1,
+                },
+                {
+                    "id": LIVE_RERUN_RUN,
+                    "event": "pull_request",
+                    "head_sha": LIVE_SHA,
+                    "check_suite_id": LIVE_RERUN_CURRENT_SUITE,
+                    "run_attempt": 2,
+                },
+            ]
+        }
+        self.assertEqual(
+            select_suites(namespace, payload, LIVE_SHA, "pull_request"),
+            [LIVE_RERUN_CURRENT_SUITE],
+        )
+        self.assertEqual(
+            select_run_ids(namespace, payload, LIVE_SHA, "pull_request"),
+            {LIVE_RERUN_RUN},
+        )
+
+    def test_evidence_reader_attempt_binding_discriminates_the_superseded_suite(self) -> None:
+        """Removing the attempt binding admits the superseded attempt's suite.
+
+        The mutation keeps the first attempt the payload carries instead of
+        the current one, so the superseded attempt's suite is read.
+        """
+        program = evidence_program(self.workflow)
+        mutated = program.replace(
+            "if previous is None or run_attempt(run) > run_attempt(previous):",
+            "if previous is None:",
+        )
+        if mutated == program:
+            self.fail("the attempt-binding mutation did not apply; update the mutation anchor")
+        namespace = load_program_text(mutated)
+        payload = {
+            "workflow_runs": [
+                {
+                    "id": LIVE_RERUN_RUN,
+                    "event": "pull_request",
+                    "head_sha": LIVE_SHA,
+                    "check_suite_id": LIVE_RERUN_SUPERSEDED_SUITE,
+                    "run_attempt": 1,
+                },
+                {
+                    "id": LIVE_RERUN_RUN,
+                    "event": "pull_request",
+                    "head_sha": LIVE_SHA,
+                    "check_suite_id": LIVE_RERUN_CURRENT_SUITE,
+                    "run_attempt": 2,
+                },
+            ]
+        }
+        self.assertEqual(
+            namespace["canonical_suites"](payload, LIVE_SHA, "pull_request"),
+            [LIVE_RERUN_SUPERSEDED_SUITE],
+        )
+
     def _run_reader(self, directory: Path, subject_sha: str, environment=None):
         """Run the shipped reader and return (completed, output payload text)."""
         root = Path(directory)
@@ -258,7 +618,16 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
         runs_path = root / "runs.json"
         runs_path.write_text(
             json.dumps(
-                {"workflow_runs": [{"id": 1, "head_sha": "c" * 40, "check_suite_id": 2}]}
+                {
+                    "workflow_runs": [
+                        {
+                            "id": 1,
+                            "event": "push",
+                            "head_sha": "c" * 40,
+                            "check_suite_id": 2,
+                        }
+                    ]
+                }
             ),
             encoding="utf-8",
         )
@@ -278,6 +647,7 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
                 subject_sha,
                 str(out_path),
                 "main",
+                "push",
             ],
             capture_output=True,
             text=True,
@@ -285,6 +655,25 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
             check=False,
             env=run_environment,
         )
+        if completed.returncode == 2:
+            # A reader that does not take the authoritative event at all.
+            # Call it the way it wants to be called, so the test measures
+            # what it does rather than failing on an arity error.
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(program_path),
+                    str(runs_path),
+                    subject_sha,
+                    str(out_path),
+                    "main",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                env=run_environment,
+            )
         return completed, out_path.read_text(encoding="utf-8")
 
     def test_evidence_reader_degrades_to_non_blocking_without_a_canonical_suite(self) -> None:
@@ -292,8 +681,10 @@ class MainRedEvidenceSourceTests(unittest.TestCase):
             completed, written = self._run_reader(directory, "d" * 40)
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("::warning::", completed.stdout)
-        # The branch under test must be the one the test names.
-        self.assertIn(f"no canonical ci.yml run for {'d' * 40}", completed.stdout)
+        # The branch under test must be the one the test names, and the
+        # warning must name the authoritative event so the gap is
+        # distinguishable from "a run exists but its suite is empty".
+        self.assertIn(f"no canonical push ci.yml run for {'d' * 40}", completed.stdout)
         # The failure payload must be the empty file the retired census error
         # path wrote, so the trusted classifier reads it as missing evidence
         # (a warning, hence non-blocking) instead of as a valid observation
