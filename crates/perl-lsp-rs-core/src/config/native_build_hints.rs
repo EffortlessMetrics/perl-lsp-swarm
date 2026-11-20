@@ -3,7 +3,8 @@
 //! This module looks for literal `Makefile.PL` / `Build.PL` hints at the
 //! workspace root and extracts the ExtUtils::MakeMaker-style keys relevant to
 //! native builds: `INC`, `LIBS`, `DEFINE`, `OBJECT`, and `MYEXTLIB`, plus the
-//! Module::Build equivalents `include_dirs` and `extra_compiler_flags`. It does
+//! Module::Build equivalents `include_dirs`, `extra_compiler_flags`, and
+//! `extra_linker_flags`. It does
 //! not execute Perl and does not model full build metadata.
 //!
 //! Only literal quoted strings and literal arrays of quoted strings are
@@ -284,6 +285,7 @@ fn merge_script_hints(
                 "extra_compiler_flags",
                 flatten_include_flags,
             );
+            merge_linker_flags(contribution, script, source, "extra_linker_flags");
         }
     }
 
@@ -305,6 +307,24 @@ fn merge_include_dirs(
         &mut contribution.include_dirs,
         extraction.values.iter().flat_map(|value| expand(value)),
     );
+}
+
+fn merge_linker_flags(
+    contribution: &mut NativeBuildHintContribution,
+    script: NativeBuildScript,
+    source: &str,
+    key: &'static str,
+) {
+    let extraction = extract_key_literal_values(source, key);
+    push_failures(contribution, script, key, extraction.failures);
+
+    for value in &extraction.values {
+        let tokens = tokenize_flags(value)
+            .into_iter()
+            .filter(|token| is_library_link_input(token))
+            .collect::<Vec<_>>();
+        collect_unique(&mut contribution.libs_flags, tokens.into_iter());
+    }
 }
 
 fn merge_typed_key(
@@ -1167,6 +1187,43 @@ WriteMakefile(
     }
 
     #[test]
+    fn build_pl_extra_linker_flags_yields_typed_library_link_flags() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_build_pl(
+            r#"
+Module::Build->new(
+    extra_linker_flags => ['-L/opt/build/lib', '-lbuildonly'],
+);
+"#,
+        )?;
+
+        let hints = root.hints();
+
+        assert_eq!(
+            hints.libs_flags,
+            vec!["-L/opt/build/lib".to_string(), "-lbuildonly".to_string()]
+        );
+        assert!(
+            hints.libs_alternatives.is_empty(),
+            "extra_linker_flags are cumulative, not MakeMaker LIBS alternatives"
+        );
+        assert!(hints.diagnostics.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn build_pl_extra_linker_flags_scalar_form_is_supported() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_build_pl("Module::Build->new(extra_linker_flags => '-lm -lnsl');")?;
+
+        let hints = root.hints();
+
+        assert_eq!(hints.libs_flags, vec!["-lm".to_string(), "-lnsl".to_string()]);
+        assert!(hints.diagnostics.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn include_dir_hints_remain_supported_next_to_the_new_keys() -> TestResult {
         let root = HintRoot::new()?;
         root.write_makefile(
@@ -1445,6 +1502,7 @@ WriteMakefile(
 Module::Build->new(
     include_dirs => ['xs/build_inc'],
     extra_compiler_flags => '-Ixs/build_extra',
+    extra_linker_flags => ['-Lxs/build_link', '-lbuildlink'],
     LIBS => '-lbuild',
     DEFINE => '-DBUILD_HINT',
     OBJECT => 'build.obj',
@@ -1511,8 +1569,11 @@ Module::Build->new(
             hints.include_dirs,
             vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
         );
-        assert_eq!(hints.libs_flags, vec!["-lbuild".to_string()]);
-        assert_eq!(hints.libs_alternatives, vec![vec!["-lbuild".to_string()]]);
+        assert_eq!(
+            hints.libs_flags,
+            vec!["-Lxs/build_link".to_string(), "-lbuildlink".to_string(), "-lbuild".to_string()]
+        );
+        assert_eq!(hints.libs_alternatives, vec![vec!["-lbuild".to_string()]],);
         assert_eq!(hints.define_flags, vec!["-DBUILD_HINT".to_string()]);
         assert_eq!(hints.object_files, vec!["build.obj".to_string()]);
         assert_eq!(hints.myextlib_files, vec!["build/libbuild.lib".to_string()]);
@@ -1548,7 +1609,13 @@ Module::Build->new(
         );
         assert_eq!(
             canonical.libs_flags,
-            vec!["-L/opt/make/lib".to_string(), "-lmake".to_string(), "-lbuild".to_string(),]
+            vec![
+                "-L/opt/make/lib".to_string(),
+                "-lmake".to_string(),
+                "-Lxs/build_link".to_string(),
+                "-lbuildlink".to_string(),
+                "-lbuild".to_string(),
+            ]
         );
         assert_eq!(
             canonical.define_flags,
@@ -1577,7 +1644,10 @@ Module::Build->new(
             hints.include_dirs,
             vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
         );
-        assert_eq!(hints.libs_flags, vec!["-lbuild".to_string()]);
+        assert_eq!(
+            hints.libs_flags,
+            vec!["-Lxs/build_link".to_string(), "-lbuildlink".to_string(), "-lbuild".to_string(),]
+        );
         assert_eq!(
             hints.diagnostics,
             vec![diagnostic(
@@ -1643,7 +1713,10 @@ Module::Build->new(
             hints.include_dirs,
             vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
         );
-        assert_eq!(hints.libs_flags, vec!["-lbuild".to_string()]);
+        assert_eq!(
+            hints.libs_flags,
+            vec!["-Lxs/build_link".to_string(), "-lbuildlink".to_string(), "-lbuild".to_string(),]
+        );
         assert!(hints.limitations.is_empty());
         assert!(
             !hints.include_dirs.contains(&"xs/make_inc".to_string()),
