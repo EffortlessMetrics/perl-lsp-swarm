@@ -17,6 +17,7 @@ permissions:
 
 jobs:
   lint:
+    if: github.event_name != 'merge_group'
     name: Workflow Trigger Lint
     runs-on: ubuntu-24.04
     steps:
@@ -100,3 +101,39 @@ jobs:
             echo "## Workflow trigger lint found violations" >> "$GITHUB_STEP_SUMMARY"
             echo "Required-check policy in .ci/policies/required-checks.toml is enforced. Fix violations before merging." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  # G-only compatible cluster: the three former jobs compiled the same xtask.
+  # Their PR/push paths remain unchanged until the separate lifecycle cutover.
+  queue-metadata:
+    name: Queue metadata checks
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact merge group
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.merge_group.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        with:
+          toolchain: stable
+      - name: Prove metadata cluster routing and failure semantics
+        run: |
+          python3 -m venv "$RUNNER_TEMP/queue-metadata-tests"
+          "$RUNNER_TEMP/queue-metadata-tests/bin/python" -m pip install --disable-pip-version-check --quiet 'PyYAML==6.0.3'
+          "$RUNNER_TEMP/queue-metadata-tests/bin/python" -m unittest scripts.ci.test_queue_metadata -v
+      - name: Compile once and run individual metadata checks
+        run: python3 scripts/ci/run_queue_metadata.py
+      - name: Upload exact-attempt metadata receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: queue-metadata-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/queue-metadata/${{ github.sha }}/${{ github.run_id }}/${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 7
