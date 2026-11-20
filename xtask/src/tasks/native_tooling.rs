@@ -1805,6 +1805,30 @@ mod tests {
             markdown: Some(markdown.clone()),
         })?;
 
+        // These two rows depend only on the live registry and fix catalog. The
+        // other readiness rows describe the receipts available to the operator.
+        let readiness_markdown = temp.path().join("readiness.md");
+        readiness(NativeToolingReadinessConfig {
+            status_receipt: receipt.clone(),
+            receipt: temp.path().join("readiness.json"),
+            markdown: Some(readiness_markdown.clone()),
+        })?;
+        let generated = fs::read_to_string(readiness_markdown)?;
+        let committed = include_str!("../../../docs/project/status/native_tooling_readiness.md");
+        fn rule_rows(markdown: &str) -> Vec<&str> {
+            markdown
+                .lines()
+                .filter(|row| row.starts_with("| critic |") && row.contains("| rules="))
+                .collect()
+        }
+        let expected = rule_rows(&generated);
+        assert_eq!(expected.len(), 2, "expected rule surface and suppression rows");
+        assert_eq!(
+            rule_rows(committed),
+            expected,
+            "refresh the committed native critic readiness rows"
+        );
+
         let value: Value = serde_json::from_str(&fs::read_to_string(receipt)?)?;
         assert_eq!(value["kind"], "native_tooling_status");
         assert!(value["generated_at"].as_str().is_some());
