@@ -529,7 +529,7 @@ const BP_INNER: u64 = 9; // my $inner_y = 20 — inside inner_sub
 /// Execution stops inside the named sub, and its Locals scope must NOT contain
 /// the outer `my $outer_var`, the `our $pkg_counter`, or built-in globals.
 #[test]
-#[ignore = "#10563; #9057/#18912: retained live named-sub fixture requires nonempty captured Locals and name filtering; current fixture behavior is unqualified, not forbidden Package/Globals advertisement."]
+#[ignore = "#10563; #9057/#18912: retained live named-sub fixture requires a nonempty set of Locals names and checks name filtering; current fixture behavior is unqualified, not forbidden Package/Globals advertisement."]
 fn test_e2e_named_sub_breakpoint_excludes_outer_and_global_vars() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
@@ -800,7 +800,7 @@ fn test_e2e_scopes_have_no_cross_contamination() -> TestResult {
 ///   Line 6: my $z = $x * $y; <- BP_LEXICAL (stopped HERE — $x and $y are set)
 ///   Line 7: print "$z\n";
 #[test]
-#[ignore = "#10563; #9057/#18912: retained #950 live fixture requires captured $x/$y names and values at line 6; scope advertisement alone does not establish that capture, which remains unqualified here."]
+#[ignore = "#10563; #9057/#18912: retained #950 live fixture checks for $x and $y by name at line 6 and checks only $x's value; scope advertisement alone does not establish that capture, which remains unqualified here."]
 fn test_e2e_locals_scope_returns_user_lexicals_not_db_internals() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
