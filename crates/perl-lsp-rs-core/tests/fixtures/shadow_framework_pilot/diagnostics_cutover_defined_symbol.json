@@ -1,0 +1,36 @@
+{
+  "schema_version": 2,
+  "query": "diagnostics_check",
+  "input": {
+    "symbol": "defined_sub"
+  },
+  "old_result": {
+    "available": true,
+    "match_count": 1,
+    "identities": [
+      "warn"
+    ]
+  },
+  "new_result": {
+    "available": true,
+    "match_count": 0,
+    "identities": []
+  },
+  "verdict": "regression",
+  "notes": [
+    "suppressed: dynamic boundary or symbol defined"
+  ],
+  "fact_source_traces": [
+    {
+      "surface": "Diagnostics",
+      "source": "SemanticFact",
+      "provenance": "ExactAst",
+      "confidence": "High",
+      "freshness": "Fresh",
+      "fallback_state": "Fallback",
+      "source_hash": null,
+      "anchor_id": 10,
+      "model_version": 1
+    }
+  ]
+}
