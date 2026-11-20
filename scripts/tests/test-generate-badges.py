@@ -7,6 +7,8 @@ from pathlib import Path, PosixPath
 import subprocess
 import sys
 import tempfile
+import textwrap
+import tomllib
 import threading
 import time
 import unittest
@@ -222,6 +224,72 @@ class FakeWindowsJob:
     def close(self):
         self.closed = True
         return []
+
+
+class BadgeDownloadTests(unittest.TestCase):
+    def test_policy_tracks_installed_badge_job_and_triggers(self):
+        import re
+
+        lanes = tomllib.loads((REPO_ROOT / "policy/ci-lane-whitelist.toml").read_text())["lane"]
+        lane, = [row for row in lanes if row["id"] == "badge_endpoints"]
+        self.assertEqual(REPO_ROOT / lane["workflow"], WORKFLOW)
+        workflow = WORKFLOW.read_text()
+        triggers = workflow.split("\non:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertCountEqual(lane["allowed_triggers"], re.findall(r"^  ([\w-]+):", triggers, re.M))
+        jobs = workflow.split("\njobs:\n", 1)[1]
+        self.assertEqual(lane["job"], "generate")
+        self.assertIn(f"\n  {lane['job']}:\n", "\n" + jobs)
+        self.assertIn("run: bash scripts/ci/download-badge-receipts.sh", jobs)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "download job runs on Ubuntu")
+    def test_download_outcomes(self):
+        backend = "error downloading ripr-pr-evidence: HTTP 503: "
+        cases = [
+            (["ok"], True, ""),
+            ([backend + "unavailable", "ok"], True, "retrying once"),
+            ([backend + "unavailable"] * 2, False, "backend unavailable"),
+            ([backend + "503 Egress is over the account limit."], False, "backend unavailable"),
+            ([backend + "Retry-After: 120"], False, "backend unavailable"),
+            (["HTTP 403 access denied"], False, "without a recognized backend 503"),
+            (["unzip: bad entry HTTP 503"], False, "without a recognized backend 503"),
+            (["missing"], False, "Invalid RIPR artifact"),
+            ([backend + "unavailable", "missing"], False, "Invalid RIPR artifact"),
+        ]
+        for outcomes, success, message in cases:
+            with self.subTest(outcomes=outcomes), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                gh = root / "gh"
+                gh.write_text(textwrap.dedent("""\
+                    #!/bin/bash
+                    set -eu
+                    [[ "$1 $2 $3 $4 $5 $6 $7 $8" == "run download 42 --repo owner/repo --name ripr-pr-evidence --dir" ]]
+                    echo called >> "$RUNNER_TEMP/calls"
+                    n=$(wc -l < "$RUNNER_TEMP/calls")
+                    result=$(sed -n "${n}p" "$RUNNER_TEMP/outcomes")
+                    files="$9/receipts/quality"
+                    mkdir -p "$files"
+                    touch "$files/ripr-plus.json"
+                    if [[ $result != missing ]]; then touch "$files/ripr-badge-producer.json"; fi
+                    if [[ $result != ok && $result != missing ]]; then
+                      echo "$result" >&2
+                      exit 1
+                    fi
+                    """))
+                gh.chmod(0o755)
+                sleep = root / "sleep"
+                sleep.write_text('#!/bin/sh\n[ "$1" = 30 ]\n')
+                sleep.chmod(0o755)
+                (root / "outcomes").write_text("\n".join(outcomes))
+                result = subprocess.run(
+                    ["bash", REPO_ROOT / "scripts/ci/download-badge-receipts.sh"],
+                    env={**os.environ, "RUNNER_TEMP": tmp, "PRODUCER_RUN_ID": "42",
+                         "GITHUB_REPOSITORY": "owner/repo", "PATH": tmp + ":" + os.environ["PATH"]},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(len((root / "calls").read_text().splitlines()), len(outcomes))
+                self.assertEqual((root / "ripr-badge").exists(), success)
 
 
 class GenerateBadgesTests(unittest.TestCase):

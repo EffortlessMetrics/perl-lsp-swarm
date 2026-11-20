@@ -53,15 +53,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PRODUCER_RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/ripr-badge"
-          gh run download "$PRODUCER_RUN_ID" \
-            --repo "$GITHUB_REPOSITORY" \
-            --name ripr-pr-evidence \
-            --dir "$RUNNER_TEMP/ripr-badge"
-          test -f "$RUNNER_TEMP/ripr-badge/receipts/quality/ripr-plus.json"
-          test -f "$RUNNER_TEMP/ripr-badge/receipts/quality/ripr-badge-producer.json"
+        run: bash scripts/ci/download-badge-receipts.sh
 
       - name: Set up manual RIPR producer
         if: github.event_name == 'workflow_dispatch'
