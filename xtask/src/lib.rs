@@ -22,6 +22,7 @@ pub mod compiler_transformation_contract;
 pub mod compiler_upstream_status;
 pub mod contributor_topology;
 pub mod critic_rule_proof;
+pub mod docker_workspace_path;
 pub mod durable_publish;
 pub mod editor_client_compat;
 pub mod editor_host;

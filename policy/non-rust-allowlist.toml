@@ -1597,6 +1597,23 @@ created = "2026-05-07"
 review_after = "2026-12-07"
 
 [[allow]]
+id = "non-rust-devcontainer-config"
+glob = ".devcontainer/**"
+kind = "container_config"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Dev Container definition for editor-inside-container topology (#8987)."
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo run -p xtask --bin docker-workspace-path -- check",
+]
+created = "2026-11-02"
+review_after = "2026-12-07"
+broad_glob_reason = "Dev Container metadata is a small tree; the directory class is the reviewed unit."
+
+[[allow]]
 id = "non-rust-homebrew-formula"
 glob = "Formula/**"
 kind = "package_distribution"

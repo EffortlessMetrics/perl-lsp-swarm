@@ -1,12 +1,15 @@
 # docker-compose.yml — local testing for the perl-lsp Docker image
 #
+# Topology: editor_inside_container (#8987). The client and server both use
+# /workspace. Host editors on the machine outside Docker must use
+# scripts/docker/run-perllsp-host-editor.sh instead.
+#
 # Usage:
 #   docker compose build                         # build the image
 #   docker compose run --rm perl-lsp             # run LSP server (stdio)
 #   docker compose run --rm perl-lsp --version   # print version
 #
-# The container mounts the current directory as /workspace so perllsp
-# can index your Perl project's files.
+# The container mounts the current directory at /workspace for in-container editors.
 
 services:
   perl-lsp:
