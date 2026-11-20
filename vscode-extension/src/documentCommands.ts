@@ -84,11 +84,24 @@ export async function runCheckSyntaxCommand(
     return;
   }
 
-  if (editor.document.isDirty) {
-    await editor.document.save();
-  }
-
   const filePath = editor.document.uri.fsPath;
+  if (editor.document.isDirty) {
+    let saved: boolean;
+    try {
+      saved = await editor.document.save();
+    } catch {
+      vscode.window.showErrorMessage(
+        `Could not save ${path.basename(filePath)}. Syntax not checked.`,
+      );
+      return;
+    }
+    if (!saved || editor.document.isDirty) {
+      vscode.window.showErrorMessage(
+        `Could not save ${path.basename(filePath)}. Syntax not checked.`,
+      );
+      return;
+    }
+  }
   const config = vscode.workspace.getConfiguration('perl-lsp');
   const includePaths: string[] = config.get('includePaths', ['lib', 'local/lib/perl5']);
   // Machine scope only — never honor workspace/folder externalIncludePaths (#4998).
