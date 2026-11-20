@@ -41,6 +41,15 @@ fn use_filter_util_call_warns() {
 }
 
 #[test]
+fn use_switch_source_filter_warns() {
+    let diags = pl702("use Switch;\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("Switch")),
+        "expected PL702 for `use Switch;`, got: {diags:?}"
+    );
+}
+
+#[test]
 fn ordinary_modules_do_not_warn() {
     let diags = pl702("use strict;\nuse warnings;\nuse List::Util qw(sum);\n");
     assert!(diags.is_empty(), "ordinary modules must not raise PL702, got: {diags:?}");
