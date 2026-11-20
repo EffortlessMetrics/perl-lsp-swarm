@@ -1,8 +1,9 @@
 # CI Lane Map
 
 Quick-reference mapping from policy lanes → workflow jobs → triggers → cost band.
-Generated alongside [`policy/ci-lane-whitelist.toml`](../../policy/ci-lane-whitelist.toml)
-and meant to stay in sync with it.
+This hand-maintained reference may lag the policy. For blocking status, read
+`blocking` in [the lane whitelist](../../policy/ci-lane-whitelist.toml) and
+[the planner policy](../../policy/ci-lanes.toml).
 
 > Companion: [inventory.md](inventory.md).
 
@@ -19,7 +20,7 @@ and meant to stay in sync with it.
 | `pr_title_check` | `pr-title-check.yml` | `validate-title` | `ubuntu-24.04` | 1 | yes |
 | `merge_group_title_check` | `merge-group-title-check.yml` | `validate-title` | `ubuntu-24.04` | 1 | yes |
 | `methodology_gate` | `methodology-gate.yml` | `methodology` | `ubuntu-24.04` | 2 | yes |
-| `pr_smoke` | `ci.yml` | `pr-smoke` | `ubuntu-24.04` | 4 | yes |
+| `pr_smoke` | `ci.yml` | `pr-smoke` | `ubuntu-24.04` | 4 | no |
 | `merge_gate_shards` | `ci.yml` | `merge-gate-shards` | `ubuntu-24.04` | 24 | yes |
 | `merge_gate_aggregate` | `ci.yml` | `merge-gate` | `ubuntu-24.04` | 1 | yes |
 | `check_all_targets` | `ci.yml` | `check-all-targets` | `ubuntu-24.04` | 6 | yes |
