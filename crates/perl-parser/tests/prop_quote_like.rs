@@ -1,7 +1,7 @@
 // Property-based tests for quote-like operators (q, qq, qr, qw, s///, tr///)
 
 // Include the utilities module
-include!("prop_test_utils.rs");
+include!("support/prop_test_utils.rs");
 
 const REGRESS_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/_proptest-regressions/prop_quote_like");
