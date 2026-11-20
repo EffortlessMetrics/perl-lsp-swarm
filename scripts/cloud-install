@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Provision the Linux cloud image. --check only inspects the installed tools and caches.
+set -euo pipefail
+cd -- "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+install=true
+if [[ $# -eq 1 && $1 = --check ]]; then
+    install=false
+elif [[ $# -ne 0 ]]; then
+    echo 'usage: bash scripts/cloud-install [--check]' >&2
+    exit 2
+fi
+
+shared=${PERL_LSP_CLOUD_SHARED:-/workspace/shared}
+[[ $shared = /* ]] || { echo 'Use an absolute PERL_LSP_CLOUD_SHARED.' >&2; exit 2; }
+tools="$shared/codex-tools"
+export CARGO_HOME="$shared/cargo" RUSTUP_HOME="$shared/rustup"
+export npm_config_cache="$shared/npm-cache" RUSTUP_AUTO_INSTALL=0
+export PATH="$CARGO_HOME/bin:$tools/rust-bin:$tools/bin:$PATH"
+for tool in git python3 perl; do command -v "$tool"; done
+python3 -c 'import tomllib'
+. scripts/lib/cargo-toolchain-guard.sh
+rust_settings=$(python3 - <<'PYTHON'
+import tomllib
+
+with open("rust-toolchain.toml", "rb") as source:
+    toolchain = tomllib.load(source)["toolchain"]
+with open("Cargo.toml", "rb") as source:
+    msrv = tomllib.load(source)["workspace"]["package"]["rust-version"]
+print(toolchain["channel"], msrv, toolchain["profile"], ",".join(toolchain["components"]))
+PYTHON
+)
+read -r pin msrv profile components <<< "$rust_settings"
+cargo_guard_version_ge "$pin" "$msrv" || { echo "Rust pin $pin must satisfy MSRV $msrv" >&2; exit 1; }
+node_pin=$(sed -nE "s/^ +node-version: '([0-9]+\.[0-9]+\.[0-9]+)'$/\1/p" .github/actions/setup-vscode-toolchain/action.yml)
+[[ $node_pin =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected one exact VS Code CI Node pin.' >&2; exit 1; }
+npm_spec=$(python3 -c 'import json; print(json.load(open("vscode-extension/package.json"))["packageManager"])')
+[[ $npm_spec =~ ^npm@[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid npm pin: $npm_spec" >&2; exit 1; }
+
+if "$install"; then
+    for tool in curl tar xz sha256sum; do command -v "$tool"; done
+    mkdir -p "$tools/bin"
+    tmp=$(mktemp -d "$tools/.install-XXXXXX")
+    trap 'rm -rf -- "$tmp"' EXIT
+    download() { curl --proto '=https' --tlsv1.2 -fsSL "$1" -o "$2"; }
+    if ! command -v rustup >/dev/null; then
+        download https://sh.rustup.rs "$tmp/rustup-init.sh"
+        sh "$tmp/rustup-init.sh" -y --no-modify-path --default-toolchain none
+    fi
+    manager_bin=$(CDPATH= cd -- "$(dirname -- "$(type -P rustup)")" && pwd -P)
+    ln -sfnT -- "$manager_bin" "$tools/rust-bin"
+    rustup toolchain install stable --profile minimal --no-self-update
+    rustup toolchain install "$pin" --profile "$profile" --component "$components" --no-self-update
+
+    download https://astral.sh/uv/install.sh "$tmp/uv.sh"
+    UV_UNMANAGED_INSTALL="$tools/bin" sh "$tmp/uv.sh"
+    if [[ ! -x $tools/bin/just ]]; then
+        if image_just=$(type -P just); then
+            cp -- "$image_just" "$tmp/just"
+            mv -T -- "$tmp/just" "$tools/bin/just"
+        else
+            download https://just.systems/install.sh "$tmp/just.sh"
+            bash "$tmp/just.sh" --to "$tools/bin"
+        fi
+    fi
+
+    case $(uname -m) in
+        x86_64) arch=x64 ;;
+        aarch64) arch=arm64 ;;
+        *) echo 'Expected an x64 or arm64 Linux image.' >&2; exit 1 ;;
+    esac
+    # Resolve Node's latest final release, then fetch its versioned archive.
+    install_node() {
+        local selector=$1 checksum name version dest
+        download "https://nodejs.org/dist/$selector/SHASUMS256.txt" "$tmp/sums"
+        read -r checksum name < <(awk -v arch="$arch" '$2 ~ ("^node-v[0-9.]+-linux-" arch "\\.tar\\.xz$") {print}' "$tmp/sums")
+        [[ $checksum =~ ^[[:xdigit:]]{64}$ && $name =~ ^node-v([0-9]+\.[0-9]+\.[0-9]+)-linux- ]]
+        version=${BASH_REMATCH[1]}
+        [[ $selector = latest || $selector = "v$version" ]]
+        dest="$tools/node/$version"
+        if [[ ! -x $dest/bin/node ]]; then
+            download "https://nodejs.org/dist/v$version/$name" "$tmp/$name"
+            (cd "$tmp" && printf '%s  %s\n' "$checksum" "$name" | sha256sum -c - >&2)
+            mkdir -p "$tools/node"
+            mkdir "$tmp/unpacked"
+            tar -xJf "$tmp/$name" --strip-components=1 -C "$tmp/unpacked"
+            mv -T -- "$tmp/unpacked" "$dest"
+        fi
+        [[ $("$dest/bin/node" --version) = "v$version" ]]
+        node_bin="$dest/bin"
+    }
+    install_node latest
+    ln -sfnT -- "$node_bin" "$tools/node-current-bin"
+    install_node "v$node_pin"
+    export PATH="$node_bin:$PATH"
+    if [[ ! -x $tools/extension-npm/bin/npm || $("$tools/extension-npm/bin/npm" --version) != "${npm_spec#npm@}" ]]; then
+        npm install --global --prefix "$tools/extension-npm" "$npm_spec"
+    fi
+fi
+
+"$tools/bin/uv" --version
+"$tools/node-current-bin/node" --version
+# Old rustup can ignore RUSTUP_AUTO_INSTALL. Its help is a non-selecting probe.
+if ! cargo_guard_probe_rustup_manager "$(type -P rustup)" >/dev/null; then
+    echo 'Cloud checks require rustup 1.28.0 or newer.' >&2
+    exit 1
+fi
+for toolchain in "$pin" stable; do
+    rustup which --toolchain "$toolchain" rustc >/dev/null || {
+        echo "Missing rustc for $toolchain in $RUSTUP_HOME. Rerun the cloud Install script." >&2
+        exit 1
+    }
+done
+stable_release=$(rustup run stable rustc --version)
+read -r compiler stable_version _ <<< "$stable_release"
+if [[ $compiler != rustc ]] || ! cargo_guard_version_ge "$stable_version" "$msrv"; then
+    echo "Expected stable rustc >= $msrv, got: $stable_release" >&2
+    exit 1
+fi
+printf '%s (stable)\n' "$stable_release"
+release=$(rustup run "$pin" rustc --version)
+[[ $release = "rustc $pin "* ]] || { echo "Unexpected rustc: $release (pin $pin)" >&2; exit 1; }
+printf '%s (workspace MSRV %s)\n' "$release" "$msrv"
+rustup run "$pin" cargo --version
+if "$install"; then
+    rustup run "$pin" cargo fetch --locked
+fi
+rustup run "$pin" cargo metadata --frozen --format-version 1 >/dev/null
+
+export PATH="$tools/extension-npm/bin:$tools/node/$node_pin/bin:$PATH"
+# cloud-startup prepends cargo/bin. Verify it will see this same Node/npm pair.
+for tool in node npm; do
+    startup_tool=$(PATH="$CARGO_HOME/bin:$PATH" type -P "$tool")
+    if [[ ! $startup_tool -ef $(type -P "$tool") ]]; then
+        echo "$startup_tool shadows the prepared extension $tool in cloud-startup" >&2
+        exit 1
+    fi
+done
+[[ $(node --version) = "v$node_pin" ]]
+(cd vscode-extension && node scripts/toolchain-doctor.js)
+"$tools/bin/just" --version
+if "$install"; then
+    bash scripts/cloud-startup
+fi

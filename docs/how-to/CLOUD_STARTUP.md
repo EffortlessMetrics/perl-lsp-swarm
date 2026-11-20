@@ -1,4 +1,72 @@
-# Reuse the cloud startup entry
+# Create a Codex Cloud environment
+
+Select this repository and a Linux x64 or arm64 image. In **Settings → Codex
+Cloud → Environments → Edit**, paste this line into **Install script**. It runs
+from the refreshed checkout and calls the existing startup entry after provisioning.
+
+```bash
+bash scripts/cloud-install
+```
+
+The installer and its offline check default to `/workspace/shared`. To use
+another persistent directory, set `PERL_LSP_CLOUD_SHARED` to the same **absolute**
+path in the install environment and each task shell.
+
+Use an image with Bash, Git, curl and CA certificates, GNU core utilities, tar
+with xz, Perl, and Python 3.11+ with `tomllib`. Official Linux Node.js binaries
+from v25 onward require the `libatomic` runtime (`libatomic1` on Debian/Ubuntu).
+Choose an image that includes it. During installation the version check runs the
+prepared Node binary directly. [Node.js binary requirements](https://github.com/nodejs/node/blob/v26.x/BUILDING.md#official-binary-platforms-and-toolchains)
+
+The installer reuses a discoverable
+rustup, saves a copy of an image-provided `just` in the prepared tools directory,
+and acquires missing tools from their upstream installers.
+Node and `just` use prebuilt binaries. For native Rust builds, the repository's [development shell](../../flake.nix)
+includes a compiler/linker, pkg-config and OpenSSL development files.
+
+Each online install refreshes Rust stable, Node.js and uv. For general Node
+tooling it selects the newest **final** release from Node's official `dist/latest`
+SHA-256 manifest, including when that release has an LTS label. Astral supplies
+uv. Rustup installs the checkout's Rust pin and components separately. Both
+the stable compiler and the pin must meet the workspace MSRV. Locked Cargo
+fetch and frozen metadata use the pin explicitly. Startup inherits an explicit
+`RUSTUP_TOOLCHAIN`, including `stable`. An unset selector leaves selection
+to rustup in the checkout.
+
+The extension gets the exact Node version from its [CI action](../../.github/actions/setup-vscode-toolchain/action.yml)
+and the npm version from its [manifest](../../vscode-extension/package.json).
+The extension doctor checks that pair before startup installs the locked npm tree.
+Setup checks that startup will resolve this same Node/npm pair.
+
+The install phase needs HTTPS access to the official installers and releases
+(Rust, Node.js, Astral, GitHub and, if needed, just.systems), Cargo's dependency
+sources, the npm registry and the repository's Git origin. Keep agent internet
+access off. Rebuild to refresh moving versions or dependencies after a lockfile change.
+
+In a fresh task shell, run this from the checkout for an offline, build-free
+check. It sets `RUSTUP_AUTO_INSTALL=0` in its process and checks that the pinned
+and stable compilers are installed before invoking either. It resolves frozen
+Cargo metadata from the cache and runs the extension doctor.
+
+```bash
+bash scripts/cloud-install --check
+```
+
+For general tooling in that shell, activate the same shared homes and installed
+binaries. Select stable per command with `rustup run stable`. Cargo builds in
+the repository still follow [storage admission](../agents/CARGO_STORAGE.md).
+
+```bash
+shared=${PERL_LSP_CLOUD_SHARED:-/workspace/shared}
+export CARGO_HOME="$shared/cargo" RUSTUP_HOME="$shared/rustup" RUSTUP_AUTO_INSTALL=0
+export PATH="$shared/codex-tools/node-current-bin:$CARGO_HOME/bin:$shared/codex-tools/rust-bin:$shared/codex-tools/bin:$PATH"
+rustup run stable rustc --version
+node --version
+uv --version
+just --version
+```
+
+## Reuse the cloud startup entry
 
 `scripts/cloud-startup` validates an already provisioned Linux cloud image and
 prepares the refreshed checkout. Put this command in the platform's saved setup
@@ -40,8 +108,8 @@ Rustup 1.27 and earlier can install a missing toolchain despite
 A modern `rustup` on PATH cannot bless a compiler proxy backed by an older manager.
 
 `PERL_LSP_CLOUD_SHARED` selects the existing host storage root; the default is
-`/workspace/shared`. A relative value is anchored to the startup invocation
-directory before any directory change. The entry selects `cargo`, `rustup`,
+`/workspace/shared`. Standalone `cloud-startup` also accepts a relative path and resolves it
+against the invocation directory before changing directories. The entry selects `cargo`, `rustup`,
 `devplane/perl-lsp-swarm`, and `npm-cache` beneath that root and prepends only
 its `cargo/bin` directory to `PATH`. It does not manufacture a Node patch-level
 path. The active `node` and `npm` commands must already be on the inherited
