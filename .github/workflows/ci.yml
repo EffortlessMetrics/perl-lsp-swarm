@@ -1945,6 +1945,10 @@ jobs:
       - name: Warm xtask
         run: cargo build -p xtask --bin xtask --locked
 
+      - name: Provision YAML reader for candidate cache-contract tests
+        if: matrix.name == 'meta'
+        run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
+
       - name: Verify candidate meta self-tests
         if: matrix.name == 'meta'
         shell: bash
