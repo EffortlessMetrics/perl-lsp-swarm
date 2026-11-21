@@ -1076,8 +1076,7 @@ gates:
   # #13698: main run 33128026402 spent ~22 minutes inside the shared PR-fast
   # runner before its only failure — the deterministic `ci_subject`
   # digest-oracle fixture defect — surfaced from `unit_routed_full`, the broad
-  # routed unit cohort (today the only pr_fast gate that executes xtask's
-  # `tests/` suites). These focused owner gates run their owners' fast
+  # routed unit cohort. These focused owner gates run their owners' fast
   # deterministic proofs BEFORE that cohort, and (`short_circuit: true`) stop
   # the remaining plan on a blocking failure, so a control-plane regression is
   # reported without paying the cohort's full build/test budget first.
@@ -1086,10 +1085,18 @@ gates:
   # when ci-scope picks `xtask` — the owner crate of the CI-subject, route
   # plan, gate-runner, workflow-policy, generated-inventory, and badge-producer
   # proofs — so product-only diffs pay nothing for control-plane proofs
-  # (falsifier 2). Neither gate duplicates another pr_fast gate: `unit_scoped`
-  # runs `--lib` only and already covers the xtask library surface early, and
-  # `unit_routed_full` runs `--tests` only, so the bin and `ci_subject` targets
-  # are covered nowhere else in this tier. The broad cohort below is untouched
+  # (falsifier 2). These focused gates OVERLAP the broad cohort rather than
+  # partitioning it; their value is ordering and isolation, not disjoint
+  # coverage. Corrected (#19079): this block previously recorded that
+  # `unit_routed_full` was the only pr_fast gate executing xtask's `tests/`
+  # suites and that the bin and `ci_subject` targets were covered nowhere else
+  # in this tier. Both claims were false — this gate itself runs
+  # `xtask/tests/ci_subject.rs`, and `unit_control_plane_bins` runs `--bin
+  # xtask` with owner-module filters. `unit_scoped` runs `--lib`, and
+  # `unit_routed_full` runs `--tests`, which also selects the library and
+  # binaries built as unittests, so the two overlap on the xtask library
+  # surface instead of splitting it, and `unit_routed_full` additionally
+  # executes `xtask/tests/ci_subject.rs`. The broad cohort below is untouched
   # and remains the authoritative backstop: a focused pass never removes it
   # (falsifier 4), and a focused pass followed by a cohort failure still reds
   # the run with both dispositions recorded (falsifier 3). No timeout was
