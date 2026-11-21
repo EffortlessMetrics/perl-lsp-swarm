@@ -446,10 +446,20 @@ fn workspace_substitution(report: &DoctorReport) -> bool {
     let resolved = comparable_workspace_path(&report.workspace);
     #[cfg(windows)]
     {
-        !requested.to_string_lossy().eq_ignore_ascii_case(&resolved.to_string_lossy())
+        // Compare on the trailing-separator-trimmed spelling.
+        // `std::path::absolute` keeps a trailing separator (`absolute(r"F:\p\")`
+        // is `r"F:\p\"`), and `canonicalize` never produces one, so a plain
+        // string compare would call the *same* directory substituted whenever
+        // the user typed a trailing backslash. `Path`'s own equality is
+        // component-based and would ignore it, but it is case-sensitive, which
+        // is the other half of the problem.
+        let fold = |path: &Path| path.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
+        !fold(&requested).eq_ignore_ascii_case(&fold(&resolved))
     }
     #[cfg(not(windows))]
     {
+        // `Path` equality is component-based, so a trailing separator is
+        // already ignored, and POSIX paths are case-sensitive.
         requested != resolved
     }
 }
@@ -4358,6 +4368,37 @@ mod tests {
             "case-differing spellings are one Windows directory: requested={} workspace={}",
             report.requested_workspace.display(),
             report.workspace.display()
+        );
+        Ok(())
+    }
+
+    /// A trailing separator names the same directory and must not read as a
+    /// substitution.
+    ///
+    /// `std::path::absolute` keeps it (`absolute(r"F:\p\")` is `r"F:\p\"`) while
+    /// `canonicalize` never produces one, so a whole-string compare would call
+    /// the same directory substituted whenever the user typed a trailing
+    /// backslash. The cross-platform control below is the one that actually
+    /// exercises the comparison; this one pins the spelling the user typed.
+    #[test]
+    fn doctor_report_does_not_disclose_for_a_trailing_separator_spelling() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let canonical = temp.path().canonicalize()?;
+
+        let report = stub_report(
+            canonical.clone(),
+            requested_workspace_dir(&format!("{}/", canonical.display())),
+        );
+        assert!(
+            !workspace_substitution(&report),
+            "a trailing separator names the same directory: requested={} workspace={}",
+            report.requested_workspace.display(),
+            report.workspace.display()
+        );
+        let rendered = render_report(report, "perl-lsp");
+        assert!(
+            !rendered.contains("Workspace path as requested:"),
+            "a trailing separator must not trigger a disclosure, got:\n{rendered}"
         );
         Ok(())
     }
