@@ -58,7 +58,7 @@ function run(overrides = {}) {
 }
 
 /**
- * @param {Array<{code?: string, filename?: string, severity?: string}>} diagnostics
+ * @param {Array<{code?: string, filename?: string, severity?: string, message?: string}>} diagnostics
  */
 function jsonOutput(diagnostics) {
   return JSON.stringify({ diagnostics, number_of_files: 1, number_of_rules: 1 });
@@ -222,10 +222,10 @@ void test('a run that could not execute is rejected', () => {
     spawnFailure.failures.join('\n'),
   );
 
-  const signaled = evaluateRun(
-    run({ status: null, stdout: '', signal: 'SIGTERM' }),
-    { file: 'good.ts', expectDiagnostics: false },
-  );
+  const signaled = evaluateRun(run({ status: null, stdout: '', signal: 'SIGTERM' }), {
+    file: 'good.ts',
+    expectDiagnostics: false,
+  });
   assert.equal(signaled.ok, false);
   assert.ok(
     signaled.failures.some((failure) => failure.includes('terminated by signal SIGTERM')),
@@ -293,9 +293,7 @@ void test('a diagnostic with no file cannot satisfy the attribution check', () =
   const verdict = evaluateRun(
     run({
       status: 1,
-      stdout: jsonOutput([
-        { message: 'no file', code: EXPECTED_RULE_CODE, severity: 'error' },
-      ]),
+      stdout: jsonOutput([{ message: 'no file', code: EXPECTED_RULE_CODE, severity: 'error' }]),
     }),
     { file: 'bad.ts', expectDiagnostics: true },
   );
@@ -376,8 +374,8 @@ function runScriptAgainstStub(behavior) {
         `const RULE_CODE = ${JSON.stringify(EXPECTED_RULE_CODE)};`,
         `const behavior = ${behavior.toString()};`,
         'const outcome = behavior(args);',
-        "if (outcome.stdout) process.stdout.write(outcome.stdout);",
-        "if (outcome.stderr) process.stderr.write(outcome.stderr);",
+        'if (outcome.stdout) process.stdout.write(outcome.stdout);',
+        'if (outcome.stderr) process.stderr.write(outcome.stderr);',
         // Set exitCode rather than calling process.exit(): stdout is a pipe
         // here, so writes are asynchronous and process.exit() would discard
         // the buffered output before it reached the parent.
@@ -440,7 +438,7 @@ void test('the script is green when the structured report is exactly as expected
           diagnostics: [
             {
               message: 'Promises must be awaited.',
-              code: RULE_CODE,
+              code: 'typescript(no-floating-promises)',
               severity: 'error',
               filename: target,
             },
@@ -470,7 +468,7 @@ void test('the script is red when the rule is reported for the good fixture', ()
           diagnostics: [
             {
               message: 'Promises must be awaited.',
-              code: RULE_CODE,
+              code: 'typescript(no-floating-promises)',
               severity: 'error',
               filename: target,
             },
@@ -486,7 +484,7 @@ void test('the script is red when the rule is reported for the good fixture', ()
         diagnostics: [
           {
             message: 'Promises must be awaited.',
-            code: RULE_CODE,
+            code: 'typescript(no-floating-promises)',
             severity: 'error',
             filename: '/tmp/canary/bad.ts',
           },

@@ -149,6 +149,15 @@ function runOxlint(tmpDir, file) {
 }
 
 /**
+ * One diagnostic record as oxlint's JSON reporter emits it. Only the fields
+ * the canary decides on are required to be present; the rest of the record
+ * (message, url, help, labels) is carried by the tool and simply not read
+ * here.
+ *
+ * @typedef {{code?: string, filename?: string, severity?: string, message?: string}} OxlintDiagnostic
+ */
+
+/**
  * Parses oxlint's JSON reporter output into its diagnostic records.
  *
  * Returns a failure reason instead of throwing, because malformed output is
@@ -158,7 +167,7 @@ function runOxlint(tmpDir, file) {
  * reported no problems".
  *
  * @param {string} stdout
- * @returns {{diagnostics: Array<{code?: string, filename?: string, severity?: string}>, parseError: string|null}}
+ * @returns {{diagnostics: OxlintDiagnostic[], parseError: string|null}}
  */
 function parseOxlintJson(stdout) {
   const trimmed = (stdout || '').trim();
@@ -241,9 +250,7 @@ function evaluateRun(run, expectation) {
       diagnostic.code === EXPECTED_RULE_CODE &&
       normalizeDiagnosticPath(diagnostic.filename) === expectedFile,
   );
-  const otherDiagnostics = diagnostics.filter(
-    (diagnostic) => !matching.includes(diagnostic),
-  );
+  const otherDiagnostics = diagnostics.filter((diagnostic) => !matching.includes(diagnostic));
 
   if (expectation.expectDiagnostics) {
     if (matching.length === 0) {
@@ -253,9 +260,7 @@ function evaluateRun(run, expectation) {
       );
     }
     if (run.status === 0) {
-      failures.push(
-        `expected a failing exit status for ${expectation.file}, but oxlint exited 0`,
-      );
+      failures.push(`expected a failing exit status for ${expectation.file}, but oxlint exited 0`);
     }
   } else {
     if (matching.length > 0) {
@@ -275,7 +280,10 @@ function evaluateRun(run, expectation) {
     failures.push(
       `oxlint reported ${otherDiagnostics.length} unexpected diagnostic(s) for ${expectation.file}: ` +
         otherDiagnostics
-          .map((diagnostic) => `${diagnostic.code ?? '<no code>'} in ${diagnostic.filename ?? '<no file>'}`)
+          .map(
+            (diagnostic) =>
+              `${diagnostic.code ?? '<no code>'} in ${diagnostic.filename ?? '<no file>'}`,
+          )
           .join(', '),
     );
   }
