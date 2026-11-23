@@ -17,7 +17,7 @@
 # `schema_version: "convergence_core.v1"`. A missing field is a deprecation
 # warning (older callers before #15278). A greater value is a refusal — the
 # output shape may have changed in a way this projection does not understand.
-# See issue #15278.
+# See issue #15278 and docs/reference/REVIEW_CONVERGENCE_OUTPUT_V1.md.
 set -euo pipefail
 
 SUPPORTED_SCHEMA_VERSIONS=("convergence_core.v1")
