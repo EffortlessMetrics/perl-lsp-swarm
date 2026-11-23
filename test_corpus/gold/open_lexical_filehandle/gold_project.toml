@@ -1,0 +1,26 @@
+schema = "gold_project.v1"
+project_id = "open_lexical_filehandle"
+topology_fingerprint = "96bcd2a859a29b5a09aa5606113d07dd56ea78d3756a250df273b27ba2b0207f"
+content_fingerprint = "209e171cc5054ec806054c85ba3f94a281ff2521433addf956b92e671c42cf5a"
+
+[[members]]
+member_id = "expected_json"
+path = "expected.json"
+role = "generated_expectation_input"
+byte_length = 97
+sha256 = "ee955208b48f2193cd6c162a4a0198299baaf7f27fea1b7f603ac9774738ea85"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 173
+sha256 = "9fd3dd9527b05afead0a84829784f387db3fd7bec3e203817348659e6b868891"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

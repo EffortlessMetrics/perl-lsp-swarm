@@ -1,0 +1,37 @@
+schema = "gold_project.v1"
+project_id = "rename_subroutine"
+topology_fingerprint = "ab2ef36edbebf11c55232f8d566c25b201ca0f020794b6b36732dd7f985197ec"
+content_fingerprint = "6611df441959a1d290d51b28521eaacd9bb18c4a9c6be785f9cbc7b007cada5b"
+
+[[members]]
+member_id = "expected_json"
+path = "expected.json"
+role = "generated_expectation_input"
+byte_length = 75
+sha256 = "453837f0a8c45790c0989de0e9f48c61fb3e49533437f08b9e68f9d32dc4d9c6"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "expected_rename_json"
+path = "expected_rename.json"
+role = "generated_expectation_input"
+byte_length = 1531
+sha256 = "219ca67edb23bf55ba7075b339468c790700c61c2ab2e681c5a4fd46e9643c6d"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 221
+sha256 = "3b1c6b768df4f0b0a2069107d6ce468e1277dc703c8c253bbff755eaef40cdfb"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

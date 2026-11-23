@@ -1,0 +1,26 @@
+schema = "gold_project.v1"
+project_id = "rename_basic"
+topology_fingerprint = "720b3e09457e39a3c27bb598fc37bfc45c74daddd3c43d933bfa184fae9ef8cc"
+content_fingerprint = "45c397eb44b123d8dcbf093c845c1171314e56ca1c83a42a538763bbf9e75d53"
+
+[[members]]
+member_id = "expected_rename_json"
+path = "expected_rename.json"
+role = "generated_expectation_input"
+byte_length = 1846
+sha256 = "f61d01eb0ab803bd82b631e604ae577db0f7569e15d98d9c326b156132a9c4d7"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 140
+sha256 = "fd0ee771c166ea15194425ae9dc1cc8c211c0077587b5f60993e786887243a05"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

@@ -35,7 +35,7 @@ const SIDECAR_FLOORS: [(&str, usize); 7] = [
     ("expected_module.json", 5),
 ];
 
-const FIXTURE_FILES: [&str; 8] = [
+const FIXTURE_FILES: [&str; 9] = [
     "fixture.pl",
     "expected.json",
     "expected_hover.json",
@@ -44,6 +44,7 @@ const FIXTURE_FILES: [&str; 8] = [
     "expected_symbols.json",
     "expected_rename.json",
     "expected_module.json",
+    "gold_project.toml",
 ];
 
 /// A gold member whose bytes deliberately deviate from [`DEFAULT_BYTE_CLASS`].

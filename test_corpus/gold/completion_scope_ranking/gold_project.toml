@@ -1,0 +1,26 @@
+schema = "gold_project.v1"
+project_id = "completion_scope_ranking"
+topology_fingerprint = "1abc79db36a861af872888aafabe40df113fc485acbf51e01bac12b894fdec62"
+content_fingerprint = "02954e9305780b48481a8d823821765e3953dd9035679e1af45efd6951ba5606"
+
+[[members]]
+member_id = "expected_completion_json"
+path = "expected_completion.json"
+role = "generated_expectation_input"
+byte_length = 1257
+sha256 = "0c901941cda3d91e928ed677456b4c031d15c0d54330ce73825ae4212fe2e7cf"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 139
+sha256 = "936eaf9c92bff383f5455ef8408bbe790d101dcff9296e321ddfa4e97365da33"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
