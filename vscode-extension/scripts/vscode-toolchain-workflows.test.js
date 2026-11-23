@@ -18,6 +18,8 @@ const extensionWorkflows = [
   'publish-extension.yml',
 ];
 
+const rollingObservationWorkflow = 'rolling-installed-public-beta-observation.yml';
+
 function readWorkflow(name) {
   return fs.readFileSync(path.join(repositoryRoot, '.github', 'workflows', name), 'utf8');
 }
@@ -335,6 +337,26 @@ void test('Windows first-hour byte leaf builds both release binaries at the exac
     /PERL_LSP_(?:CANDIDATE_ID|ARTIFACT_SET_ID|CANDIDATE_ARTIFACT_MANIFEST|CONSTRUCT_CANDIDATE_MANIFEST|TEST_EXPLORER_JOURNEY):/,
   );
   assert.match(job, /if-no-files-found: warn/);
+});
+
+void test('rolling installed VSIX journeys package the exact built DAP on Linux and Windows', () => {
+  const source = readWorkflow(rollingObservationWorkflow);
+  const configureStart = source.indexOf('- name: Configure exact smoke subject and host selector');
+  const configureEnd = source.indexOf('\n      - name:', configureStart + 1);
+  assert.ok(configureStart >= 0 && configureEnd > configureStart);
+  const configureStep = source.slice(configureStart, configureEnd);
+  assert.match(configureStep, /printf 'PERL_LSP_DAP_PATH=%s\\n' "\$DAP_PATH" >> "\$GITHUB_ENV"/);
+
+  for (const stepName of [
+    'Run exact packaged VSIX journey under Xvfb',
+    'Run exact packaged VSIX journey on Windows',
+  ]) {
+    const start = source.indexOf(`- name: ${stepName}`);
+    assert.notEqual(start, -1, `missing installed journey step: ${stepName}`);
+    const nextStep = source.indexOf('\n      - name:', start + 1);
+    const step = source.slice(start, nextStep === -1 ? source.length : nextStep);
+    assert.match(step, /npm run test:published:local/);
+  }
 });
 
 void test('managed-binary smoke proves TypeScript authority before compilation on every OS', () => {

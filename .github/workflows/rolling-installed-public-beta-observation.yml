@@ -231,6 +231,7 @@ jobs:
           fi
           printf 'OBSERVED_VSCODE_VERSION=%s\n' "$VSCODE_SELECTOR" >> "$GITHUB_ENV"
           printf 'PERL_LSP_FIRST_HOUR_SERVER_PATH=%s\n' "$SERVER_PATH" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_DAP_PATH=%s\n' "$DAP_PATH" >> "$GITHUB_ENV"
           printf 'PERL_LSP_SERVER_SOURCE_SHA=%s\n' "$SOURCE_SHA" >> "$GITHUB_ENV"
           printf 'PERL_LSP_VSCODE_VERSION=%s\n' "$VSCODE_SELECTOR" >> "$GITHUB_ENV"
           printf 'PERL_LSP_SMOKE_RECEIPTS_DIR=%s/%s/vscode\n' "$GITHUB_WORKSPACE" "$ROW_ROOT" >> "$GITHUB_ENV"
