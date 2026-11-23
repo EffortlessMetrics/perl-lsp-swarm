@@ -3,8 +3,9 @@
 //! This module promotes the first read-only Dancer2 provider cells
 //! (completion, signature help, hover, definition, document/workspace
 //! symbols, bounded diagnostics) from the canonical activation, import,
-//! route, context, and hook facts minted by `perl-semantic-facts` and
-//! extracted by `perl-semantic-analyzer` (#8914, #8918, #8921, #8924).
+//! route, context, hook, and template-target facts minted by
+//! `perl-semantic-facts` and extracted by `perl-semantic-analyzer`
+//! (#8914, #8918, #8921, #8924, #8937).
 //!
 //! # One selected authority
 //!
