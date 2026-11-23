@@ -11,11 +11,14 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        let partial_params = params.clone();
         #[cfg(feature = "workspace")]
         let result = self.handle_workspace_symbols_v2(params);
         #[cfg(not(feature = "workspace"))]
         let result = self.handle_workspace_symbols(params);
-        result
+        result.and_then(|response| {
+            self.finish_lsp_partial_result_array(partial_params.as_ref(), response)
+        })
     }
 
     pub(super) fn handle_workspace_symbol_resolve_dispatch(
