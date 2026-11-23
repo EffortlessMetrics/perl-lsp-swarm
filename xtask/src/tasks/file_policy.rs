@@ -6439,8 +6439,15 @@ jobs:
     /// Negative control for #15041: a v10 subject that fails strict preapproval
     /// but survives `scan_trusted_workflow_shape` must not be accepted by the
     /// integration gate.
+    ///
+    /// The `preapproved_` name prefix is load-bearing: it is what the required
+    /// merge surface's `file_policy::tests::preapproved` filter
+    /// (`scripts/ci/required-merge-surface.sh:310`) matches, so the required
+    /// `Compile All Targets (bit-rot guard)` context executes this
+    /// discriminator. A rename that drops the prefix silently returns this
+    /// control to the advisory nightly only.
     #[test]
-    fn validate_subject_workflow_rejects_v7_shape_scan_bypass_tampering() -> Result<()> {
+    fn preapproved_v10_subject_rejects_v7_shape_scan_bypass_tampering() -> Result<()> {
         let (temp, base) = exact_fixture()?;
         let workflow_path = ".github/workflows/non-rust-policy.yml";
         let mut workflow = fs::read_to_string(temp.path().join(workflow_path))?;
