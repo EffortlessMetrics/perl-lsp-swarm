@@ -1,4 +1,189 @@
 pub mod perl_semantic_facts
+pub mod perl_semantic_facts::direct_callable
+#[non_exhaustive] pub enum perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition
+pub perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::AmbiguousIndirectOrFilehandle
+pub perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::CoderefVariable
+pub perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::ExactBareParenthesized
+pub perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::ExactBareUnparenthesized
+pub perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::ExactNamedAmpersand
+pub perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::ExactQualified
+pub perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::Method
+pub perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::RecoveredOrSynthetic
+pub perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::Unsupported
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition) -> core::cmp::Ordering
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::partial_cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass
+pub perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::BareParenthesizedFunctionCall
+pub perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::BareUnparenthesizedCall
+pub perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::BuiltinOrFeatureKeyword
+pub perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::CoderefVariableCall
+pub perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::ExplicitAmpersandNamedCall
+pub perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::IndirectObjectOrFilehandleAmbiguous
+pub perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::MethodCall
+pub perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::OtherUnsupportedOrDynamicShape
+pub perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::PackageQualifiedFunctionCall
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass) -> core::cmp::Ordering
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::partial_cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_semantic_facts::direct_callable::DirectCallableClaimCeiling
+pub perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::ExactBinding
+pub perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::InstrumentOrReadiness
+pub perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::NonExactEvidence
+pub fn perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableClaimCeiling
+pub fn perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableClaimCeiling) -> core::cmp::Ordering
+pub fn perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableClaimCeiling) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::partial_cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableClaimCeiling) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableClaimCeiling::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableClaimCeiling, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_semantic_facts::direct_callable::DirectCallableContractError
+pub perl_semantic_facts::direct_callable::DirectCallableContractError::EmptyIdentity(&'static str)
+pub perl_semantic_facts::direct_callable::DirectCallableContractError::ExactUnresolvedWithoutCompleteDenominator
+pub perl_semantic_facts::direct_callable::DirectCallableContractError::InvalidAxisCombination(&'static str)
+pub perl_semantic_facts::direct_callable::DirectCallableContractError::LegacyEmptyExactUnresolved
+pub perl_semantic_facts::direct_callable::DirectCallableContractError::MethodCallExactUnresolved
+pub fn perl_semantic_facts::direct_callable::DirectCallableContractError::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableContractError
+pub fn perl_semantic_facts::direct_callable::DirectCallableContractError::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableContractError) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableContractError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableContractError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition
+pub perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::CompleteForCallClass
+pub perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::ExternalOrDependencyUnindexed
+pub perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::InstrumentFailure
+pub perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::NotReady
+pub perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::Partial
+pub perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::Stale
+pub fn perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition
+pub fn perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition) -> core::cmp::Ordering
+pub fn perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::partial_cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_semantic_facts::direct_callable::DirectCallableDisposition
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::AmbiguousMultipleTargets
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::DynamicCallablePossible
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::ExactUnresolved
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::ExternalOrDependencyUnindexed
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::InstrumentFailure
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::NotReadyOrIncomplete
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::ResolvedBuiltinOrLanguageConstruct
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::ResolvedGeneratedOrFrameworkBinding
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::ResolvedImportedOrVisibleBinding
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::ResolvedLocalOrPackageSub
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::ResolvedQualifiedTarget
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::Stale
+pub perl_semantic_facts::direct_callable::DirectCallableDisposition::UnsupportedCallShape
+pub fn perl_semantic_facts::direct_callable::DirectCallableDisposition::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableDisposition
+pub fn perl_semantic_facts::direct_callable::DirectCallableDisposition::cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableDisposition) -> core::cmp::Ordering
+pub fn perl_semantic_facts::direct_callable::DirectCallableDisposition::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableDisposition) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableDisposition::partial_cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableDisposition) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::direct_callable::DirectCallableDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableDisposition::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::direct_callable::DirectCallableDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableDisposition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary
+pub perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::NotApplicable
+pub perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::Possible
+pub perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::PresentAndRelevant
+pub perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::ProvenAbsentForSubject
+pub perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::UnknownOrIncomplete
+pub fn perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary
+pub fn perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary) -> core::cmp::Ordering
+pub fn perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::partial_cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind
+pub perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::DynamicNoneAbsence
+pub perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::EmptyVectorAbsence
+pub perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::None
+pub perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::NullQueryImplementation
+pub fn perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind
+pub fn perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind) -> core::cmp::Ordering
+pub fn perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::partial_cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_semantic_facts::direct_callable::DirectCallableTargetResolution
+pub perl_semantic_facts::direct_callable::DirectCallableTargetResolution::Contradicted
+pub perl_semantic_facts::direct_callable::DirectCallableTargetResolution::ExactOne
+pub perl_semantic_facts::direct_callable::DirectCallableTargetResolution::ExactSeveral
+pub perl_semantic_facts::direct_callable::DirectCallableTargetResolution::NoneObserved
+pub perl_semantic_facts::direct_callable::DirectCallableTargetResolution::NotComparable
+pub fn perl_semantic_facts::direct_callable::DirectCallableTargetResolution::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableTargetResolution
+pub fn perl_semantic_facts::direct_callable::DirectCallableTargetResolution::cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableTargetResolution) -> core::cmp::Ordering
+pub fn perl_semantic_facts::direct_callable::DirectCallableTargetResolution::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableTargetResolution) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableTargetResolution::partial_cmp(&self, other: &perl_semantic_facts::direct_callable::DirectCallableTargetResolution) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::direct_callable::DirectCallableTargetResolution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableTargetResolution::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::direct_callable::DirectCallableTargetResolution::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableTargetResolution::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableTargetResolution, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes
+pub perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::call_shape: perl_semantic_facts::direct_callable::DirectCallableCallShapeDisposition
+pub perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::coverage: perl_semantic_facts::direct_callable::DirectCallableCoverageDisposition
+pub perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::dynamic: perl_semantic_facts::direct_callable::DirectCallableDynamicBoundary
+pub perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::legacy_input: perl_semantic_facts::direct_callable::DirectCallableLegacyInputKind
+pub perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::reason_ids: alloc::vec::Vec<alloc::string::String>
+pub perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::resolved_target: core::option::Option<perl_semantic_facts::EntityId>
+pub perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::target: perl_semantic_facts::direct_callable::DirectCallableTargetResolution
+pub fn perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::validate(&self) -> core::result::Result<(), perl_semantic_facts::direct_callable::DirectCallableContractError>
+pub fn perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes
+pub fn perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment
+pub perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::assessment_digest: alloc::string::String
+pub perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::axes: perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes
+pub perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::claim_ceiling: perl_semantic_facts::direct_callable::DirectCallableClaimCeiling
+pub perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::disposition: perl_semantic_facts::direct_callable::DirectCallableDisposition
+pub perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::subject: perl_semantic_facts::direct_callable::DirectCallableSubject
+pub fn perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::fingerprint(subject: &perl_semantic_facts::direct_callable::DirectCallableSubject, axes: &perl_semantic_facts::direct_callable::DirectCallableEvidenceAxes) -> alloc::string::String
+pub fn perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::validate(&self) -> core::result::Result<(), perl_semantic_facts::direct_callable::DirectCallableContractError>
+pub fn perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment
+pub fn perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableResolutionAssessment, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_semantic_facts::direct_callable::DirectCallableSubject
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::call_anchor: perl_semantic_facts::AnchorId
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::callee_spelling: alloc::string::String
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::document: perl_semantic_facts::FileId
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::lexical_scope: core::option::Option<perl_semantic_facts::ScopeId>
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::owning_package: core::option::Option<alloc::string::String>
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::query_snapshot_id: alloc::string::String
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::root_identity: alloc::string::String
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::source_generation: perl_semantic_facts::SourceGeneration
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::subject_id: alloc::string::String
+pub perl_semantic_facts::direct_callable::DirectCallableSubject::syntax_class: perl_semantic_facts::direct_callable::DirectCallableCallSyntaxClass
+pub fn perl_semantic_facts::direct_callable::DirectCallableSubject::validate(&self) -> core::result::Result<(), perl_semantic_facts::direct_callable::DirectCallableContractError>
+pub fn perl_semantic_facts::direct_callable::DirectCallableSubject::clone(&self) -> perl_semantic_facts::direct_callable::DirectCallableSubject
+pub fn perl_semantic_facts::direct_callable::DirectCallableSubject::eq(&self, other: &perl_semantic_facts::direct_callable::DirectCallableSubject) -> bool
+pub fn perl_semantic_facts::direct_callable::DirectCallableSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::direct_callable::DirectCallableSubject::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::direct_callable::DirectCallableSubject::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::direct_callable::DirectCallableSubject, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_semantic_facts::direct_callable::DIRECT_CALLABLE_QUERY_FAMILY: &str
+pub const perl_semantic_facts::direct_callable::DIRECT_CALLABLE_RESOLUTION_SCHEMA: &str
+pub fn perl_semantic_facts::direct_callable::direct_callable_query_requirement() -> core::result::Result<perl_semantic_facts::SemanticQueryRequirement, perl_semantic_facts::SemanticQueryContractError>
+pub fn perl_semantic_facts::direct_callable::register_direct_callable_requirement(registry: &mut perl_semantic_facts::SemanticQueryRequirementRegistry) -> core::result::Result<(), perl_semantic_facts::SemanticQueryContractError>
 pub mod perl_semantic_facts::framework
 #[non_exhaustive] pub enum perl_semantic_facts::framework::AdapterAuthorityError
 pub perl_semantic_facts::framework::AdapterAuthorityError::BlockingLimitation
