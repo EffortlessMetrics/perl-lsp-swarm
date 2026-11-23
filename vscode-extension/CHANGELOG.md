@@ -4,6 +4,8 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-22
+
 ### Changed
 
 - **Packaged activation failures are provably cleaned up and recoverable on

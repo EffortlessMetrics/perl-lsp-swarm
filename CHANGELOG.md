@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-22
+
 <!-- changelog coverage: retrospective_covered_through = da86c123a (this PR's
      base commit, conservative floor for the audited range). Post-audit
      user-facing PRs merged after this PR was authored are NOT covered here
