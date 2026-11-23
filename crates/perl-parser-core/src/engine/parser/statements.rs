@@ -1397,6 +1397,13 @@ impl<'a> Parser<'a> {
         expr = self.parse_or_with(expr)?;
         expr = self.parse_range_with(expr)?;
         expr = self.parse_ternary_with(expr)?;
+        // Assignment binds looser than `?:`. A statement-start nullary/named-unary
+        // call that grew a ternary (`wantarray ? $a : $b = 1`) must apply `=` to
+        // that ternary lvalue. Do not assign into arbitrary calls: `length($x) = 5`
+        // is not valid Perl and must stay unparsed as an lvalue.
+        if matches!(expr.kind, NodeKind::Ternary { .. }) {
+            expr = self.parse_assignment_with(expr, true)?;
+        }
         expr = self.collect_comma_fat_arrow_continuation(expr)?;
         self.parse_word_or_expr(expr)
     }

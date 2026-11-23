@@ -255,8 +255,22 @@ impl<'a> Parser<'a> {
             return self.parse_return_expr();
         }
 
-        let mut expr = self.parse_ternary_with_tail(collect_else_list)?;
+        let expr = self.parse_ternary_with_tail(collect_else_list)?;
+        self.parse_assignment_with(expr, collect_else_list)
+    }
 
+    /// Apply a following assignment operator to an already-parsed left-hand
+    /// expression (`?:` binds tighter than `=`).
+    ///
+    /// Statement-start nullary builtins (`wantarray ? $a : $b = 1`) climb
+    /// through `parse_named_unary_statement_tail` and must share this seam with
+    /// the ordinary expression assignment production so the else-side `=` is
+    /// assignment to the ternary lvalue, matching `perl -MO=Deparse,-p`.
+    fn parse_assignment_with(
+        &mut self,
+        mut expr: Node,
+        collect_else_list: bool,
+    ) -> ParseResult<Node> {
         if let Some((op, op_start)) = self.consume_assignment_operator()? {
             // The RHS can be a 'not' expression, or missing (recovery)
             let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
