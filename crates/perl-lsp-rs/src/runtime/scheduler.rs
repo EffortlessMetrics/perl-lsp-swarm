@@ -540,6 +540,14 @@ impl Scheduler {
         };
         let permit = self.mutation_tx.reserve().await.map_err(|_| ())?;
         let seq = self.mutation_seq_next.fetch_add(1, Ordering::SeqCst) + 1;
+        self.server.emit_document_symbol_lifecycle_probe(
+            "mutation_admitted",
+            &request.method,
+            request.params.as_ref(),
+            request.id.as_ref(),
+            Some(seq),
+            None,
+        );
         let enqueued = std::time::Instant::now();
         permit.send(QueuedMutation { request, seq, enqueued });
         admission.armed = false;
@@ -569,6 +577,14 @@ impl Scheduler {
             extract_freshness(&self.server, &request.method, request.params.as_ref(), priority);
         let arrival_seq = READ_ARRIVAL_SEQ.fetch_add(1, Ordering::Relaxed);
         let permit = self.read_tx.reserve().await.map_err(|_| ())?;
+        self.server.emit_document_symbol_lifecycle_probe(
+            "read_admitted",
+            &request.method,
+            request.params.as_ref(),
+            request.id.as_ref(),
+            Some(wait_for_seq),
+            None,
+        );
         permit.send(QueuedRead {
             request,
             wait_for_seq,

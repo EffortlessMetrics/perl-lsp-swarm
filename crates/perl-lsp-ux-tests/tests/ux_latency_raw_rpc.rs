@@ -31,7 +31,7 @@
 //!         -- --test-threads=1 --nocapture
 
 use anyhow::{Context, Result, bail};
-use perl_lsp_ux_tests::observation::WaitEnd;
+use perl_lsp_ux_tests::observation::{StreamEnd, WaitEnd};
 use perl_lsp_ux_tests::{LspEvent, ScenarioConfig, UxHarness, binary_available};
 use serde_json::{Value, json};
 use std::io::Write;
@@ -421,16 +421,570 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
         return Ok(());
     }
 
-    let harness = UxHarness::new(e2e_config(timeout()))?;
-    harness.open_file("lib/Latency/Symbols.pm", SYMBOL_SOURCE)?;
+    // Diagnostic carrier for #17020: four fresh children, stopping at the
+    // first empty immediate result. Readiness never replaces the immediate
+    // assertion; it supplies a second observation in that exact same child.
+    for session in 0..4 {
+        let mut config = e2e_config(timeout());
+        config.extra_env.extend([
+            ("PERL_LSP_DOCUMENT_SYMBOL_PROBE".to_string(), Some("1".to_string())),
+            ("PERL_LSP_LOG".to_string(), Some("warn,document_symbol_probe=debug".to_string())),
+            ("RUST_LOG".to_string(), None),
+            ("NO_COLOR".to_string(), Some("1".to_string())),
+        ]);
+        let harness = UxHarness::new(config)?;
+        let path = "lib/Latency/Symbols.pm";
+        harness.open_file(path, SYMBOL_SOURCE)?;
+        let uri = harness.workspace.uri(path);
+        let ready_before = harness.wait_for_active_document_ready(&uri, Duration::ZERO).is_ok();
+        let immediate = document_symbol_primary_probe_request(
+            &harness,
+            path,
+            session,
+            ready_before,
+            timeout(),
+            emit_document_symbol_probe_receipt,
+        )?;
+        let ready_by_response =
+            harness.wait_for_active_document_ready(&uri, Duration::ZERO).is_ok();
+        // Persist the primary observation before any later readiness/control
+        // request can fail. Waiting for stderr cannot change this response.
+        let primary_branches = wait_for_document_symbol_branch_probes(&harness, &[&immediate]);
+        emit_document_symbol_probe_receipt(&json!({
+            "kind": "document_symbol_primary_probe",
+            "session": session,
+            "ready_before_query": ready_before,
+            "ready_by_response": ready_by_response,
+            "immediate_raw_envelope": immediate,
+            "handler_branches": primary_branches,
+            "lifecycle_probes": document_symbol_probes(&harness, "document_symbol_lifecycle_probe"),
+            "client_write_probes": harness.client.document_symbol_client_write_probes(),
+            "transport_probes": document_symbol_probes(&harness, "document_symbol_transport_probe"),
+        }))?;
+        assert!(
+            probe_branch(&primary_branches, &immediate).is_some(),
+            "missing primary request-correlated branch probe: {immediate}"
+        );
+        let readiness = harness.wait_for_active_document_ready_result(&uri, ARRIVAL_BUDGET);
+        // Record even a readiness failure before deciding the original assertion.
+        let after_ready = if readiness.is_ok() {
+            Some(document_symbol_probe_request(&harness, path)?)
+        } else {
+            None
+        };
 
-    let symbols = harness.document_symbols("lib/Latency/Symbols.pm")?;
+        harness.open_file("empty-control.pl", "1;\n")?;
+        let empty = document_symbol_probe_request(&harness, "empty-control.pl")?;
+        let unopened = document_symbol_probe_request(&harness, "unopened-control.pl")?;
+        harness.open_file("desync-control.pl", "sub predecessor {}\n")?;
+        harness.client.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": harness.workspace.uri("desync-control.pl"), "version": 2 },
+                "contentChanges": null
+            }),
+        )?;
+        let desync = document_symbol_probe_request(&harness, "desync-control.pl")?;
+        // One bounded control proves oversized buffers retain the wire result
+        // while avoiding a content fingerprint scan in the opted-in probe.
+        let over_limit = if session == 0 {
+            let source = format!("sub alpha {{}}\n#{}\n", "x".repeat(64 * 1024));
+            harness.open_file("hash-limit-control.pl", &source)?;
+            Some(document_symbol_probe_request(&harness, "hash-limit-control.pl")?)
+        } else {
+            None
+        };
+        let expected = [&immediate, &empty, &unopened, &desync];
+        let mut observed_responses = expected.to_vec();
+        observed_responses.extend(after_ready.as_ref());
+        observed_responses.extend(over_limit.as_ref());
+        let branches = wait_for_document_symbol_branch_probes(&harness, &observed_responses);
+        let lifecycle = document_symbol_probes(&harness, "document_symbol_lifecycle_probe");
+        emit_document_symbol_probe_receipt(&json!({
+            "kind": "document_symbol_same_child_probe",
+            "session": session,
+            "ready_before_query": ready_before,
+            "ready_by_response": ready_by_response,
+            "readiness": document_symbol_readiness_metadata(&readiness),
+            "immediate_raw_envelope": immediate,
+            "after_ready_raw_envelope": after_ready,
+            "empty_raw_envelope": empty,
+            "unopened_raw_envelope": unopened,
+            "full_sync_raw_envelope": desync,
+            "hash_limit_raw_envelope": over_limit,
+            "handler_branches": branches,
+            "lifecycle_probes": lifecycle,
+            "client_write_probes": harness.client.document_symbol_client_write_probes(),
+            "transport_probes": document_symbol_probes(&harness, "document_symbol_transport_probe"),
+        }))?;
+
+        for response in observed_responses {
+            assert!(
+                probe_branch(&branches, response).is_some(),
+                "missing request-correlated branch probe: {response}"
+            );
+        }
+        assert_eq!(
+            probe_branch(&branches, &empty),
+            Some("ast"),
+            "known-empty control must reach AST extraction"
+        );
+        assert!(
+            document_symbol_probe_result(&empty)?.is_empty(),
+            "known-empty control must return []"
+        );
+        assert_eq!(probe_branch(&branches, &unopened), Some("not_open"));
+        assert!(
+            document_symbol_probe_result(&unopened)?.is_empty(),
+            "unopened control must return []"
+        );
+        assert_eq!(probe_branch(&branches, &desync), Some("full_sync_required"));
+        assert!(
+            document_symbol_probe_result(&desync)?.is_empty(),
+            "full-sync control must return []"
+        );
+
+        let symbols = document_symbol_probe_result(&immediate)?;
+        assert!(
+            symbol_tree_contains_name(symbols, "alpha"),
+            "documentSymbol must expose the alpha subroutine over the e2e path; got {symbols:?}"
+        );
+        let ingress = lifecycle
+            .iter()
+            .find(|probe| {
+                probe["stage"] == "ingress"
+                    && probe["method"] == "textDocument/documentSymbol"
+                    && probe.get("request_id") == immediate.get("id")
+            })
+            .context("missing actual documentSymbol ingress observation")?;
+        let uri_hash = document_symbol_probe_uri_hash(ingress, "uri_hash")?;
+        let normalized_hash = document_symbol_probe_uri_hash(ingress, "normalized_uri_hash")?;
+        let server_pid = ingress["server_pid"]
+            .as_u64()
+            .filter(|pid| *pid > 0)
+            .context("missing positive child PID")?;
+        let mut open_sequence = None;
+        for stage in [
+            "ingress",
+            "mutation_admitted",
+            "dispatch_entered",
+            "preflight_continue",
+            "did_open_handler_entered",
+            "did_open_inserted_parsed",
+            "did_open_return_ok",
+        ] {
+            let probe = lifecycle
+                .iter()
+                .find(|probe| {
+                    probe["method"] == "textDocument/didOpen"
+                        && probe["stage"] == stage
+                        && probe["uri_hash"] == uri_hash
+                })
+                .with_context(|| format!("missing same-URI didOpen stage {stage}"))?;
+            assert_eq!(
+                probe["server_pid"].as_u64(),
+                Some(server_pid),
+                "stages must belong to one child"
+            );
+            assert_eq!(
+                document_symbol_probe_uri_hash(probe, "normalized_uri_hash")?,
+                normalized_hash
+            );
+            if stage == "ingress" {
+                assert_eq!(probe["incoming_text_bytes"], SYMBOL_SOURCE.len());
+                assert_eq!(probe["incoming_version"], 1);
+            }
+            if stage == "mutation_admitted" {
+                open_sequence = probe["mutation_sequence"].as_u64();
+            }
+            if stage == "did_open_inserted_parsed" || stage == "did_open_return_ok" {
+                assert_eq!(probe["document_present"], true);
+                assert_eq!(probe["document_generation"], 1);
+            }
+        }
+        let read = lifecycle
+            .iter()
+            .find(|probe| {
+                probe["stage"] == "read_admitted" && probe.get("request_id") == immediate.get("id")
+            })
+            .context("missing actual read admission observation")?;
+        assert_eq!(read["server_pid"].as_u64(), Some(server_pid));
+        assert_eq!(document_symbol_probe_uri_hash(read, "uri_hash")?, uri_hash);
+        assert_eq!(document_symbol_probe_uri_hash(read, "normalized_uri_hash")?, normalized_hash);
+        assert!(
+            read["mutation_sequence"].as_u64().context("read barrier sequence")?
+                >= open_sequence.context("didOpen admission sequence")?
+        );
+        let empty_ingress = lifecycle
+            .iter()
+            .find(|probe| {
+                probe["stage"] == "ingress"
+                    && probe["method"] == "textDocument/documentSymbol"
+                    && probe.get("request_id") == empty.get("id")
+            })
+            .context("missing different-URI control ingress")?;
+        assert_eq!(empty_ingress["server_pid"].as_u64(), Some(server_pid));
+        assert_ne!(document_symbol_probe_uri_hash(empty_ingress, "uri_hash")?, uri_hash);
+        assert_ne!(
+            document_symbol_probe_uri_hash(empty_ingress, "normalized_uri_hash")?,
+            normalized_hash
+        );
+        assert_document_symbol_transport_capture(
+            &harness,
+            immediate["id"].as_i64().context("numeric primary ID")?,
+            server_pid,
+        )?;
+        let primary = probe_receipt(&branches, &immediate).context("missing primary receipt")?;
+        assert!(primary["text_hash"].is_u64(), "small fixture must retain its fingerprint");
+        assert_eq!(primary["text_hash_omitted_byte_limit"], false);
+        if let Some(over_limit) = &over_limit {
+            let receipt =
+                probe_receipt(&branches, over_limit).context("missing hash-limit receipt")?;
+            assert_eq!(receipt["text_hash_limit_bytes"], 64 * 1024);
+            assert!(receipt["text_bytes"].as_u64().is_some_and(|bytes| bytes > 64 * 1024));
+            assert!(receipt["text_hash"].is_null(), "over-limit source must not be hashed");
+            assert_eq!(receipt["text_hash_omitted_byte_limit"], true);
+            assert!(symbol_tree_contains_name(document_symbol_probe_result(over_limit)?, "alpha"));
+        }
+
+        readiness.map_err(|end| anyhow::anyhow!("same-child readiness failed: {end:?}"))?;
+        let after_ready = after_ready.context("missing post-readiness observation")?;
+        assert!(
+            symbol_tree_contains_name(document_symbol_probe_result(&after_ready)?, "alpha"),
+            "post-readiness documentSymbol must expose alpha: {after_ready}"
+        );
+        harness.assert_no_crash();
+    }
+    Ok(())
+}
+
+#[test]
+fn ux_latency_document_symbol_probe_requires_explicit_opt_in() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+    let mut config = e2e_config(timeout());
+    config.extra_env.extend([
+        ("PERL_LSP_DOCUMENT_SYMBOL_PROBE".to_string(), None),
+        ("PERL_LSP_LOG".to_string(), Some("debug".to_string())),
+        ("RUST_LOG".to_string(), None),
+        ("NO_COLOR".to_string(), Some("1".to_string())),
+    ]);
+    let harness = UxHarness::new(config)?;
+    harness.open_file("probe-opt-out.pl", SYMBOL_SOURCE)?;
+    let response = document_symbol_probe_request(&harness, "probe-opt-out.pl")?;
+    assert!(symbol_tree_contains_name(document_symbol_probe_result(&response)?, "alpha"));
+    harness.client.shutdown_and_exit(timeout())?;
+    // The exit INFO marker follows this response and fences the asynchronous
+    // stderr reader. Elapsed time alone cannot prove absence of an earlier log.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if harness.client.peek_stderr_lines().iter().any(|line| line.contains("LSP server exiting"))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            bail!("missing post-response stderr exit fence for probe opt-out control");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let branches = document_symbol_branch_probes(&harness);
+    emit_document_symbol_probe_receipt(&json!({
+        "kind": "document_symbol_opt_out_probe",
+        "raw_envelope": response,
+        "handler_branches": branches,
+    }))?;
     assert!(
-        symbol_tree_contains_name(&symbols, "alpha"),
-        "documentSymbol must expose the alpha subroutine over the e2e path; got {symbols:?}"
+        branches.is_empty(),
+        "global debug logging must not opt into document symbol fingerprints"
     );
+    assert!(document_symbol_probes(&harness, "document_symbol_lifecycle_probe").is_empty());
+    assert!(document_symbol_probes(&harness, "document_symbol_transport_probe").is_empty());
+    assert_eq!(harness.client.document_symbol_client_write_probes()["enabled"], false);
+    Ok(())
+}
 
-    harness.assert_no_crash();
+fn document_symbol_probe_request(harness: &UxHarness, path: &str) -> Result<Value> {
+    harness.client.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": harness.workspace.uri(path) } }),
+        timeout(),
+    )
+}
+
+fn document_symbol_primary_probe_request(
+    harness: &UxHarness,
+    path: &str,
+    session: usize,
+    ready_before: bool,
+    request_timeout: Duration,
+    emit: impl FnOnce(&Value) -> Result<()>,
+) -> Result<Value> {
+    match harness.client.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": harness.workspace.uri(path) } }),
+        request_timeout,
+    ) {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            // Persist the actual failure before propagating it. There is no
+            // response envelope to invent; UxClient's bounded Drop owns cleanup.
+            let receipt = json!({
+                "kind": "document_symbol_primary_transport_failure",
+                "session": session,
+                "ready_before_query": ready_before,
+                "response_received": false,
+                "error_metadata": document_symbol_transport_error_metadata(&error, harness.client.stream_end().as_ref()),
+                "handler_branches": document_symbol_branch_probes(harness),
+                "lifecycle_probes": document_symbol_probes(harness, "document_symbol_lifecycle_probe"),
+                "client_write_probes": harness.client.document_symbol_client_write_probes(),
+                "transport_probes": document_symbol_probes(harness, "document_symbol_transport_probe"),
+            });
+            // The request stays failed even if the evidence sink itself fails.
+            // Do not replace or stringify the original error to report that.
+            let _ = emit(&receipt);
+            Err(error)
+        }
+    }
+}
+
+#[test]
+fn ux_latency_document_symbol_transport_failure_persists_actual_error() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+    let harness = UxHarness::new(e2e_config(timeout()))?;
+    harness.client.shutdown_and_exit(timeout())?;
+    let mut persisted = Vec::new();
+    let result = document_symbol_primary_probe_request(
+        &harness,
+        "closed-transport.pl",
+        0,
+        false,
+        Duration::from_millis(250),
+        |receipt| {
+            emit_document_symbol_probe_receipt(receipt)?;
+            persisted.push(receipt.clone());
+            Ok(())
+        },
+    );
+    result.err().context("closed transport must remain an error, never an empty result")?;
+    assert_eq!(persisted.len(), 1, "failure must persist exactly once before returning");
+    assert_eq!(persisted[0]["kind"], "document_symbol_primary_transport_failure");
+    assert_eq!(persisted[0]["response_received"], false);
+    assert!(persisted[0]["error_metadata"]["class"].is_string());
+    assert!(persisted[0].get("error").is_none());
+    assert!(persisted[0].get("immediate_raw_envelope").is_none());
+    assert!(persisted[0].get("result").is_none());
+    Ok(())
+}
+
+fn document_symbol_transport_error_metadata(
+    error: &anyhow::Error,
+    stream: Option<&StreamEnd>,
+) -> Value {
+    let io_kind = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .map(|error| format!("{:?}", error.kind()));
+    let stream_class = match stream {
+        Some(StreamEnd::ServerClosed) => Some("server_closed"),
+        Some(StreamEnd::TransportFailure { .. }) => Some("transport_failure"),
+        None => None,
+    };
+    json!({
+        "class": if io_kind.is_some() { "io_failure" } else { stream_class.unwrap_or("request_failure") },
+        "io_error_kind": io_kind,
+        "stream_class": stream_class,
+    })
+}
+
+fn document_symbol_readiness_metadata(readiness: &std::result::Result<(), WaitEnd>) -> Value {
+    match readiness {
+        Ok(()) => json!({ "class": "ready" }),
+        Err(WaitEnd::Deadline { timeout }) => {
+            json!({ "class": "deadline", "timeout_ms": timeout.as_millis() })
+        }
+        Err(WaitEnd::Ended(StreamEnd::ServerClosed)) => json!({ "class": "server_closed" }),
+        Err(WaitEnd::Ended(StreamEnd::TransportFailure { .. })) => {
+            json!({ "class": "transport_failure" })
+        }
+    }
+}
+
+#[test]
+fn document_symbol_probe_error_metadata_omits_client_method_id_and_long_details() -> Result<()> {
+    let details =
+        format!("method=synthetic-method-secret id=synthetic-id-secret {}", "x".repeat(8192));
+    let stream = StreamEnd::TransportFailure { detail: details.clone() };
+    for error in [anyhow::anyhow!(details.clone()), std::io::Error::other(details.clone()).into()] {
+        let receipt = json!({
+            "transport": document_symbol_transport_error_metadata(&error, Some(&stream)),
+            "readiness": document_symbol_readiness_metadata(&Err(WaitEnd::Ended(stream.clone()))),
+        });
+        let encoded = serde_json::to_string(&receipt)?;
+        assert!(encoded.len() < 256, "only bounded class/kind metadata may be retained");
+        assert!(!encoded.contains("synthetic-method-secret"));
+        assert!(!encoded.contains("synthetic-id-secret"));
+        assert!(!encoded.contains(&"x".repeat(32)));
+        assert_eq!(receipt["readiness"]["class"], "transport_failure");
+        assert_eq!(receipt["transport"]["stream_class"], "transport_failure");
+        assert_eq!(error.to_string(), details, "metadata must not mutate the original error");
+    }
+    Ok(())
+}
+
+fn document_symbol_probe_result(response: &Value) -> Result<&[Value]> {
+    if let Some(error) = response.get("error") {
+        bail!("documentSymbol returned error: {error}; raw envelope: {response}");
+    }
+    response
+        .get("result")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .with_context(|| format!("documentSymbol must return an explicit result array: {response}"))
+}
+
+fn document_symbol_probe_uri_hash<'a>(probe: &'a Value, key: &str) -> Result<&'a str> {
+    probe[key]
+        .as_str()
+        .filter(|hash| {
+            hash.strip_prefix("sha256:").is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        })
+        .with_context(|| format!("missing valid bounded URI identity: {key}"))
+}
+
+fn assert_document_symbol_transport_capture(
+    harness: &UxHarness,
+    query_id: i64,
+    server_pid: u64,
+) -> Result<()> {
+    let client = harness.client.document_symbol_client_write_probes();
+    assert_eq!(client["enabled"], true);
+    assert_eq!(client["complete"], true, "overflow makes write completeness unproven");
+    assert_eq!(client["omitted_records"], 0);
+    let writes = client["records"].as_array().context("missing client write ranges")?;
+    assert!(!writes.is_empty());
+    let mut offset = 0;
+    for (index, write) in writes.iter().enumerate() {
+        assert_eq!(write["server_pid"].as_u64(), Some(server_pid));
+        assert_eq!(write["write_sequence"].as_u64(), Some(index as u64 + 1));
+        assert_eq!(write["stream_start"].as_u64(), Some(offset));
+        let end = write["stream_end"].as_u64().context("write end offset")?;
+        let accepted = write["accepted_bytes"].as_u64().context("accepted write bytes")?;
+        assert_eq!(end.checked_sub(offset), Some(accepted));
+        offset = end;
+    }
+    let server = document_symbol_probes(harness, "document_symbol_transport_probe");
+    assert!(!server.is_empty(), "missing actual server frame/decode capture");
+    for (index, record) in server.iter().enumerate() {
+        assert_ne!(
+            record["stage"], "record_limit_exceeded",
+            "overflow makes decode completeness unproven"
+        );
+        assert_eq!(record["server_pid"].as_u64(), Some(server_pid));
+        assert_eq!(record["event_sequence"].as_u64(), Some(index as u64 + 1));
+    }
+    for method in ["did_open", "document_symbol"] {
+        let first = writes
+            .iter()
+            .find(|write| {
+                write["frame"]["origin"] == "foreground"
+                    && write["frame"]["method_class"] == method
+                    && if method == "did_open" {
+                        write["frame"]["text_bytes"] == SYMBOL_SOURCE.len()
+                    } else {
+                        write["frame"]["numeric_id"] == query_id
+                    }
+            })
+            .context("missing actual fixture/query write frame")?;
+        let token = first["frame_token"].as_u64().context("write frame token")?;
+        let parts: Vec<_> =
+            writes.iter().filter(|write| write["frame_token"].as_u64() == Some(token)).collect();
+        let header: Vec<_> = parts.iter().filter(|write| write["phase"] == "header").collect();
+        let body: Vec<_> = parts.iter().filter(|write| write["phase"] == "body").collect();
+        assert!(!header.is_empty() && !body.is_empty());
+        let start = header[0]["stream_start"].as_u64().context("header stream start")?;
+        let end = body.last().context("body writes")?["stream_end"]
+            .as_u64()
+            .context("body stream end")?;
+        let body_bytes = first["frame"]["body_bytes"].as_u64().context("serialized body length")?;
+        let actual_body_bytes: u64 =
+            body.iter().map(|write| write["accepted_bytes"].as_u64().unwrap_or(0)).sum();
+        assert_eq!(actual_body_bytes, body_bytes);
+        assert!(parts.iter().any(|write| write["phase"] == "flush" && write["outcome"] == "ok"));
+        let extracted = server
+            .iter()
+            .find(|record| {
+                record["stage"] == "body_extracted"
+                    && record["metadata"]["stream_start"].as_u64() == Some(start)
+                    && record["metadata"]["stream_end"].as_u64() == Some(end)
+            })
+            .context("missing matching actual extracted byte range")?;
+        assert_eq!(extracted["metadata"]["body_bytes"].as_u64(), Some(body_bytes));
+        let frame_sequence =
+            extracted["metadata"]["frame_sequence"].as_u64().context("server frame sequence")?;
+        assert!(
+            server.iter().any(|record| record["stage"] == "decoded_body"
+                && record["metadata"]["frame_sequence"].as_u64() == Some(frame_sequence)
+                && record["metadata"]["outcome"] == "accepted"
+                && record["metadata"]["method_class"] == method
+                && (method == "did_open" || record["metadata"]["numeric_id"] == query_id)),
+            "missing accepted decode for measured write"
+        );
+    }
+    Ok(())
+}
+
+fn document_symbol_branch_probes(harness: &UxHarness) -> Vec<Value> {
+    document_symbol_probes(harness, "document_symbol_branch_probe")
+}
+
+fn document_symbol_probes(harness: &UxHarness, kind: &str) -> Vec<Value> {
+    harness
+        .client
+        .peek_stderr_lines()
+        .iter()
+        .filter_map(|line| {
+            let start = line.find('{')?;
+            let receipt: Value = serde_json::from_str(&line[start..]).ok()?;
+            (receipt["kind"] == kind).then_some(receipt)
+        })
+        .collect()
+}
+
+fn wait_for_document_symbol_branch_probes(harness: &UxHarness, responses: &[&Value]) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let branches = document_symbol_branch_probes(harness);
+        if responses.iter().all(|response| probe_branch(&branches, response).is_some())
+            || Instant::now() >= deadline
+        {
+            return branches;
+        }
+        // Observe stderr after a response; never retry a behavioral request.
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn probe_branch<'a>(branches: &'a [Value], response: &Value) -> Option<&'a str> {
+    probe_receipt(branches, response)?.get("branch")?.as_str()
+}
+
+fn probe_receipt<'a>(branches: &'a [Value], response: &Value) -> Option<&'a Value> {
+    let id = response.get("id")?;
+    branches.iter().find(|branch| branch.get("request_id") == Some(id))
+}
+
+fn emit_document_symbol_probe_receipt(receipt: &Value) -> Result<()> {
+    // Descriptor IO preserves one bounded measurement even when libtest captures
+    // passing output. No source text or host credentials enter the receipt.
+    let stderr = std::io::stderr();
+    let mut output = stderr.lock();
+    serde_json::to_writer(&mut output, receipt)?;
+    output.write_all(b"\n")?;
     Ok(())
 }
 
