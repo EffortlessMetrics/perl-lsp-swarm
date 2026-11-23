@@ -30,9 +30,9 @@ for pkg in sorted(meta["packages"], key=lambda p: p["name"]):
     # Include publish-disabled workspace crates in patch config to allow
     # local workspace dependency resolution during dry-run packaging.
     crate_dir = os.path.dirname(pkg["manifest_path"])
-    rel_path = os.path.relpath(crate_dir, workspace_root).replace(os.sep, "/")
+    rel_path = os.path.relpath(crate_dir, workspace_root)
     print("--config=patch.crates-io.{}.path=\"{}\"".format(pkg["name"], rel_path))
-' | tr -d '\r'
+'
 )"
 
 mapfile -t PATCH_ARGS <<< "${PATCH_OUTPUT}"
