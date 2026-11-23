@@ -376,7 +376,7 @@ regex = "1.12.2"
 thiserror = "2.0.18"
 tempfile = "3.24.0"
 anyhow = "1.0.103"
-url = "2.5.8"
+url = "2.5.9"
 lsp-types = "0.97.0"
 parking_lot = { version = "0.13.0", features = ["arc_lock"] }
 tracing = "0.1.44"
