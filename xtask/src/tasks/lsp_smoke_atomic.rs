@@ -215,6 +215,23 @@ pub fn child_specs() -> Vec<ChildSpec> {
     ]
 }
 
+/// Spell a Windows behavior executable for the native launcher (#17482):
+/// a canonicalized root carries the verbatim `\\?\` prefix, whose leading
+/// `\\` the launcher's shlex tokenizer would reduce to `\`, corrupting the
+/// path. Strip the verbatim prefix and use `/` separators, which Windows
+/// accepts and shlex passes through intact.
+#[cfg(windows)]
+fn windows_behavior_executable(executable: &str) -> String {
+    if let Some(unc) = executable.strip_prefix(r"\\?\UNC\") {
+        return format!("//{}", unc.replace('\\', "/"));
+    }
+    let stripped = executable
+        .strip_prefix(r"\\?\")
+        .or_else(|| executable.strip_prefix(r"\\.\\"))
+        .unwrap_or(executable);
+    stripped.replace('\\', "/")
+}
+
 /// The exact command one child executes (also recorded in the receipt).
 ///
 /// Behavior children run the prebuilt test binary **directly** — the path
@@ -238,6 +255,10 @@ pub fn command_line(spec: &ChildSpec, executable: Option<&str>) -> String {
         ChildKind::Behavior => {
             let filter = spec.test_filter.unwrap_or_default();
             let executable = executable.unwrap_or("<unresolved-prebuilt-test-binary>");
+            #[cfg(windows)]
+            let executable = windows_behavior_executable(executable);
+            #[cfg(windows)]
+            let executable = executable.as_str();
             let exact = if spec.exact { " --exact" } else { "" };
             format!("\"{executable}\" {filter}{exact} --test-threads=1")
         }
@@ -1281,6 +1302,21 @@ mod tests {
         assert_eq!(
             command_line(&spec, Some("target/debug/deps/semantic_definition-test")),
             "\"target/debug/deps/semantic_definition-test\" \
+semantic_definition_tests::definition_finds_scalar_variable_declaration --exact \
+--test-threads=1"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn behavior_command_strips_verbatim_prefix_for_native_launcher() {
+        let spec = pinned_spec("semantic_definition/scalar_variable");
+        assert_eq!(
+            command_line(
+                &spec,
+                Some(r"\\?\H:\repo\target\debug\deps\semantic_definition-test.exe")
+            ),
+            "\"H:/repo/target/debug/deps/semantic_definition-test.exe\" \
 semantic_definition_tests::definition_finds_scalar_variable_declaration --exact \
 --test-threads=1"
         );
