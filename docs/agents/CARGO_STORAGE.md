@@ -639,7 +639,11 @@ descriptor's origin or a live lease. It traverses only the four named roots with
 entry, depth, elapsed-time and fingerprint-byte bounds. Missing, unreadable,
 changed or clipped entries keep partial observed counts but cannot yield complete
 totals. Fingerprints under target and separated build roots include custom/agent
-profiles and explicit target triples. Public JSON retains fixed resource roles,
+profiles and explicit target triples. The reader recognizes both the legacy
+`<profile>/.fingerprint/<unit>/<file>.json` layout and Cargo 1.100's
+`<profile>/build/<package>/<hash>/fingerprint/<file>.json`, including retained
+mixed layouts after an upgrade. A directory named `fingerprint` outside those
+shapes does not make unrelated JSON a Cargo fingerprint. Public JSON retains fixed resource roles,
 path/content hashes and selected integer fingerprint hashes, never raw descriptor
 paths, arbitrary metadata or fingerprint environment/flag values.
 

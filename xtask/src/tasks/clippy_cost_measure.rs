@@ -18,6 +18,11 @@
 //! admission runs. The invalidation is repeated before *each* cold pass so
 //! both cold measurements start from the identical canonical state instead of
 //! the second one inheriting warmth produced by the first.
+//! This legacy invalidation is supported only on stable Cargo 1.95–1.99 with
+//! a shared target/build directory. Cargo 1.100's new layout, separate build
+//! directories, and unknown toolchains refuse a selection containing
+//! `members-cold` before any measurement or invalidation; `--states warm`
+//! remains available. No new-layout cleanup is inferred from directory names.
 //!
 //! Every pass records argv, wall duration, exit code, and Clippy finding
 //! counts parsed from `--message-format=json` stdout. Non-zero Clippy exits
@@ -141,6 +146,7 @@ struct ClippyCostReceipt {
 
 #[derive(Serialize)]
 struct ToolchainInfo {
+    cargo_version: String,
     cargo_clippy_version: String,
 }
 
@@ -216,21 +222,26 @@ fn cargo_program() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
 }
 
-fn probe_toolchain(cargo: &str) -> Result<ToolchainInfo> {
-    let output = Command::new(cargo).args(["clippy", "--version"]).output().map_err(|e| {
-        eyre!("cannot execute '{cargo} clippy --version': {e} — is cargo installed and on PATH?")
+fn probe_toolchain(cargo: &str, root: &Path) -> Result<ToolchainInfo> {
+    Ok(ToolchainInfo {
+        cargo_version: probe_version(cargo, &["--version"], root)?,
+        cargo_clippy_version: probe_version(cargo, &["clippy", "--version"], root)?,
+    })
+}
+
+fn probe_version(cargo: &str, args: &[&str], root: &Path) -> Result<String> {
+    let command = format!("{cargo} {}", args.join(" "));
+    let output = Command::new(cargo).args(args).current_dir(root).output().map_err(|e| {
+        eyre!("cannot execute '{command}': {e} — is the requested Cargo tool installed?")
     })?;
     if !output.status.success() {
-        bail!(
-            "'{cargo} clippy --version' exited with {} — the clippy driver is unavailable",
-            output.status.code().unwrap_or(-1)
-        );
+        bail!("'{command}' exited with {}", output.status.code().unwrap_or(-1));
     }
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if text.is_empty() {
-        bail!("'{cargo} clippy --version' produced no version text");
+        bail!("'{command}' produced no version text");
     }
-    Ok(ToolchainInfo { cargo_clippy_version: text })
+    Ok(text)
 }
 
 fn git_head(root: &Path) -> Result<String> {
@@ -250,10 +261,21 @@ fn git_head(root: &Path) -> Result<String> {
     Ok(head)
 }
 
-fn workspace_members_and_target(root: &Path) -> Result<(Vec<String>, PathBuf)> {
-    let bytes = crate::utils::run_cargo_metadata(true)
-        .with_context(|| format!("cargo metadata failed under {}", root.display()))?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
+fn workspace_members_and_target(
+    root: &Path,
+    cargo: &str,
+) -> Result<(Vec<String>, PathBuf, PathBuf)> {
+    // Bind metadata to the same Cargo executable as the version probe and
+    // measured runs; PATH may select a different toolchain from $CARGO.
+    let output = Command::new(cargo)
+        .args(["metadata", "--format-version", "1", "--no-deps", "--locked"])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("spawning '{cargo} metadata' under {}", root.display()))?;
+    if !output.status.success() {
+        bail!("'{cargo} metadata' failed:\n{}", String::from_utf8_lossy(&output.stderr));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| eyre!("cargo metadata JSON parse failed: {e}"))?;
     let mut members: Vec<String> = value["packages"]
         .as_array()
@@ -268,7 +290,47 @@ fn workspace_members_and_target(root: &Path) -> Result<(Vec<String>, PathBuf)> {
     let target_dir = value["target_directory"]
         .as_str()
         .ok_or_else(|| eyre!("cargo metadata missing 'target_directory'"))?;
-    Ok((members, PathBuf::from(target_dir)))
+    let build_dir = value["build_directory"]
+        .as_str()
+        .ok_or_else(|| eyre!("cargo metadata missing 'build_directory'"))?;
+    Ok((members, PathBuf::from(target_dir), PathBuf::from(build_dir)))
+}
+
+/// Refuse a cold claim unless the existing invalidator's layout is supported.
+/// Metadata supplies the effective build root, including Cargo config files;
+/// inspecting only CARGO_BUILD_BUILD_DIR would miss a configured separate root.
+fn validate_cache_states(
+    states: &[ClippyCacheState],
+    cargo_version: &str,
+    target_dir: &Path,
+    build_dir: &Path,
+) -> Result<()> {
+    if !states.contains(&ClippyCacheState::MembersCold) {
+        return Ok(());
+    }
+    let version = cargo_version.strip_prefix("cargo ").and_then(|text| {
+        text.split_whitespace()
+            .next()?
+            .split('.')
+            .map(|component| component.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+    });
+    if !matches!(version.as_deref(), Some([1, minor, _]) if (95..100).contains(minor)) {
+        bail!(
+            "members-cold requires the known stable Cargo 1.95–1.99 layout; \
+             observed '{cargo_version}'. Cargo 1.100 and unknown layouts cannot \
+             establish member invalidation with this instrument. Use --states warm."
+        );
+    }
+    if target_dir != build_dir {
+        bail!(
+            "members-cold cannot establish invalidation with a separate Cargo build_directory \
+             ({}; target_directory {}). Use --states warm.",
+            build_dir.display(),
+            target_dir.display()
+        );
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -495,10 +557,16 @@ fn pass_is_primed(state: ClippyCacheState) -> bool {
 pub fn run(args: ClippyCostMeasureArgs) -> Result<()> {
     let root = project_root()?;
     let cargo = cargo_program();
+    run_measurement(&root, &cargo, args)
+}
 
-    let toolchain = probe_toolchain(&cargo)?;
-    let git_head = git_head(&root)?;
-    let (members, target_dir) = workspace_members_and_target(&root)?;
+fn run_measurement(root: &Path, cargo: &str, args: ClippyCostMeasureArgs) -> Result<()> {
+    let toolchain = probe_toolchain(cargo, root)?;
+    let git_head = git_head(root)?;
+    let (members, target_dir, build_dir) = workspace_members_and_target(root, cargo)?;
+    // Validate the whole selection before even a warm priming pass or log
+    // allocation: a mixed warm/cold request must not start an unsupported run.
+    validate_cache_states(&args.states, &toolchain.cargo_version, &target_dir, &build_dir)?;
 
     let receipt_path =
         if args.receipt.is_absolute() { args.receipt.clone() } else { root.join(&args.receipt) };
@@ -542,15 +610,8 @@ pub fn run(args: ClippyCostMeasureArgs) -> Result<()> {
                     logs_dir.join(format!("{}.prime.stdout.jsonl", label.replace('/', "_")));
                 let prime_stderr =
                     logs_dir.join(format!("{}.prime.stderr.log", label.replace('/', "_")));
-                run_with_watchdog(
-                    &cargo,
-                    &prime_argv,
-                    &root,
-                    &prime_stdout,
-                    &prime_stderr,
-                    timeout,
-                )
-                .with_context(|| format!("priming pass [{label}] failed"))?;
+                run_with_watchdog(cargo, &prime_argv, root, &prime_stdout, &prime_stderr, timeout)
+                    .with_context(|| format!("priming pass [{label}] failed"))?;
             }
 
             println!("==> measuring [{label}]");
@@ -561,7 +622,7 @@ pub fn run(args: ClippyCostMeasureArgs) -> Result<()> {
             let started_at = Utc::now();
             let start = Instant::now();
             let exit_code =
-                run_with_watchdog(&cargo, &argv, &root, &stdout_log, &stderr_log, timeout)
+                run_with_watchdog(cargo, &argv, root, &stdout_log, &stderr_log, timeout)
                     .with_context(|| format!("measurement pass [{label}] failed"))?;
             let duration_ms = start.elapsed().as_millis();
             let finished_at = Utc::now();
@@ -902,7 +963,10 @@ mod tests {
             issue: "11736",
             generated_at: "2026-08-24T00:00:00Z".to_string(),
             git_head: "abc123".to_string(),
-            toolchain: ToolchainInfo { cargo_clippy_version: "clippy 0.1.0".to_string() },
+            toolchain: ToolchainInfo {
+                cargo_version: "cargo 1.95.0 (fixture)".to_string(),
+                cargo_clippy_version: "clippy 0.1.0".to_string(),
+            },
             host: HostInfo {
                 os: "windows",
                 arch: "x86_64",
@@ -919,8 +983,173 @@ mod tests {
         assert_eq!(value["schema_version"], 1);
         assert_eq!(value["issue"], "11736");
         assert_eq!(value["host"]["logical_cpus"], 8);
+        assert_eq!(value["toolchain"]["cargo_version"], "cargo 1.95.0 (fixture)");
         assert_eq!(value["notes"][0], "note");
         assert_eq!(value["runs"].as_array().map(Vec::len), Some(0));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn measurement_probes_selected_workspace_before_any_cache_or_output_mutation() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().join("workspace");
+        let target = root.join("target");
+        let fingerprint = target.join("debug/.fingerprint/perl-token-0123456789abcdef");
+        fs::create_dir_all(&fingerprint)?;
+        fs::write(fingerprint.join("lib-perl_token.json"), b"{}")?;
+        let root = fs::canonicalize(root)?;
+        for args in [
+            vec!["init", "--quiet"],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            let status = Command::new("git").args(args).current_dir(&root).status()?;
+            assert!(status.success(), "fixture Git setup must succeed");
+        }
+        fs::write(
+            fixture.path().join("metadata.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "packages": [{"name": "perl-token"}],
+                "target_directory": target,
+                "build_directory": target,
+            }))?,
+        )?;
+        let cargo = fixture.path().join("cargo-proxy");
+        fs::write(
+            &cargo,
+            r#"#!/bin/sh
+set -eu
+fixture=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+selected=$(CDPATH= cd -- "$fixture/workspace" && pwd -P)
+case "$*" in
+  --version)
+    if [ "$PWD" = "$selected" ]; then
+      printf 'cargo 1.100.0 (selected workspace)\n'
+    else
+      printf 'cargo 1.95.0 (caller workspace)\n'
+    fi
+    ;;
+  'clippy --version')
+    printf '%s\n' "$PWD" > "$fixture/clippy-probe-cwd"
+    printf 'clippy 0.1.100 (fixture)\n'
+    ;;
+  'metadata --format-version 1 --no-deps --locked') cat "$fixture/metadata.json" ;;
+  *) touch "$fixture/unexpected-measurement"; exit 17 ;;
+esac
+"#,
+        )?;
+        fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))?;
+        let caller_probe = Command::new(&cargo).arg("--version").output()?;
+        assert!(String::from_utf8_lossy(&caller_probe.stdout).contains("1.95.0"));
+        let receipt = fixture.path().join("receipt.json");
+        let result = run_measurement(
+            &root,
+            cargo.to_str().ok_or_else(|| eyre!("fixture Cargo path must be UTF-8"))?,
+            ClippyCostMeasureArgs {
+                receipt: receipt.clone(),
+                scopes: vec![ClippyScope::Lib],
+                states: vec![ClippyCacheState::Warm, ClippyCacheState::MembersCold],
+                timeout_secs: 5,
+            },
+        );
+        let error =
+            result.err().ok_or_else(|| eyre!("selected Cargo 1.100 must refuse cold proof"))?;
+        assert!(error.to_string().contains("cargo 1.100.0 (selected workspace)"), "{error}");
+        assert_eq!(
+            fs::read_to_string(fixture.path().join("clippy-probe-cwd"))?.trim(),
+            root.to_str().ok_or_else(|| eyre!("fixture workspace path must be UTF-8"))?
+        );
+        assert!(!target.join("receipts").exists());
+        assert!(!receipt.exists());
+        assert!(!fixture.path().join("unexpected-measurement").exists());
+        assert!(fingerprint.join("lib-perl_token.json").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn cold_selection_refuses_new_or_unknown_cargo_before_touching_cache() -> Result<()> {
+        let target = tempfile::tempdir()?;
+        let legacy = target.path().join("debug/.fingerprint/perl-token-0123456789abcdef");
+        let current = target.path().join("debug/build/perl-token/0123456789abcdef/fingerprint");
+        for path in [&legacy, &current] {
+            fs::create_dir_all(path)?;
+            fs::write(path.join("lib-perl_token.json"), b"{}")?;
+        }
+        for version in [
+            "cargo 1.100.0 (fixture)",
+            "cargo 1.101.0 (fixture)",
+            "cargo 2.0.0 (fixture)",
+            "cargo 1.99.0-nightly (fixture)",
+            "cargo 1.95.0-beta.1 (fixture)",
+            "cargo 1.94.0 (fixture)",
+            "cargo unknown",
+            "clippy 1.95.0",
+            "",
+        ] {
+            let result = validate_cache_states(
+                &[ClippyCacheState::Warm, ClippyCacheState::MembersCold],
+                version,
+                target.path(),
+                target.path(),
+            );
+            let error = result.err().ok_or_else(|| {
+                eyre!("unsupported layout must refuse a cold selection: {version}")
+            })?;
+            assert!(error.to_string().contains("Use --states warm"), "{error}");
+            assert!(legacy.join("lib-perl_token.json").is_file());
+            assert!(current.join("lib-perl_token.json").is_file());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cold_selection_requires_metadata_build_root_to_equal_target() -> Result<()> {
+        let target = tempfile::tempdir()?;
+        let build = tempfile::tempdir()?;
+        let fingerprint = build.path().join("debug/.fingerprint/perl-token-0123456789abcdef");
+        fs::create_dir_all(&fingerprint)?;
+        fs::write(fingerprint.join("lib-perl_token.json"), b"{}")?;
+        let error = validate_cache_states(
+            &[ClippyCacheState::MembersCold],
+            "cargo 1.95.0 (fixture)",
+            target.path(),
+            build.path(),
+        )
+        .err()
+        .ok_or_else(|| {
+            eyre!("metadata-selected separate intermediates must refuse a cold claim")
+        })?;
+        assert!(error.to_string().contains("separate Cargo build_directory"), "{error}");
+        assert!(fingerprint.join("lib-perl_token.json").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_cold_and_new_layout_warm_controls_remain_available() -> Result<()> {
+        let target = Path::new("/fixture/target");
+        for version in ["cargo 1.95.0 (fixture)", "cargo 1.99.1 (fixture)"] {
+            validate_cache_states(&[ClippyCacheState::MembersCold], version, target, target)?;
+        }
+        validate_cache_states(
+            &[ClippyCacheState::Warm],
+            "cargo 1.100.0 (fixture)",
+            target,
+            Path::new("/fixture/separate-build"),
+        )?;
         Ok(())
     }
 
