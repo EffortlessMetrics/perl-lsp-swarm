@@ -322,13 +322,24 @@ fn recovered_require_does_not_disable_unquoted_bareword_globally() {
 }
 
 #[test]
-fn demo_database_begin_eval_require_dbi_is_legal() {
-    let code = include_str!("../../../demo_workspace/lib/Database.pm");
-    assert_require_operand_role(code, &["DBI"]);
-    let issues = scope_issues_strict(code);
-    assert!(
-        !has_unquoted(&issues, "DBI"),
-        "demo Database.pm require DBI must not be UnquotedBareword: {:?}",
-        unquoted_names(&issues)
-    );
+fn begin_eval_require_dbi_keeps_module_role_in_lf_and_crlf() {
+    // Keep the former demo's nested require shape independent of the shipped demo.
+    let fixture = include_str!("../../../testdata/diagnostics/pl109_optional_dbi.pl");
+    let crlf = fixture.replace('\n', "\r\n");
+    for (code, eol) in [(fixture, "\n"), (crlf.as_str(), "\r\n")] {
+        assert_require_operand_role(code, &["DBI"]);
+        let issues = scope_issues_strict(code);
+        assert!(unquoted_names(&issues).is_empty(), "{eol:?}: {issues:?}");
+
+        let control = format!("{code}my $x = DBI;{eol}");
+        assert_require_operand_role(&control, &["DBI"]);
+        let issues = scope_issues_strict(&control);
+        let ranges: Vec<_> = issues
+            .iter()
+            .filter(|issue| issue.kind == IssueKind::UnquotedBareword)
+            .map(|issue| issue.range)
+            .collect();
+        let expression_start = code.len() + "my $x = ".len();
+        assert_eq!(ranges, [(expression_start, expression_start + "DBI".len())], "{eol:?}");
+    }
 }
