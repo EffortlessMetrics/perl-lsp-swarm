@@ -6,6 +6,22 @@
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use url::Url;
 
+// The legacy Windows and UNC normalizers below encode path components
+// themselves instead of going through `url`, so this set must encode every
+// character that `url`'s own path percent-encode set (`url::parser::PATH`)
+// encodes. If the two disagree, a legacy spelling and its canonical
+// `file:///` spelling produce different keys — and that is not cosmetic:
+// the push-diagnostics sink normalizes the already-normalized key a second
+// time, so a disagreement makes the sink miss the open document and drop
+// diagnostics.
+//
+// `url` 2.5.9 added `^` to its path set (upstream servo/rust-url PR 1140).
+// `^` therefore has to be added here in the *same* change as the dependency
+// bump: on 2.5.8 the canonical branch leaves `^` literal, so encoding it here
+// alone would break legacy/canonical agreement in the opposite direction.
+//
+// `%` is a deliberate repo-specific addition: a literal `%` in a filename is
+// encoded here even though `url` leaves it alone.
 const URI_PATH_KEY_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -14,6 +30,7 @@ const URI_PATH_KEY_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'<')
     .add(b'>')
     .add(b'?')
+    .add(b'^')
     .add(b'`')
     .add(b'{')
     .add(b'}');
@@ -395,6 +412,35 @@ mod tests {
             uri_key(r"\\server\shared docs\folder#1\file?.pl"),
             "file://server/shared%20docs/folder%231/file%3F.pl"
         );
+    }
+
+    /// `url` 2.5.9 added `^` to its own path percent-encode set (upstream
+    /// servo/rust-url PR 1140). The legacy Windows and UNC normalizers encode
+    /// with this crate's own set, so both branches must agree on `^`: when they
+    /// disagree, a legacy spelling and its canonical `file:///` spelling map to
+    /// different keys, and the push-diagnostics sink — which normalizes the
+    /// already-normalized key a second time — misses the open document.
+    #[test]
+    fn caret_in_path_agrees_between_legacy_and_canonical_spellings() {
+        assert_eq!(uri_key(r"file://C:\dir\foo^bar.pl"), uri_key("file:///C:/dir/foo^bar.pl"));
+        assert_eq!(
+            uri_key(r"\\server\share\foo^bar.pl"),
+            uri_key("file://server/share/foo^bar.pl")
+        );
+    }
+
+    /// The push-diagnostics sink looks a document up by re-normalizing a key
+    /// that was already normalized once (see
+    /// `crates/perl-lsp-rs/src/runtime/diagnostics_sink.rs`). A key that is not
+    /// idempotent under `uri_key` therefore fails that lookup and the
+    /// document's push diagnostics are dropped.
+    #[test]
+    fn uri_key_is_idempotent_for_caret_paths() {
+        let legacy = uri_key(r"file://C:\dir\foo^bar.pl");
+        assert_eq!(uri_key(&legacy), legacy);
+
+        let unc = uri_key(r"\\server\share\foo^bar.pl");
+        assert_eq!(uri_key(&unc), unc);
     }
 
     #[test]
