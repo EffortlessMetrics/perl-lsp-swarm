@@ -108,9 +108,12 @@ case "$EXPECTED_SHA256" in
         ;;
 esac
 
-TMP_INSTALLER="$(mktemp)"
-trap 'rm -f "$TMP_INSTALLER"' EXIT HUP INT TERM
+TMP_BOOTSTRAP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_BOOTSTRAP_DIR"' EXIT HUP INT TERM
+TMP_INSTALLER="$TMP_BOOTSTRAP_DIR/install.sh"
+TMP_UNINSTALL_HELPER="$TMP_BOOTSTRAP_DIR/standalone_uninstall.py"
 CANONICAL_INSTALLER_URL="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/scripts/install.sh"
+CANONICAL_UNINSTALL_HELPER_URL="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/scripts/standalone_uninstall.py"
 
 # Do not follow redirects. The selected repository/ref/path is part of the
 # installer identity; a redirect is not an equivalent source.
@@ -141,6 +144,20 @@ fi
 
 if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
     bootstrap_fail "canonical installer SHA-256 mismatch"
+fi
+
+HELPER_HTTP_STATUS="$(
+    curl \
+        --proto '=https' \
+        --silent \
+        --show-error \
+        --output "$TMP_UNINSTALL_HELPER" \
+        --write-out '%{http_code}' \
+        "$CANONICAL_UNINSTALL_HELPER_URL"
+)" || bootstrap_fail "failed to fetch the standalone uninstall helper"
+
+if [ "$HELPER_HTTP_STATUS" != "200" ]; then
+    bootstrap_fail "standalone uninstall helper request returned HTTP $HELPER_HTTP_STATUS; redirects and non-success responses are rejected"
 fi
 
 # Do not exec here: returning through this shell guarantees the EXIT trap

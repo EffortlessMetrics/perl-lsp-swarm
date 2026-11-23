@@ -36,7 +36,8 @@
 param(
     [string]$Version = "latest",
     [string]$InstallDir = "$env:USERPROFILE\.local\bin",
-    [switch]$NoModifyPath
+    [switch]$NoModifyPath,
+    [switch]$Uninstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -1095,6 +1096,25 @@ function Test-ReleaseAsset {
         }
         return [pscustomobject]@{ State = "unknown"; StatusCode = $StatusCode }
     }
+}
+
+if ($Uninstall) {
+    $Helper = Join-Path $PSScriptRoot "scripts/standalone_uninstall.py"
+    if (-not (Test-Path -LiteralPath $Helper)) {
+        Write-Error "standalone uninstall helper missing: $Helper"
+    }
+    $Python = Get-Command python3 -ErrorAction SilentlyContinue
+    if (-not $Python) {
+        $Python = Get-Command python -ErrorAction SilentlyContinue
+    }
+    if (-not $Python) {
+        Write-Error "python3 is required for -Uninstall"
+    }
+    & $Python.Source $Helper uninstall --install-dir $InstallDir
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+    exit 0
 }
 
 # Name each target as a whole literal rather than assembling it from an arch
