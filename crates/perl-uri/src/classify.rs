@@ -7,21 +7,28 @@ use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use url::Url;
 
 // The legacy Windows and UNC normalizers below encode path components
-// themselves instead of going through `url`, so this set must encode every
-// character that `url`'s own path percent-encode set (`url::parser::PATH`)
-// encodes. If the two disagree, a legacy spelling and its canonical
-// `file:///` spelling produce different keys — and that is not cosmetic:
-// the push-diagnostics sink normalizes the already-normalized key a second
-// time, so a disagreement makes the sink miss the open document and drop
-// diagnostics.
+// themselves instead of going through `url`, so this set must be a superset of
+// `url`'s own path percent-encode set (`url::parser::PATH`): every byte `url`
+// encodes in a path, this crate has to encode as well. If the two disagree, a
+// legacy spelling and its canonical `file:///` spelling produce different keys
+// — and that is not cosmetic: the push-diagnostics sink normalizes the
+// already-normalized key a second time, so a disagreement makes the sink miss
+// the open document and drop diagnostics.
 //
 // `url` 2.5.9 added `^` to its path set (upstream servo/rust-url PR 1140).
 // `^` therefore has to be added here in the *same* change as the dependency
 // bump: on 2.5.8 the canonical branch leaves `^` literal, so encoding it here
 // alone would break legacy/canonical agreement in the opposite direction.
 //
-// `%` is a deliberate repo-specific addition: a literal `%` in a filename is
-// encoded here even though `url` leaves it alone.
+// `%` is the one deliberate addition beyond `url`'s set: a literal `%` in a
+// filename is encoded here even though `url` leaves it alone, because a client
+// that encodes that filename sends it as `%25` and `url` preserves the
+// triplet.
+//
+// This set is a hand-maintained mirror of a private constant in `url`, so it
+// can drift. `legacy_and_canonical_spellings_agree_on_every_ascii_byte` walks
+// the whole ASCII byte domain and fails if `url` ever encodes a byte that this
+// crate does not.
 const URI_PATH_KEY_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -427,6 +434,55 @@ mod tests {
             uri_key(r"\\server\share\foo^bar.pl"),
             uri_key("file://server/share/foo^bar.pl")
         );
+    }
+
+    /// The legacy Windows and UNC normalizers encode path components with this
+    /// crate's own set, while the canonical branch relies on `url`'s own path
+    /// percent-encode set. The two must agree on every byte: when they
+    /// disagree, a legacy spelling and its canonical `file:///` spelling map to
+    /// different keys, and the push-diagnostics sink — which normalizes the
+    /// already-normalized key a second time — misses the open document.
+    ///
+    /// `url = "2.5.9"` is a caret requirement, so it admits any later `url`
+    /// 2.x, and `.github/dependabot.yml` proposes cargo bumps weekly. The
+    /// 2.5.9 bump itself widened `url`'s path set by one byte, so a future
+    /// widening has to be detected rather than merely avoided. This test walks
+    /// the whole ASCII byte domain so that a byte `url` starts encoding but
+    /// this crate does not fails the build instead of silently splitting the
+    /// key space.
+    ///
+    /// Bytes excluded, with the reason each cannot reach the comparison:
+    /// - `\t`, `\n`, `\r`: `url` strips these from the input before parsing.
+    /// - `#`, `?`: delimit the fragment and the query, so they never reach a
+    ///   parsed path.
+    /// - `/`, `\`: structural separators in both branches, not encoded bytes.
+    /// - `%`: the one deliberate asymmetry — this crate encodes a literal `%`
+    ///   in a filesystem path while `url` preserves existing percent triplets.
+    ///   `percent_encodes_legacy_windows_drive_key_segments` covers that case.
+    #[test]
+    fn legacy_and_canonical_spellings_agree_on_every_ascii_byte() {
+        for byte in 0u8..=0x7f {
+            let ch = byte as char;
+            if matches!(ch, '\t' | '\n' | '\r' | '#' | '%' | '?' | '/' | '\\') {
+                continue;
+            }
+
+            let legacy = format!(r"file://C:\dir\foo{ch}bar.pl");
+            let canonical = format!("file:///C:/dir/foo{ch}bar.pl");
+            assert_eq!(
+                uri_key(&legacy),
+                uri_key(&canonical),
+                "legacy and canonical spellings disagree on byte {byte:#04x}"
+            );
+
+            let legacy_unc = format!(r"\\server\share\foo{ch}bar.pl");
+            let canonical_unc = format!("file://server/share/foo{ch}bar.pl");
+            assert_eq!(
+                uri_key(&legacy_unc),
+                uri_key(&canonical_unc),
+                "legacy and canonical UNC spellings disagree on byte {byte:#04x}"
+            );
+        }
     }
 
     /// The push-diagnostics sink looks a document up by re-normalizing a key
