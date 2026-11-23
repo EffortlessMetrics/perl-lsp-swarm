@@ -46,14 +46,16 @@ The `c-src/` directory contains a snapshot of the upstream tree-sitter
 Perl grammar:
 
 - `parser.c` — the tree-sitter-generated LR parser
-- `scanner.c` — the external scanner
+- `scanner.c` — the external scanner (**projection** of `tree-sitter-perl/src/scanner.c`; see #7261)
 - `tsp_unicode.h`, `bsearch.h` — scanner helpers
 - `tree_sitter/parser.h`, `tree_sitter/array.h`, `tree_sitter/alloc.h` —
   tree-sitter runtime headers required by `parser.c` and `scanner.c`
 
-The `c-src/` directory IS the canonical source of truth for these files
-inside this repository. This crate carries its own copy so the published
-package is self-contained.
+The `c-src/` directory carries vendored/generated C artifacts for the
+published comparison crate. **`tree-sitter-perl/src/scanner.c` is the sole
+hand-written scanner authority**; `c-src/scanner.c` is an exact checked
+projection synchronized by `cargo xtask tree-sitter-scanner sync` (#7261).
+`parser.c` retains its separate generated authority.
 
 ### Key Types and Functions (lib.rs)
 
