@@ -67,10 +67,35 @@ pub(super) fn handle_variable<'a>(
         if strict_vars_mode {
             analyzer.push_undeclared_variable_issue(issues, context, node, sigil, name);
         }
-    } else if !is_initialized {
+    } else if !is_initialized && !is_whole_aggregate_use(node, ancestors, sigil, lookup_sigil) {
         analyzer.push_uninitialized_variable_issue(issues, context, node, sigil, name);
     }
     false
+}
+
+/// A whole-aggregate use (`@out`, `%h`, `scalar(@out)`, `\%h`) of a bare
+/// `my @out;` / `my %h;` reads an empty-but-defined aggregate, which never
+/// raises Perl's "Use of uninitialized value" warning (#18765). Element and
+/// slice reads (`$a[0]`, `$h{k}`, `@a[0, 1]`) yield `undef` and still warn,
+/// so they keep reporting until the aggregate is stored into.
+fn is_whole_aggregate_use(
+    node: &Node,
+    ancestors: &[&Node],
+    sigil: &str,
+    lookup_sigil: &str,
+) -> bool {
+    if !matches!(lookup_sigil, "@" | "%") || sigil != lookup_sigil {
+        return false;
+    }
+    !ancestors.last().is_some_and(|parent| match &parent.kind {
+        NodeKind::Binary { op, left, .. } => {
+            matches!(op.as_str(), "[]" | "{}") && std::ptr::eq(left.as_ref(), node)
+        }
+        NodeKind::ArraySlice { target, .. }
+        | NodeKind::HashSlice { target, .. }
+        | NodeKind::KeyValueSlice { target, .. } => std::ptr::eq(target.as_ref(), node),
+        _ => false,
+    })
 }
 
 /// Split a braced typeglob body into a single simple variable use — one sigil
