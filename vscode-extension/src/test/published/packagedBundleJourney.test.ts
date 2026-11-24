@@ -466,8 +466,10 @@ function recordPackagedDapEvidence(
   receipt.dap_startup = {
     extension_path: extensionPath,
     adapter_path: dapPath,
+    vsix_member: process.env.PERL_LSP_DAP_VSIX_MEMBER ?? null,
     session_id: session.id,
     initialize_then_launch: true,
+    correlated_disconnect: true,
     exit,
     debuggee,
     owned_process_cleanup: 'pass',
@@ -1275,6 +1277,16 @@ suite('Packaged VSIX bundled-server journey', function () {
     assert.ok(fs.existsSync(dapPath), `packaged DAP is missing: ${dapPath}`);
     const expectedDapSha256 = sha256(dapPath);
     const builtDapSha256 = process.env.PERL_LSP_DAP_SHA256?.trim();
+    const verifiedMember = process.env.PERL_LSP_DAP_VSIX_MEMBER;
+    if (verifiedMember !== undefined) {
+      assert.ok(builtDapSha256, 'verified VSIX member requires the built adapter SHA-256');
+      const installedMember = path.relative(extensionPath, dapPath).split(path.sep).join('/');
+      assert.equal(
+        verifiedMember,
+        `extension/${installedMember}`,
+        'installed DAP differs from verified VSIX member',
+      );
+    }
     if (process.platform === 'linux') {
       assert.ok(builtDapSha256, 'Linux packaged DAP proof requires the built adapter SHA-256');
     }

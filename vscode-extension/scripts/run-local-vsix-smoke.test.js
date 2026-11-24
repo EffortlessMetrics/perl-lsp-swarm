@@ -322,7 +322,8 @@ void test('verified packaged child receipt hashes and parses one source snapshot
       }),
     );
   };
-  const validate = () =>
+  /** @param {{sha256: string, vsix_member: string}} [expectedDap] */
+  const validate = (expectedDap) =>
     validateVerifiedCandidateReceipt({
       receiptFile,
       sourceReceiptFile,
@@ -330,6 +331,7 @@ void test('verified packaged child receipt hashes and parses one source snapshot
       expectedVsixSha256: artifactHashes.vsix_sha256,
       expectedBundledServerSha256: artifactHashes.bundled_server_sha256,
       expectedPlatform: 'windows',
+      expectedDap,
     });
 
   bindSource(healthyBytes);
@@ -346,6 +348,32 @@ void test('verified packaged child receipt hashes and parses one source snapshot
   const failed = validate();
   assert.equal(failed.ok, false);
   assert.match(failed.violations?.join(' ') ?? '', /does not prove the bounded/);
+
+  const expectedDap = {
+    sha256: 'd'.repeat(64),
+    vsix_member: 'extension/bin/win32-x64/perl-dap.exe',
+  };
+  const dapSource = {
+    ...healthySource,
+    artifact_hashes: { ...artifactHashes, dap_sha256: expectedDap.sha256 },
+    dap_startup: {
+      vsix_member: expectedDap.vsix_member,
+      initialize_then_launch: true,
+      correlated_disconnect: true,
+      owned_process_cleanup: 'pass',
+      exit: { code: 0 },
+    },
+  };
+  bindSource(Buffer.from(JSON.stringify(dapSource)));
+  assert.equal(validate(expectedDap).ok, true);
+  assert.equal(validate({ ...expectedDap, sha256: 'e'.repeat(64) }).ok, false);
+  assert.equal(validate({ ...expectedDap, vsix_member: 'extension/bin/linux-x64/perl-dap' }).ok, false);
+  bindSource(Buffer.from(JSON.stringify({
+    ...dapSource,
+    dap_startup: { ...dapSource.dap_startup, correlated_disconnect: false },
+  })));
+  assert.equal(validate(expectedDap).ok, false);
+  bindSource(failedBytes);
 
   const readFile = fs.readFileSync;
   let sourceReads = 0;
@@ -3606,7 +3634,7 @@ void test('smoke source labels cannot forge summary rows or workflow commands', 
     throw new Error('source label forged a workflow command');
 });
 
-void test('main forwards its constructed manifest to the Test Explorer child', () => {
+void test('main binds staged DAP for the editor and forwards the manifest to Test Explorer', () => {
   const vm = require('node:vm');
   const source = fs.readFileSync(path.join(__dirname, 'run-local-vsix-smoke.js'), 'utf8');
   const revision = 'a'.repeat(40);
@@ -3618,9 +3646,13 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
     PERL_LSP_ARTIFACT_SET_ID: 'local-artifacts',
     PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
     PERL_LSP_TEST_EXPLORER_JOURNEY: '1',
-    PERL_LSP_CURRENT_SOURCE_DAP_STAGED: '1',
+    PERL_LSP_CURRENT_SOURCE_DAP_STAGED: '0',
+    PERL_LSP_DAP_PATH: '/fixture/perl-dap.exe',
+    PERL_LSP_DAP_SHA256: 'f'.repeat(64),
   };
   const childEnvironments = [];
+  const behavioralEnvironments = [];
+  const verifierArgs = [];
   const packageEnvironments = [];
   const sandbox = {
     __dirname,
@@ -3629,6 +3661,7 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
       env: environment,
       platform: 'win32',
       arch: 'x64',
+      execPath: process.execPath,
       stderr: {
         write(message) {
           throw new Error(message);
@@ -3636,6 +3669,14 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
       },
     },
     require(name) {
+      if (name === 'child_process') {
+        return {
+          spawnSync(_executable, args) {
+            verifierArgs.push(args);
+            return { status: 0 };
+          },
+        };
+      }
       if (name === 'fs')
         return {
           existsSync: () => true,
@@ -3649,6 +3690,7 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
       return require(name);
     },
     capture: (env) => childEnvironments.push(env),
+    captureBehavioral: (env) => behavioralEnvironments.push(env),
     capturePackageEnv: (env) => packageEnvironments.push(env),
   };
   // Execute the actual main and manifest constructor. Only package/process IO
@@ -3661,9 +3703,10 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
     persistReceipt = () => {};
     stageServerForPackage = () => () => {};
     runNpm = (_args, env) => { capturePackageEnv(env); return { status: 0 }; };
-    sha256File = () => 'b'.repeat(64);
+    sha256File = (file) => file === '/fixture/perl-dap.exe' ? 'd'.repeat(64) : 'b'.repeat(64);
+    observeSmokeArtifact = (file) => ({ path: file, sha256: 'b'.repeat(64), size: 10 });
     runInventoryTransition = () => ({ status: 'pass', behavior_safe: true });
-    runPublishedSmoke = () => ({ phase: 'child', result: { status: 0 } });
+    runPublishedSmoke = (env) => { captureBehavioral(env); return { phase: 'child', result: { status: 0 } }; };
     validateVerifiedCandidateReceipt = () => ({ ok: true });
     runTestExplorerJourneyStage = (env, revision, vsixPath, digest) => {
       capture(testExplorerSmokeEnv(env, revision, vsixPath, digest));
@@ -3679,7 +3722,18 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
   );
   assert.equal(childEnvironments.length, 1, 'main must invoke the Test Explorer stage');
   assert.equal(packageEnvironments.length, 1, 'main must package once');
-  assert.equal(packageEnvironments[0].PERL_LSP_CURRENT_SOURCE_DAP_STAGED, '0');
+  assert.equal(packageEnvironments[0].PERL_LSP_CURRENT_SOURCE_DAP_STAGED, '1');
+  assert.equal(verifierArgs.length, 1);
+  assert.deepEqual(Array.from(verifierArgs[0].slice(3)), [
+    '--vsix-sha256', 'b'.repeat(64), '--member', 'bin/win32-x64/perl-dap.exe',
+    '--sha256', 'd'.repeat(64),
+  ]);
+  assert.equal(behavioralEnvironments.length, 1);
+  assert.equal(behavioralEnvironments[0].PERL_LSP_DAP_SHA256, 'd'.repeat(64));
+  assert.equal(
+    behavioralEnvironments[0].PERL_LSP_DAP_VSIX_MEMBER,
+    'extension/bin/win32-x64/perl-dap.exe',
+  );
   const child = childEnvironments[0];
   assert.ok(
     child.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,

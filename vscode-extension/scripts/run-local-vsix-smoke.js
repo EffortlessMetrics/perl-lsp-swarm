@@ -445,6 +445,33 @@ function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
+function verifyPackagedDap(vsixPath, vsixSha256, sha256) {
+  const { directory } = bundleTargetForPlatform();
+  const binaryName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+  const member = `bin/${directory}/${binaryName}`;
+  const result = spawnSync(
+    process.execPath,
+    [
+      path.join(__dirname, 'check-vsix-prebuilt-payload.js'),
+      '--vsix',
+      vsixPath,
+      '--vsix-sha256',
+      vsixSha256,
+      '--member',
+      member,
+      '--sha256',
+      sha256,
+    ],
+    { encoding: 'utf8', windowsHide: true },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const detail = result.stderr?.trim() || result.signal || result.status;
+    throw new Error(`Cannot bind built debugger to VSIX: ${detail}`);
+  }
+  return { sha256, vsix_member: `extension/${member}` };
+}
+
 /** Parent-owned byte snapshot, independent of the extension-host observer. */
 function observeSmokeArtifact(file, containmentRoot) {
   if (typeof file !== 'string' || !path.isAbsolute(file))
@@ -597,6 +624,7 @@ function writeJsonAtomic(destination, value) {
  *   source_label: string,
  *   server: { source_sha: string | null, path: string | null, sha256: string | null, observation_before?: {path:string,sha256:string,size:number}, observation_after?: {path:string,sha256:string,size:number} },
  *   vsix: { path: string | null, sha256: string | null, observation_before?: {path:string,sha256:string,size:number}, observation_after?: {path:string,sha256:string,size:number} },
+ *   dap?: { sha256: string, vsix_member: string },
  *   stages: {
  *     package_creation: SmokeStage,
  *     package_inventory: SmokeStage,
@@ -1171,6 +1199,9 @@ function verifiedCandidateReceiptPath() {
 }
 
 /**
+ * @param {{receiptFile: string, env: NodeJS.ProcessEnv, expectedVsixSha256: string,
+ *   expectedBundledServerSha256: string, expectedDap?: {sha256: string, vsix_member: string} | undefined,
+ *   sourceReceiptFile: string, expectedPlatform: string}} options
  * @returns {{ok: boolean, receipt?: any, source_receipt?: any, violations?: string[]}}
  */
 function validateVerifiedCandidateReceipt({
@@ -1178,6 +1209,7 @@ function validateVerifiedCandidateReceipt({
   env,
   expectedVsixSha256,
   expectedBundledServerSha256,
+  expectedDap = undefined,
   sourceReceiptFile,
   expectedPlatform,
 }) {
@@ -1194,11 +1226,11 @@ function validateVerifiedCandidateReceipt({
     if (!allowedStatuses.has(receipt.status)) {
       violations.push('verified child receipt has an invalid or missing bounded status');
     }
-    for (const [field, expected] of [
-      ['candidate_id', env.PERL_LSP_CANDIDATE_ID],
-      ['frozen_product_sha', env.PERL_LSP_CURRENT_SOURCE_SHA],
-      ['artifact_set_id', env.PERL_LSP_ARTIFACT_SET_ID],
-    ]) {
+    for (const [field, expected] of Object.entries({
+      candidate_id: env.PERL_LSP_CANDIDATE_ID,
+      frozen_product_sha: env.PERL_LSP_CURRENT_SOURCE_SHA,
+      artifact_set_id: env.PERL_LSP_ARTIFACT_SET_ID,
+    })) {
       if (receipt[field] !== expected) {
         violations.push(`verified child ${field} does not bind this candidate`);
       }
@@ -1242,6 +1274,22 @@ function validateVerifiedCandidateReceipt({
     }
     if (sourceReceipt?.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
       violations.push("packaged source receipt bundled-server digest is not this run's server");
+    }
+    if (expectedDap) {
+      const dap = sourceReceipt?.dap_startup;
+      if (
+        sourceReceipt?.artifact_hashes?.dap_sha256 !== expectedDap.sha256 ||
+        dap?.vsix_member !== expectedDap.vsix_member ||
+        dap?.initialize_then_launch !== true ||
+        dap?.correlated_disconnect !== true ||
+        dap?.owned_process_cleanup !== 'pass' ||
+        dap?.exit?.code !== 0 ||
+        dap?.exit?.signal !== undefined
+      ) {
+        violations.push(
+          'packaged source receipt does not bind installed DAP startup and cleanup to the verified VSIX member',
+        );
+      }
     }
     const expectedBundleMarker =
       expectedPlatform === 'windows' ? 'win32-x64' : `${expectedPlatform}-x64`;
@@ -3088,6 +3136,7 @@ function main() {
     try {
       const inputServerObservation = observeSmokeArtifact(path.resolve(serverPath));
       receipt.server.observation_before = inputServerObservation;
+      const builtDapSha256 = dapPath ? sha256File(dapPath) : undefined;
       restoreStagedServer = stageServerForPackage(serverPath, root, dapPath);
       /** @type {NodeJS.ProcessEnv} */
       const packageEnv = {
@@ -3166,6 +3215,11 @@ function main() {
       receipt.stages.package_creation = { status: 'pass', exit_code: 0 };
       persistReceipt(destination, receipt);
 
+      if (builtDapSha256 !== undefined) {
+        receipt.dap = verifyPackagedDap(vsixPath, receipt.vsix.sha256, builtDapSha256);
+        persistReceipt(destination, receipt);
+      }
+
       const constructedManifest = constructCandidateArtifactManifest(
         process.env,
         revision,
@@ -3182,6 +3236,9 @@ function main() {
 
       if (shouldRunBehavioralSmoke(receipt.stages)) {
         const vsixObservation = observeSmokeArtifact(path.resolve(vsixPath));
+        if (vsixObservation.sha256 !== receipt.vsix.sha256) {
+          throw new Error('VSIX bytes changed between packaging and editor launch');
+        }
         // Existing runner inputs retain this invocation-owned profile for parent byte observation.
         fs.mkdirSync(receiptsRoot(), { recursive: true });
         const identityProfile = fs.mkdtempSync(path.join(receiptsRoot(), 'installed-identity-'));
@@ -3208,6 +3265,10 @@ function main() {
           PERL_LSP_SMOKE_USER_DATA_DIR: identityUserData,
           PERL_LSP_SMOKE_EXTENSIONS_DIR: identityExtensions,
         };
+        if (receipt.dap) {
+          smokeEnv.PERL_LSP_DAP_SHA256 = receipt.dap.sha256;
+          smokeEnv.PERL_LSP_DAP_VSIX_MEMBER = receipt.dap.vsix_member;
+        }
         if (constructedManifest !== undefined) {
           smokeEnv.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = constructedManifest;
           smokeEnv.PERL_LSP_PACKAGED_BUNDLE_SMOKE = '1';
@@ -3275,6 +3336,10 @@ function main() {
                   env: smokeEnv,
                   expectedVsixSha256: receipt.vsix.sha256,
                   expectedBundledServerSha256: sha256File(serverPath),
+                  expectedDap:
+                    process.platform === 'linux' || process.platform === 'win32'
+                      ? receipt.dap
+                      : undefined,
                   sourceReceiptFile: path.join(
                     path.dirname(verifiedCandidateReceiptPath()),
                     'packaged_bundle_journey_receipt.json',
