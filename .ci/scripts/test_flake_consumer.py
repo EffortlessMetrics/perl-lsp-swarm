@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Execute the production flake workflow's Bash with scripted Cargo (#19084).
 
-No Rust, network, Git mutations, or third-party Python packages are used.
+Node executes the report callers with GitHub stubs. No Rust, network, Git
+mutations, or third-party Python packages are used.
 """
 
 import ast
@@ -32,14 +33,17 @@ def workflow_steps():
                 match = re.fullmatch(r"\s+(?:- )?" + key + r": (.*)", line)
                 if match:
                     step[key] = match[1]
-        if "        run: |" in lines:
-            start = lines.index("        run: |") + 1
-            body = []
-            for line in lines[start:]:
-                if line and not line.startswith("          "):
-                    break
-                body.append(line[10:] if line else "")
-            step["run"] = "\n".join(body) + "\n"
+        for key, indentation in (("run", 8), ("script", 10)):
+            marker = " " * indentation + key + ": |"
+            if marker in lines:
+                start = lines.index(marker) + 1
+                prefix = " " * (indentation + 2)
+                body = []
+                for line in lines[start:]:
+                    if line and not line.startswith(prefix):
+                        break
+                    body.append(line.removeprefix(prefix))
+                step[key] = "\n".join(body) + "\n"
     return steps
 
 
@@ -83,7 +87,8 @@ def events(name="real::failure", failed=True, corrupt=False):
         {"type": "test", "event": "started", "name": name},
         {"type": "test", "event": "failed" if failed else "ok", "name": name},
         {"type": "suite", "event": "failed" if failed else "ok",
-         "passed": 0 if failed else 1, "failed": 1 if failed else 0, "ignored": 0},
+         "passed": 0 if failed else 1, "failed": 1 if failed else 0,
+         "ignored": 0, "filtered_out": 0},
     ]
     return [json.dumps(record) for record in records] + (["{broken"] if corrupt else [])
 
@@ -98,11 +103,17 @@ with open("cargo-calls.jsonl", "a") as calls:
 if args == ["--version"]:
     print("cargo fixture-toolchain")
 elif args[0] == "metadata":
-    print(json.dumps({"packages": [{"name": run["pkg"], "targets": [{"kind": ["lib"]}]} for run in config["runs"]]}))
+    print(json.dumps({"packages": [
+        {"name": run["pkg"], "targets": [{"kind": ["lib"], "name": run["pkg"] + "_lib"}]}
+        for run in config["runs"]
+    ]}))
 elif args[0] == "test":
     if "--exact" in args:
         name = args[args.index("--exact") + 1]
+        package = args[args.index("-p") + 1]
         mode = config.get("replay", "pass")
+        if isinstance(mode, dict):
+            mode = mode[package]
         if mode == "wrong":
             name = "wrong::identity"
         failed = mode == "failed"
@@ -114,6 +125,8 @@ elif args[0] == "test":
         ]
         for record in records:
             print(json.dumps(record))
+        if mode in ("timing", "race_condition"):
+            print({"timing": "timed out", "race_condition": "deadlock"}[mode])
         sys.exit(101 if failed else 0)
     counter = Path("initial-count")
     index = int(counter.read_text()) if counter.exists() else 0
@@ -134,7 +147,8 @@ class FlakeConsumerTest(unittest.TestCase):
         self.work = Path(temporary.name)
         scripts = self.work / ".ci/scripts"
         scripts.mkdir(parents=True)
-        for name in ("extract-failed-tests.py", "prepare-flake-replay.py"):
+        for name in ("extract-failed-tests.py", "prepare-flake-replay.py",
+                     "flake-replay-results.py", "quarantine-flaky.sh"):
             source = ROOT / ".ci/scripts" / name
             if source.exists():
                 shutil.copy2(source, scripts / name)
@@ -143,6 +157,9 @@ class FlakeConsumerTest(unittest.TestCase):
         cargo = bin_dir / "cargo"
         cargo.write_text(FAKE_CARGO)
         cargo.chmod(0o755)
+        sleep = bin_dir / "sleep"
+        sleep.write_text("#!/bin/bash\nexit 0\n")
+        sleep.chmod(0o755)
         self.env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"],
                         GITHUB_SHA="fixture-head", TEST_FILTER_INPUT="", PYTHONDONTWRITEBYTECODE="1")
         self.steps = workflow_steps()
@@ -173,6 +190,155 @@ class FlakeConsumerTest(unittest.TestCase):
             values.update({f"steps.{step}.outputs.{key}": value for key, value in outputs.items()})
         values["steps.quarantine.outcome"] = "success"
         return values
+
+    def result_rows(self, prefix):
+        return [json.loads(line) for line in
+                (self.work / f"{prefix}.jsonl").read_text().splitlines()]
+
+    def issue_body(self, name):
+        script = self.step(name=name)["script"]
+        script = re.sub(r"\$\{\{ github\.[\w.]+ \}\}", "fixture", script)
+        wrapper = """
+const context = {repo: {owner: 'fixture', repo: 'fixture'}};
+const capture = ({body}) => console.log(JSON.stringify(body));
+const github = {rest: {issues: {create: capture, createComment: capture}}};
+const core = {warning: message => { throw Error(message) }};
+"""
+        result = subprocess.run(["node", "-e", wrapper + "(async () => {\n" + script + "\n})();"],
+                                cwd=self.work, text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def replay_and_quarantine(self, runs, replay):
+        result, initial = self.initial(runs, replay)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        retry = self.step(id="retry_results")
+        self.assertTrue(condition(retry["if"], self.values(initial)))
+        result, retried = self.run_step(retry)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        quarantine = self.step(id="quarantine")
+        self.assertTrue(condition(quarantine["if"], self.values(initial, retried)))
+        ledger = self.work / ".ci/debt-ledger.yaml"
+        empty = "budgets:\n  max_quarantined_tests: 10\nflaky_tests: []\n"
+        ledger.write_text(empty)
+        result, _ = self.run_step(quarantine)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return ledger.read_text(), empty
+
+    def test_post_replay_same_name_keeps_causes_and_skips_ledger_in_both_orders(self):
+        runs = [{"pkg": package, "events": events("left::same"), "status": 101}
+                for package in ("one", "two")]
+        replay = {"one": "timing", "two": "race_condition"}
+        for order in (runs, list(reversed(runs))):
+            with self.subTest(first=order[0]["pkg"]):
+                ledger, empty = self.replay_and_quarantine(order, replay)
+                self.assertEqual(ledger, empty)
+                self.assertEqual(
+                    {(row["package"], row["target"], row["target_name"], row["name"], row["cause"])
+                     for row in self.result_rows("flaky-tests")},
+                    {("one", "lib", "one_lib", "left::same", "timing"),
+                     ("two", "lib", "two_lib", "left::same", "race_condition")},
+                )
+                body = self.issue_body("Comment on #2093 with flake report")
+                self.assertRegex(body, r'"one_lib".*"left::same".*"timing".*skipped for ledger')
+                self.assertRegex(body, r'"two_lib".*"left::same".*"race_condition".*skipped for ledger')
+
+    def test_unique_names_write_their_own_causes(self):
+        ledger, _ = self.replay_and_quarantine([
+            {"pkg": "one", "events": events("left::one"), "status": 101},
+            {"pkg": "two", "events": events("left::two"), "status": 101},
+        ], {"one": "timing", "two": "race_condition"})
+        self.assertEqual(dict(re.findall(
+            r'  - name: "([^"]+)"\n(?:(?!  - name:)[^\n]*\n)*?'
+            r'    root_cause_category: "([^"]+)"', ledger,
+        )), {"left::one": "timing", "left::two": "race_condition"})
+
+    def test_unique_flake_is_quarantined_alongside_reported_ambiguous_flakes(self):
+        ledger, _ = self.replay_and_quarantine([
+            {"pkg": package, "events": events(name), "status": 101}
+            for package, name in (("one", "left::shared"), ("two", "left::shared"),
+                                  ("three", "left::unique"))
+        ], {"one": "timing", "two": "race_condition", "three": "timing"})
+        self.assertEqual(re.findall(r'  - name: "([^"]+)"', ledger), ["left::unique"])
+        self.assertEqual(len(self.result_rows("flaky-tests")), 3)
+
+    def test_same_name_flaky_and_stable_keeps_both_issue_attributions(self):
+        ledger, empty = self.replay_and_quarantine(
+            [{"pkg": package, "events": events("left::same"), "status": 101}
+             for package in ("one", "two")],
+            {"one": "timing", "two": "failed"},
+        )
+        self.assertEqual(ledger, empty)
+        flake = self.issue_body("Comment on #2093 with flake report")
+        stable = self.issue_body("Create issue for stable failures")
+        self.assertIn('"one_lib"', flake)
+        line = next(line for line in flake.splitlines() if '"one_lib"' in line)
+        self.assertIn('"timing"', line)
+        self.assertIn("skipped for ledger", line)
+        self.assertIn('"two_lib"', flake)
+        self.assertIn('"two_lib"', stable)
+        self.assertNotIn('"one_lib"', stable)
+        self.assertEqual(self.result_rows("stable-failures")[0]["name"], "left::same")
+
+    def test_retrying_quarantine_does_not_add_another_escaped_ledger_name(self):
+        ledger, empty = self.replay_and_quarantine([
+            {"pkg": "one", "events": events("left::δοκιμή"), "status": 101},
+        ], {"one": "timing"})
+        self.assertNotEqual(ledger, empty)
+        quarantine = self.step(id="quarantine")
+        ledger_path = self.work / ".ci/debt-ledger.yaml"
+        for suffix in ("", "  ", "  # existing row"):
+            with self.subTest(suffix=suffix):
+                existing = re.sub(r"^  - name: .*$", lambda row: row[0] + suffix,
+                                  ledger, flags=re.MULTILINE)
+                ledger_path.write_text(existing)
+                result, _ = self.run_step(quarantine)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Added: 0", result.stdout)
+                self.assertEqual(ledger_path.read_text(), existing)
+
+    def test_passing_and_ignored_same_name_are_part_of_the_quarantine_denominator(self):
+        for outcome in ("ok", "ignored"):
+            with self.subTest(outcome=outcome):
+                sibling = [json.loads(line) for line in events("left::same", failed=False)]
+                if outcome == "ignored":
+                    del sibling[1]
+                    sibling[1]["event"] = outcome
+                    sibling[2].update(passed=0, ignored=1)
+                ledger, empty = self.replay_and_quarantine([
+                    {"pkg": "one", "events": events("left::same"), "status": 101},
+                    {"pkg": "two", "events": [json.dumps(line) for line in sibling], "status": 0},
+                ], {"one": "timing"})
+                self.assertEqual(ledger, empty)
+                self.assertEqual(len(self.result_rows("flaky-tests")), 1)
+
+    def test_filter_and_incomplete_census_only_disable_ledger_projection(self):
+        for filter_args, filtered_out in [('--features "example-feature"', 0), ("", 2), ("", None)]:
+            with self.subTest(filter_args=filter_args, filtered_out=filtered_out):
+                self.env["TEST_FILTER_INPUT"] = filter_args
+                run = [json.loads(line) for line in events("left::same")]
+                if filtered_out is None:
+                    del run[-1]["filtered_out"]
+                else:
+                    run[-1]["filtered_out"] = filtered_out
+                ledger, empty = self.replay_and_quarantine([
+                    {"pkg": "one", "events": [json.dumps(line) for line in run], "status": 101},
+                ], {"one": "timing"})
+                self.assertEqual(ledger, empty)
+                row = self.result_rows("flaky-tests")[0]
+                self.assertEqual(row["cause"], "timing")
+                if filter_args:
+                    self.assertIn("example-feature", row["command"])
+
+    def test_mismatched_terminal_cannot_hide_a_same_named_sibling_from_quarantine(self):
+        sibling = [json.loads(line) for line in events("left::same", failed=False)]
+        sibling[2]["name"] = "left::other"
+        ledger, empty = self.replay_and_quarantine([
+            {"pkg": "one", "events": events("left::same"), "status": 101},
+            {"pkg": "two", "events": [json.dumps(line) for line in sibling], "status": 0},
+        ], {"one": "timing"})
+        self.assertEqual(ledger, empty)
+        self.assertEqual(len(self.result_rows("flaky-tests")), 1)
 
     def test_mixed_stream_replays_valid_failure_but_remains_red_without_remote_actions(self):
         result, outputs = self.initial([
@@ -297,7 +463,10 @@ class FlakeConsumerTest(unittest.TestCase):
         self.assertEqual(retries["stable_failure_count"], "1")
         self.assertEqual(retries["flake_count"], "0")
         self.assertEqual(retries["instrument_failure"], "0")
-        self.assertEqual((self.work / "stable-failures.txt").read_text(), "real::failure\n")
+        stable = self.result_rows("stable-failures")
+        self.assertEqual([(row["package"], row["target"], row["target_name"], row["name"])
+                          for row in stable], [("good", "lib", "good_lib", "real::failure")])
+        self.assertEqual(stable[0]["command"][6:8], ["--features", "example-feature"])
         calls = [json.loads(line) for line in (self.work / "cargo-calls.jsonl").read_text().splitlines()]
         tests = [args for args in calls if args[0] == "test"]
         self.assertEqual(len(tests), 4)

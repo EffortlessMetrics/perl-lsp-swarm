@@ -76,8 +76,33 @@ while IFS= read -r test_name; do
     test_name=${test_name%$'\r'}
     [[ -z "$test_name" ]] && continue
 
-    # Already quarantined?
-    if grep -Fq "name: \"$test_name\"" "$LEDGER" 2>/dev/null; then
+    # Compare the decoded ledger key so escaped names and YAML comments
+    # do not interfere with retries.
+    ALREADY_QUARANTINED=$(python3 - "$LEDGER" "$test_name" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+ledger, name = sys.argv[1:]
+prefix = "  - name:"
+decoder = json.JSONDecoder()
+for line in Path(ledger).read_text().splitlines():
+    if not line.startswith(prefix):
+        continue
+    field = line[len(prefix):].lstrip()
+    try:
+        value, end = decoder.raw_decode(field)
+    except json.JSONDecodeError:
+        continue
+    suffix = field[end:].strip()
+    if value == name and (not suffix or suffix.startswith("#")):
+        print("true")
+        break
+else:
+    print("false")
+PYEOF
+)
+    if [[ "$ALREADY_QUARANTINED" == true ]]; then
         echo "SKIP: $test_name already quarantined"
         SKIPPED=$((SKIPPED + 1))
         continue

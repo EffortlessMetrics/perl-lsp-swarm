@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
@@ -61,6 +62,67 @@ def annotation(message):
     print("::error::" + escaped)
 
 
+def observation_identities(lines, receipt, allow_quarantine):
+    """Derive legacy-name eligibility from the full, unfiltered libtest run."""
+    targets = {}
+    names = []
+    block_names = []
+    summaries = []
+    block = None
+    pending = set()
+    complete = allow_quarantine and not any(
+        receipt["stream"][key] for key in ("malformed_json_lines", "events_before_envelope")
+    )
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind, outcome = event.get("type"), event.get("event")
+        if kind == "run":
+            package, target = event["package"], event["target"]
+            target_name = event.get("target_name")
+            named_target = isinstance(target_name, str) and bool(target_name)
+            complete &= target == "lib" and package not in targets and named_target
+            if named_target:
+                targets[package] = target_name
+            block = (package, target, target_name)
+            block_names.append([])
+            pending = set()
+        elif block is not None:
+            if kind == "test" and outcome in ("started", "ok", "failed", "ignored"):
+                name = event.get("name")
+                if not isinstance(name, str) or not name:
+                    complete = False
+                elif outcome == "started":
+                    complete &= name not in pending
+                    pending.add(name)
+                else:
+                    complete &= outcome == "ignored" or name in pending
+                    pending.discard(name)
+                    block_names[-1].append(name)
+                    names.append((*block, name))
+            elif kind == "suite" and outcome in ("ok", "failed"):
+                filtered = event.get("filtered_out")
+                summaries.append(type(filtered) is int and filtered == 0)
+            elif kind == "run_end":
+                complete &= not pending
+                block = None
+    counts = Counter(identity[-1] for identity in names)
+    complete &= len(summaries) == len(receipt["blocks"]) and all(summaries)
+    complete &= all(
+        len(observed) == len(set(observed)) == block["counts"]["discovered"]
+        for observed, block in zip(block_names, receipt["blocks"], strict=True)
+    )
+    return {
+        "library_targets": targets,
+        "unique_tests": [identity for identity in names if counts[identity[-1]] == 1]
+        if complete else [],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("observations", type=Path)
@@ -74,6 +136,8 @@ def main():
     # No output can survive a failed/stale consumer invocation in a reused
     # working directory. Outputs are appended only after all validation.
     Path("failed-tests.tsv").unlink(missing_ok=True)
+    identities = Path("flake-observation-identities.json")
+    identities.unlink(missing_ok=True)
     try:
         lines = args.observations.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
         receipt = json.loads(args.receipt.read_text(encoding="utf-8"))
@@ -90,6 +154,9 @@ def main():
         Path("failed-tests.tsv").write_text(
             "".join(f"{package}\t{name}\n" for package, name in eligible), encoding="utf-8"
         )
+        identities.write_text(json.dumps(
+            observation_identities(lines, receipt, trusted and args.filter_count == 0)
+        ), encoding="utf-8")
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             output.write(f"verdict={receipt['verdict']}\n")
             output.write(f"flake_count={receipt['counts']['failed']}\n")
@@ -98,6 +165,7 @@ def main():
             output.write(f"observation_exit_code={final_exit}\n")
     except (OSError, ValueError, KeyError, TypeError) as error:
         Path("failed-tests.tsv").unlink(missing_ok=True)
+        identities.unlink(missing_ok=True)
         annotation(f"flake receipt consumer failed: {error}")
         return 1
 
