@@ -466,11 +466,80 @@ fn port_proof_disconnect(dap: &mut DapProcess, request: i64, attached: bool) -> 
             {
                 terminated = true;
             }
-            Err(RecvTimeoutError::Disconnected) if acknowledged => break,
+            Err(RecvTimeoutError::Disconnected) => {
+                if !acknowledged {
+                    return Err(anyhow!(
+                        "disconnect stream ended before successful disconnect response"
+                    ));
+                }
+                if attached && !terminated {
+                    return Err(anyhow!(
+                        "attached-session disconnect stream ended before terminated event"
+                    ));
+                }
+                break;
+            }
             other => return Err(anyhow!("unexpected disconnect/EOF frame: {other:?}")),
         }
     }
     dap.finish_cleanly()
+}
+
+fn port_proof_synthetic_dap(
+    rx: Receiver<std::result::Result<DapMessage, String>>,
+) -> Result<DapProcess> {
+    let mut child = if cfg!(windows) {
+        Command::new("cmd")
+            .args(["/C", "ping", "-n", "31", "127.0.0.1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?
+    } else {
+        Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?
+    };
+    let stdin = child.stdin.take().ok_or_else(|| anyhow!("child stdin was not piped"))?;
+    let reader = thread::spawn(|| ());
+    Ok(DapProcess {
+        child,
+        stdin,
+        rx,
+        reader: Some(reader),
+        observed: Arc::new(Mutex::new(Vec::new())),
+    })
+}
+
+fn port_proof_disconnect_response(request: i64) -> DapMessage {
+    DapMessage::Response {
+        seq: request + 1,
+        request_seq: request,
+        success: true,
+        command: "disconnect".to_string(),
+        body: None,
+        message: None,
+    }
+}
+
+#[test]
+fn port_proof_disconnect_rejects_attached_eof_without_terminated() -> Result<()> {
+    let (tx, rx) = channel();
+    tx.send(Ok(port_proof_disconnect_response(1)))?;
+    drop(tx);
+    let mut dap = port_proof_synthetic_dap(rx)?;
+    let error = port_proof_disconnect(&mut dap, 1, true)
+        .err()
+        .ok_or_else(|| anyhow!("attached disconnect must fail when terminated is missing"))?;
+    let message = error.to_string();
+    assert!(
+        message.contains("terminated event"),
+        "expected missing terminated discrimination, got: {message}"
+    );
+    Ok(())
 }
 
 #[test]
