@@ -224,6 +224,33 @@ fn windows_rooted_file_uri_to_path(_url: &Url) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn uri_to_fs_path_hosted_drive_letter_preserves_platform_behavior() {
+        let hosted_drive = uri_to_fs_path("file://host/C:/dir/file.pl");
+        let local_drive = uri_to_fs_path("file://localhost/C:/dir/file.pl");
+        let ordinary_unc = uri_to_fs_path("file://host/share/dir/file.pl");
+
+        #[cfg(windows)]
+        {
+            // Compare the returned spelling without accessing the share.
+            assert_eq!(
+                hosted_drive.as_ref().map(|path| path.as_os_str()),
+                Some(std::ffi::OsStr::new(r"\\host\C:\dir\file.pl"))
+            );
+            assert_eq!(local_drive, Some(PathBuf::from(r"c:\dir\file.pl")));
+        }
+        #[cfg(unix)]
+        {
+            assert_eq!(hosted_drive, None);
+            assert_eq!(local_drive, Some(PathBuf::from("/c:/dir/file.pl")));
+        }
+
+        // The Windows guard excludes the ordinary share and the local-only
+        // fallbacks decline it. Unix also declines the remote authority.
+        assert_eq!(ordinary_unc, None);
+    }
+
     // `fs.rs:184-185` discriminator (#15722): a local-authority file URL
     // whose canonical re-parse lacks a Windows drive letter must hit the
     // `!windows_to_file_path_wont_panic(&canonical)` guard. On Windows that
