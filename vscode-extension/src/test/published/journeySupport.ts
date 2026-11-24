@@ -256,6 +256,80 @@ export function pathsEquivalent(left: unknown, right: string): boolean {
   return normalizedLeft === normalizedRight;
 }
 
+type TrackedBreakpoint = { id?: number; verified?: boolean };
+
+type BreakpointMessage = {
+  type?: string;
+  command?: string;
+  seq?: number;
+  request_seq?: number;
+  success?: boolean;
+  event?: string;
+  arguments?: { source?: { path?: string }; breakpoints?: Array<{ line?: number }> };
+  body?: {
+    breakpoint?: TrackedBreakpoint;
+    breakpoints?: TrackedBreakpoint[];
+    reason?: string;
+    threadId?: number;
+    hitBreakpointIds?: number[];
+  };
+};
+
+/** Bind the first stop in this editor session to its verified fixture breakpoint. */
+export function requirePackagedBreakpointStop(
+  trace: ReadonlyArray<{ direction: string; message?: unknown }>,
+  program: string,
+  line: number,
+): { breakpoint_id: number; thread_id: number } {
+  let requestSequence: number | undefined;
+  const verifiedIds = new Set<number>();
+  let requestedId: number | undefined;
+  for (const { direction, message } of trace) {
+    if (!message || typeof message !== 'object') continue;
+    const record = message as BreakpointMessage;
+    if (direction === 'in' && record.type === 'request' && record.command === 'setBreakpoints') {
+      const { source, breakpoints } = record.arguments ?? {};
+      if (pathsEquivalent(source?.path, program)) {
+        requestedId = undefined;
+        verifiedIds.clear();
+        requestSequence =
+          breakpoints?.length === 1 && breakpoints[0]?.line === line ? record.seq : undefined;
+      }
+    }
+    if (direction !== 'out') continue;
+    if (
+      record.type === 'response' &&
+      record.command === 'setBreakpoints' &&
+      record.success === true &&
+      typeof record.request_seq === 'number' &&
+      record.request_seq === requestSequence
+    ) {
+      requestSequence = undefined;
+      const breakpoints = record.body?.breakpoints;
+      const breakpoint = breakpoints?.length === 1 ? breakpoints[0] : undefined;
+      requestedId = breakpoint?.id;
+      if (requestedId !== undefined && breakpoint?.verified === true) verifiedIds.add(requestedId);
+    } else if (record.type === 'event' && record.event === 'breakpoint') {
+      const breakpoint = record.body?.breakpoint;
+      if (breakpoint?.id !== undefined && record.body?.reason === 'changed') {
+        if (breakpoint.verified === true) verifiedIds.add(breakpoint.id);
+        else verifiedIds.delete(breakpoint.id);
+      }
+    } else if (record.type === 'event' && record.event === 'stopped') {
+      assert.equal(record.body?.reason, 'breakpoint', 'first DAP stop must be the source breakpoint');
+      assert.ok(
+        requestedId !== undefined && Number.isSafeInteger(requestedId) && verifiedIds.has(requestedId),
+        'fixture breakpoint was not verified before the first stop',
+      );
+      assert.deepEqual(record.body?.hitBreakpointIds, [requestedId], 'wrong breakpoint hit identity');
+      const threadId = record.body?.threadId;
+      assert.ok(typeof threadId === 'number' && Number.isSafeInteger(threadId) && threadId > 0);
+      return { breakpoint_id: requestedId, thread_id: threadId };
+    }
+  }
+  throw new Error('installed DAP trace contained no stopped event');
+}
+
 export async function providerResult(
   label: string,
   command: string,

@@ -16,6 +16,7 @@ import {
   providerPosition,
   providerResult,
   receiptsDir,
+  requirePackagedBreakpointStop,
   observeActiveDocumentReadiness,
   waitForActiveDocumentGeneration,
   sha256,
@@ -437,6 +438,7 @@ function recordPackagedDapEvidence(
   session: vscode.DebugSession,
   exit: { code?: number; signal?: string },
   debuggee: OwnedDebuggee,
+  breakpoint?: ReceiptValue,
 ): void {
   const receiptPath = path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json');
   if (!fs.existsSync(receiptPath)) {
@@ -459,7 +461,9 @@ function recordPackagedDapEvidence(
       (limitation) => limitation !== 'DAP preview is not exercised by this slice.',
     );
     limitations.push(
-      'DAP startup and ordinary Stop are exercised; breakpoint, stepping, variables and evaluation semantics remain not proven.',
+      breakpoint
+        ? 'DAP startup, one fixture breakpoint and ordinary Stop are exercised; stepping, variables and evaluation remain not proven.'
+        : 'DAP startup and ordinary Stop are exercised; breakpoint, stepping, variables and evaluation semantics remain not proven.',
     );
     receipt.known_limitations = limitations;
   }
@@ -470,6 +474,7 @@ function recordPackagedDapEvidence(
     session_id: session.id,
     initialize_then_launch: true,
     correlated_disconnect: true,
+    ...(breakpoint ? { breakpoint } : {}),
     exit,
     debuggee,
     owned_process_cleanup: 'pass',
@@ -1261,7 +1266,9 @@ suite('Packaged VSIX bundled-server journey', function () {
   });
 
   test('starts and cleanly stops the packaged DAP on the host platform', async function () {
+    const requireBreakpoint = process.env.PERL_LSP_PACKAGED_DAP_BREAKPOINT === '1';
     if (process.platform !== 'win32' && process.platform !== 'linux') {
+      assert.equal(requireBreakpoint, false, 'packaged breakpoint proof requires Linux or Windows');
       this.skip();
       return;
     }
@@ -1278,6 +1285,9 @@ suite('Packaged VSIX bundled-server journey', function () {
     const expectedDapSha256 = sha256(dapPath);
     const builtDapSha256 = process.env.PERL_LSP_DAP_SHA256?.trim();
     const verifiedMember = process.env.PERL_LSP_DAP_VSIX_MEMBER;
+    if (requireBreakpoint) {
+      assert.ok(verifiedMember, 'packaged breakpoint proof requires a verified VSIX member');
+    }
     if (verifiedMember !== undefined) {
       assert.ok(builtDapSha256, 'verified VSIX member requires the built adapter SHA-256');
       const installedMember = path.relative(extensionPath, dapPath).split(path.sep).join('/');
@@ -1309,6 +1319,9 @@ suite('Packaged VSIX bundled-server journey', function () {
     const releaseFile = path.join(workspacePath, `packaged_dap_${runId}.release`);
     const environmentFile = path.join(workspacePath, `packaged_dap_${runId}.env`);
     let debuggee: OwnedDebuggee | undefined;
+    let breakpointEvidence: ReceiptValue | undefined;
+    let sourceBreakpoint: vscode.SourceBreakpoint | undefined;
+    const breakpointStatement = 'my $deadline = time + 120;';
     const subscriptions: vscode.Disposable[] = [];
 
     let startedSession: vscode.DebugSession | undefined;
@@ -1316,7 +1329,7 @@ suite('Packaged VSIX bundled-server journey', function () {
     const requestCommands = new Map<number, string>();
     const successfulStopResponses = new Set<string>();
     let stopRequested = false;
-    const protocolTrace: Array<Record<string, unknown>> = [];
+    const protocolTrace: Array<{ direction: string; [key: string]: unknown }> = [];
     let adapterError: string | undefined;
     let unexpectedException: string | undefined;
     let adapterExit: { code?: number; signal?: string } | undefined;
@@ -1340,25 +1353,34 @@ suite('Packaged VSIX bundled-server journey', function () {
     const exitEvent = new Promise<{ code?: number; signal?: string }>((resolve) => {
       resolveExit = resolve;
     });
+    let resolveFirstStop: (() => void) | undefined;
+    const firstStop = new Promise<void>((resolve) => {
+      resolveFirstStop = resolve;
+    });
     try {
-      fs.writeFileSync(
-        program,
-        [
-          'use strict;',
-          'use warnings;',
-          'my ($pid_file, $release_file, $environment_file) = @ARGV;',
-          'open my $environment, q{>}, $environment_file or die "environment file: $!";',
-          'print {$environment} "PERL_RL=$ENV{PERL_RL}\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\n"; close $environment or die "environment close: $!";',
-          'open my $pid, q{>}, $pid_file or die "pid file: $!";',
-          'print {$pid} $$; close $pid or die "pid close: $!";',
-          'my $deadline = time + 120;',
-          'while (!-e $release_file && time < $deadline) { select undef, undef, undef, 0.1; }',
-          'open my $ended, q{>}, $pid_file or die "exit marker: $!";',
-          'print {$ended} "completed-without-stop"; close $ended or die "exit marker close: $!";',
-          '',
-        ].join('\n'),
-        { flag: 'wx' },
-      );
+      const fixtureLines = [
+        'use strict;',
+        'use warnings;',
+        'my ($pid_file, $release_file, $environment_file) = @ARGV;',
+        'open my $environment, q{>}, $environment_file or die "environment file: $!";',
+        'print {$environment} "PERL_RL=$ENV{PERL_RL}\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\n"; close $environment or die "environment close: $!";',
+        'open my $pid, q{>}, $pid_file or die "pid file: $!";',
+        'print {$pid} $$; close $pid or die "pid close: $!";',
+        breakpointStatement,
+        'while (!-e $release_file && time < $deadline) { select undef, undef, undef, 0.1; }',
+        'open my $ended, q{>}, $pid_file or die "exit marker: $!";',
+        'print {$ended} "completed-without-stop"; close $ended or die "exit marker close: $!";',
+        '',
+      ];
+      fs.writeFileSync(program, fixtureLines.join('\n'), { flag: 'wx' });
+      const breakpointLine = fixtureLines.indexOf(breakpointStatement) + 1;
+      const fixtureSha256 = requireBreakpoint ? sha256(program) : undefined;
+      if (requireBreakpoint) {
+        sourceBreakpoint = new vscode.SourceBreakpoint(
+          new vscode.Location(vscode.Uri.file(program), new vscode.Position(breakpointLine - 1, 0)),
+        );
+        vscode.debug.addBreakpoints([sourceBreakpoint]);
+      }
       subscriptions.push(
         vscode.debug.onDidStartDebugSession((session) => {
           if (
@@ -1405,12 +1427,11 @@ suite('Packaged VSIX bundled-server journey', function () {
                   record.body && typeof record.body === 'object'
                     ? (record.body as { reason?: unknown })
                     : undefined;
-                if (
-                  record.type === 'event' &&
-                  record.event === 'stopped' &&
-                  body?.reason === 'exception'
-                ) {
-                  unexpectedException = 'DAP stopped event reported reason=exception';
+                if (record.type === 'event' && record.event === 'stopped') {
+                  resolveFirstStop?.();
+                  if (body?.reason === 'exception') {
+                    unexpectedException = 'DAP stopped event reported reason=exception';
+                  }
                 }
                 if (
                   record.type === 'response' &&
@@ -1524,6 +1545,29 @@ suite('Packaged VSIX bundled-server journey', function () {
       } else {
         assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=0$/m);
       }
+      if (requireBreakpoint) {
+        await withTimeout('packaged DAP first source breakpoint stop', firstStop, 30_000);
+        const hit = requirePackagedBreakpointStop(protocolTrace, program, breakpointLine);
+        const stack: { stackFrames?: Array<{ source?: { path?: string }; line?: number }> } =
+          await withTimeout(
+            'packaged DAP stopped thread stack',
+            session.customRequest('stackTrace', { threadId: hit.thread_id, levels: 1 }),
+            30_000,
+          );
+        const frame = stack.stackFrames?.[0];
+        assert.ok(
+          pathsEquivalent(frame?.source?.path, program),
+          'breakpoint top frame has the wrong source',
+        );
+        assert.equal(frame?.line, breakpointLine, 'breakpoint top frame has the wrong line');
+        assert.equal(sha256(program), fixtureSha256, 'breakpoint fixture bytes changed during launch');
+        breakpointEvidence = {
+          ...hit,
+          source: program,
+          line: breakpointLine,
+          fixture_sha256: fixtureSha256,
+        };
+      }
       stopRequested = true;
       await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
       await withTimeout('packaged DAP termination event', termination, 30_000);
@@ -1608,6 +1652,13 @@ suite('Packaged VSIX bundled-server journey', function () {
           cleanupErrors.push(error);
         }
       }
+      if (sourceBreakpoint) {
+        try {
+          vscode.debug.removeBreakpoints([sourceBreakpoint]);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
       for (const file of [program, pidFile, releaseFile, environmentFile]) {
         try {
           fs.rmSync(file, { force: true });
@@ -1640,6 +1691,13 @@ suite('Packaged VSIX bundled-server journey', function () {
     }
     if (cleanupFailure) throw cleanupFailure;
     assert.ok(startedSession && adapterExit && debuggee);
-    recordPackagedDapEvidence(extensionPath, dapPath, startedSession, adapterExit, debuggee);
+    recordPackagedDapEvidence(
+      extensionPath,
+      dapPath,
+      startedSession,
+      adapterExit,
+      debuggee,
+      breakpointEvidence,
+    );
   });
 });
