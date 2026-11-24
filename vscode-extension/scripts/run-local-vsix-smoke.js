@@ -1226,11 +1226,12 @@ function validateVerifiedCandidateReceipt({
     if (!allowedStatuses.has(receipt.status)) {
       violations.push('verified child receipt has an invalid or missing bounded status');
     }
-    for (const [field, expected] of Object.entries({
+    const expectedIdentity = Object.entries({
       candidate_id: env.PERL_LSP_CANDIDATE_ID,
       frozen_product_sha: env.PERL_LSP_CURRENT_SOURCE_SHA,
       artifact_set_id: env.PERL_LSP_ARTIFACT_SET_ID,
-    })) {
+    });
+    for (const [field, expected] of expectedIdentity) {
       if (receipt[field] !== expected) {
         violations.push(`verified child ${field} does not bind this candidate`);
       }
@@ -1277,6 +1278,11 @@ function validateVerifiedCandidateReceipt({
     }
     if (expectedDap) {
       const dap = sourceReceipt?.dap_startup;
+      for (const [field, expected] of expectedIdentity) {
+        if (!expected || dap?.[field] !== expected) {
+          violations.push(`packaged DAP ${field} does not bind this candidate`);
+        }
+      }
       if (
         sourceReceipt?.artifact_hashes?.dap_sha256 !== expectedDap.sha256 ||
         dap?.vsix_member !== expectedDap.vsix_member ||

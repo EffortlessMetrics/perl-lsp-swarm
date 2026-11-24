@@ -255,7 +255,7 @@ void test('verified packaged child receipt rejects stale source, identity, and a
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
-void test('verified packaged child receipt hashes and parses one source snapshot', (t) => {
+void test('verified packaged child receipt hashes and parses one source snapshot', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-snapshot-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const receiptFile = path.join(directory, 'verified_child_receipt.json');
@@ -357,6 +357,9 @@ void test('verified packaged child receipt hashes and parses one source snapshot
     ...healthySource,
     artifact_hashes: { ...artifactHashes, dap_sha256: expectedDap.sha256 },
     dap_startup: {
+      candidate_id: env.PERL_LSP_CANDIDATE_ID,
+      frozen_product_sha: env.PERL_LSP_CURRENT_SOURCE_SHA,
+      artifact_set_id: env.PERL_LSP_ARTIFACT_SET_ID,
       vsix_member: expectedDap.vsix_member,
       initialize_then_launch: true,
       correlated_disconnect: true,
@@ -366,6 +369,24 @@ void test('verified packaged child receipt hashes and parses one source snapshot
   };
   bindSource(Buffer.from(JSON.stringify(dapSource)));
   assert.equal(validate(expectedDap).ok, true);
+  for (const [field, otherCandidateValue] of Object.entries({
+    candidate_id: 'candidate-2',
+    frozen_product_sha: 'e'.repeat(40),
+    artifact_set_id: 'set-2',
+  })) {
+    for (const [caseName, value] of [['missing', undefined], ['mismatched', otherCandidateValue]]) {
+      await t.test(`rejects ${caseName} embedded DAP ${field}`, () => {
+        bindSource(Buffer.from(JSON.stringify({
+          ...dapSource,
+          dap_startup: { ...dapSource.dap_startup, [field]: value },
+        })));
+        const result = validate(expectedDap);
+        assert.equal(result.ok, false);
+        assert.ok(result.violations?.includes(`packaged DAP ${field} does not bind this candidate`));
+      });
+    }
+  }
+  bindSource(Buffer.from(JSON.stringify(dapSource)));
   assert.equal(validate({ ...expectedDap, sha256: 'e'.repeat(64) }).ok, false);
   assert.equal(validate({ ...expectedDap, vsix_member: 'extension/bin/linux-x64/perl-dap' }).ok, false);
   bindSource(Buffer.from(JSON.stringify({
