@@ -94,6 +94,14 @@ export async function callSite(): Promise<void> {
 `;
 
 /**
+ * The rule this canary exists to prove. Oxlint's JSON reporter emits it in
+ * `typescript(<rule>)` form; the human-readable reporter emits the bare
+ * `typescript/no-floating-promises` form. Matching the structured code is what
+ * makes a diagnostic attributable to this exact rule.
+ */
+const EXPECTED_RULE_CODE = 'typescript(no-floating-promises)';
+
+/**
  * Runs oxlint against a fixture file in `tmpDir`, using absolute paths for
  * every argument. The process cwd is deliberately kept at EXT_ROOT (not
  * tmpDir): oxlint-tsgolint is resolved via Node module resolution starting
@@ -102,7 +110,18 @@ export async function callSite(): Promise<void> {
  * gets a real type-aware run without polluting the extension's own lint
  * scope with the canary fixtures.
  *
- * @returns {{status: number|null, stdout: string, stderr: string}}
+ * `--format json` is required: the human-readable reporter is free-form text,
+ * so a rule name can appear in it for reasons unrelated to a diagnostic being
+ * reported for the fixture under test (a backend initialization error, a
+ * diagnostic for an unrelated file). The JSON reporter makes each diagnostic a
+ * structured record carrying its own rule code and file, which is the only
+ * shape from which "this rule fired on this file" can be established.
+ *
+ * Spawn errors and signals are preserved rather than dropped: a run that could
+ * not execute at all is not a clean run, and must not be indistinguishable
+ * from one that executed and found nothing.
+ *
+ * @returns {{status: number|null, stdout: string, stderr: string, signal: string|null, error: Error|null}}
  */
 function runOxlint(tmpDir, file) {
   const result = spawnSync(
@@ -115,6 +134,8 @@ function runOxlint(tmpDir, file) {
       path.join(tmpDir, '.oxlintrc.json'),
       '--tsconfig',
       path.join(tmpDir, 'tsconfig.json'),
+      '--format',
+      'json',
     ],
     { cwd: EXT_ROOT, encoding: 'utf8' },
   );
@@ -122,7 +143,152 @@ function runOxlint(tmpDir, file) {
     status: result.status,
     stdout: result.stdout || '',
     stderr: result.stderr || '',
+    signal: result.signal || null,
+    error: result.error || null,
   };
+}
+
+/**
+ * One diagnostic record as oxlint's JSON reporter emits it. Only the fields
+ * the canary decides on are required to be present; the rest of the record
+ * (message, url, help, labels) is carried by the tool and simply not read
+ * here.
+ *
+ * @typedef {{code?: string, filename?: string, severity?: string, message?: string}} OxlintDiagnostic
+ */
+
+/**
+ * Parses oxlint's JSON reporter output into its diagnostic records.
+ *
+ * Returns a failure reason instead of throwing, because malformed output is
+ * itself a red condition the canary must report rather than crash on: a
+ * malformed report means the tool did not produce a trustworthy answer, and
+ * "the tool printed something unparseable" must never be read as "the tool
+ * reported no problems".
+ *
+ * @param {string} stdout
+ * @returns {{diagnostics: OxlintDiagnostic[], parseError: string|null}}
+ */
+function parseOxlintJson(stdout) {
+  const trimmed = (stdout || '').trim();
+  if (trimmed.length === 0) {
+    return { diagnostics: [], parseError: 'oxlint produced no output to parse' };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (error) {
+    return {
+      diagnostics: [],
+      parseError: `oxlint output was not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.diagnostics)) {
+    return {
+      diagnostics: [],
+      parseError: 'oxlint JSON output did not contain a diagnostics array',
+    };
+  }
+  return { diagnostics: parsed.diagnostics, parseError: null };
+}
+
+/**
+ * Normalizes a diagnostic's reported file to a comparable path.
+ *
+ * Oxlint reports forward slashes on every platform, and the canary's fixture
+ * path is absolute, so both sides are normalized before comparison. A
+ * diagnostic whose file cannot be resolved is left as an empty string, which
+ * never matches a real fixture path — an unattributable diagnostic must not
+ * be able to satisfy the attribution check.
+ *
+ * @param {string | undefined} filename
+ * @returns {string}
+ */
+function normalizeDiagnosticPath(filename) {
+  if (typeof filename !== 'string' || filename.length === 0) {
+    return '';
+  }
+  const normalized = filename.replace(/\\/g, '/');
+  const marker = '/';
+  const slashIndex = normalized.lastIndexOf(marker);
+  return slashIndex === -1 ? normalized : normalized.slice(slashIndex + 1);
+}
+
+/**
+ * Evaluates one oxlint run against the expectation for its fixture.
+ *
+ * This is the pure core of the canary: it takes a completed run and the
+ * expectation, and returns whether the run satisfied it plus the reasons it
+ * did not. Keeping it free of process and filesystem concerns is what makes
+ * the negative controls (malformed output, a diagnostic for the wrong file,
+ * a diagnostic for the wrong rule, a spawn failure) directly testable with
+ * synthetic runs instead of requiring the native tools to misbehave.
+ *
+ * @param {{status: number|null, stdout: string, stderr: string, signal?: string|null, error?: Error|null}} run
+ * @param {{file: string, expectDiagnostics: boolean}} expectation
+ * @returns {{ok: boolean, failures: string[]}}
+ */
+function evaluateRun(run, expectation) {
+  const failures = [];
+
+  if (run.error) {
+    failures.push(`oxlint could not be executed: ${run.error.message}`);
+  }
+  if (run.signal) {
+    failures.push(`oxlint was terminated by signal ${run.signal}`);
+  }
+
+  const { diagnostics, parseError } = parseOxlintJson(run.stdout);
+  if (parseError) {
+    failures.push(parseError);
+  }
+
+  const expectedFile = normalizeDiagnosticPath(expectation.file);
+  const matching = diagnostics.filter(
+    (diagnostic) =>
+      diagnostic &&
+      diagnostic.code === EXPECTED_RULE_CODE &&
+      normalizeDiagnosticPath(diagnostic.filename) === expectedFile,
+  );
+  const otherDiagnostics = diagnostics.filter((diagnostic) => !matching.includes(diagnostic));
+
+  if (expectation.expectDiagnostics) {
+    if (matching.length === 0) {
+      failures.push(
+        `expected ${EXPECTED_RULE_CODE} to be reported for ${expectation.file}, ` +
+          'but no such diagnostic was present',
+      );
+    }
+    if (run.status === 0) {
+      failures.push(`expected a failing exit status for ${expectation.file}, but oxlint exited 0`);
+    }
+  } else {
+    if (matching.length > 0) {
+      failures.push(
+        `expected no ${EXPECTED_RULE_CODE} diagnostic for ${expectation.file}, ` +
+          `but ${matching.length} were reported`,
+      );
+    }
+    if (run.status !== 0) {
+      failures.push(
+        `expected a clean exit status for ${expectation.file}, but oxlint exited ${run.status}`,
+      );
+    }
+  }
+
+  if (otherDiagnostics.length > 0) {
+    failures.push(
+      `oxlint reported ${otherDiagnostics.length} unexpected diagnostic(s) for ${expectation.file}: ` +
+        otherDiagnostics
+          .map(
+            (diagnostic) =>
+              `${diagnostic.code ?? '<no code>'} in ${diagnostic.filename ?? '<no file>'}`,
+          )
+          .join(', '),
+    );
+  }
+
+  return { ok: failures.length === 0, failures };
 }
 
 function fail(message, detail) {
@@ -163,15 +329,12 @@ function main() {
     // Case (a): bare floating promise MUST be flagged. A clean/zero-exit
     // result here means the engine did not really run type-aware analysis.
     const badResult = runOxlint(tmpDir, 'bad.ts');
-    const badFlagged =
-      badResult.status !== 0 &&
-      (badResult.stdout.includes('no-floating-promises') ||
-        badResult.stderr.includes('no-floating-promises'));
-    if (!badFlagged) {
+    const badVerdict = evaluateRun(badResult, { file: 'bad.ts', expectDiagnostics: true });
+    if (!badVerdict.ok) {
       allPassed = false;
       fail(
         'case (a) — the deliberate floating promise in bad.ts was NOT flagged by typescript/no-floating-promises.',
-        `exit=${badResult.status}\nstdout:\n${badResult.stdout}\nstderr:\n${badResult.stderr}`,
+        badVerdict.failures.join('\n'),
       );
     } else {
       reporter.info(
@@ -183,14 +346,13 @@ function main() {
     // means either a false positive, or (more likely under alpha tooling)
     // that type-aware initialization itself failed — both are RED.
     const goodResult = runOxlint(tmpDir, 'good.ts');
-    const goodClean =
-      goodResult.status === 0 && !goodResult.stdout.includes('no-floating-promises');
-    if (!goodClean) {
+    const goodVerdict = evaluateRun(goodResult, { file: 'good.ts', expectDiagnostics: false });
+    if (!goodVerdict.ok) {
       allPassed = false;
       fail(
         'case (b) — the properly-awaited good.ts was flagged, or the run failed to complete cleanly ' +
           '(this includes tsgolint failing to initialize).',
-        `exit=${goodResult.status}\nstdout:\n${goodResult.stdout}\nstderr:\n${goodResult.stderr}`,
+        goodVerdict.failures.join('\n'),
       );
     } else {
       reporter.info('OK  case (b): good.ts passes cleanly.');
@@ -205,4 +367,13 @@ function main() {
   }
 }
 
-main();
+module.exports = {
+  EXPECTED_RULE_CODE,
+  evaluateRun,
+  normalizeDiagnosticPath,
+  parseOxlintJson,
+};
+
+if (require.main === module) {
+  main();
+}
