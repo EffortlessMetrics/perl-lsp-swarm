@@ -20,7 +20,7 @@ function prebuiltManifest(overrides = {}) {
     schema: 'vsix_candidate_payload.v1',
     extension: {
       id: 'EffortlessMetrics.perl-lsp-rs',
-      version: '0.17.0',
+      version: packageJson.version,
       sourceSha: 'a'.repeat(40),
     },
     candidate: { id: 'candidate-a', release: '0.18.0', sourceSha: 'a'.repeat(40) },
@@ -188,6 +188,16 @@ void test('prebuilt manifest binds exact Windows server source, target, and byte
         },
       ),
     /missing required DAP payload/,
+  );
+  const otherVersion = valid.extension.version === '0.0.1' ? '0.0.2' : '0.0.1';
+  assert.throws(
+    () =>
+      validateProjectionManifest(
+        { ...valid, extension: { ...valid.extension, version: otherVersion } },
+        projectionInput(),
+        'win32-x64',
+      ),
+    /extension identity disagrees with package\.json/,
   );
   assert.throws(
     () =>
