@@ -11,6 +11,7 @@ import {
   bundledBinaryPath,
   bundledDapPath,
   bundledServerVersion,
+  buildPackagedDapFixture,
   pathsEquivalent,
   platformLabel,
   providerPosition,
@@ -1321,7 +1322,6 @@ suite('Packaged VSIX bundled-server journey', function () {
     let debuggee: OwnedDebuggee | undefined;
     let breakpointEvidence: ReceiptValue | undefined;
     let sourceBreakpoint: vscode.SourceBreakpoint | undefined;
-    const breakpointStatement = 'my $deadline = time + 120;';
     const subscriptions: vscode.Disposable[] = [];
 
     let startedSession: vscode.DebugSession | undefined;
@@ -1358,22 +1358,8 @@ suite('Packaged VSIX bundled-server journey', function () {
       resolveFirstStop = resolve;
     });
     try {
-      const fixtureLines = [
-        'use strict;',
-        'use warnings;',
-        'my ($pid_file, $release_file, $environment_file) = @ARGV;',
-        'open my $environment, q{>}, $environment_file or die "environment file: $!";',
-        'print {$environment} "PERL_RL=$ENV{PERL_RL}\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\n"; close $environment or die "environment close: $!";',
-        'open my $pid, q{>}, $pid_file or die "pid file: $!";',
-        'print {$pid} $$; close $pid or die "pid close: $!";',
-        breakpointStatement,
-        'while (!-e $release_file && time < $deadline) { select undef, undef, undef, 0.1; }',
-        'open my $ended, q{>}, $pid_file or die "exit marker: $!";',
-        'print {$ended} "completed-without-stop"; close $ended or die "exit marker close: $!";',
-        '',
-      ];
-      fs.writeFileSync(program, fixtureLines.join('\n'), { flag: 'wx' });
-      const breakpointLine = fixtureLines.indexOf(breakpointStatement) + 1;
+      const { bytes, breakpointLine } = buildPackagedDapFixture();
+      fs.writeFileSync(program, bytes, { flag: 'wx' });
       const fixtureSha256 = requireBreakpoint ? sha256(program) : undefined;
       if (requireBreakpoint) {
         sourceBreakpoint = new vscode.SourceBreakpoint(
@@ -1537,14 +1523,6 @@ suite('Packaged VSIX bundled-server journey', function () {
         undefined,
         unexpectedException ?? 'packaged DAP reported no unexpected exception',
       );
-      debuggee = await waitForDebuggee(pidFile);
-      const childEnvironment = fs.readFileSync(environmentFile, 'utf8');
-      assert.match(childEnvironment, /^PERL_RL=Perl$/m);
-      if (process.platform === 'win32') {
-        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=1 ReadLine=0$/m);
-      } else {
-        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=0$/m);
-      }
       if (requireBreakpoint) {
         await withTimeout('packaged DAP first source breakpoint stop', firstStop, 30_000);
         const hit = requirePackagedBreakpointStop(protocolTrace, program, breakpointLine);
@@ -1567,6 +1545,14 @@ suite('Packaged VSIX bundled-server journey', function () {
           line: breakpointLine,
           fixture_sha256: fixtureSha256,
         };
+      }
+      debuggee = await waitForDebuggee(pidFile);
+      const childEnvironment = fs.readFileSync(environmentFile, 'utf8');
+      assert.match(childEnvironment, /^PERL_RL=Perl$/m);
+      if (process.platform === 'win32') {
+        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=1 ReadLine=0$/m);
+      } else {
+        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=0$/m);
       }
       stopRequested = true;
       await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);

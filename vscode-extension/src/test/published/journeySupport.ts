@@ -256,6 +256,29 @@ export function pathsEquivalent(left: unknown, right: string): boolean {
   return normalizedLeft === normalizedRight;
 }
 
+/** Serialize the Perl fixture and locate its breakpoint in the bytes written to disk. */
+export function buildPackagedDapFixture(): { bytes: Buffer; breakpointLine: number } {
+  const breakpointStatement = 'my $deadline = time + 120;';
+  const bytes = Buffer.from([
+    'use strict;',
+    'use warnings;',
+    'my ($pid_file, $release_file, $environment_file) = @ARGV;',
+    'open my $environment, q{>}, $environment_file or die "environment file: $!";',
+    String.raw`print {$environment} "PERL_RL=$ENV{PERL_RL}\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\n"; close $environment or die "environment close: $!";`,
+    'open my $pid, q{>}, $pid_file or die "pid file: $!";',
+    'print {$pid} $$; close $pid or die "pid close: $!";',
+    breakpointStatement,
+    'while (!-e $release_file && time < $deadline) { select undef, undef, undef, 0.1; }',
+    'open my $ended, q{>}, $pid_file or die "exit marker: $!";',
+    'print {$ended} "completed-without-stop"; close $ended or die "exit marker close: $!";',
+    '',
+  ].join('\n'), 'utf8');
+  const physicalLines = bytes.toString('utf8').split('\n');
+  const index = physicalLines.indexOf(breakpointStatement);
+  assert.ok(index >= 0 && index === physicalLines.lastIndexOf(breakpointStatement));
+  return { bytes, breakpointLine: index + 1 };
+}
+
 type TrackedBreakpoint = { id?: number; verified?: boolean };
 
 type BreakpointMessage = {

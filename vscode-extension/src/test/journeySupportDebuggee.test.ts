@@ -1,6 +1,10 @@
 import * as assert from 'assert';
 import * as path from 'path';
-import { debuggeeCreationTimeFromProbe, requirePackagedBreakpointStop } from './published/journeySupport';
+import {
+  buildPackagedDapFixture,
+  debuggeeCreationTimeFromProbe,
+  requirePackagedBreakpointStop,
+} from './published/journeySupport';
 import type { BoundedProcessResult } from '../testAdapter';
 
 const success: BoundedProcessResult = {
@@ -55,6 +59,17 @@ describe('installed debuggee probe interpretation', () => {
     );
     assert.throws(() => debuggeeCreationTimeFromProbe(-1, success));
   });
+});
+
+it('targets the serialized deadline after both marker writes', () => {
+  const { bytes, breakpointLine } = buildPackagedDapFixture();
+  const lines = bytes.toString('utf8').split('\n');
+  assert.equal(lines[breakpointLine - 1], 'my $deadline = time + 120;');
+  const beforeStop = lines.slice(0, breakpointLine - 1);
+  assert.ok(beforeStop.includes(
+    String.raw`print {$environment} "PERL_RL=$ENV{PERL_RL}\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\n"; close $environment or die "environment close: $!";`,
+  ));
+  assert.ok(beforeStop.includes('print {$pid} $$; close $pid or die "pid close: $!";'));
 });
 
 describe('installed editor breakpoint trace', () => {
