@@ -350,3 +350,37 @@ cargo test -p xtask --test activation --test activation_check --locked -- --noca
 # required merge surface command 39: Draft PR feedback contract (required merge surface)
 _step_index=$((_step_index + 1))
 cargo test -p xtask --test draft_pr_feedback_contract --locked -- --nocapture
+
+# required merge surface command 40: Gate-policy profile contract, unfiltered complement (required merge surface)
+# #19561: command 34 reaches this target through a test-name filter that selects
+# 1 of its 15 tests. The filter was introduced over a 14-test file, so every
+# other assertion in this file has never executed in a required context: the
+# required surface reports green while skipping them. Command 34 keeps its
+# filtered selection (the immutable prefix is byte-frozen against the pinned
+# baseline), so this command runs the complementary 14 and requires a
+# non-vacuous receipt: each named assertion must report "ok" and the summary
+# must report 14 passed, 0 failed, 0 ignored.
+_step_index=$((_step_index + 1))
+set -o pipefail
+cargo test -p xtask --test gate_policy_profile_tests --locked -- \
+  --test-threads=1 --color never --skip freshness_gate_commands_satisfy_every_named_suite_cfg \
+  | tee "$RUNNER_TEMP/gate-policy-profile-contract.log"
+grep -Eq '^test result: ok\. 14 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in ' \
+  "$RUNNER_TEMP/gate-policy-profile-contract.log"
+for test_name in \
+  parser_corpus_pr_policy_is_unambiguous \
+  release_history_pr_gates_have_realistic_timeout_headroom \
+  conflict_marker_gate_has_local_runtime_headroom \
+  routed_integration_test_gate_has_cold_ci_headroom \
+  parser_stack_gate_stays_required_merge_gate \
+  parser_integration_gate_is_required_and_manifest_driven \
+  inline_completion_gates_are_split_scoped_ordered_and_budgeted \
+  gate_registry_alignment_prevents_stale_parser_wiring \
+  dap_support_gate_binds_all_helper_targets_and_propagates_failures \
+  dap_support_retry_envelope_leaves_terminal_receipt_headroom \
+  lsp_unit_lanes_partition_the_surface_exactly \
+  lsp_merge_gate_comments_do_not_cite_closed_red_suite_blocker \
+  lsp_unit_lanes_share_ceiling_and_budget \
+  lsp_smoke_is_atomic_bounded_and_independently_terminal; do
+  grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/gate-policy-profile-contract.log"
+done
