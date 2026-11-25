@@ -22,7 +22,6 @@ EXCLUDED_STUBS=(
     "reference/status/quality.md"
     "reference/status/release.md"
     "reference/configuration-canonical.md"
-    "reference/native-critic-rule-matrix.md"
     "reference/performance-slo.md"
     "reference/configuration-schema.md"
 )

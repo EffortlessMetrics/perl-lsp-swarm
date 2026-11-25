@@ -52,7 +52,8 @@ if ! bash "$CHECKER" > /dev/null; then
 fi
 
 # 2. A stale committed projection fails.
-book_target="$REPO_ROOT/book/src/reference/editor-setup-canonical.md"
+book_rel="reference/native-critic-rule-matrix.md"
+book_target="$REPO_ROOT/book/src/$book_rel"
 # 3. A non-link canonical edit fails until the projection is regenerated.
 source_target="$REPO_ROOT/docs/how-to/EDITOR_SETUP.md"
 book_backup=""
@@ -82,10 +83,11 @@ cp "$source_target" "$source_backup"
 source_saved=1
 
 printf '\nArtificial drift for the freshness-check self-test.\n' >> "$book_target"
-if bash "$CHECKER" > /dev/null 2>&1; then
+if drift_output="$(bash "$CHECKER" 2>&1)"; then
     echo "FAIL: checker passed despite committed projection drift" >&2
     exit 1
 fi
+grep -Fxq "DRIFT: committed copy is stale: $book_rel" <<< "$drift_output"
 cp "$book_backup" "$book_target"
 
 printf '\nArtificial canonical drift for the freshness-check self-test.\n' >> "$source_target"
