@@ -347,7 +347,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
     },
     {
-      "answering_tier": "workspace_text",
+      "answering_tier": "semantic_analyzer",
       "character": 32,
       "cursor_site": "usage",
       "declaration_shape": "not_applicable",
@@ -365,18 +365,18 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_fallback_state": "legacy_provider",
       "receipt_freshness": "fresh",
       "receipt_reason": "live_provider_result",
-      "receipt_source_backed_state": "workspace_text_fallback",
+      "receipt_source_backed_state": "semantic_analyzer_fallback",
       "request_shape": "method_call",
       "result_count": 2,
       "scenario_rationale": "cross_file_caller_lives_outside_the_same_file_scope",
       "source_backed": false,
-      "source_backed_attempted": true,
-      "source_backed_cutover_result": "legacy_fallback",
-      "source_backed_decline_stage": "cutover",
+      "source_backed_attempted": false,
+      "source_backed_cutover_result": null,
+      "source_backed_decline_stage": null,
       "source_backed_exact_candidate_count": 0,
-      "source_backed_outcome": "declined",
+      "source_backed_outcome": "not_attempted",
       "source_backed_symbol_at_found": false,
-      "text_result_count": 2,
+      "text_result_count": 0,
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/Runner.pm"
     },
     {
