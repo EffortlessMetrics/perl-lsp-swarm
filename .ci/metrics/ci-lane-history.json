@@ -3,7 +3,7 @@
   "generated_at": "2026-11-13T05:23:34Z",
   "window_days": 14,
   "min_samples_for_learned": 5,
-  "lane_count": 26,
+  "lane_count": 27,
   "lanes": {
     "check_all_targets": {
       "samples": 0,
@@ -84,6 +84,11 @@
     "perl_version_matrix": {
       "samples": 0,
       "static_floor": 40.0,
+      "learned": false
+    },
+    "pr_fast_unblocked": {
+      "samples": 0,
+      "static_floor": 4.0,
       "learned": false
     },
     "pr_plan": {
@@ -302,5 +307,5 @@
     },
     "runs_scanned": 242
   },
-  "content_digest": "1739738689e9a6a55fa8ccbe394ce271a08908b78cb233da88885533b642fb1d"
+  "content_digest": "660abe88209e9c2099b9cbfb740e2e34dbaaa4f65383be9c4fe8c39a47b965a6"
 }

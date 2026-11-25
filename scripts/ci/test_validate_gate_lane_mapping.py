@@ -6,10 +6,14 @@ from __future__ import annotations
 import io
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
+
+import yaml
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -21,10 +25,57 @@ from validate_gate_lane_mapping import (  # noqa: E402
     GATE_TO_LANE_MAP,
     SCHEMA_VERSION,
     main,
+    read_yaml_gate_specs,
 )
 
 
+def runs_full_pr_fast(script: str) -> bool:
+    for line in script.replace("\\\n", " ").splitlines():
+        if not re.match(r'^\s*(?:cargo\s+xtask|"?[^\s"]*/xtask"?|xtask)\s+gates\s', line):
+            continue
+        args = shlex.split(line, comments=True)
+        if "--gate" in args or any(arg.startswith("--gate=") for arg in args):
+            continue
+        if "--tier=pr-fast" in args or ("--tier", "pr-fast") in zip(args, args[1:]):
+            return True
+    return False
+
+
 class ValidateGateLaneMappingTests(unittest.TestCase):
+    def test_pr_fast_workflow_executors_have_exact_tier_coverage(self) -> None:
+        root = _HERE.parents[1]
+        workflow = ".github/workflows/ci.yml"
+        jobs = yaml.safe_load((root / workflow).read_text())["jobs"]
+        whitelist = tomllib.loads((root / "policy/ci-lane-whitelist.toml").read_text())
+        specs = read_yaml_gate_specs(root / ".ci/gate-policy.yaml")
+        expected = {name for name, spec in specs.items() if spec["tier"] == "pr_fast"}
+        executors = set()
+        for job, definition in jobs.items():
+            if not any(runs_full_pr_fast(step.get("run", "")) for step in definition.get("steps", [])):
+                continue
+            executors.add(job)
+            lanes = [lane["id"] for lane in whitelist["lane"]
+                     if lane.get("workflow") == workflow and lane.get("job") == job]
+            self.assertEqual(1, len(lanes), job)
+            actual = {name for name, entry in GATE_TO_LANE_MAP.items() if lanes[0] in entry["lanes"]}
+            self.assertEqual(expected, actual, job)
+        self.assertTrue({"pr-smoke", "pr-fast-unblocked"} <= executors)
+
+    def test_full_tier_and_named_invocations(self) -> None:
+        self.assertTrue(runs_full_pr_fast("cargo xtask gates --receipt --tier pr-fast"))
+        self.assertFalse(runs_full_pr_fast("xtask gates --tier pr-fast --gate=unit_routed_full_build"))
+        self.assertFalse(runs_full_pr_fast('echo "cargo xtask gates --tier pr-fast"'))
+
+    def test_unrouted_advisory_gate_cannot_become_required_silently(self) -> None:
+        for required, expected_status in (("false", 0), ("true", 1)):
+            status, _, report = self.run_validator(
+                f"gates:\n  - name: policy_checks\n    tier: merge_gate\n    required: {required}\n",
+                "[lane.merge_gate_shards]\n", strict=True, json_out=True,
+            )
+            self.assertEqual(expected_status, status)
+            self.assertEqual([], report["mapped"])
+            self.assertEqual(required == "false", "policy_checks" in report["intentionally_unrouted"])
+
     def run_validator(
         self,
         gate_policy_text: str,
@@ -87,6 +138,7 @@ gates:
 """,
             """
 [lane.pr_smoke]
+[lane.pr_fast_unblocked]
 """,
             strict=False,
             json_out=True,
@@ -107,6 +159,7 @@ gates:
 """,
             """
 [lane.pr_smoke]
+[lane.pr_fast_unblocked]
 [lane.docs_gate]
 """,
             strict=True,
@@ -224,6 +277,7 @@ gates:
 """,
             """
 [lane.pr_smoke]
+[lane.pr_fast_unblocked]
 [lane.docs_gate]
 """,
             strict=True,
@@ -286,6 +340,7 @@ gates:
 """,
             """
 [lane.pr_smoke]
+[lane.pr_fast_unblocked]
 [lane.docs_gate]
 """,
             strict=True,
@@ -354,6 +409,7 @@ gates:
 """,
             """
 [lane.pr_smoke]
+[lane.pr_fast_unblocked]
 """,
             strict=True,
             json_out=True,
@@ -384,6 +440,7 @@ gates:
 """,
             """
 [lane.pr_smoke]
+[lane.pr_fast_unblocked]
 """,
             strict=False,
         )
