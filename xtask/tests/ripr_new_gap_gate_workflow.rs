@@ -24,6 +24,110 @@ fn project_root() -> Result<PathBuf> {
         .to_path_buf())
 }
 
+#[test]
+fn required_surface_runs_exact_checkpoint_controls() -> Result<()> {
+    let source = fs::read_to_string(project_root()?.join("scripts/ci/required-merge-surface.sh"))?;
+    let expected = r#"cargo test -p xtask --test ripr_new_gap_gate_workflow --locked -- --nocapture
+
+# Same-run RIPR+ checkpoint runtime controls.
+set -o pipefail
+cargo test -p xtask --bin xtask --locked -- \
+  --exact \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_analysis_environment_and_external_cargo_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_ignored_and_untracked_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_readback_refuses_wrong_written_bytes \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_rejects_external_input_and_cached_checkpoint \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_requires_repository_root_subject \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_binds_rendered_root_and_policy_spellings \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_refuses_input_mutation_during_analysis \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics \
+  --test-threads=1 --color never | tee "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+grep -Eq '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in ' \
+  "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+for test_name in \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_analysis_environment_and_external_cargo_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_ignored_and_untracked_inputs \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_readback_refuses_wrong_written_bytes \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_rejects_external_input_and_cached_checkpoint \
+  tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_requires_repository_root_subject \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_binds_rendered_root_and_policy_spellings \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_refuses_input_mutation_during_analysis \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer \
+  tasks::ripr_evidence::tests::ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics; do
+  grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/ripr-plus-checkpoint-runtime.log"
+done"#;
+    let validate = |script: &str| -> Result<()> {
+        let (_, group) = script.split_once(
+            "# required merge surface command 18: ripr gap-gate workflow contract (required merge surface)\n",
+        ).ok_or_else(|| anyhow!("required RIPR workflow-contract group is missing"))?;
+        let (group, _) = group
+            .split_once("# required merge surface command 19:")
+            .ok_or_else(|| anyhow!("required RIPR workflow-contract boundary is missing"))?;
+        let commands = group
+            .lines()
+            .filter(|line| !line.starts_with("_step_index="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        ensure!(
+            commands.trim() == expected,
+            "required RIPR group must preserve its original command and exact checkpoint runtime/liveness suffix"
+        );
+        Ok(())
+    };
+    validate(&source)?;
+
+    for (old, new) in [
+        ("cargo test -p xtask --test ripr_new_gap_gate_workflow --locked -- --nocapture", "true"),
+        ("--bin xtask", "--lib"),
+        ("  --exact \\\n", ""),
+        ("set -o pipefail", "set +o pipefail"),
+        ("9 passed;", "8 passed;"),
+        ("grep -Fx", "true # grep -Fx"),
+    ] {
+        let changed = expected.replacen(old, new, 1);
+        ensure!(changed != expected, "runtime mutation did not change {old}");
+        ensure!(
+            validate(&source.replacen(expected, &changed, 1)).is_err(),
+            "accepted missing/changed checkpoint runtime control: {old}"
+        );
+    }
+
+    for name in [
+        "tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_analysis_environment_and_external_cargo_inputs",
+        "tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_binds_ignored_and_untracked_inputs",
+        "tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_readback_refuses_wrong_written_bytes",
+        "tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_rejects_external_input_and_cached_checkpoint",
+        "tasks::ripr_evidence::checkpoint::tests::ripr_plus_checkpoint_requires_repository_root_subject",
+        "tasks::ripr_evidence::tests::ripr_plus_checkpoint_binds_rendered_root_and_policy_spellings",
+        "tasks::ripr_evidence::tests::ripr_plus_checkpoint_refuses_input_mutation_during_analysis",
+        "tasks::ripr_evidence::tests::ripr_plus_checkpoint_rejects_changed_source_policy_tool_run_and_failed_producer",
+        "tasks::ripr_evidence::tests::ripr_plus_checkpoint_uses_two_sensor_calls_and_keeps_full_check_semantics",
+    ] {
+        let selector = format!("  {name} \\\n");
+        let changed = expected.replacen(&selector, "", 1);
+        ensure!(changed != expected, "checkpoint selector was absent: {name}");
+        ensure!(
+            validate(&source.replacen(expected, &changed, 1)).is_err(),
+            "accepted missing checkpoint selector: {name}"
+        );
+
+        // Change only the liveness list; the real runtime selector remains.
+        let position =
+            expected.rfind(name).ok_or_else(|| anyhow!("missing liveness owner {name}"))?;
+        let mut changed = expected.to_owned();
+        changed.replace_range(
+            position..position + name.len(),
+            "tasks::ripr_evidence::tests::missing_checkpoint_owner",
+        );
+        ensure!(
+            validate(&source.replacen(expected, &changed, 1)).is_err(),
+            "accepted changed checkpoint liveness owner: {name}"
+        );
+    }
+    Ok(())
+}
+
 fn require_real_jq() -> Result<()> {
     let output = Command::new("jq")
         .arg("--version")
@@ -1041,7 +1145,15 @@ sudo() {
           ;;
         ripr-plus)
           [ "$3" = "--receipt" ] && [ "$4" = "target/receipts/quality/ripr-plus.json" ] || return 1
-          if [ "$#" -eq 5 ]; then [ "$5" = "--check" ] || return 1; elif [ "$#" -ne 4 ]; then return 1; fi
+          if [ "$#" -eq 6 ]; then
+            [ "$5" = "--checkpoint" ] || [ "$5" = "--check-generated" ] || return 1
+            [ "$6" = "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json" ] || return 1
+          elif [ "$#" -eq 7 ]; then
+            [ "$5" = "--check" ] && [ "$6" = "--checkpoint" ] || return 1
+            [ "$7" = "$RIPR_FRESHNESS_HANDOFF/ripr-plus-checkpoint.json" ] || return 1
+          else
+            return 1
+          fi
           ;;
         ripr-review-comments)
           [ "$3" = "--base" ] && [ "$4" = "$FAKE_BASE" ] || return 1
@@ -1527,14 +1639,16 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     assert!(
         workflow.contains("cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json")
             && workflow.contains(
-                "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check"
+                "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check --checkpoint"
             )
             && workflow.contains("target/receipts/quality/ripr-plus.json"),
         "ripr.yml must generate, check, and upload the repo-wide RIPR+ receipt"
     );
     assert!(
         xtask_main.contains("RiprPlus")
-            && xtask_main.contains("ripr_plus(&root, &receipt, &suppressions, check)")
+            && xtask_main.contains("ripr_evidence::ripr_plus(")
+            && xtask_main.contains("checkpoint.as_deref(),")
+            && xtask_main.contains("check_generated.as_deref(),")
             && xtask_main.contains("default_value = \"policy/ripr-suppressions.toml\""),
         "PR1 workflow must not call a missing `cargo xtask ripr-plus` command"
     );
@@ -1547,7 +1661,7 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         .ok_or("missing validate step")?;
     for check_command in [
         "cargo xtask ripr-pr --base",
-        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
+        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check-generated",
     ] {
         assert!(
             validate_step.contains(check_command) && validate_step.contains("--check"),
@@ -2125,8 +2239,10 @@ ci-disk-guard() {
         );
     }
     for expected_command in [
-        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json".to_owned(),
-        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check".to_owned(),
+        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --checkpoint"
+            .to_owned(),
+        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check-generated"
+            .to_owned(),
         format!(
             "cargo xtask ripr-review-comments --base {FALLBACK_BASE} --head {FALLBACK_EVALUATED} --pr-head {FALLBACK_RAW_HEAD} --timeout-seconds 3600"
         ),
