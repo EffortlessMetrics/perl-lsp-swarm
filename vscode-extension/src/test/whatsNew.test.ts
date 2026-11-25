@@ -223,6 +223,41 @@ describe('extractVersionSection', () => {
   });
 });
 
+/**
+ * Independent oracle for the heading What's New should open for `version` in the
+ * shipped CHANGELOG, whatever its release state (#19381): the exact `## [version]`
+ * section, else the pre-release's release core, else `## [Unreleased]`, taking
+ * the first that has a body. Returns '' when none does. It uses its own regexes
+ * rather than the extractor under test, so it accepts final (`## [0.18.0]`),
+ * release-candidate (`## [0.18.0-rc.1]`) and unreleased layouts alike.
+ */
+function expectedReleaseHeading(changelog: string, version: string): string {
+  const candidates = [version];
+  const hyphen = version.indexOf('-');
+  if (hyphen > 0) {
+    candidates.push(version.slice(0, hyphen));
+  }
+  candidates.push('Unreleased');
+  const lines = changelog.split('\n');
+  for (const candidate of candidates) {
+    const heading = `## [${candidate}]`;
+    const start = lines.findIndex(
+      (line) =>
+        line === heading || line.startsWith(`${heading} `) || line.startsWith(`${heading}\t`),
+    );
+    if (start < 0) {
+      continue;
+    }
+    const rest = lines.slice(start + 1);
+    const next = rest.findIndex((line) => line.startsWith('## '));
+    const body = (next < 0 ? rest : rest.slice(0, next)).join('\n');
+    if (body.trim().length > 0) {
+      return heading;
+    }
+  }
+  return '';
+}
+
 describe('resolveVersionSection', () => {
   const UNRELEASED_CHANGELOG = `# Change Log
 
@@ -266,13 +301,46 @@ describe('resolveVersionSection', () => {
     expect(resolveVersionSection(changelog, '0.18.0-rc.1')).toBe('');
   });
 
-  test('resolves non-empty notes for 0.18.0 and its pre-releases from the shipped CHANGELOG', () => {
+  test('resolves the expected 0.18.0 and pre-release notes from the shipped CHANGELOG', () => {
     const shipped = fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8');
     for (const version of ['0.18.0', '0.18.0-rc.1']) {
+      const expected = expectedReleaseHeading(shipped, version);
       const section = resolveVersionSection(shipped, version);
-      expect(section.startsWith('## [0.18.0]')).toBe(true);
-      expect(hasSectionBody(section)).toBe(true);
+      if (expected === '') {
+        expect(section).toBe('');
+      } else {
+        expect(section.startsWith(expected)).toBe(true);
+        expect(hasSectionBody(section)).toBe(true);
+      }
     }
+  });
+
+  test.each([
+    [
+      'unreleased',
+      '## [Unreleased]\n\n### Fixed\n- Pending\n\n## [0.17.0] - 2026-06-28\n\n- Old\n',
+    ],
+    [
+      'final cut',
+      '## [Unreleased]\n\n## [0.18.0] - 2026-11-20\n\n### Fixed\n- Shipped\n\n## [0.17.0]\n\n- Old\n',
+    ],
+    [
+      'release-candidate cut',
+      '## [Unreleased]\n\n## [0.18.0-rc.1] - 2026-11-05\n\n### Fixed\n- Candidate\n\n## [0.17.0]\n\n- Old\n',
+    ],
+  ])('resolver agrees with the release-state oracle for a %s changelog', (_state, body) => {
+    const changelog = `# Change Log\n\n${body}`;
+    for (const version of ['0.18.0', '0.18.0-rc.1']) {
+      const expected = expectedReleaseHeading(changelog, version);
+      const section = resolveVersionSection(changelog, version);
+      if (expected === '') {
+        expect(section).toBe('');
+      } else {
+        expect(section.startsWith(expected)).toBe(true);
+      }
+    }
+    // An installed release candidate always finds notes in every state above.
+    expect(expectedReleaseHeading(changelog, '0.18.0-rc.1')).not.toBe('');
   });
 
   test('prefers an exact version match over Unreleased', () => {
@@ -295,14 +363,17 @@ describe('WhatsNewManager.hasReleaseNotesContent', () => {
   }
 
   test.each(['0.18.0', '0.18.0-rc.1'])(
-    'installed %s with the shipped changelog has release notes to auto-open',
+    'installed %s with the shipped changelog auto-opens exactly when it has release notes',
     (version) => {
       const dir = packagedExtension(version, shippedChangelog());
       try {
         const mgr = new WhatsNewManager(makeContext({ extensionPath: dir }), makeOutputChannel());
         expect(mgr.currentVersion()).toBe(version);
-        expect(mgr.hasReleaseNotesContent()).toBe(true);
-        expect(mgr.extractChangelogSection(version).startsWith('## [0.18.0]')).toBe(true);
+        const expected = expectedReleaseHeading(shippedChangelog(), version);
+        expect(mgr.hasReleaseNotesContent()).toBe(expected !== '');
+        if (expected !== '') {
+          expect(mgr.extractChangelogSection(version).startsWith(expected)).toBe(true);
+        }
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
