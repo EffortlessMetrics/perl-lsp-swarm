@@ -1,5 +1,10 @@
 impl<'a> Parser<'a> {
     #[inline]
+    fn source_text(&self) -> &'a str {
+        std::str::from_utf8(self.src_bytes).unwrap_or("")
+    }
+
+    #[inline]
     fn is_statement_terminator(kind: Option<TokenKind>) -> bool {
         matches!(kind, Some(TokenKind::Semicolon) | Some(TokenKind::Eof) | None)
     }

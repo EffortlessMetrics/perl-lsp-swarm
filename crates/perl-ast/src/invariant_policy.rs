@@ -608,13 +608,13 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
             &[]
         ),
         fixture!(
-            NodeKind::Use { module: text(), args: vec![text()], has_filter_risk: false },
-            &["module", "args"],
+            NodeKind::use_directive(text(), vec![text()], false),
+            &["module", "module_span", "syntax", "args"],
             &["has_filter_risk"]
         ),
         fixture!(
-            NodeKind::No { module: text(), args: vec![text()], has_filter_risk: false },
-            &["module", "args"],
+            NodeKind::no_directive(text(), vec![text()], false),
+            &["module", "module_span", "syntax", "args"],
             &["has_filter_risk"]
         ),
         fixture!(

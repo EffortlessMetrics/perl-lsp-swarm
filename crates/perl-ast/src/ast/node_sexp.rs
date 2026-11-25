@@ -648,8 +648,8 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
             write_named(out, "name", name)?;
             write_named(out, "body", body)
         }
-        NodeKind::Use { module, args, has_filter_risk }
-        | NodeKind::No { module, args, has_filter_risk } => {
+        NodeKind::Use { module, module_span: _, syntax: _, args, has_filter_risk }
+        | NodeKind::No { module, module_span: _, syntax: _, args, has_filter_risk } => {
             write_named(out, "module", module)?;
             write_named_list(out, "args", args)?;
             write_flag(out, "has_filter_risk", *has_filter_risk)

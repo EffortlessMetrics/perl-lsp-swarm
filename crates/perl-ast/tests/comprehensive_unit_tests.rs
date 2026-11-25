@@ -700,10 +700,8 @@ fn sexp_loop_control() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn sexp_use_and_no() -> Result<(), Box<dyn std::error::Error>> {
-    let use_stmt = Node::new(
-        NodeKind::Use { module: "strict".to_string(), args: vec![], has_filter_risk: false },
-        loc(0, 11),
-    );
+    let use_stmt =
+        Node::new(NodeKind::use_directive("strict".to_string(), vec![], false), loc(0, 11));
     let no_stmt = Node::new(
         NodeKind::No {
             module: "warnings".to_string(),
@@ -719,10 +717,8 @@ fn sexp_use_and_no() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn sexp_use_with_filter_risk() -> Result<(), Box<dyn std::error::Error>> {
-    let risky = Node::new(
-        NodeKind::Use { module: "Filter::Simple".to_string(), args: vec![], has_filter_risk: true },
-        loc(0, 20),
-    );
+    let risky =
+        Node::new(NodeKind::use_directive("Filter::Simple".to_string(), vec![], true), loc(0, 20));
     let sexp = risky.to_sexp();
     assert!(sexp.contains("(has_filter_risk true)"), "got: {sexp}");
     Ok(())
@@ -1598,7 +1594,7 @@ fn kind_name_covers_all_variants() -> Result<(), Box<dyn std::error::Error>> {
             },
         ),
         ("FunctionCall", NodeKind::FunctionCall { name: String::new(), args: vec![] }),
-        ("Use", NodeKind::Use { module: String::new(), args: vec![], has_filter_risk: false }),
+        ("Use", NodeKind::use_directive(String::new(), vec![], false)),
         (
             "Error",
             NodeKind::Error {
@@ -1809,10 +1805,7 @@ fn leaf_nodes_have_no_children() -> Result<(), Box<dyn std::error::Error>> {
             },
             loc(0, 3),
         ),
-        Node::new(
-            NodeKind::Use { module: "strict".to_string(), args: vec![], has_filter_risk: false },
-            loc(0, 11),
-        ),
+        Node::new(NodeKind::use_directive("strict".to_string(), vec![], false), loc(0, 11)),
         Node::new(
             NodeKind::No { module: "warnings".to_string(), args: vec![], has_filter_risk: false },
             loc(0, 13),
