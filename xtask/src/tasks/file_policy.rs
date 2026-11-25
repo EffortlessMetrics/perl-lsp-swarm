@@ -6098,6 +6098,97 @@ review_after = "2026-06-01"
         Ok((temp, base))
     }
 
+    /// Contract version carried by the in-family shape fixture base.
+    ///
+    /// `validate_subject_workflow` reaches the in-family shape scan
+    /// (`scan_trusted_workflow_shape`) only when the subject's contract-version
+    /// is *not* the preapproved one. The trusted workflow on `main` is v9, so a
+    /// v9 base sends every changed subject to the strict v10 preapproval path
+    /// and the in-family path can no longer be reached through the
+    /// integration gate. Pinning this fixture base below the live version
+    /// keeps the in-family controls on the path they were written for.
+    ///
+    /// This changes no production dispatch: a real changed workflow is still
+    /// base v9 -> subject v10 -> strict-only, and #18833's removal of the
+    /// strict-path fallback (which closed #15041) stays in force. Only the
+    /// fixture's base version differs from the trusted base on `main`.
+    ///
+    /// `legacy_shape_subject` fails closed if this base ever lands on the
+    /// preapproved path again: a silent retarget would move these controls off
+    /// the code they name without any test turning red.
+    const LEGACY_SHAPE_BASE_VERSION: u64 = 8;
+
+    /// A fixture whose trusted workflow carries `LEGACY_SHAPE_BASE_VERSION`, so
+    /// a one-increment subject lands on the in-family shape scan instead of the
+    /// strict v10 preapproval path.
+    fn legacy_shape_fixture() -> Result<(tempfile::TempDir, String)> {
+        let temp = tempfile::tempdir()?;
+        let live = include_str!("../../../.github/workflows/non-rust-policy.yml");
+        let live_version = must_some_with(
+            live.lines()
+                .find_map(|line| line.trim().strip_prefix("# contract-version:"))
+                .and_then(|value| value.trim().parse::<u64>().ok()),
+            "trusted workflow must carry a contract-version",
+        );
+        let workflow = live.replacen(
+            &format!("# contract-version: {live_version}"),
+            &format!("# contract-version: {LEGACY_SHAPE_BASE_VERSION}"),
+            1,
+        );
+        init_tracked_fixture(
+            temp.path(),
+            &[
+                ("README.md", "fixture\n"),
+                ("policy/non-rust-allowlist.toml", &readme_allowlist_toml()?),
+                (".github/workflows/non-rust-policy.yml", &workflow),
+            ],
+        )?;
+        let base = commit_fixture(temp.path(), "base")?;
+        Ok((temp, base))
+    }
+
+    /// Apply the one-increment contract-version protocol to a fixture
+    /// workflow, and assert that the resulting subject version is *not* the
+    /// preapproved one. Without that assertion a future retarget of
+    /// `PREAPPROVED_SUBJECT_CONTRACT_VERSION` could silently redirect these
+    /// in-family controls onto the strict path.
+    fn legacy_shape_subject(workflow: &str) -> String {
+        let version = must_some_with(
+            workflow
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("# contract-version:"))
+                .and_then(|value| value.trim().parse::<u64>().ok()),
+            "fixture workflow must carry a contract-version",
+        );
+        let subject_version = version + 1;
+        assert_ne!(
+            subject_version, PREAPPROVED_SUBJECT_CONTRACT_VERSION,
+            "in-family shape subject must not land on the preapproved path"
+        );
+        workflow.replacen(
+            &format!("# contract-version: {version}"),
+            &format!("# contract-version: {subject_version}"),
+            1,
+        )
+    }
+
+    /// The unmutated in-family fixture must be accepted on the in-family path.
+    ///
+    /// Without this control a rejection could be caused by an unrelated
+    /// fixture defect rather than by the injected candidate-derived content,
+    /// which would let every mutation below pass for the wrong reason.
+    fn assert_legacy_shape_baseline_accepted() -> Result<()> {
+        let (temp, base) = legacy_shape_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let workflow = legacy_shape_subject(&workflow);
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "in-family shape baseline")?;
+        validate_subject_workflow(temp.path(), &base, &subject)
+            .context("the unmutated in-family fixture must be accepted on the in-family path")?;
+        Ok(())
+    }
+
     const PREAPPROVED_FIXTURE: &str = r#"# contract-version: 10
 name: Non-Rust policy
 on:
@@ -6348,8 +6439,15 @@ jobs:
     /// Negative control for #15041: a v10 subject that fails strict preapproval
     /// but survives `scan_trusted_workflow_shape` must not be accepted by the
     /// integration gate.
+    ///
+    /// The `preapproved_` name prefix is load-bearing: it is what the required
+    /// merge surface's `file_policy::tests::preapproved` filter
+    /// (`scripts/ci/required-merge-surface.sh:310`) matches, so the required
+    /// `Compile All Targets (bit-rot guard)` context executes this
+    /// discriminator. A rename that drops the prefix silently returns this
+    /// control to the advisory nightly only.
     #[test]
-    fn validate_subject_workflow_rejects_v7_shape_scan_bypass_tampering() -> Result<()> {
+    fn preapproved_v10_subject_rejects_v7_shape_scan_bypass_tampering() -> Result<()> {
         let (temp, base) = exact_fixture()?;
         let workflow_path = ".github/workflows/non-rust-policy.yml";
         let mut workflow = fs::read_to_string(temp.path().join(workflow_path))?;
@@ -6574,30 +6672,19 @@ jobs:
 
     #[test]
     fn trusted_workflow_rejects_alternate_candidate_checkout_or_import() -> Result<()> {
+        assert_legacy_shape_baseline_accepted()?;
         for injected in [
             "\n          git checkout \"$SUBJECT_SHA\"\n",
             "\n          git worktree add candidate \"$SUBJECT_SHA\"\n",
             "\n          source ./candidate.sh\n",
         ] {
-            let (temp, base) = exact_fixture()?;
+            let (temp, base) = legacy_shape_fixture()?;
             let workflow_path = ".github/workflows/non-rust-policy.yml";
             let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
             // A changed trusted workflow must increment its contract-version by
             // exactly one before later checks run; follow that protocol so the
             // injection itself is what gets rejected.
-            let version_marker = "# contract-version: ";
-            let version = must_some_with(
-                workflow
-                    .lines()
-                    .find_map(|line| line.trim().strip_prefix(version_marker))
-                    .and_then(|value| value.trim().parse::<u64>().ok()),
-                "fixture workflow must carry a contract-version",
-            );
-            let workflow = workflow.replacen(
-                &format!("{version_marker}{version}"),
-                &format!("{version_marker}{}", version + 1),
-                1,
-            );
+            let workflow = legacy_shape_subject(&workflow);
             let workflow = workflow.replacen(
                 "      - name: Upload exact-tree receipt",
                 &(injected.to_string() + "      - name: Upload exact-tree receipt"),
@@ -6619,7 +6706,7 @@ jobs:
 
     #[test]
     fn trusted_workflow_scans_executable_cargo_runs_not_validator_source() -> Result<()> {
-        let (temp, base) = exact_fixture()?;
+        let (temp, base) = legacy_shape_fixture()?;
         let workflow_path = ".github/workflows/non-rust-policy.yml";
         let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
         let workflow = workflow.replacen(
@@ -6627,38 +6714,15 @@ jobs:
             "          # cargo run github.event.pull_request.head.sha\n          run_bodies = []\n",
             1,
         );
-        let version_marker = "# contract-version: ";
-        let version = must_some_with(
-            workflow
-                .lines()
-                .find_map(|line| line.trim().strip_prefix(version_marker))
-                .and_then(|value| value.trim().parse::<u64>().ok()),
-            "fixture workflow must carry a contract-version",
-        );
-        let workflow = workflow.replacen(
-            &format!("{version_marker}{version}"),
-            &format!("{version_marker}{}", version + 1),
-            1,
-        );
+        let workflow = legacy_shape_subject(&workflow);
         write_fixture(temp.path(), workflow_path, &workflow)?;
         let subject = commit_fixture(temp.path(), "validator source comment")?;
         validate_subject_workflow(temp.path(), &base, &subject)?;
 
-        let (temp, base) = exact_fixture()?;
+        let (temp, base) = legacy_shape_fixture()?;
         let workflow_path = ".github/workflows/non-rust-policy.yml";
         let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-        let version = must_some_with(
-            workflow
-                .lines()
-                .find_map(|line| line.trim().strip_prefix(version_marker))
-                .and_then(|value| value.trim().parse::<u64>().ok()),
-            "fixture workflow must carry a contract-version",
-        );
-        let workflow = workflow.replacen(
-            &format!("{version_marker}{version}"),
-            &format!("{version_marker}{}", version + 1),
-            1,
-        );
+        let workflow = legacy_shape_subject(&workflow);
         let workflow = workflow.replacen(
             "run: cargo run --locked -p xtask -- non-rust exact-tree",
             "run: cargo run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}",
@@ -6680,26 +6744,15 @@ jobs:
     #[test]
     fn trusted_workflow_rejects_candidate_refs_in_step_inputs_and_whitespace_variants() -> Result<()>
     {
+        assert_legacy_shape_baseline_accepted()?;
         let workflow_path = ".github/workflows/non-rust-policy.yml";
-        let version_marker = "# contract-version: ";
         for injected in [
             "\n      - name: candidate ref input\n        env:\n          REF: refs/pull/${{ github.event.pull_request.number }}/head\n        run: echo \"$REF\"\n",
             "\n      - name: candidate ref command\n        run: cargo  run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}\n",
         ] {
-            let (temp, base) = exact_fixture()?;
+            let (temp, base) = legacy_shape_fixture()?;
             let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-            let version = must_some_with(
-                workflow
-                    .lines()
-                    .find_map(|line| line.trim().strip_prefix(version_marker))
-                    .and_then(|value| value.trim().parse::<u64>().ok()),
-                "fixture workflow must carry a contract-version",
-            );
-            let workflow = workflow.replacen(
-                &format!("{version_marker}{version}"),
-                &format!("{version_marker}{}", version + 1),
-                1,
-            );
+            let workflow = legacy_shape_subject(&workflow);
             let workflow = workflow.replacen(
                 "      - name: Upload exact-tree receipt",
                 &(injected.to_string() + "      - name: Upload exact-tree receipt"),
@@ -6721,20 +6774,11 @@ jobs:
 
     #[test]
     fn trusted_workflow_rejects_duplicate_reserved_contract_id() -> Result<()> {
-        let (temp, base) = exact_fixture()?;
+        assert_legacy_shape_baseline_accepted()?;
+        let (temp, base) = legacy_shape_fixture()?;
         let workflow_path = ".github/workflows/non-rust-policy.yml";
         let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-        let version_marker = "# contract-version: ";
-        let version = workflow
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(version_marker))
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .ok_or_else(|| eyre!("fixture workflow must carry a contract-version"))?;
-        let workflow = workflow.replacen(
-            &format!("{version_marker}{version}"),
-            &format!("{version_marker}{}", version + 1),
-            1,
-        );
+        let workflow = legacy_shape_subject(&workflow);
         let duplicate = "      - id: verify-trusted-workflow-contract\n        name: Unexpected duplicate\n        run: echo duplicate\n";
         let workflow = workflow.replacen(
             "      - name: Upload exact-tree receipt",
@@ -6751,6 +6795,72 @@ jobs:
             error.to_string().contains("exactly one reserved contract-verification step ID"),
             "unexpected error: {error}"
         );
+        Ok(())
+    }
+
+    /// The production path for a changed trusted workflow is base v9 -> subject
+    /// v10 -> strict preapproval only. #18833 removed the strict-path fallback
+    /// that #15041 exploited, so the in-family controls above no longer
+    /// describe the path a real changed workflow takes. This keeps the same
+    /// defect classes covered on the path production actually uses: a v10
+    /// subject that smuggles candidate-derived execution must be rejected.
+    #[test]
+    fn preapproved_v10_subject_rejects_candidate_derived_execution() -> Result<()> {
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        // Control: the unmodified preapproved subject is accepted against the
+        // live trusted base, so every rejection below is caused by the
+        // injected execution and not by the fixture.
+        let (temp, base) = exact_fixture()?;
+        write_fixture(temp.path(), workflow_path, PREAPPROVED_FIXTURE)?;
+        let subject = commit_fixture(temp.path(), "preapproved baseline")?;
+        validate_subject_workflow(temp.path(), &base, &subject).context(
+            "the canonical preapproved subject must be accepted against the live trusted base",
+        )?;
+
+        for (label, injected) in [
+            (
+                "candidate sha interpolation in the evaluator",
+                (
+                    "--subject-sha \"$SUBJECT_SHA\"",
+                    "--subject-sha ${{ github.event.pull_request.head.sha }}",
+                ),
+            ),
+            (
+                "candidate checkout step",
+                (
+                    "      - name: Upload exact-tree receipt",
+                    "      - name: Checkout candidate content\n        run: git checkout \"$SUBJECT_INPUT_SHA\"\n\n      - name: Upload exact-tree receipt",
+                ),
+            ),
+        ] {
+            let (temp, base) = exact_fixture()?;
+            let workflow = PREAPPROVED_FIXTURE.replacen(injected.0, injected.1, 1);
+            ensure!(
+                workflow != PREAPPROVED_FIXTURE,
+                "injection must apply to the preapproved fixture: {label}"
+            );
+            write_fixture(temp.path(), workflow_path, &workflow)?;
+            let subject = commit_fixture(temp.path(), "preapproved tampering")?;
+            let error = must_err_with(
+                validate_subject_workflow(temp.path(), &base, &subject),
+                "candidate-derived execution must fail closed on the preapproved path",
+            );
+            let message = error.to_string();
+            assert!(
+                message.contains("v10"),
+                "rejection must come from the strict preapproval validator, got: {error}"
+            );
+            for in_family_only in [
+                "must not execute candidate source",
+                "must not execute or import candidate-derived content",
+                "exactly one reserved contract-verification step ID",
+            ] {
+                assert!(
+                    !message.contains(in_family_only),
+                    "rejection must not come from the in-family shape scan ({in_family_only}): {error}"
+                );
+            }
+        }
         Ok(())
     }
 
