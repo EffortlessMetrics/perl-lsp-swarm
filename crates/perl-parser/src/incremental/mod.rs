@@ -5,6 +5,7 @@
 mod checkpoint;
 mod diagnostics;
 mod edit;
+mod exact_suffix_sync;
 mod geometry_attachment;
 mod lex;
 mod reparse;
@@ -20,6 +21,11 @@ pub use perl_line_index::LineIndex;
 pub use checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
 pub use diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult};
 pub use edit::Edit;
+pub use exact_suffix_sync::{
+    EXACT_SUFFIX_SYNC_CONTRACT_VERSION, ExactSuffixSyncCandidate, ExactSuffixSyncDenial,
+    ExactSuffixSyncMetrics, ExactSuffixSyncPolicy, compare_direct_token_window,
+    evaluate_exact_suffix_sync,
+};
 pub use geometry_attachment::{
     SOURCE_GEOMETRY_ATTACHMENT_SCHEMA_VERSION, SourceGeometryAttachment,
     SourceGeometryAttachmentState, SourceGeometryInstrumentFailureReason, SourceGeometryLimitation,
