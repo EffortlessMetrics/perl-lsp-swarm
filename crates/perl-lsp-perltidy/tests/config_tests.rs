@@ -1,3 +1,4 @@
+#![allow(deprecated)] // These targets prove the intentionally retained compatibility API.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_lsp_perltidy::{BuiltInFormatter, PerlTidyConfig, PerlTidyFormatter};
 use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
@@ -266,26 +267,25 @@ fn builtin_formatter_respects_indent_columns() {
 }
 
 #[test]
-fn builtin_formatter_handles_parens_and_brackets() {
+fn builtin_compat_preserves_handles_parens_and_brackets() {
     let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
-    let formatted = formatter.format("my @arr = (\n1,\n2,\n);\n");
-
-    let lines: Vec<&str> = formatted.lines().collect();
-    assert_eq!(lines[1], "    1,");
-    assert_eq!(lines[2], "    2,");
-    assert_eq!(lines[3], ");");
+    let source = "my @arr = (\n1,\n2,\n);\n";
+    assert_eq!(
+        formatter.format(source),
+        source,
+        "the retired delimiter scanner cannot supply speculative edits outside the canonical native engine"
+    );
 }
 
 #[test]
-fn builtin_formatter_indents_multiline_function_arguments() {
+fn builtin_compat_preserves_indents_multiline_function_arguments() {
     let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
-    let formatted = formatter.format("my $value = foo($a,\n$b,\n$c,\n);\n");
-
-    let lines: Vec<&str> = formatted.lines().collect();
-    assert_eq!(lines[0], "my $value = foo($a,");
-    assert_eq!(lines[1], "    $b,");
-    assert_eq!(lines[2], "    $c,");
-    assert_eq!(lines[3], ");");
+    let source = "my $value = foo($a,\n$b,\n$c,\n);\n";
+    assert_eq!(
+        formatter.format(source),
+        source,
+        "the retired delimiter scanner cannot supply speculative edits outside the canonical native engine"
+    );
 }
 
 #[test]
@@ -374,61 +374,80 @@ fn builtin_formatter_multi_closer_line_does_not_over_decrement() {
 }
 
 #[test]
-fn builtin_formatter_ignores_unmatched_leading_closers_for_indentation() {
+fn builtin_compat_preserves_ignores_unmatched_leading_closers_for_indentation() {
     let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
-    let formatted = formatter.format("if ($ok) {\n)\nprint 1;\n}\n");
-    assert_eq!(formatted, "if ($ok) {\n    )\n    print 1;\n}\n");
-}
-
-#[test]
-fn builtin_formatter_matches_nested_mixed_delimiters() {
-    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
-    let formatted = formatter.format("foo({[\nbar();\n]})\nprint 1;\n");
-    assert_eq!(formatted, "foo({[\n            bar();\n]})\nprint 1;\n");
-}
-
-#[test]
-fn builtin_formatter_ignores_regex_character_class_delimiters() {
-    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
-    let formatted = formatter.format("if ($x =~ /[[]/) {\nprint 1;\n}\nprint 2;\n");
-    assert_eq!(formatted, "if ($x =~ /[[]/) {\n    print 1;\n}\nprint 2;\n");
-}
-
-#[test]
-fn builtin_formatter_ignores_bare_and_quote_like_regex_delimiters() {
-    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
-    let formatted =
-        formatter.format("if (/[()]/) {\nprint 1;\n}\nif (m{[()]}) {\nprint 2;\n}\nif (qr/[{]/) {\nprint 3;\n}\nprint 4;\n");
+    let source = "if ($ok) {\n)\nprint 1;\n}\n";
     assert_eq!(
-        formatted,
-        "if (/[()]/) {\n    print 1;\n}\nif (m{[()]}) {\n    print 2;\n}\nif (qr/[{]/) {\n    print 3;\n}\nprint 4;\n"
+        formatter.format(source),
+        source,
+        "the retired delimiter scanner cannot supply speculative edits outside the canonical native engine"
     );
 }
 
 #[test]
-fn builtin_formatter_ignores_extended_quote_like_and_replacement_delimiters() {
+fn builtin_compat_preserves_matches_nested_mixed_delimiters() {
     let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
-    let formatted = formatter.format(
-        "if (qq{[()]}) {\nprint 1;\n}\nif (qw{[()]}) {\nprint 2;\n}\nif (qx{[()]}) {\nprint 3;\n}\nif ($x =~ s/a/{/) {\nprint 4;\n}\nif ($x =~ tr/a/{/) {\nprint 5;\n}\nprint 6;\n",
-    );
+    let source = "foo({[\nbar();\n]})\nprint 1;\n";
     assert_eq!(
-        formatted,
-        "if (qq{[()]}) {\n    print 1;\n}\nif (qw{[()]}) {\n    print 2;\n}\nif (qx{[()]}) {\n    print 3;\n}\nif ($x =~ s/a/{/) {\n    print 4;\n}\nif ($x =~ tr/a/{/) {\n    print 5;\n}\nprint 6;\n"
+        formatter.format(source),
+        source,
+        "the retired delimiter scanner cannot supply speculative edits outside the canonical native engine"
     );
 }
 
 #[test]
-fn builtin_formatter_ignores_mixed_substitution_delimiters() {
+fn builtin_compat_preserves_ignores_regex_character_class_delimiters() {
     let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
-    let formatted = formatter.format("if ($x =~ s{foo}/bar/) {\nprint 1;\n}\nprint 2;\n");
-    assert_eq!(formatted, "if ($x =~ s{foo}/bar/) {\n    print 1;\n}\nprint 2;\n");
+    let source = "if ($x =~ /[[]/) {\nprint 1;\n}\nprint 2;\n";
+    assert_eq!(
+        formatter.format(source),
+        source,
+        "the retired delimiter scanner cannot supply speculative edits outside the canonical native engine"
+    );
 }
 
 #[test]
-fn builtin_formatter_carries_multiline_regex_state() {
+fn builtin_compat_preserves_ignores_bare_and_quote_like_regex_delimiters() {
     let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
-    let formatted = formatter.format("if (/[\n()]/) {\nprint 1;\n}\nprint 2;\n");
-    assert_eq!(formatted, "if (/[\n    ()]/) {\n    print 1;\n}\nprint 2;\n");
+    let source = "if (/[()]/) {\nprint 1;\n}\nif (m{[()]}) {\nprint 2;\n}\nif (qr/[{]/) {\nprint 3;\n}\nprint 4;\n";
+    assert_eq!(
+        formatter.format(source),
+        source,
+        "the retired delimiter scanner cannot supply speculative edits outside the canonical native engine"
+    );
+}
+
+#[test]
+fn builtin_compat_preserves_ignores_extended_quote_like_and_replacement_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let source = "if (qq{[()]}) {\nprint 1;\n}\nif (qw{[()]}) {\nprint 2;\n}\nif (qx{[()]}) {\nprint 3;\n}\nif ($x =~ s/a/{/) {\nprint 4;\n}\nif ($x =~ tr/a/{/) {\nprint 5;\n}\nprint 6;\n";
+    assert_eq!(
+        formatter.format(source),
+        source,
+        "the retired delimiter scanner cannot supply speculative edits outside the canonical native engine"
+    );
+}
+
+#[test]
+fn builtin_compat_preserves_ignores_mixed_substitution_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let source = "if ($x =~ s{foo}/bar/) {\nprint 1;\n}\nprint 2;\n";
+    assert_eq!(
+        formatter.format(source),
+        source,
+        "the retired delimiter scanner cannot supply speculative edits outside the canonical native engine"
+    );
+}
+
+#[test]
+fn builtin_compat_preserves_carries_multiline_regex_state() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let source = "if (/[\n()]/) {\nprint 1;\n}\nprint 2;\n";
+    assert_eq!(
+        formatter.format(source),
+        source,
+        "the retired delimiter scanner cannot supply speculative edits outside the canonical native engine"
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

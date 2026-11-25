@@ -14,6 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (`perl-lsp-rs-core` formatting tooling): native formatting is now owned by
+  `perl-tidy`, with checked byte requests and source-bound edit plans.** Native style
+  configuration cannot select disabled or external execution. The LSP provider uses
+  the same library directly and owns wire-coordinate conversion, engine selection and
+  current-document checks. External text execution and configuration move to
+  `perl-tidy-perltidy`; its existing runtime seam does not imply production supervision.
+  `perl_lsp_rs_core::tooling::perltidy` now exposes canonical byte types. Existing callers
+  requiring the former mode-bearing config and UTF-16 result structs can import the
+  deprecated `perl-lsp-perltidy` facade, which preserves those public shapes and delegates
+  to the canonical owners. Its migration/removal target is **0.18.0**; #9292 owns actual
+  removal after downstream and external acceptance. Previously withdrawn runtime methods
+  remain withdrawn. Per `docs/reference/STABILITY.md`, these core public-type changes
+  require the next minor release and must not ship in a 0.17.x patch.
+
+  Native indentation is admitted only in 1–16 columns and line width in 1–1000 columns
+  before parsing or allocation. Raw and typed legacy range calls now share typed admission;
+  selections that would reindent relative to handwritten surrounding blocks are refused,
+  while full-document reindentation remains supported. Exact bare-CR partial targets that
+  the LF/CRLF renderer cannot represent are refused. `BuiltInFormatter` now leaves malformed
+  or unsupported input unchanged through native refusal instead of using a separate scanner.
+  Source digests use canonical SHA-256 `ContentDigest`, and native/external configuration
+  fingerprints use distinct versioned domains. LSP whitespace projection withholds changes
+  whose literal preservation is not proven, and result publication checks document
+  incarnation as well as generation/version. See the formatter package READMEs for migration.
+
 - **Breaking (`perl-lsp-rs-core`): `performance::IncrementalParser` removed.**
   The type performed no parsing: it silently swapped reversed endpoints,
   fabricated one-byte extents for zero-length insertions, and answered

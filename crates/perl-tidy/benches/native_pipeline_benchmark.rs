@@ -22,7 +22,6 @@
 //! baseline comparison stays `continue-on-error: true` and no PR gate reads
 //! these numbers.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 // The subject registry is a shared superset surface: the canary tests consume
@@ -37,9 +36,7 @@ use std::path::PathBuf;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use perf_subjects::{BENCH_GROUP, bench_rows, identity_row_with_counters, toolchain_tag};
-use perl_lsp_perltidy::native::{
-    FormatConfig, FormatContext, NativeFormatter, NativePipelineCounters,
-};
+use perl_tidy::native::{FormatConfig, FormatContext, NativeFormatter, NativePipelineCounters};
 
 /// The one run identity carried by both the sidecar envelope and every enrolled
 /// row. The nightly validator requires the two to be equal, so the fallback used
@@ -65,13 +62,11 @@ fn run_id(toolchain: &str) -> String {
 /// default is the fallback, not the assumption.
 fn criterion_dir() -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR")
-        .map_or_else(
-            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"),
-            PathBuf::from,
-        )
+        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"), PathBuf::from)
         .join("criterion")
 }
 
+#[expect(clippy::print_stderr, reason = "the benchmark reports receipt I/O failure before exiting")]
 fn write_subject_identities(rows: &[serde_json::Value], run_id: &str) {
     let output = criterion_dir().join("native-pipeline-measurements.v1.json");
     if let Some(parent) = output.parent() {

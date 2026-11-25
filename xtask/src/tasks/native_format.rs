@@ -444,8 +444,9 @@ pub fn config(config: NativeFormatConfigReceiptConfig) -> Result<()> {
         config_source,
         config_profile: server_config.perltidy_profile.clone(),
         formatting_enabled: server_config.perltidy_enabled,
-        engine_selected: format_config.mode,
-        external_adapter_requested: format_config.mode == FormatterMode::ExternalLegacy,
+        engine_selected: server_config.formatting_engine,
+        external_adapter_requested: server_config.formatting_engine
+            == FormatterMode::ExternalLegacy,
         line_width: format_config.line_width,
         indent_width: format_config.indent_width,
         use_tabs: format_config.use_tabs,
@@ -478,7 +479,6 @@ pub fn config(config: NativeFormatConfigReceiptConfig) -> Result<()> {
 
 fn format_config_from_server_config(server_config: &ServerConfig) -> FormatConfig {
     let mut config = FormatConfig {
-        mode: server_config.formatting_engine,
         line_width: server_config
             .perltidy_maximum_line_length
             .unwrap_or_else(|| FormatConfig::default().line_width),

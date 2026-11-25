@@ -337,13 +337,13 @@ fn test_wired_feature_profile_cli_accessible() {
 }
 
 // ---------------------------------------------------------------------------
-// perl-lsp-perltidy
+// perl-tidy-perltidy via application configuration
 // ---------------------------------------------------------------------------
 
 /// Perltidy integration types must be reachable and defaults must be correct.
 #[test]
 fn test_wired_perltidy_config_accessible() {
-    use perl_lsp_perltidy::PerlTidyConfig;
+    use perl_lsp_rs_core::providers::formatting::PerlTidyConfig;
     let config = PerlTidyConfig::default();
     // Verify load-bearing defaults that downstream callers depend on.
     assert_eq!(config.maximum_line_length, Some(80), "default maximum_line_length must be 80");

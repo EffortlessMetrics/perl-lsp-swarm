@@ -4,8 +4,7 @@
 //! Subjects are generated from fixed base units so every consumer (bench,
 //! canary test, nightly receipt) observes byte-identical content. Each subject
 //! pins exact identity — family, line-ending convention, indentation family,
-//! scaling size, and an FNV-1a content digest computed with the same
-//! constants and prefix as the production `FormatIdentity::content_digest` —
+//! scaling size, and a canonical content digest from the shared identity owner used by the production `FormatIdentity::content_digest` —
 //! so #9327 representative-corpus identities can enroll through this registry
 //! without schema movement, and per-subject identity rows can never be hidden
 //! behind an aggregate average (NPC-008).
@@ -13,7 +12,7 @@
 //! This module must stay lint-clean: it is compiled into ordinary test
 //! targets as well as the bench harness.
 
-use perl_lsp_perltidy::native::{FormatIdentity, NativePipelineCounters, TypedFormatResult};
+use perl_tidy::native::{FormatIdentity, NativePipelineCounters, TypedFormatResult};
 use serde_json::{Value, json};
 
 /// Production default `FormatConfig::line_width`.
@@ -44,21 +43,10 @@ pub const BENCH_GROUP: &str = "native_pipeline_document";
 /// Engine label recorded in emitted subject identity rows.
 pub const SUBJECT_ENGINE: &str = "native";
 
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// Compute the production-compatible stable digest for `bytes`.
-///
-/// Mirrors the private `stable_digest` in `native/outcome.rs` (same FNV-1a
-/// constants, same `source-v1` prefix) so subject digests can be compared
-/// against `FormatIdentity::content_digest` byte-for-byte.
+/// Compute content identity through the shared canonical digest owner.
 #[must_use]
 pub fn source_digest(source: &str) -> String {
-    let hash = source
-        .as_bytes()
-        .iter()
-        .fold(FNV_OFFSET_BASIS, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME));
-    format!("source-v1:{hash:016x}")
+    perl_source_identity::ContentDigest::of_bytes(source.as_bytes()).to_string()
 }
 
 /// One deterministic scaling subject of the checked-in cohort.
@@ -167,7 +155,7 @@ pub fn bench_rows() -> Vec<SubjectSpec> {
 #[must_use]
 pub fn identity_row(spec: &SubjectSpec, config_fingerprint: &str, toolchain: &str) -> Value {
     json!({
-        "schema": perl_lsp_perltidy::COUNTER_SCHEMA_V1,
+        "schema": perl_tidy::COUNTER_SCHEMA_V1,
         "bench_group": BENCH_GROUP,
         "bench_name": spec.id(),
         "bench_id": spec.bench_id(),
@@ -216,7 +204,7 @@ fn identity_row_from_production_identity(
     toolchain: &str,
 ) -> Value {
     json!({
-        "schema": perl_lsp_perltidy::COUNTER_SCHEMA_V1,
+        "schema": perl_tidy::COUNTER_SCHEMA_V1,
         "bench_group": BENCH_GROUP,
         "bench_name": spec.id(),
         "bench_id": spec.bench_id(),

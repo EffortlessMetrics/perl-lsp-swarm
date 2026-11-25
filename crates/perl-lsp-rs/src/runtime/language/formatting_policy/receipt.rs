@@ -215,7 +215,8 @@ impl LspServer {
 
         let documents = self.documents_guard();
         let current = self.get_document(&documents, &snapshot.uri).is_some_and(|document| {
-            document.version == snapshot.version
+            document.incarnation == snapshot.incarnation
+                && document.version == snapshot.version
                 && u64::from(document.current_generation()) == snapshot.generation
         });
         if !current {
@@ -433,13 +434,131 @@ mod tests {
         })
     }
 
+    fn reopen_same_version_and_generation(
+        server: &LspServer,
+        snapshot: &Snapshot,
+        source: &str,
+    ) -> Result<Snapshot, Box<dyn Error>> {
+        server.test_apply_did_close(&snapshot.uri)?;
+        server.test_apply_did_open(&snapshot.uri, source, snapshot.version)?;
+        let reopened = server.admit(
+            Surface::Document,
+            &document_formatting_params(&snapshot.uri, snapshot.version),
+        )?;
+        verify(reopened.version == snapshot.version, "reopen changed the version premise")?;
+        verify(
+            reopened.generation == snapshot.generation,
+            "reopen changed the generation premise",
+        )?;
+        verify(
+            reopened.incarnation != snapshot.incarnation,
+            "reopen must create a distinct document instance",
+        )?;
+        Ok(reopened)
+    }
+
+    #[test]
+    fn reopened_document_incarnation_rejects_old_formatting_result() -> TestResult {
+        for reopened_source in ["my$x=1;\n", "my$y=2;\n"] {
+            let (server, output) = server_with_output();
+            let uri = "file:///reopened-formatting-result.pl";
+            server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+            let snapshot = server.admit(Surface::Document, &document_formatting_params(uri, 1))?;
+            let formatter = CodeFormatter::with_config_and_mode(
+                snapshot.config.perltidy.clone(),
+                snapshot.config.mode,
+            );
+            let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
+            let decision =
+                formatter.format_document_decision(&snapshot.text, &snapshot.options, &context)?;
+            verify(
+                decision.outcome.disposition == FormatDisposition::Applied
+                    && !decision.document.edits.is_empty(),
+                "reopen regression must start with actual native edits",
+            )?;
+            server.ensure_current_with_engine(&snapshot, Some("native"))?;
+
+            // Both equal and different bytes can reuse the old URI/version/generation.
+            // Neither permits a result from the previous open instance to escape.
+            let reopened = reopen_same_version_and_generation(&server, &snapshot, reopened_source)?;
+            let error = server.project(&snapshot, decision).err().ok_or_else(|| {
+                io::Error::other("old formatting result survived document close/reopen")
+            })?;
+            verify(error.code == CONTENT_MODIFIED, format!("wrong stale error: {error:?}"))?;
+            let receipt = server
+                .provider_decision_traces
+                .lock()
+                .get(PROVIDER)
+                .cloned()
+                .ok_or_else(|| io::Error::other("stale result did not record a receipt"))?;
+            verify(
+                receipt["reason"] == "stale_source" && receipt["result_count"] == 0,
+                format!("old result retained successful evidence: {receipt:?}"),
+            )?;
+
+            // A result computed for the new instance still succeeds.
+            let context = FormatContext::new(Some(reopened.uri.clone()), Some(reopened.generation));
+            let decision =
+                formatter.format_document_decision(&reopened.text, &reopened.options, &context)?;
+            let projected = server.project(&reopened, decision)?;
+            verify(
+                projected.as_ref().and_then(Value::as_array).is_some_and(|edits| !edits.is_empty()),
+                "new document instance did not accept its own formatting result",
+            )?;
+            drop(server);
+            verify(
+                show_message_count(&outbound_messages(&output.lock())?) == 0,
+                "reopened formatting result emitted an unexpected warning",
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reopened_document_incarnation_blocks_postcheck_notification() -> TestResult {
+        for reopened_source in ["print 1;;;\n", "print 2;;;\n"] {
+            let (server, output) = server_with_output();
+            let uri = "file:///reopened-formatting-notification.pl";
+            server.test_apply_did_open(uri, "print 1;;;\n", 1)?;
+            let snapshot = server.admit(Surface::Document, &document_formatting_params(uri, 1))?;
+            server.ensure_current_with_engine(&snapshot, Some("native"))?;
+
+            // Reopen after the response guard has passed, at the exact boundary
+            // where the notification sink must independently reject old ownership.
+            let reopened = reopen_same_version_and_generation(&server, &snapshot, reopened_source)?;
+            let error = server
+                .notify_unsupported_syntax_if_current(&snapshot, true, Some("native"))
+                .err()
+                .ok_or_else(|| io::Error::other("old formatting warning survived close/reopen"))?;
+            verify(error.code == CONTENT_MODIFIED, format!("wrong stale error: {error:?}"))?;
+            drop(server);
+            verify(
+                show_message_count(&outbound_messages(&output.lock())?) == 0,
+                "previous document instance emitted an obsolete warning",
+            )?;
+
+            // Keep the positive control on a fresh server so draining the first
+            // writer proves zero obsolete messages, independently of new warnings.
+            let (server, output) = server_with_output();
+            server.test_apply_did_open(uri, &reopened.text, reopened.version)?;
+            let current = server.admit(Surface::Document, &document_formatting_params(uri, 1))?;
+            server.notify_unsupported_syntax_if_current(&current, true, Some("native"))?;
+            drop(server);
+            verify(
+                show_message_count(&outbound_messages(&output.lock())?) == 1,
+                "current document instance did not emit its admitted warning",
+            )?;
+        }
+        Ok(())
+    }
+
     #[test]
     fn unsupported_native_syntax_warns_once_per_surface() -> TestResult {
         let (server, output) = server_with_output();
         let uri = "file:///unsupported-native-formatting.pl";
         // `print 1;;;` stays outside the native formatter's supported
         // envelope (see `unsupported_unchanged_source_is_refused` in
-        // perl-lsp-perltidy), so both surfaces refuse with
+        // perl-tidy), so both surfaces refuse with
         // `unsupported_syntax`. The previous fixture (`print $fh $x;`
         // inside a sub) became supported and canonical after the
         // block/print formatter slices, which made this test's premise
@@ -450,10 +569,13 @@ mod tests {
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
         let repeated_document =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
+        // Select the complete unsupported line; a partial target now correctly
+        // refuses earlier as unsafe_range and must not trigger this warning.
+        let mut range_params = range_formatting_params(uri, 1);
+        range_params["range"]["end"]["character"] = json!(10);
         let first_range =
-            server.handle_range_formatting_policy(Some(range_formatting_params(uri, 1)), None)?;
-        let repeated_range =
-            server.handle_range_formatting_policy(Some(range_formatting_params(uri, 1)), None)?;
+            server.handle_range_formatting_policy(Some(range_params.clone()), None)?;
+        let repeated_range = server.handle_range_formatting_policy(Some(range_params), None)?;
 
         verify(first_document == Some(json!([])), "document refusal returned edits")?;
         verify(repeated_document == Some(json!([])), "repeated document refusal returned edits")?;
@@ -503,7 +625,7 @@ mod tests {
                 },
                 {
                     "start": { "line": 1, "character": 0 },
-                    "end": { "line": 1, "character": 9 }
+                    "end": { "line": 1, "character": 13 }
                 }
             ],
             "options": { "tabSize": 4, "insertSpaces": true },

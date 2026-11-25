@@ -1,88 +1,23 @@
 use serde::{Deserialize, Serialize};
 
-/// Native formatter operating mode.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum FormatterMode {
-    /// Run the Rust-native formatter.
-    ///
-    /// The retired `compat` / `perltidy-compat` configuration tokens were
-    /// removed by #7129 and are rejected since #15624 closed the deprecation
-    /// window: `compat` was a bare alias that selected this mode and produced
-    /// byte-identical output, so it named no behavior a user could observe or
-    /// rely on. A future compatibility profile must arrive as its own
-    /// behavior-backed contract with a profile identity, a reviewed mapping
-    /// table, and behavior fixtures — it does not inherit authority from the
-    /// removed alias.
-    #[default]
-    Native,
-    /// Explicitly use an external legacy formatter adapter.
-    ExternalLegacy,
-    /// Disable formatting.
-    Off,
-}
+pub use perl_tidy::{
+    BracePlacement, ElsePlacement, FinalNewline, FormatterMode, FormatterSelection, KeywordSpacing,
+    MAX_NATIVE_INDENT_WIDTH, MAX_NATIVE_LINE_WIDTH, NativeConfigError, NativeFormatConfig,
+    TrailingComma,
+};
 
-/// Final newline handling policy.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum FinalNewline {
-    /// Preserve the input's final newline state.
-    #[default]
-    Preserve,
-    /// Ensure exactly one final newline when formatting succeeds.
-    Insert,
-    /// Remove trailing final newlines when formatting succeeds.
-    Trim,
-}
-
-/// Trailing comma handling for wrapped delimited expressions.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TrailingComma {
-    /// Preserve the native formatter's current behavior and do not add commas.
-    #[default]
-    Preserve,
-    /// Add a trailing comma when a call, list, or hash is rendered across lines.
-    AddWhenWrapped,
-}
-
-/// Opening brace placement for supported native block layouts.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum BracePlacement {
-    /// Keep the opening brace on the block header line.
-    #[default]
-    SameLine,
-    /// Place the opening brace on its own line at the block indentation.
-    NextLine,
-}
-
-/// Placement for supported native `else` and `elsif` block tails.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ElsePlacement {
-    /// Keep `else` and `elsif` cuddled to the previous closing brace.
-    #[default]
-    Cuddled,
-    /// Place `else` and `elsif` on a fresh line at the block indentation.
-    SeparateLine,
-}
-
-/// Spacing between supported control keywords and their condition parentheses.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum KeywordSpacing {
-    /// Insert a space between the keyword and condition parentheses.
-    #[default]
-    Space,
-    /// Omit the space between the keyword and condition parentheses.
-    Compact,
-}
-
-/// Configuration shared by native formatter implementations.
+/// Former native configuration, retained as a compatibility input.
+///
+/// `Native` translates to pure native style. `Off` returns a disabled result.
+/// `ExternalLegacy` is explicitly refused by [`super::NativeFormatter`]; callers
+/// must use an external adapter to execute that selection.
+#[deprecated(
+    since = "0.17.0",
+    note = "migrate by 0.18.0 (#9292): use perl_tidy::NativeFormatConfig and select engines in the application"
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatConfig {
-    /// Formatter engine mode.
+    /// Legacy application selection, never passed to the native renderer.
     pub mode: FormatterMode,
     /// Preferred line width.
     pub line_width: u32,
@@ -104,24 +39,44 @@ pub struct FormatConfig {
 
 impl Default for FormatConfig {
     fn default() -> Self {
+        Self::from(NativeFormatConfig::default())
+    }
+}
+
+impl From<NativeFormatConfig> for FormatConfig {
+    fn from(config: NativeFormatConfig) -> Self {
         Self {
             mode: FormatterMode::Native,
-            line_width: 100,
-            indent_width: 4,
-            use_tabs: false,
-            final_newline: FinalNewline::Preserve,
-            trailing_comma: TrailingComma::Preserve,
-            brace_placement: BracePlacement::SameLine,
-            else_placement: ElsePlacement::Cuddled,
-            keyword_spacing: KeywordSpacing::Space,
+            line_width: config.line_width,
+            indent_width: config.indent_width,
+            use_tabs: config.use_tabs,
+            final_newline: config.final_newline,
+            trailing_comma: config.trailing_comma,
+            brace_placement: config.brace_placement,
+            else_placement: config.else_placement,
+            keyword_spacing: config.keyword_spacing,
         }
     }
 }
 
 impl FormatConfig {
-    /// Build an explicit external legacy configuration.
+    /// Build the former external selection. Native calls explicitly refuse it.
     #[must_use]
     pub fn external_legacy() -> Self {
         Self { mode: FormatterMode::ExternalLegacy, ..Self::default() }
+    }
+
+    /// Style-only projection after selection admission, or for the legacy IR.
+    pub(super) fn native_policy(&self) -> NativeFormatConfig {
+        NativeFormatConfig {
+            line_width: self.line_width,
+            indent_width: self.indent_width,
+            use_tabs: self.use_tabs,
+            final_newline: self.final_newline,
+            trailing_comma: self.trailing_comma,
+            brace_placement: self.brace_placement,
+            else_placement: self.else_placement,
+            keyword_spacing: self.keyword_spacing,
+        }
     }
 }

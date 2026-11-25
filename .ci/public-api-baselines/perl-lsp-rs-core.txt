@@ -432,7 +432,7 @@ pub struct perl_lsp_rs_core::config::ServerConfig
 pub perl_lsp_rs_core::config::ServerConfig::ai_completion: perl_lsp_rs_core::config::AiCompletionConfig
 pub perl_lsp_rs_core::config::ServerConfig::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp_rs_core::config::ServerConfig::format_on_save: bool
-pub perl_lsp_rs_core::config::ServerConfig::formatting_engine: perl_lsp_perltidy::native::implementation::config::FormatterMode
+pub perl_lsp_rs_core::config::ServerConfig::formatting_engine: perl_tidy::native::implementation::config::FormatterMode
 pub perl_lsp_rs_core::config::ServerConfig::inlay_hints_chained_hints: bool
 pub perl_lsp_rs_core::config::ServerConfig::inlay_hints_enabled: bool
 pub perl_lsp_rs_core::config::ServerConfig::inlay_hints_max_length: usize
@@ -4036,7 +4036,7 @@ pub fn perl_lsp_rs_core::providers::formatting::range_admission::admit_wire_endp
 pub enum perl_lsp_rs_core::providers::formatting::FormattingError
 pub perl_lsp_rs_core::providers::formatting::FormattingError::InvalidOutputEncoding
 pub perl_lsp_rs_core::providers::formatting::FormattingError::IoError(alloc::string::String)
-pub perl_lsp_rs_core::providers::formatting::FormattingError::NativeNotProven(perl_lsp_perltidy::native::outcome::FormatReasonCode)
+pub perl_lsp_rs_core::providers::formatting::FormattingError::NativeNotProven(perl_tidy::native::outcome::FormatReasonCode)
 pub perl_lsp_rs_core::providers::formatting::FormattingError::PerltidyError(alloc::string::String)
 pub perl_lsp_rs_core::providers::formatting::FormattingError::PerltidyNotFound(alloc::string::String)
 pub fn perl_lsp_rs_core::providers::FormattingError::error_kind(&self) -> &'static str
@@ -4113,7 +4113,7 @@ pub fn perl_lsp_rs_core::providers::FormattedDocument::default() -> perl_lsp_rs_
 pub fn perl_lsp_rs_core::providers::FormattedDocument::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::formatting::FormattingDecision
 pub perl_lsp_rs_core::providers::formatting::FormattingDecision::document: perl_lsp_rs_core::providers::FormattedDocument
-pub perl_lsp_rs_core::providers::formatting::FormattingDecision::outcome: perl_lsp_perltidy::native::outcome::FormatOutcome
+pub perl_lsp_rs_core::providers::formatting::FormattingDecision::outcome: perl_tidy::native::outcome::FormatOutcome
 pub fn perl_lsp_rs_core::providers::FormattingDecision::into_document(self) -> perl_lsp_rs_core::providers::FormattedDocument
 pub fn perl_lsp_rs_core::providers::FormattingDecision::clone(&self) -> perl_lsp_rs_core::providers::FormattingDecision
 pub fn perl_lsp_rs_core::providers::FormattingDecision::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -4129,16 +4129,20 @@ pub fn perl_lsp_rs_core::providers::FormattingOptions::clone(&self) -> perl_lsp_
 pub fn perl_lsp_rs_core::providers::FormattingOptions::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::FormattingOptions::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::providers::FormattingOptions, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp_rs_core::providers::formatting::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider::native() -> perl_lsp_rs_core::providers::FormattingProvider
 pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions) -> core::result::Result<perl_lsp_rs_core::providers::FormattedDocument, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document_decision(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document_decision_with_counters(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext, counters: &mut perl_lsp_perltidy::native::implementation::counters::NativePipelineCounters) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document_decision(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document_decision_with_counters(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext, counters: &mut perl_tidy::native::implementation::counters::NativePipelineCounters) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
 pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions) -> core::result::Result<perl_lsp_rs_core::providers::FormattedDocument, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range_decision(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range_decision_with_counters(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext, counters: &mut perl_lsp_perltidy::native::implementation::counters::NativePipelineCounters) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::new(runtime: R) -> perl_lsp_rs_core::providers::FormattingProvider<R>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_formatter_mode(self, mode: perl_lsp_perltidy::native::implementation::config::FormatterMode) -> perl_lsp_rs_core::providers::FormattingProvider<R>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_perltidy_config(self, config: perl_lsp_perltidy::PerlTidyConfig) -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range_decision(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range_decision_with_counters(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext, counters: &mut perl_tidy::native::implementation::counters::NativePipelineCounters) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::new(runtime: R) -> perl_lsp_rs_core::providers::FormattingProvider<R> where R: perl_subprocess_runtime::SubprocessRuntime
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_formatter_mode(self, mode: perl_tidy::native::implementation::config::FormatterMode) -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_native_config(self, config: perl_tidy::native::implementation::config::NativeFormatConfig) -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_perltidy_config(self, config: perl_tidy_perltidy::config::ExternalPerlTidyConfig) -> perl_lsp_rs_core::providers::FormattingProvider<R>
 pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_perltidy_path(self, path: alloc::string::String) -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::without_external() -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider::default() -> perl_lsp_rs_core::providers::FormattingProvider
 pub struct perl_lsp_rs_core::providers::formatting::SourceGeometry
 pub fn perl_lsp_rs_core::providers::range_admission::SourceGeometry::byte_offset(&self, source: &str, line: u32, character: u32) -> core::result::Result<usize, perl_lsp_rs_core::providers::range_admission::RangePositionError>
 pub fn perl_lsp_rs_core::providers::range_admission::SourceGeometry::line_content_end(&self, source: &str, line: u32) -> usize
@@ -6187,6 +6191,7 @@ pub perl_lsp_rs_core::providers::provider_decision::ProviderDecisionProvider::Co
 pub perl_lsp_rs_core::providers::provider_decision::ProviderDecisionProvider::DapModulePaths
 pub perl_lsp_rs_core::providers::provider_decision::ProviderDecisionProvider::Diagnostics
 pub perl_lsp_rs_core::providers::provider_decision::ProviderDecisionProvider::DocumentSymbols
+pub perl_lsp_rs_core::providers::provider_decision::ProviderDecisionProvider::Formatting
 pub perl_lsp_rs_core::providers::provider_decision::ProviderDecisionProvider::GotoDefinition
 pub perl_lsp_rs_core::providers::provider_decision::ProviderDecisionProvider::Hover
 pub perl_lsp_rs_core::providers::provider_decision::ProviderDecisionProvider::ModuleResolution
@@ -7676,7 +7681,7 @@ pub fn perl_lsp_rs_core::providers::FoldingRangeKind::fmt(&self, f: &mut core::f
 pub enum perl_lsp_rs_core::providers::FormattingError
 pub perl_lsp_rs_core::providers::FormattingError::InvalidOutputEncoding
 pub perl_lsp_rs_core::providers::FormattingError::IoError(alloc::string::String)
-pub perl_lsp_rs_core::providers::FormattingError::NativeNotProven(perl_lsp_perltidy::native::outcome::FormatReasonCode)
+pub perl_lsp_rs_core::providers::FormattingError::NativeNotProven(perl_tidy::native::outcome::FormatReasonCode)
 pub perl_lsp_rs_core::providers::FormattingError::PerltidyError(alloc::string::String)
 pub perl_lsp_rs_core::providers::FormattingError::PerltidyNotFound(alloc::string::String)
 pub fn perl_lsp_rs_core::providers::FormattingError::error_kind(&self) -> &'static str
@@ -7985,6 +7990,7 @@ pub perl_lsp_rs_core::providers::ProviderDecisionProvider::Completion
 pub perl_lsp_rs_core::providers::ProviderDecisionProvider::DapModulePaths
 pub perl_lsp_rs_core::providers::ProviderDecisionProvider::Diagnostics
 pub perl_lsp_rs_core::providers::ProviderDecisionProvider::DocumentSymbols
+pub perl_lsp_rs_core::providers::ProviderDecisionProvider::Formatting
 pub perl_lsp_rs_core::providers::ProviderDecisionProvider::GotoDefinition
 pub perl_lsp_rs_core::providers::ProviderDecisionProvider::Hover
 pub perl_lsp_rs_core::providers::ProviderDecisionProvider::ModuleResolution
@@ -8878,7 +8884,7 @@ pub fn perl_lsp_rs_core::providers::FormattedDocument::fmt(&self, f: &mut core::
 pub fn perl_lsp_rs_core::providers::FormattedDocument::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::FormattingDecision
 pub perl_lsp_rs_core::providers::FormattingDecision::document: perl_lsp_rs_core::providers::FormattedDocument
-pub perl_lsp_rs_core::providers::FormattingDecision::outcome: perl_lsp_perltidy::native::outcome::FormatOutcome
+pub perl_lsp_rs_core::providers::FormattingDecision::outcome: perl_tidy::native::outcome::FormatOutcome
 pub fn perl_lsp_rs_core::providers::FormattingDecision::into_document(self) -> perl_lsp_rs_core::providers::FormattedDocument
 pub fn perl_lsp_rs_core::providers::FormattingDecision::clone(&self) -> perl_lsp_rs_core::providers::FormattingDecision
 pub fn perl_lsp_rs_core::providers::FormattingDecision::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -8903,16 +8909,20 @@ pub fn perl_lsp_rs_core::providers::FormattingOptions::fmt(&self, f: &mut core::
 pub fn perl_lsp_rs_core::providers::FormattingOptions::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::providers::FormattingOptions, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub fn perl_lsp_rs_core::providers::FormattingOptions::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::providers::FormattingOptions, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider::native() -> perl_lsp_rs_core::providers::FormattingProvider
 pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions) -> core::result::Result<perl_lsp_rs_core::providers::FormattedDocument, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document_decision(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document_decision_with_counters(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext, counters: &mut perl_lsp_perltidy::native::implementation::counters::NativePipelineCounters) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document_decision(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_document_decision_with_counters(&self, content: &str, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext, counters: &mut perl_tidy::native::implementation::counters::NativePipelineCounters) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
 pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions) -> core::result::Result<perl_lsp_rs_core::providers::FormattedDocument, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range_decision(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range_decision_with_counters(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext, counters: &mut perl_lsp_perltidy::native::implementation::counters::NativePipelineCounters) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::new(runtime: R) -> perl_lsp_rs_core::providers::FormattingProvider<R>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_formatter_mode(self, mode: perl_lsp_perltidy::native::implementation::config::FormatterMode) -> perl_lsp_rs_core::providers::FormattingProvider<R>
-pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_perltidy_config(self, config: perl_lsp_perltidy::PerlTidyConfig) -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range_decision(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::format_range_decision_with_counters(&self, content: &str, range: &perl_lsp_rs_core::providers::FormatRange, options: &perl_lsp_rs_core::providers::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext, counters: &mut perl_tidy::native::implementation::counters::NativePipelineCounters) -> core::result::Result<perl_lsp_rs_core::providers::FormattingDecision, perl_lsp_rs_core::providers::FormattingError>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::new(runtime: R) -> perl_lsp_rs_core::providers::FormattingProvider<R> where R: perl_subprocess_runtime::SubprocessRuntime
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_formatter_mode(self, mode: perl_tidy::native::implementation::config::FormatterMode) -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_native_config(self, config: perl_tidy::native::implementation::config::NativeFormatConfig) -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_perltidy_config(self, config: perl_tidy_perltidy::config::ExternalPerlTidyConfig) -> perl_lsp_rs_core::providers::FormattingProvider<R>
 pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::with_perltidy_path(self, path: alloc::string::String) -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider<R>::without_external() -> perl_lsp_rs_core::providers::FormattingProvider<R>
+pub fn perl_lsp_rs_core::providers::FormattingProvider::default() -> perl_lsp_rs_core::providers::FormattingProvider
 pub struct perl_lsp_rs_core::providers::HtmxAttributeNameContext<'a>
 pub perl_lsp_rs_core::providers::HtmxAttributeNameContext::position: usize
 pub perl_lsp_rs_core::providers::HtmxAttributeNameContext::prefix: &'a str
@@ -12319,7 +12329,11 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::normalize_critic_findings(candida
 pub fn perl_lsp_rs_core::tooling::perl_critic::normalize_with_native_policy(candidates: impl core::iter::traits::collect::IntoIterator<Item = perl_lsp_rs_core::tooling::perl_critic::CriticFindingCandidate>, policy: &perl_lsp_rs_core::tooling::perl_critic::NativeCriticPolicy<'_>) -> alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding>
 pub type perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfileParseError = <perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile as core::str::traits::FromStr>::Err
 pub mod perl_lsp_rs_core::tooling::perltidy
-pub use perl_lsp_rs_core::tooling::perltidy::<<perl_lsp_perltidy::*>>
+pub use perl_lsp_rs_core::tooling::perltidy::<<perl_tidy::*>>
+pub use perl_lsp_rs_core::tooling::perltidy::ExternalPerlTidyConfig
+pub use perl_lsp_rs_core::tooling::perltidy::ExternalPerlTidyError
+pub use perl_lsp_rs_core::tooling::perltidy::LegacyPerlTidyExecutor
+pub type perl_lsp_rs_core::tooling::perltidy::PerlTidyConfig = perl_tidy_perltidy::config::ExternalPerlTidyConfig
 pub mod perl_lsp_rs_core::transport
 pub mod perl_lsp_rs_core::transport::framing
 pub enum perl_lsp_rs_core::transport::framing::FramingError

@@ -1,63 +1,36 @@
 # CLAUDE.md (perl-lsp-perltidy)
 
-## Role
+## Role and ownership
 
-Perl source formatting: a native-first Rust formatter, plus an optional
-subprocess-backed adapter for projects that need exact `perltidy` output
-compatibility.
+Deprecated compatibility facade for the published mode-bearing formatter API.
+It retains the original configuration, UTF-16 DTO/result shapes and trait/method
+signatures while delegating native computation to `perl-tidy` and external text
+execution to `perl-tidy-perltidy`. There is no formatter algorithm here.
 
-## Owns
+## Boundaries
 
-- `native` module -- `NativeFormatter` (the default LSP formatter),
-  `PerlFormatter` trait, `FormatConfig`, `FormatDoc`, `FormatResult`,
-  `TextEdit`, `FormatDiagnostic`, and layout-option types
-  (`BracePlacement`, `ElsePlacement`, `KeywordSpacing`, `TrailingComma`,
-  `FinalNewline`).
-- `PerlTidyConfig` / `PerlTidyFormatter` -- subprocess-backed adapter that
-  shells out to `perltidy` via `perl-subprocess-runtime` for exact
-  compatibility when required.
-- `BuiltInFormatter` / `FormatSuggestion` -- built-in style presets.
+- `src/native/projection.rs` translates through canonical `perl-position-tracking`
+  conversion. Require exact user endpoints; named legacy whole-line widening is
+  explicit request policy, never an endpoint clamp or a second geometry scanner.
+- `Off` performs no native work. Native `ExternalLegacy` requests refuse instead
+  of silently invoking native or discovering an executable.
+- `BuiltInFormatter` delegates to the same parse-gated native owner. Do not restore
+  its retired delimiter scanner to preserve speculative edits on malformed input.
+- Legacy cache, file-in-place and line helpers remain only in this facade; new
+  first-party consumers use the canonical packages directly.
 
-## Does not own
+The migration/removal target is 0.18.0. Issue #9292 owns actual removal after
+downstream migration and external acceptance; that target does not itself permit
+removal. Previously withdrawn runtime methods remain withdrawn.
 
-- Full Perl parsing beyond what `perl-parser-core` provides.
-- The LSP `textDocument/formatting` request wiring itself -- that lives in
-  `perl-lsp-rs-core::providers` (this crate is the formatting engine, not
-  the provider).
+## Focused proof
 
-## Neighbors
+Use the repository's admitted Cargo route for `test -p perl-lsp-perltidy
+--lib --tests`. Retained compatibility tests prove signatures, selection refusal,
+strict geometry and canonical delegation. Native layout/benchmark ownership is
+in `perl-tidy`; the independent legacy edit-application helper remains a projection
+oracle. External subprocess tests do not establish installed-version output parity.
 
-- Upstream: `perl-parser-core`, `perl-subprocess-runtime`, `serde`.
-- Downstream: `perl-lsp-rs-core` (depends on this directly for its
-  tooling/formatting providers), and transitively `perl-lsp-rs`.
-
-## Read first
-
-- `src/lib.rs` -- facade, `PerlTidyConfig`, `PerlTidyFormatter`.
-- `src/native.rs` -- the `PerlFormatter` trait and `NativeFormatter`; this
-  is where the actual default formatting logic lives (the largest file in
-  the crate).
-
-## Focused validation
-
-`cargo test -p perl-lsp-perltidy`. `tests/native_contract_tests.rs` and
-`tests/native_formatter_parse_gate_tests.rs` guard the native formatter's
-parse-preserving contract (output must still parse as valid Perl).
-`tests/subprocess_tests.rs` covers the `perltidy` subprocess path and skips
-gracefully when `perltidy` isn't installed on the runner.
-
-## Review hotspots
-
-- `native.rs` -- any change must preserve round-trip parseability; a
-  formatter that produces unparseable output is a correctness regression,
-  not a style nit.
-- `PerlTidyConfig`'s `extra_args` / `timeout_secs` -- the subprocess
-  boundary is the security-adjacent surface (arbitrary args passed to an
-  external process).
-
-## Claim boundary
-
-Describes formatter architecture and configuration surface as authored.
-Does not assert byte-for-byte output parity with any specific installed
-`perltidy` version -- that's an external-tool compatibility claim this crate
-cannot make on its own.
+Read `README.md` before changing compatibility behavior. Preserve original public
+result shapes; disclose numeric admission, exact unsupported targets and other
+intentional refusal changes instead of claiming blanket historical byte parity.

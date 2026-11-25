@@ -2,7 +2,7 @@
 //!
 //! Keep these adapter tests with the provider owner so the formatter's own
 //! test graph does not depend on the LSP core. The remaining counter, benchmark,
-//! and receipt canaries stay in perl-lsp-perltidy.
+//! and receipt canaries stay in perl-tidy.
 
 #![deny(clippy::map_err_ignore)]
 
@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use perl_lsp_perltidy::native::{FormatContext, FormatReasonCode, NativePipelineCounters};
+use perl_tidy::{FormatContext, FormatReasonCode, NativePipelineCounters};
 
 // Exact statement/LF/tabs/four-unit fixture previously supplied by SubjectSpec.
 // This provider proof needs the source, not the benchmark registry or receipts.

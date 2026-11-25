@@ -51,7 +51,6 @@ perl-diagnostics = { workspace = true }
 # perl-lsp-critic-parser absorbed into perl-lsp-rs-core::critic_parser (Wave G3 step 7)
 perl-lsp-rs-core = { workspace = true, default-features = true, features = ["lsp-compat", "ai-provider"] }
 # perl-lsp-performance absorbed into perl-lsp-rs-core::performance (Wave G3 step 5)
-perl-lsp-perltidy = { workspace = true }
 perl-position-tracking = { workspace = true, features = ["lsp-compat"] }
 perl-semantic-analyzer = { workspace = true }
 perl-semantic-facts = { workspace = true }

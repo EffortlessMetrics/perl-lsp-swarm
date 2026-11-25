@@ -321,15 +321,17 @@ pub use perl_lsp::features::formatting::FormattingDecision
 pub use perl_lsp::features::formatting::FormattingError
 pub use perl_lsp::features::formatting::FormattingOptions
 pub use perl_lsp::features::formatting::FormattingProvider
+pub use perl_lsp::features::formatting::NativeFormatConfig
 pub use perl_lsp::features::formatting::PerlTidyConfig
 pub struct perl_lsp::features::formatting::CodeFormatter
 pub fn perl_lsp::features::formatting::CodeFormatter::format_document(&self, content: &str, options: &perl_lsp_rs_core::providers::formatting_types::FormattingOptions) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::formatting_types::FormatTextEdit>, perl_lsp_rs_core::providers::formatting::formatting::FormattingError>
-pub fn perl_lsp::features::formatting::CodeFormatter::format_document_decision(&self, content: &str, options: &perl_lsp_rs_core::providers::formatting_types::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::formatting::formatting::FormattingDecision, perl_lsp_rs_core::providers::formatting::formatting::FormattingError>
+pub fn perl_lsp::features::formatting::CodeFormatter::format_document_decision(&self, content: &str, options: &perl_lsp_rs_core::providers::formatting_types::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::formatting::formatting::FormattingDecision, perl_lsp_rs_core::providers::formatting::formatting::FormattingError>
 pub fn perl_lsp::features::formatting::CodeFormatter::format_range(&self, content: &str, range: &perl_position_tracking::wire::WireRange, options: &perl_lsp_rs_core::providers::formatting_types::FormattingOptions) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::formatting_types::FormatTextEdit>, perl_lsp_rs_core::providers::formatting::formatting::FormattingError>
-pub fn perl_lsp::features::formatting::CodeFormatter::format_range_decision(&self, content: &str, range: &perl_position_tracking::wire::WireRange, options: &perl_lsp_rs_core::providers::formatting_types::FormattingOptions, context: &perl_lsp_perltidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::formatting::formatting::FormattingDecision, perl_lsp_rs_core::providers::formatting::formatting::FormattingError>
+pub fn perl_lsp::features::formatting::CodeFormatter::format_range_decision(&self, content: &str, range: &perl_position_tracking::wire::WireRange, options: &perl_lsp_rs_core::providers::formatting_types::FormattingOptions, context: &perl_tidy::native::outcome::FormatContext) -> core::result::Result<perl_lsp_rs_core::providers::formatting::formatting::FormattingDecision, perl_lsp_rs_core::providers::formatting::formatting::FormattingError>
 pub fn perl_lsp::features::formatting::CodeFormatter::new() -> perl_lsp::features::formatting::CodeFormatter
-pub fn perl_lsp::features::formatting::CodeFormatter::with_config(config: perl_lsp_perltidy::PerlTidyConfig) -> perl_lsp::features::formatting::CodeFormatter
-pub fn perl_lsp::features::formatting::CodeFormatter::with_config_and_mode(config: perl_lsp_perltidy::PerlTidyConfig, mode: perl_lsp_perltidy::native::implementation::config::FormatterMode) -> perl_lsp::features::formatting::CodeFormatter
+pub fn perl_lsp::features::formatting::CodeFormatter::with_config(config: perl_tidy_perltidy::config::ExternalPerlTidyConfig) -> perl_lsp::features::formatting::CodeFormatter
+pub fn perl_lsp::features::formatting::CodeFormatter::with_config_and_mode(config: perl_tidy_perltidy::config::ExternalPerlTidyConfig, mode: perl_tidy::native::implementation::config::FormatterMode) -> perl_lsp::features::formatting::CodeFormatter
+pub fn perl_lsp::features::formatting::CodeFormatter::with_native_config(config: perl_tidy::native::implementation::config::NativeFormatConfig) -> perl_lsp::features::formatting::CodeFormatter
 pub fn perl_lsp::features::formatting::CodeFormatter::default() -> perl_lsp::features::formatting::CodeFormatter
 pub mod perl_lsp::features::implementation_provider
 pub struct perl_lsp::features::implementation_provider::ImplementationProvider

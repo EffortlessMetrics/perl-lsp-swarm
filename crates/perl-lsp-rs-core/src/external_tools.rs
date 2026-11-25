@@ -340,7 +340,7 @@ pub const EXTERNAL_TOOL_REGISTRY: &[ExternalToolPolicy] = &[
             executable: Some("perl-tidy"),
             lsp_consumer: Some("perllsp"),
             delivery: NativeReplacementDelivery::Planned,
-            current_implementation: Some("perl-lsp-perltidy"),
+            current_implementation: Some("perl-tidy"),
             owner: "#7411 / #8653 / #7143",
         },
         roles: PERLTIDY_ROLES,
@@ -1122,10 +1122,10 @@ mod tests {
         assert_eq!(native.executable, Some("perl-tidy"));
         assert_eq!(native.lsp_consumer, Some("perllsp"));
 
-        // The ruled identity has not shipped; the registry must say so rather
-        // than imply `perl-tidy` is already the crate consumers can depend on.
+        // The extracted library is the current owner. Full product delivery,
+        // including the separately qualified executable, has not shipped yet.
         assert_eq!(native.delivery, NativeReplacementDelivery::Planned);
-        assert_eq!(native.current_implementation, Some("perl-lsp-perltidy"));
+        assert_eq!(native.current_implementation, Some("perl-tidy"));
         Ok(())
     }
 

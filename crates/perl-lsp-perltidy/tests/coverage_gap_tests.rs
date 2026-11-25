@@ -1,3 +1,4 @@
+#![allow(deprecated)] // These targets prove the intentionally retained compatibility API.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 /// Tests targeting previously uncovered functions and branches in
 /// `perl-lsp-perltidy` (both `lib.rs` and `native.rs`).
@@ -492,23 +493,23 @@ fn native_formatter_preserves_double_quoted_heredoc_marker() {
 // ── NativeFormatter — format_range parse gate ────────────────────────────────
 
 #[test]
-fn native_format_range_off_mode_returns_unchanged() {
+fn native_format_range_invalid_policy_returns_unchanged() {
     let formatter = NativeFormatter::new();
-    let config = FormatConfig { mode: FormatterMode::Off, ..FormatConfig::default() };
+    let config = FormatConfig { indent_width: u32::MAX, ..FormatConfig::default() };
     let source = "my $x = ;\n"; // would fail parse
     let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 10));
 
     let result = formatter.format_range(source, range, &config);
 
     assert!(!result.changed);
-    assert!(result.diagnostics.is_empty());
+    assert!(!result.diagnostics.is_empty());
 }
 
 #[test]
 fn native_format_range_skips_when_source_has_parse_error() {
     let formatter = NativeFormatter::new();
     let source = "my $x = ;\n";
-    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 10));
+    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 9));
 
     let result = formatter.format_range(source, range, &FormatConfig::default());
 

@@ -5,7 +5,7 @@
 //! later next-edit providers must use before any editor-visible behavior lands.
 
 use super::PreparedInlineCompletionContext;
-use perl_lsp_perltidy::native::inferred_line_ending_at;
+use perl_tidy::inferred_line_ending_at;
 use serde::{Deserialize, Serialize};
 
 /// Source that controls the next-edit feature gate.

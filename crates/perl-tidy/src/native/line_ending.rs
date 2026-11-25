@@ -35,7 +35,7 @@
 /// [`crate::native::source_convention`].
 ///
 /// ```
-/// use perl_lsp_perltidy::native::inferred_line_ending;
+/// use perl_tidy::native::inferred_line_ending;
 ///
 /// assert_eq!(inferred_line_ending("my $x = 1;\r\n"), "\r\n");
 /// assert_eq!(inferred_line_ending("my $x = 1;\n"), "\n");
@@ -136,13 +136,15 @@ mod tests {
     }
 
     #[test]
-    fn insertion_position_wins_over_a_different_document_tail_convention() {
+    fn insertion_position_wins_over_a_different_document_tail_convention()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "package Demo;\r\nmy $value = 1;\nmy $tail = 2;\r\n";
-        let insertion = source.find("my $value").expect("fixture has insertion line");
+        let insertion = source.find("my $value").ok_or("fixture has insertion line")?;
         assert_eq!(inferred_line_ending_at(source, insertion), "\r\n");
 
-        let later_insertion = source.find("my $tail").expect("fixture has later line");
+        let later_insertion = source.find("my $tail").ok_or("fixture has later line")?;
         assert_eq!(inferred_line_ending_at(source, later_insertion), "\n");
+        Ok(())
     }
 
     #[test]

@@ -642,6 +642,28 @@ current_integration_mode = "workspace_path"
 metadata_authority = "workspace_inherited"
 
 [[packages]]
+name = "perl-tidy"
+path = "crates/perl-tidy"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#8653"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-tidy-perltidy"
+path = "crates/perl-tidy-perltidy"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#8653"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
 name = "perl-token"
 path = "crates/perl-token"
 current_owner = "swarm-product"

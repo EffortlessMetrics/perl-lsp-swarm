@@ -1,7 +1,7 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
-use perl_lsp_perltidy::{
+use perl_tidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, KeywordSpacing, NativeFormatter,
-    PerlFormatter, TextPosition, TextRange, TrailingComma,
+    PerlFormatter, TrailingComma,
 };
 
 #[test]
@@ -412,17 +412,14 @@ fn native_formatter_combines_simple_layout_with_final_newline_policy() {
 fn native_range_formatter_formats_only_selected_simple_declaration_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nmy$y=2;\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 7));
+    let range = byte_range(source, 1, 0, 1, 7);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my$x=1;\nmy $y = 2;\n");
     assert_eq!(result.edits.len(), 1);
-    assert_eq!(
-        result.edits[0].range,
-        TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 7))
-    );
+    assert_eq!(result.edits[0].range, byte_range(source, 1, 0, 1, 7));
     assert_eq!(result.edits[0].new_text, "my $y = 2;");
 }
 
@@ -430,9 +427,9 @@ fn native_range_formatter_formats_only_selected_simple_declaration_line() {
 fn native_range_formatter_preserves_trailing_comment_on_selected_simple_statement_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1; # keep\nmy$y=2;\n";
-    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 14));
+    let range = byte_range(source, 0, 0, 0, 14);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my $x = 1; # keep\nmy$y=2;\n");
@@ -445,9 +442,9 @@ fn native_range_formatter_preserves_trailing_comment_on_selected_simple_statemen
 fn native_range_formatter_keeps_neighboring_leading_comment_outside_selected_line() {
     let formatter = NativeFormatter::new();
     let source = "# applies to next declaration\nmy$x=1;\nmy$y=2;\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 7));
+    let range = byte_range(source, 1, 0, 1, 7);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "# applies to next declaration\nmy $x = 1;\nmy$y=2;\n");
@@ -460,9 +457,9 @@ fn native_range_formatter_keeps_neighboring_leading_comment_outside_selected_lin
 fn native_range_formatter_formats_selected_simple_lexical_declaration_list_line() {
     let formatter = NativeFormatter::new();
     let source = "my($x,$y)=($a,$b);\nmy$z=1;\n";
-    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 18));
+    let range = byte_range(source, 0, 0, 0, 18);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my ($x, $y) = ($a, $b);\nmy$z=1;\n");
@@ -475,9 +472,9 @@ fn native_range_formatter_formats_selected_simple_lexical_declaration_list_line(
 fn native_range_formatter_formats_selected_simple_binary_expression_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=$y+1;\nreturn$x*2;\n";
-    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 10));
+    let range = byte_range(source, 0, 0, 0, 10);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my $x = $y + 1;\nreturn$x*2;\n");
@@ -490,9 +487,9 @@ fn native_range_formatter_formats_selected_simple_binary_expression_line() {
 fn native_range_formatter_formats_selected_simple_assignment_line() {
     let formatter = NativeFormatter::new();
     let source = "$x=1;\n$y=$x+2;\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 8));
+    let range = byte_range(source, 1, 0, 1, 8);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "$x=1;\n$y = $x + 2;\n");
@@ -505,9 +502,9 @@ fn native_range_formatter_formats_selected_simple_assignment_line() {
 fn native_range_formatter_formats_selected_simple_call_expression_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=foo($y,1);\nreturn baz($x,$y);\n";
-    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 15));
+    let range = byte_range(source, 0, 0, 0, 15);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my $x = foo($y, 1);\nreturn baz($x,$y);\n");
@@ -520,9 +517,9 @@ fn native_range_formatter_formats_selected_simple_call_expression_line() {
 fn native_range_formatter_formats_selected_simple_list_literal_line() {
     let formatter = NativeFormatter::new();
     let source = "my@xs=(1,2,$y);\nreturn($x,3);\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 13));
+    let range = byte_range(source, 1, 0, 1, 13);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my@xs=(1,2,$y);\nreturn ($x, 3);\n");
@@ -535,9 +532,9 @@ fn native_range_formatter_formats_selected_simple_list_literal_line() {
 fn native_range_formatter_formats_selected_simple_hash_constructor_line() {
     let formatter = NativeFormatter::new();
     let source = "my$h={foo=>1,bar=>$x};\nreturn{answer=>42};\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 19));
+    let range = byte_range(source, 1, 0, 1, 19);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my$h={foo=>1,bar=>$x};\nreturn {answer => 42};\n");
@@ -550,9 +547,9 @@ fn native_range_formatter_formats_selected_simple_hash_constructor_line() {
 fn native_range_formatter_formats_selected_simple_module_declaration_line() {
     let formatter = NativeFormatter::new();
     let source = "package Foo::Bar ;\nuse strict ;\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 12));
+    let range = byte_range(source, 1, 0, 1, 12);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "package Foo::Bar ;\nuse strict;\n");
@@ -565,9 +562,9 @@ fn native_range_formatter_formats_selected_simple_module_declaration_line() {
 fn native_range_formatter_formats_selected_simple_method_call_line() {
     let formatter = NativeFormatter::new();
     let source = "$x=$obj->empty();\nreturn $obj->build(1,$y);\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 25));
+    let range = byte_range(source, 1, 0, 1, 25);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "$x=$obj->empty();\nreturn $obj->build(1, $y);\n");
@@ -580,9 +577,9 @@ fn native_range_formatter_formats_selected_simple_method_call_line() {
 fn native_range_formatter_formats_selected_simple_method_chain_line() {
     let formatter = NativeFormatter::new();
     let source = "$x=$obj->build()->name();\nreturn $obj->find($id)->wrap({ok=>1});\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 38));
+    let range = byte_range(source, 1, 0, 1, 38);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(
@@ -598,10 +595,10 @@ fn native_range_formatter_formats_selected_simple_method_chain_line() {
 fn native_range_formatter_wraps_selected_simple_call_line_by_width() {
     let formatter = NativeFormatter::new();
     let source = "$x=1;\nreturn $object->wrap($alpha,$beta,$gamma);\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 42));
+    let range = byte_range(source, 1, 0, 1, 42);
     let config = FormatConfig { line_width: 18, indent_width: 2, ..FormatConfig::default() };
 
-    let result = formatter.format_range(source, range, &config);
+    let result = formatter.format_range(source, range.clone(), &config);
 
     assert!(result.changed);
     assert_eq!(
@@ -627,9 +624,9 @@ fn native_range_formatter_wraps_selected_simple_call_line_by_width() {
 fn native_range_formatter_treats_end_line_at_character_zero_as_exclusive() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nmy$y=2;\n";
-    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(1, 0));
+    let range = byte_range(source, 0, 0, 1, 0);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert_eq!(result.formatted, "my $x = 1;\nmy$y=2;\n");
     assert_eq!(result.edits.len(), 1);
@@ -1046,9 +1043,9 @@ fn native_formatter_expands_simple_unless_else_blocks() {
 fn native_range_formatter_formats_selected_simple_subroutine_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nsub answer{our@y;return@y;}\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 27));
+    let range = byte_range(source, 1, 0, 1, 27);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my$x=1;\nsub answer {\n    our @y;\n    return @y;\n}\n");
@@ -1061,9 +1058,9 @@ fn native_range_formatter_formats_selected_simple_subroutine_line() {
 fn native_range_formatter_formats_selected_simple_if_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nif($ok){return$x;}\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 18));
+    let range = byte_range(source, 1, 0, 1, 18);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my$x=1;\nif ($ok) {\n    return $x;\n}\n");
@@ -1076,9 +1073,9 @@ fn native_range_formatter_formats_selected_simple_if_line() {
 fn native_range_formatter_formats_selected_simple_while_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nwhile($ok){return$x;}\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 21));
+    let range = byte_range(source, 1, 0, 1, 21);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my$x=1;\nwhile ($ok) {\n    return $x;\n}\n");
@@ -1091,9 +1088,9 @@ fn native_range_formatter_formats_selected_simple_while_line() {
 fn native_range_formatter_formats_selected_simple_while_continue_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nwhile($ok){next;}continue{last;}\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 32));
+    let range = byte_range(source, 1, 0, 1, 32);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my$x=1;\nwhile ($ok) {\n    next;\n} continue {\n    last;\n}\n");
@@ -1106,9 +1103,9 @@ fn native_range_formatter_formats_selected_simple_while_continue_line() {
 fn native_range_formatter_formats_selected_simple_unless_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nunless($ok){return$x;}\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 22));
+    let range = byte_range(source, 1, 0, 1, 22);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my$x=1;\nunless ($ok) {\n    return $x;\n}\n");
@@ -1121,9 +1118,9 @@ fn native_range_formatter_formats_selected_simple_unless_line() {
 fn native_range_formatter_formats_selected_simple_foreach_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nforeach my$item(@items){return$item;}\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 37));
+    let range = byte_range(source, 1, 0, 1, 37);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my$x=1;\nforeach my $item (@items) {\n    return $item;\n}\n");
@@ -1136,9 +1133,9 @@ fn native_range_formatter_formats_selected_simple_foreach_line() {
 fn native_range_formatter_formats_selected_simple_loop_control_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nforeach my$item(@items){next;last LOOP;redo;}\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 45));
+    let range = byte_range(source, 1, 0, 1, 45);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(
@@ -1157,12 +1154,9 @@ fn native_range_formatter_formats_selected_simple_loop_control_line() {
 fn native_range_formatter_formats_selected_simple_c_style_for_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nfor(my$i=0;$i<3;$i++){next;}\n";
-    let range = TextRange {
-        start: TextPosition { line: 1, character: 0 },
-        end: TextPosition { line: 1, character: 28 },
-    };
+    let range = byte_range(source, 1, 0, 1, 28);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(result.formatted, "my$x=1;\nfor (my $i = 0; $i < 3; $i++) {\n    next;\n}\n");
@@ -1174,12 +1168,9 @@ fn native_range_formatter_formats_selected_simple_c_style_for_line() {
 fn native_range_formatter_rejects_selected_invalid_c_style_for_continue_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nfor(my$i=0;$i<3;$i++){next;}continue{tick($i);}\n";
-    let range = TextRange {
-        start: TextPosition { line: 1, character: 0 },
-        end: TextPosition { line: 1, character: 47 },
-    };
+    let range = byte_range(source, 1, 0, 1, 47);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(!result.changed);
     assert_eq!(result.formatted, source);
@@ -1192,9 +1183,9 @@ fn native_range_formatter_rejects_selected_invalid_c_style_for_continue_line() {
 fn native_range_formatter_formats_selected_simple_if_else_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nif($ok){return 1;}else{return 0;}\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 33));
+    let range = byte_range(source, 1, 0, 1, 33);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(
@@ -1210,9 +1201,9 @@ fn native_range_formatter_formats_selected_simple_if_else_line() {
 fn native_range_formatter_formats_selected_simple_if_elsif_else_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nif($ok){return 1;}elsif($maybe){return 2;}else{return 0;}\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 57));
+    let range = byte_range(source, 1, 0, 1, 57);
 
-    let result = formatter.format_range(source, range, &FormatConfig::default());
+    let result = formatter.format_range(source, range.clone(), &FormatConfig::default());
 
     assert!(result.changed);
     assert_eq!(
@@ -1225,4 +1216,21 @@ fn native_range_formatter_formats_selected_simple_if_elsif_else_line() {
         result.edits[0].new_text,
         "if ($ok) {\n    return 1;\n} elsif ($maybe) {\n    return 2;\n} else {\n    return 0;\n}"
     );
+}
+
+// These layout fixtures use ASCII body columns; geometry enters the native API as exact bytes.
+fn byte_range(
+    source: &str,
+    start_line: usize,
+    start_column: usize,
+    end_line: usize,
+    end_column: usize,
+) -> perl_tidy::SourceByteRange {
+    let starts: Vec<_> =
+        std::iter::once(0).chain(source.match_indices('\n').map(|(at, _)| at + 1)).collect();
+    perl_tdd_support::must(perl_tidy::SourceByteRange::new(
+        &perl_tidy::ExactSource::new(source),
+        starts[start_line] + start_column,
+        starts[end_line] + end_column,
+    ))
 }

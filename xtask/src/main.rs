@@ -4678,7 +4678,7 @@ enum NativeFormatCommand {
     /// Run native formatter fixture checks and write JSON receipts.
     Check {
         /// Directory containing native formatter fixtures.
-        #[arg(long, default_value = "crates/perl-lsp-perltidy/tests/fixtures/native_formatter")]
+        #[arg(long, default_value = "crates/perl-tidy/tests/fixtures/native_formatter")]
         fixtures: PathBuf,
 
         /// Directory for native formatter receipts.
@@ -4773,7 +4773,7 @@ enum NativeToolingCommand {
     /// Write native formatter and critic status receipts.
     Status {
         /// Directory containing native formatter fixtures.
-        #[arg(long, default_value = "crates/perl-lsp-perltidy/tests/fixtures/native_formatter")]
+        #[arg(long, default_value = "crates/perl-tidy/tests/fixtures/native_formatter")]
         format_fixtures: PathBuf,
 
         /// Native-format fixture receipt to summarize.

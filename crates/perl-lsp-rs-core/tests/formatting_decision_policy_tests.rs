@@ -124,15 +124,8 @@ fn external_partial_range_refuses_without_native_substitution_or_spawn()
     assert_eq!(decision.outcome.disposition, FormatDisposition::Refused);
     assert_eq!(decision.outcome.reason, FormatReasonCode::UnsafeRange);
     assert_eq!(decision.outcome.identity.actual_engine, FormatEngine::Unknown);
-    assert_eq!(
-        decision.outcome.target,
-        FormatRequestTarget::Range {
-            range: perl_lsp_rs_core::tooling::perltidy::TextRange::new(
-                perl_lsp_rs_core::tooling::perltidy::TextPosition::new(0, 0),
-                perl_lsp_rs_core::tooling::perltidy::TextPosition::new(0, 8),
-            ),
-        },
-    );
+    assert_eq!(decision.outcome.target, FormatRequestTarget::UnadmittedRange);
+    assert!(decision.outcome.admitted.is_none());
     assert!(decision.document.edits.is_empty(), "unsafe ranges must not emit edits");
     assert_eq!(
         decision.document.text, "my$x=1;\nmy$y=2;\n",
@@ -213,7 +206,7 @@ fn invalid_range_admission_records_not_started_execution_without_substituting_do
     let decision = provider.format_range_decision("abcdef\n", &range, &options(), &context())?;
 
     assert_eq!(decision.outcome.disposition, FormatDisposition::Refused);
-    assert!(matches!(decision.outcome.target, FormatRequestTarget::Range { .. }));
+    assert_eq!(decision.outcome.target, FormatRequestTarget::UnadmittedRange);
     assert_eq!(decision.outcome.execution, FormatExecutionStrategy::NotStarted);
     assert_ne!(decision.outcome.target, FormatRequestTarget::Document);
     Ok(())
@@ -285,14 +278,13 @@ fn whitespace_options_edit_exactly_inside_the_admitted_bytes()
     );
     assert!(!invoked.load(Ordering::SeqCst), "native fallback must not spawn a subprocess");
 
-    // A partial interval whose end stops before the trailing spaces must stay
-    // a legitimate no-change: bytes outside the admitted interval are never
-    // rewritten by projection.
+    // Native byte admission refuses incomplete line bodies. The request remains
+    // exact and cannot acquire whitespace edits through projection.
     let partial = FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 10));
     let decision =
         provider.format_range_decision(source, &partial, &formatting_options, &context())?;
-    assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
-    assert_eq!(decision.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert_eq!(decision.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(decision.outcome.reason, FormatReasonCode::UnsafeRange);
     assert!(decision.document.edits.is_empty());
     assert_eq!(decision.document.text, source);
     Ok(())
@@ -320,8 +312,7 @@ fn native_range_composes_whitespace_options_after_native_formatting()
 }
 
 #[test]
-fn native_partial_range_that_widens_is_downgraded_without_edits()
--> Result<(), Box<dyn std::error::Error>> {
+fn native_partial_range_is_refused_before_any_widening() -> Result<(), Box<dyn std::error::Error>> {
     let provider =
         FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
     let source = "my$x=1;\n";
@@ -329,13 +320,12 @@ fn native_partial_range_that_widens_is_downgraded_without_edits()
 
     let decision = provider.format_range_decision(source, &range, &options(), &context())?;
 
-    assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
-    assert_eq!(decision.outcome.reason, FormatReasonCode::InstrumentFailure);
+    assert_eq!(decision.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(decision.outcome.reason, FormatReasonCode::UnsafeRange);
     assert!(decision.document.edits.is_empty());
     assert_eq!(decision.document.text, source);
-    // The engine rendered a change that containment then rejected. Because no
-    // edit is admitted, the withheld decision carries no applied-change
-    // summary — the intermediate evidence must not survive (#7585).
+    // The native engine never widens this partial target. Its explicit refusal
+    // carries neither edits nor change evidence.
     assert_eq!(decision.outcome.change.edit_count, 0);
     assert_eq!(decision.outcome.change.source_bytes_changed, 0);
     assert_eq!(decision.outcome.change.rendered_bytes_changed, 0);
@@ -668,7 +658,7 @@ fn every_terminal_decision_keeps_a_consistent_change_envelope()
     final_newline.insert_final_newline = Some(true);
 
     // (source, options) pairs spanning applied, legitimate no-change, whitespace
-    // fallback, refusal, and failed/not-proven paths.
+    // fallback and refusal paths.
     let documents = [
         ("my$x=1;\n", options()),              // native applied
         ("my $x = 1;\n", options()),           // native legitimate no-change
@@ -697,10 +687,9 @@ fn every_terminal_decision_keeps_a_consistent_change_envelope()
         assert_envelope_is_consistent("# trailing   \n", &decision);
     }
 
-    // A partial-line range whose line needs formatting: the engine emits a
-    // full-line edit, containment rejects it, and the decision is downgraded to
-    // not-proven with no edits. Without this case the withheld arm of the
-    // predicate below is never exercised.
+    // Exact native admission now rejects this partial-line request before it
+    // can emit an escaping full-line edit. The withheld result still has to
+    // carry unchanged bytes and a zero change summary.
     let containment_rejection =
         FormatRange::new(FormatPosition::new(0, 2), FormatPosition::new(0, 3));
     let decision = provider.format_range_decision(
@@ -709,7 +698,8 @@ fn every_terminal_decision_keeps_a_consistent_change_envelope()
         &options(),
         &context(),
     )?;
-    assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
+    assert_eq!(decision.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(decision.outcome.reason, FormatReasonCode::UnsafeRange);
     assert_envelope_is_consistent("my$x=1;\n", &decision);
 
     // The external adapter is the fourth terminal entry point. Drive it to a
@@ -780,4 +770,60 @@ fn assert_envelope_is_consistent(
             );
         }
     }
+}
+
+#[test]
+fn whitespace_projection_cannot_change_preserved_heredoc_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = FormattingProvider::native();
+    let source = "my $value = <<'END';\nvalue  \nEND\n";
+    let mut requested = options();
+    requested.trim_trailing_whitespace = Some(true);
+    let decision = provider.format_document_decision(source, &requested, &context())?;
+    assert_eq!(decision.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(decision.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+    assert_eq!(decision.document.text, source);
+    assert!(decision.document.edits.is_empty());
+    assert!(decision.outcome.coverage.is_empty());
+    assert_eq!(decision.outcome.change.edit_count, 0);
+    Ok(())
+}
+
+#[test]
+fn preserved_literal_documents_remain_eligible_when_projection_changes_no_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = FormattingProvider::native();
+    for (source, trim) in [
+        ("my $value = <<'END';\nvalue  \nEND\n", None),
+        ("my $value = <<'END';\nvalue\nEND\n", Some(true)),
+    ] {
+        let mut requested = options();
+        requested.trim_trailing_whitespace = trim;
+        let decision = provider.format_document_decision(source, &requested, &context())?;
+        assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(decision.outcome.reason, FormatReasonCode::AlreadyFormattedPreservingLiterals);
+        assert_eq!(decision.document.text, source);
+        assert!(decision.document.edits.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn whitespace_projection_cannot_change_an_ordinary_multiline_string()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = FormattingProvider::native();
+    let source = "my$x=1;\nmy $text = \"value  \n\";\n";
+    let plain = provider.format_document_decision(source, &options(), &context())?;
+    assert_eq!(plain.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(plain.outcome.reason, FormatReasonCode::AppliedPreservingLiterals);
+    assert!(plain.document.text.contains("value  \n\";"));
+    let mut requested = options();
+    requested.trim_trailing_whitespace = Some(true);
+    let guarded = provider.format_document_decision(source, &requested, &context())?;
+    assert_eq!(guarded.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(guarded.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+    assert_eq!(guarded.document.text, source);
+    assert!(guarded.document.edits.is_empty());
+    assert!(guarded.outcome.coverage.is_empty());
+    Ok(())
 }

@@ -55,6 +55,8 @@ paths = [
   "crates/perl-dead-code/**",
   "crates/perl-diagnostics/**",
   "crates/perl-lsp-perltidy/**",
+  "crates/perl-tidy/**",
+  "crates/perl-tidy-perltidy/**",
   "crates/perl-lsp-rs/**",
   "crates/perl-lsp-rs-core/**",
   "crates/perl-lsp-ux-tests/**",

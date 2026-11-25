@@ -1,0 +1,997 @@
+pub mod perl_tidy
+pub mod perl_tidy::native
+pub enum perl_tidy::native::BracePlacement
+pub perl_tidy::native::BracePlacement::NextLine
+pub perl_tidy::native::BracePlacement::SameLine
+pub fn perl_tidy::BracePlacement::clone(&self) -> perl_tidy::BracePlacement
+pub fn perl_tidy::BracePlacement::eq(&self, other: &perl_tidy::BracePlacement) -> bool
+pub fn perl_tidy::BracePlacement::default() -> perl_tidy::BracePlacement
+pub fn perl_tidy::BracePlacement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::BracePlacement::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::BracePlacement::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::BracePlacement, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::EditPlanError
+pub perl_tidy::native::EditPlanError::DuplicateEdit
+pub perl_tidy::native::EditPlanError::InvalidCoverage
+pub perl_tidy::native::EditPlanError::InvalidOutcome
+pub perl_tidy::native::EditPlanError::InvalidWidening
+pub perl_tidy::native::EditPlanError::MissingPlan
+pub perl_tidy::native::EditPlanError::MixedSource
+pub perl_tidy::native::EditPlanError::NotCharacterBoundary
+pub perl_tidy::native::EditPlanError::OutOfBounds
+pub perl_tidy::native::EditPlanError::OutsideTarget
+pub perl_tidy::native::EditPlanError::OverlappingEdits
+pub perl_tidy::native::EditPlanError::RenderedMismatch
+pub perl_tidy::native::EditPlanError::ReversedRange
+pub perl_tidy::native::EditPlanError::StaleSource
+pub perl_tidy::native::EditPlanError::UnsupportedSchema
+pub fn perl_tidy::EditPlanError::clone(&self) -> perl_tidy::EditPlanError
+pub fn perl_tidy::EditPlanError::eq(&self, other: &perl_tidy::EditPlanError) -> bool
+pub fn perl_tidy::EditPlanError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::EditPlanError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::EditPlanError::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::EditPlanError::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::EditPlanError, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::ElsePlacement
+pub perl_tidy::native::ElsePlacement::Cuddled
+pub perl_tidy::native::ElsePlacement::SeparateLine
+pub fn perl_tidy::ElsePlacement::clone(&self) -> perl_tidy::ElsePlacement
+pub fn perl_tidy::ElsePlacement::eq(&self, other: &perl_tidy::ElsePlacement) -> bool
+pub fn perl_tidy::ElsePlacement::default() -> perl_tidy::ElsePlacement
+pub fn perl_tidy::ElsePlacement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::ElsePlacement::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::ElsePlacement::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::ElsePlacement, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::FinalNewline
+pub perl_tidy::native::FinalNewline::Insert
+pub perl_tidy::native::FinalNewline::Preserve
+pub perl_tidy::native::FinalNewline::Trim
+pub fn perl_tidy::FinalNewline::clone(&self) -> perl_tidy::FinalNewline
+pub fn perl_tidy::FinalNewline::eq(&self, other: &perl_tidy::FinalNewline) -> bool
+pub fn perl_tidy::FinalNewline::default() -> perl_tidy::FinalNewline
+pub fn perl_tidy::FinalNewline::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FinalNewline::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FinalNewline::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FinalNewline, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::FormatDiagnosticSeverity
+pub perl_tidy::native::FormatDiagnosticSeverity::Error
+pub perl_tidy::native::FormatDiagnosticSeverity::Info
+pub perl_tidy::native::FormatDiagnosticSeverity::Warning
+pub fn perl_tidy::FormatDiagnosticSeverity::clone(&self) -> perl_tidy::FormatDiagnosticSeverity
+pub fn perl_tidy::FormatDiagnosticSeverity::eq(&self, other: &perl_tidy::FormatDiagnosticSeverity) -> bool
+pub fn perl_tidy::FormatDiagnosticSeverity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatDiagnosticSeverity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatDiagnosticSeverity::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatDiagnosticSeverity, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::FormatDisposition
+pub perl_tidy::native::FormatDisposition::Applied
+pub perl_tidy::native::FormatDisposition::FailedOrNotProven
+pub perl_tidy::native::FormatDisposition::NoChange
+pub perl_tidy::native::FormatDisposition::Refused
+pub fn perl_tidy::FormatDisposition::clone(&self) -> perl_tidy::FormatDisposition
+pub fn perl_tidy::FormatDisposition::eq(&self, other: &perl_tidy::FormatDisposition) -> bool
+pub fn perl_tidy::FormatDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatDisposition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_tidy::native::FormatDoc
+pub perl_tidy::native::FormatDoc::Group(alloc::vec::Vec<perl_tidy::FormatDoc>)
+pub perl_tidy::native::FormatDoc::HardLine
+pub perl_tidy::native::FormatDoc::IfBreak
+pub perl_tidy::native::FormatDoc::IfBreak::broken: alloc::boxed::Box<perl_tidy::FormatDoc>
+pub perl_tidy::native::FormatDoc::IfBreak::flat: alloc::boxed::Box<perl_tidy::FormatDoc>
+pub perl_tidy::native::FormatDoc::Indent(alloc::vec::Vec<perl_tidy::FormatDoc>)
+pub perl_tidy::native::FormatDoc::Line
+pub perl_tidy::native::FormatDoc::LiteralPreserve(alloc::string::String)
+pub perl_tidy::native::FormatDoc::SoftLine
+pub perl_tidy::native::FormatDoc::Space
+pub perl_tidy::native::FormatDoc::Text(alloc::string::String)
+pub fn perl_tidy::FormatDoc::group(parts: impl core::convert::Into<alloc::vec::Vec<perl_tidy::FormatDoc>>) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::if_break(broken: perl_tidy::FormatDoc, flat: perl_tidy::FormatDoc) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::indent(parts: impl core::convert::Into<alloc::vec::Vec<perl_tidy::FormatDoc>>) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::literal_preserve(value: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::render(&self, config: &perl_tidy::FormatConfig) -> alloc::string::String
+pub fn perl_tidy::FormatDoc::text(value: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::clone(&self) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::eq(&self, other: &perl_tidy::FormatDoc) -> bool
+pub fn perl_tidy::FormatDoc::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_tidy::native::FormatEngine
+pub perl_tidy::native::FormatEngine::Disabled
+pub perl_tidy::native::FormatEngine::ExternalLegacy
+pub perl_tidy::native::FormatEngine::Native
+pub perl_tidy::native::FormatEngine::Unknown
+pub fn perl_tidy::FormatEngine::clone(&self) -> perl_tidy::FormatEngine
+pub fn perl_tidy::FormatEngine::eq(&self, other: &perl_tidy::FormatEngine) -> bool
+pub fn perl_tidy::FormatEngine::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatEngine::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatEngine::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatEngine, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::FormatEvidenceState
+pub perl_tidy::native::FormatEvidenceState::Failed
+pub perl_tidy::native::FormatEvidenceState::NotApplicable
+pub perl_tidy::native::FormatEvidenceState::NotRun
+pub perl_tidy::native::FormatEvidenceState::PreservedPartially
+pub perl_tidy::native::FormatEvidenceState::Proven
+pub perl_tidy::native::FormatEvidenceState::Refused
+pub fn perl_tidy::FormatEvidenceState::clone(&self) -> perl_tidy::FormatEvidenceState
+pub fn perl_tidy::FormatEvidenceState::eq(&self, other: &perl_tidy::FormatEvidenceState) -> bool
+pub fn perl_tidy::FormatEvidenceState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatEvidenceState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatEvidenceState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatEvidenceState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::FormatExecutionStrategy
+pub perl_tidy::native::FormatExecutionStrategy::BoundedOnTypeIndentation
+pub perl_tidy::native::FormatExecutionStrategy::Disabled
+pub perl_tidy::native::FormatExecutionStrategy::ExternalPartialUnsupported
+pub perl_tidy::native::FormatExecutionStrategy::ExternalWholeDocument
+pub perl_tidy::native::FormatExecutionStrategy::NativeDocument
+pub perl_tidy::native::FormatExecutionStrategy::NativeMultiRangePlan
+pub perl_tidy::native::FormatExecutionStrategy::NativeRangeOrIsland
+pub perl_tidy::native::FormatExecutionStrategy::NotStarted
+pub fn perl_tidy::FormatExecutionStrategy::clone(&self) -> perl_tidy::FormatExecutionStrategy
+pub fn perl_tidy::FormatExecutionStrategy::eq(&self, other: &perl_tidy::FormatExecutionStrategy) -> bool
+pub fn perl_tidy::FormatExecutionStrategy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatExecutionStrategy::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatExecutionStrategy::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatExecutionStrategy, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::FormatLineEndingDisposition
+pub perl_tidy::native::FormatLineEndingDisposition::ChangedByFormatter
+pub perl_tidy::native::FormatLineEndingDisposition::NotChecked
+pub perl_tidy::native::FormatLineEndingDisposition::Preserved
+pub fn perl_tidy::FormatLineEndingDisposition::clone(&self) -> perl_tidy::FormatLineEndingDisposition
+pub fn perl_tidy::FormatLineEndingDisposition::eq(&self, other: &perl_tidy::FormatLineEndingDisposition) -> bool
+pub fn perl_tidy::FormatLineEndingDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatLineEndingDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatLineEndingDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatLineEndingDisposition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::FormatReasonCode
+pub perl_tidy::native::FormatReasonCode::AlreadyFormatted
+pub perl_tidy::native::FormatReasonCode::AlreadyFormattedPreservingLiterals
+pub perl_tidy::native::FormatReasonCode::Applied
+pub perl_tidy::native::FormatReasonCode::AppliedPreservingLiterals
+pub perl_tidy::native::FormatReasonCode::FormattedOutputParseError
+pub perl_tidy::native::FormatReasonCode::FormatterDisabled
+pub perl_tidy::native::FormatReasonCode::InstrumentFailure
+pub perl_tidy::native::FormatReasonCode::InvalidConfiguration
+pub perl_tidy::native::FormatReasonCode::LiteralPreservationUnsupported
+pub perl_tidy::native::FormatReasonCode::SourceParseError
+pub perl_tidy::native::FormatReasonCode::StaleSource
+pub perl_tidy::native::FormatReasonCode::UnsafeRange
+pub perl_tidy::native::FormatReasonCode::UnsupportedSyntax
+pub fn perl_tidy::FormatReasonCode::clone(&self) -> perl_tidy::FormatReasonCode
+pub fn perl_tidy::FormatReasonCode::eq(&self, other: &perl_tidy::FormatReasonCode) -> bool
+pub fn perl_tidy::FormatReasonCode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatReasonCode::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatReasonCode::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatReasonCode, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::FormatRequestTarget
+pub perl_tidy::native::FormatRequestTarget::Document
+pub perl_tidy::native::FormatRequestTarget::Range
+pub perl_tidy::native::FormatRequestTarget::Range::range: perl_tidy::SourceByteRange
+pub perl_tidy::native::FormatRequestTarget::UnadmittedRange
+pub fn perl_tidy::FormatRequestTarget::clone(&self) -> perl_tidy::FormatRequestTarget
+pub fn perl_tidy::FormatRequestTarget::eq(&self, other: &perl_tidy::FormatRequestTarget) -> bool
+pub fn perl_tidy::FormatRequestTarget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatRequestTarget::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatRequestTarget::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatRequestTarget, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::FormatterMode
+pub perl_tidy::native::FormatterMode::ExternalLegacy
+pub perl_tidy::native::FormatterMode::Native
+pub perl_tidy::native::FormatterMode::Off
+pub fn perl_tidy::FormatterMode::clone(&self) -> perl_tidy::FormatterMode
+pub fn perl_tidy::FormatterMode::eq(&self, other: &perl_tidy::FormatterMode) -> bool
+pub fn perl_tidy::FormatterMode::default() -> perl_tidy::FormatterMode
+pub fn perl_tidy::FormatterMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatterMode::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatterMode::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatterMode, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::KeywordSpacing
+pub perl_tidy::native::KeywordSpacing::Compact
+pub perl_tidy::native::KeywordSpacing::Space
+pub fn perl_tidy::KeywordSpacing::clone(&self) -> perl_tidy::KeywordSpacing
+pub fn perl_tidy::KeywordSpacing::eq(&self, other: &perl_tidy::KeywordSpacing) -> bool
+pub fn perl_tidy::KeywordSpacing::default() -> perl_tidy::KeywordSpacing
+pub fn perl_tidy::KeywordSpacing::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::KeywordSpacing::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::KeywordSpacing::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::KeywordSpacing, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::NativeConfigError
+pub perl_tidy::native::NativeConfigError::IndentWidth
+pub perl_tidy::native::NativeConfigError::LineWidth
+pub fn perl_tidy::NativeConfigError::clone(&self) -> perl_tidy::NativeConfigError
+pub fn perl_tidy::NativeConfigError::eq(&self, other: &perl_tidy::NativeConfigError) -> bool
+pub fn perl_tidy::NativeConfigError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativeConfigError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativeConfigError::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::NativeConfigError::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::NativeConfigError, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::native::TerminalChange
+pub perl_tidy::native::TerminalChange::Inserted
+pub perl_tidy::native::TerminalChange::LeftUnterminated
+pub perl_tidy::native::TerminalChange::Trimmed
+pub perl_tidy::native::TerminalChange::Unchanged
+pub fn perl_tidy::TerminalChange::clone(&self) -> perl_tidy::TerminalChange
+pub fn perl_tidy::TerminalChange::eq(&self, other: &perl_tidy::TerminalChange) -> bool
+pub fn perl_tidy::TerminalChange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_tidy::native::TerminalSequence
+pub perl_tidy::native::TerminalSequence::Cr
+pub perl_tidy::native::TerminalSequence::CrLf
+pub perl_tidy::native::TerminalSequence::Lf
+pub const fn perl_tidy::TerminalSequence::as_str(self) -> &'static str
+pub const fn perl_tidy::TerminalSequence::len_bytes(self) -> usize
+pub fn perl_tidy::TerminalSequence::clone(&self) -> perl_tidy::TerminalSequence
+pub fn perl_tidy::TerminalSequence::eq(&self, other: &perl_tidy::TerminalSequence) -> bool
+pub fn perl_tidy::TerminalSequence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::TerminalSequence::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_tidy::native::TrailingComma
+pub perl_tidy::native::TrailingComma::AddWhenWrapped
+pub perl_tidy::native::TrailingComma::Preserve
+pub fn perl_tidy::TrailingComma::clone(&self) -> perl_tidy::TrailingComma
+pub fn perl_tidy::TrailingComma::eq(&self, other: &perl_tidy::TrailingComma) -> bool
+pub fn perl_tidy::TrailingComma::default() -> perl_tidy::TrailingComma
+pub fn perl_tidy::TrailingComma::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::TrailingComma::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::TrailingComma::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::TrailingComma, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::ExactSource<'a>
+pub fn perl_tidy::ExactSource<'a>::identity(&self) -> &perl_tidy::FormatSourceIdentity
+pub fn perl_tidy::ExactSource<'a>::new(text: &'a str) -> perl_tidy::ExactSource<'a>
+pub fn perl_tidy::ExactSource<'a>::text(&self) -> &'a str
+pub fn perl_tidy::ExactSource<'a>::whole_document(&self) -> perl_tidy::SourceByteRange
+pub fn perl_tidy::ExactSource<'a>::with_identity(text: &'a str, identity: perl_tidy::FormatSourceIdentity) -> core::result::Result<perl_tidy::ExactSource<'a>, perl_tidy::EditPlanError>
+pub fn perl_tidy::ExactSource<'a>::clone(&self) -> perl_tidy::ExactSource<'a>
+pub fn perl_tidy::ExactSource<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::native::FinalNewlinePolicy
+pub perl_tidy::native::FinalNewlinePolicy::insert_final_newline: bool
+pub perl_tidy::native::FinalNewlinePolicy::trim_final_newlines: bool
+pub fn perl_tidy::FinalNewlinePolicy::clone(&self) -> perl_tidy::FinalNewlinePolicy
+pub fn perl_tidy::FinalNewlinePolicy::eq(&self, other: &perl_tidy::FinalNewlinePolicy) -> bool
+pub fn perl_tidy::FinalNewlinePolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::native::FormatChangeSummary
+pub perl_tidy::native::FormatChangeSummary::changed_lines: usize
+pub perl_tidy::native::FormatChangeSummary::edit_count: usize
+pub perl_tidy::native::FormatChangeSummary::rendered_bytes_changed: usize
+pub perl_tidy::native::FormatChangeSummary::source_bytes_changed: usize
+pub fn perl_tidy::FormatChangeSummary::clone(&self) -> perl_tidy::FormatChangeSummary
+pub fn perl_tidy::FormatChangeSummary::eq(&self, other: &perl_tidy::FormatChangeSummary) -> bool
+pub fn perl_tidy::FormatChangeSummary::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatChangeSummary::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatChangeSummary::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatChangeSummary, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatContext
+pub perl_tidy::native::FormatContext::source_generation: core::option::Option<u64>
+pub perl_tidy::native::FormatContext::source_id: core::option::Option<alloc::string::String>
+pub fn perl_tidy::FormatContext::new(source_id: core::option::Option<alloc::string::String>, source_generation: core::option::Option<u64>) -> perl_tidy::FormatContext
+pub fn perl_tidy::FormatContext::clone(&self) -> perl_tidy::FormatContext
+pub fn perl_tidy::FormatContext::eq(&self, other: &perl_tidy::FormatContext) -> bool
+pub fn perl_tidy::FormatContext::default() -> perl_tidy::FormatContext
+pub fn perl_tidy::FormatContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatContext::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatContext::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatContext, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatDiagnostic
+pub perl_tidy::native::FormatDiagnostic::code: alloc::string::String
+pub perl_tidy::native::FormatDiagnostic::message: alloc::string::String
+pub perl_tidy::native::FormatDiagnostic::range: core::option::Option<perl_tidy::SourceByteRange>
+pub perl_tidy::native::FormatDiagnostic::severity: perl_tidy::FormatDiagnosticSeverity
+pub fn perl_tidy::FormatDiagnostic::new(code: impl core::convert::Into<alloc::string::String>, severity: perl_tidy::FormatDiagnosticSeverity, range: core::option::Option<perl_tidy::SourceByteRange>, message: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatDiagnostic
+pub fn perl_tidy::FormatDiagnostic::clone(&self) -> perl_tidy::FormatDiagnostic
+pub fn perl_tidy::FormatDiagnostic::eq(&self, other: &perl_tidy::FormatDiagnostic) -> bool
+pub fn perl_tidy::FormatDiagnostic::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatDiagnostic::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatDiagnostic::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatDiagnostic, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatEdit
+pub perl_tidy::native::FormatEdit::new_text: alloc::string::String
+pub perl_tidy::native::FormatEdit::range: perl_tidy::SourceByteRange
+pub fn perl_tidy::FormatEdit::new(range: perl_tidy::SourceByteRange, new_text: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatEdit
+pub fn perl_tidy::FormatEdit::clone(&self) -> perl_tidy::FormatEdit
+pub fn perl_tidy::FormatEdit::eq(&self, other: &perl_tidy::FormatEdit) -> bool
+pub fn perl_tidy::FormatEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatEdit::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatEdit::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatEdit, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatEditPlan
+pub fn perl_tidy::FormatEditPlan::apply(&self, source: &perl_tidy::ExactSource<'_>) -> core::result::Result<alloc::string::String, perl_tidy::EditPlanError>
+pub fn perl_tidy::FormatEditPlan::coverage(&self) -> &[perl_tidy::SourceByteRange]
+pub fn perl_tidy::FormatEditPlan::edits(&self) -> &[perl_tidy::FormatEdit]
+pub const fn perl_tidy::FormatEditPlan::execution(&self) -> perl_tidy::FormatExecutionStrategy
+pub fn perl_tidy::FormatEditPlan::new(source: &perl_tidy::ExactSource<'_>, request: perl_tidy::FormatRequest, execution: perl_tidy::FormatExecutionStrategy, edits: alloc::vec::Vec<perl_tidy::FormatEdit>, rendered: &str) -> core::result::Result<perl_tidy::FormatEditPlan, perl_tidy::EditPlanError>
+pub fn perl_tidy::FormatEditPlan::predecessor(&self) -> &perl_tidy::FormatSourceIdentity
+pub fn perl_tidy::FormatEditPlan::rendered_digest(&self) -> &perl_source_identity::digest::ContentDigest
+pub fn perl_tidy::FormatEditPlan::request(&self) -> &perl_tidy::FormatRequest
+pub fn perl_tidy::FormatEditPlan::clone(&self) -> perl_tidy::FormatEditPlan
+pub fn perl_tidy::FormatEditPlan::eq(&self, other: &perl_tidy::FormatEditPlan) -> bool
+pub fn perl_tidy::FormatEditPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatEditPlan::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatEditPlan::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatEditPlan, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatIdentity
+pub perl_tidy::native::FormatIdentity::actual_engine: perl_tidy::FormatEngine
+pub perl_tidy::native::FormatIdentity::config_fingerprint: alloc::string::String
+pub perl_tidy::native::FormatIdentity::content_digest: alloc::string::String
+pub perl_tidy::native::FormatIdentity::requested_mode: perl_tidy::FormatterMode
+pub perl_tidy::native::FormatIdentity::source_generation: core::option::Option<u64>
+pub perl_tidy::native::FormatIdentity::source_id: core::option::Option<alloc::string::String>
+pub fn perl_tidy::FormatIdentity::clone(&self) -> perl_tidy::FormatIdentity
+pub fn perl_tidy::FormatIdentity::eq(&self, other: &perl_tidy::FormatIdentity) -> bool
+pub fn perl_tidy::FormatIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatIdentity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatIdentity::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatIdentity, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatOutcome
+pub perl_tidy::native::FormatOutcome::admitted: core::option::Option<perl_tidy::SourceByteRange>
+pub perl_tidy::native::FormatOutcome::change: perl_tidy::FormatChangeSummary
+pub perl_tidy::native::FormatOutcome::coverage: alloc::vec::Vec<perl_tidy::SourceByteRange>
+pub perl_tidy::native::FormatOutcome::disposition: perl_tidy::FormatDisposition
+pub perl_tidy::native::FormatOutcome::execution: perl_tidy::FormatExecutionStrategy
+pub perl_tidy::native::FormatOutcome::identity: perl_tidy::FormatIdentity
+pub perl_tidy::native::FormatOutcome::next_action: core::option::Option<alloc::string::String>
+pub perl_tidy::native::FormatOutcome::reason: perl_tidy::FormatReasonCode
+pub perl_tidy::native::FormatOutcome::safety: perl_tidy::FormatSafetyEvidence
+pub perl_tidy::native::FormatOutcome::source: perl_tidy::FormatSourceIdentity
+pub perl_tidy::native::FormatOutcome::target: perl_tidy::FormatRequestTarget
+pub perl_tidy::native::FormatOutcome::widening: core::option::Option<perl_tidy::TargetWidening>
+pub fn perl_tidy::FormatOutcome::clone(&self) -> perl_tidy::FormatOutcome
+pub fn perl_tidy::FormatOutcome::eq(&self, other: &perl_tidy::FormatOutcome) -> bool
+pub fn perl_tidy::FormatOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatOutcome::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatOutcome::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatOutcome, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatRequest
+pub perl_tidy::native::FormatRequest::admitted: perl_tidy::SourceByteRange
+pub perl_tidy::native::FormatRequest::requested: perl_tidy::FormatRequestTarget
+pub perl_tidy::native::FormatRequest::widening: core::option::Option<perl_tidy::TargetWidening>
+pub fn perl_tidy::FormatRequest::document(source: &perl_tidy::ExactSource<'_>) -> perl_tidy::FormatRequest
+pub fn perl_tidy::FormatRequest::range(source: &perl_tidy::ExactSource<'_>, range: perl_tidy::SourceByteRange) -> core::result::Result<perl_tidy::FormatRequest, perl_tidy::EditPlanError>
+pub fn perl_tidy::FormatRequest::validate(&self, source: &perl_tidy::ExactSource<'_>) -> core::result::Result<(), perl_tidy::EditPlanError>
+pub fn perl_tidy::FormatRequest::clone(&self) -> perl_tidy::FormatRequest
+pub fn perl_tidy::FormatRequest::eq(&self, other: &perl_tidy::FormatRequest) -> bool
+pub fn perl_tidy::FormatRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatRequest::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatRequest::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatRequest, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatResult
+pub perl_tidy::native::FormatResult::changed: bool
+pub perl_tidy::native::FormatResult::diagnostics: alloc::vec::Vec<perl_tidy::FormatDiagnostic>
+pub perl_tidy::native::FormatResult::edits: alloc::vec::Vec<perl_tidy::FormatEdit>
+pub perl_tidy::native::FormatResult::formatted: alloc::string::String
+pub fn perl_tidy::FormatResult::replace_document(source: &str, formatted: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatResult
+pub fn perl_tidy::FormatResult::unchanged(source: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatResult
+pub fn perl_tidy::FormatResult::unsafe_to_format(source: impl core::convert::Into<alloc::string::String>, code: impl core::convert::Into<alloc::string::String>, message: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatResult
+pub fn perl_tidy::FormatResult::clone(&self) -> perl_tidy::FormatResult
+pub fn perl_tidy::FormatResult::eq(&self, other: &perl_tidy::FormatResult) -> bool
+pub fn perl_tidy::FormatResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatResult, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatSafetyEvidence
+pub perl_tidy::native::FormatSafetyEvidence::line_endings: perl_tidy::FormatLineEndingDisposition
+pub perl_tidy::native::FormatSafetyEvidence::literal_preservation: perl_tidy::FormatEvidenceState
+pub perl_tidy::native::FormatSafetyEvidence::parse_after: perl_tidy::FormatEvidenceState
+pub perl_tidy::native::FormatSafetyEvidence::parse_before: perl_tidy::FormatEvidenceState
+pub perl_tidy::native::FormatSafetyEvidence::utf8: perl_tidy::FormatEvidenceState
+pub fn perl_tidy::FormatSafetyEvidence::clone(&self) -> perl_tidy::FormatSafetyEvidence
+pub fn perl_tidy::FormatSafetyEvidence::eq(&self, other: &perl_tidy::FormatSafetyEvidence) -> bool
+pub fn perl_tidy::FormatSafetyEvidence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatSafetyEvidence::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatSafetyEvidence::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatSafetyEvidence, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::FormatSourceIdentity
+pub perl_tidy::native::FormatSourceIdentity::content: perl_source_identity::digest::ContentDigest
+pub perl_tidy::native::FormatSourceIdentity::generation: perl_source_identity::generation::SourceGeneration
+pub perl_tidy::native::FormatSourceIdentity::logical_source: core::option::Option<perl_source_identity::ids::LogicalSourceId>
+pub fn perl_tidy::FormatSourceIdentity::content_only(source: &str) -> perl_tidy::FormatSourceIdentity
+pub fn perl_tidy::FormatSourceIdentity::revision(&self) -> core::option::Option<perl_source_identity::generation::ContentRevision>
+pub fn perl_tidy::FormatSourceIdentity::clone(&self) -> perl_tidy::FormatSourceIdentity
+pub fn perl_tidy::FormatSourceIdentity::eq(&self, other: &perl_tidy::FormatSourceIdentity) -> bool
+pub fn perl_tidy::FormatSourceIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatSourceIdentity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatSourceIdentity::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatSourceIdentity, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::NativeFormatConfig
+pub perl_tidy::native::NativeFormatConfig::brace_placement: perl_tidy::BracePlacement
+pub perl_tidy::native::NativeFormatConfig::else_placement: perl_tidy::ElsePlacement
+pub perl_tidy::native::NativeFormatConfig::final_newline: perl_tidy::FinalNewline
+pub perl_tidy::native::NativeFormatConfig::indent_width: u32
+pub perl_tidy::native::NativeFormatConfig::keyword_spacing: perl_tidy::KeywordSpacing
+pub perl_tidy::native::NativeFormatConfig::line_width: u32
+pub perl_tidy::native::NativeFormatConfig::trailing_comma: perl_tidy::TrailingComma
+pub perl_tidy::native::NativeFormatConfig::use_tabs: bool
+pub fn perl_tidy::NativeFormatConfig::validate(&self) -> core::result::Result<(), perl_tidy::NativeConfigError>
+pub fn perl_tidy::NativeFormatConfig::clone(&self) -> perl_tidy::NativeFormatConfig
+pub fn perl_tidy::NativeFormatConfig::eq(&self, other: &perl_tidy::NativeFormatConfig) -> bool
+pub fn perl_tidy::NativeFormatConfig::default() -> perl_tidy::NativeFormatConfig
+pub fn perl_tidy::NativeFormatConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativeFormatConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::NativeFormatConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::NativeFormatConfig, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::NativeFormatter
+pub fn perl_tidy::NativeFormatter::format(&self, source: &perl_tidy::ExactSource<'_>, request: &perl_tidy::FormatRequest, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_document_typed(&self, source: &str, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_document_typed_with_counters(&self, source: &str, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext, counters: &mut perl_tidy::NativePipelineCounters) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_range_typed(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_range_typed_with_counters(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext, counters: &mut perl_tidy::NativePipelineCounters) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_with_counters(&self, source: &perl_tidy::ExactSource<'_>, request: &perl_tidy::FormatRequest, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext, counters: &mut perl_tidy::NativePipelineCounters) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::new() -> perl_tidy::NativeFormatter
+pub fn perl_tidy::NativeFormatter::clone(&self) -> perl_tidy::NativeFormatter
+pub fn perl_tidy::NativeFormatter::default() -> perl_tidy::NativeFormatter
+pub fn perl_tidy::NativeFormatter::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativeFormatter::format_document(&self, source: &str, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::NativeFormatter::format_range(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub struct perl_tidy::native::NativePipelineCounters
+pub perl_tidy::native::NativePipelineCounters::edits_derived: u64
+pub perl_tidy::native::NativePipelineCounters::elapsed: core::time::Duration
+pub perl_tidy::native::NativePipelineCounters::formatted_output_parse_gate_invocations: u64
+pub perl_tidy::native::NativePipelineCounters::gate_nodes_observed: u64
+pub perl_tidy::native::NativePipelineCounters::layout_groups_fitted: u64
+pub perl_tidy::native::NativePipelineCounters::lines_processed: u64
+pub perl_tidy::native::NativePipelineCounters::parse_gate_invocations: u64
+pub perl_tidy::native::NativePipelineCounters::peak_depth: u64
+pub perl_tidy::native::NativePipelineCounters::pipeline_invocations: u64
+pub perl_tidy::native::NativePipelineCounters::replacement_bytes: u64
+pub perl_tidy::native::NativePipelineCounters::source_parse_gate_invocations: u64
+pub const fn perl_tidy::NativePipelineCounters::clock_tag(&self) -> &'static str
+pub const fn perl_tidy::NativePipelineCounters::schema(&self) -> &'static str
+pub fn perl_tidy::NativePipelineCounters::clone(&self) -> perl_tidy::NativePipelineCounters
+pub fn perl_tidy::NativePipelineCounters::eq(&self, other: &perl_tidy::NativePipelineCounters) -> bool
+pub fn perl_tidy::NativePipelineCounters::default() -> perl_tidy::NativePipelineCounters
+pub fn perl_tidy::NativePipelineCounters::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativePipelineCounters::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::NativePipelineCounters::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::NativePipelineCounters, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::PipelineCollectorScope
+pub fn perl_tidy::PipelineCollectorScope::install() -> perl_tidy::PipelineCollectorScope
+pub fn perl_tidy::PipelineCollectorScope::merge_into(self, counters: &mut perl_tidy::NativePipelineCounters)
+pub fn perl_tidy::PipelineCollectorScope::drop(&mut self)
+pub struct perl_tidy::native::PolicyOutcome
+pub perl_tidy::native::PolicyOutcome::bytes: alloc::string::String
+pub perl_tidy::native::PolicyOutcome::evidence: perl_tidy::TerminalNewlineEvidence
+pub fn perl_tidy::PolicyOutcome::clone(&self) -> perl_tidy::PolicyOutcome
+pub fn perl_tidy::PolicyOutcome::eq(&self, other: &perl_tidy::PolicyOutcome) -> bool
+pub fn perl_tidy::PolicyOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::native::SourceByteRange
+pub fn perl_tidy::SourceByteRange::contains(&self, other: &perl_tidy::SourceByteRange) -> bool
+pub const fn perl_tidy::SourceByteRange::end(&self) -> usize
+pub const fn perl_tidy::SourceByteRange::is_empty(&self) -> bool
+pub fn perl_tidy::SourceByteRange::new(source: &perl_tidy::ExactSource<'_>, start: usize, end: usize) -> core::result::Result<perl_tidy::SourceByteRange, perl_tidy::EditPlanError>
+pub fn perl_tidy::SourceByteRange::source(&self) -> &perl_tidy::FormatSourceIdentity
+pub const fn perl_tidy::SourceByteRange::start(&self) -> usize
+pub fn perl_tidy::SourceByteRange::validate(&self, source: &perl_tidy::ExactSource<'_>) -> core::result::Result<(), perl_tidy::EditPlanError>
+pub fn perl_tidy::SourceByteRange::clone(&self) -> perl_tidy::SourceByteRange
+pub fn perl_tidy::SourceByteRange::eq(&self, other: &perl_tidy::SourceByteRange) -> bool
+pub fn perl_tidy::SourceByteRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::SourceByteRange::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::SourceByteRange::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::SourceByteRange, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::TargetWidening
+pub perl_tidy::native::TargetWidening::owner: alloc::string::String
+pub perl_tidy::native::TargetWidening::reason: alloc::string::String
+pub fn perl_tidy::TargetWidening::clone(&self) -> perl_tidy::TargetWidening
+pub fn perl_tidy::TargetWidening::eq(&self, other: &perl_tidy::TargetWidening) -> bool
+pub fn perl_tidy::TargetWidening::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::TargetWidening::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::TargetWidening::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::TargetWidening, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::native::TerminalNewlineEvidence
+pub perl_tidy::native::TerminalNewlineEvidence::change: perl_tidy::TerminalChange
+pub perl_tidy::native::TerminalNewlineEvidence::final_run: perl_tidy::TerminalRun
+pub perl_tidy::native::TerminalNewlineEvidence::inserted: core::option::Option<perl_tidy::TerminalSequence>
+pub perl_tidy::native::TerminalNewlineEvidence::predecessor: perl_tidy::TerminalRun
+pub perl_tidy::native::TerminalNewlineEvidence::removed_count: usize
+pub fn perl_tidy::TerminalNewlineEvidence::is_consistent(&self) -> bool
+pub fn perl_tidy::TerminalNewlineEvidence::is_no_change(&self) -> bool
+pub fn perl_tidy::TerminalNewlineEvidence::clone(&self) -> perl_tidy::TerminalNewlineEvidence
+pub fn perl_tidy::TerminalNewlineEvidence::eq(&self, other: &perl_tidy::TerminalNewlineEvidence) -> bool
+pub fn perl_tidy::TerminalNewlineEvidence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::native::TerminalRun
+pub fn perl_tidy::TerminalRun::final_sequence(&self) -> core::option::Option<perl_tidy::TerminalSequence>
+pub fn perl_tidy::TerminalRun::is_empty(&self) -> bool
+pub fn perl_tidy::TerminalRun::len(&self) -> usize
+pub fn perl_tidy::TerminalRun::sequences(&self) -> &[perl_tidy::TerminalSequence]
+pub fn perl_tidy::TerminalRun::clone(&self) -> perl_tidy::TerminalRun
+pub fn perl_tidy::TerminalRun::eq(&self, other: &perl_tidy::TerminalRun) -> bool
+pub fn perl_tidy::TerminalRun::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::native::TypedFormatResult
+pub perl_tidy::native::TypedFormatResult::outcome: perl_tidy::FormatOutcome
+pub perl_tidy::native::TypedFormatResult::plan: core::option::Option<perl_tidy::FormatEditPlan>
+pub perl_tidy::native::TypedFormatResult::result: perl_tidy::FormatResult
+pub fn perl_tidy::TypedFormatResult::apply_exact(&self, source: &perl_tidy::ExactSource<'_>) -> core::result::Result<alloc::string::String, perl_tidy::EditPlanError>
+pub fn perl_tidy::TypedFormatResult::apply_to(&self, source: &str) -> core::result::Result<alloc::string::String, perl_tidy::EditPlanError>
+pub fn perl_tidy::TypedFormatResult::into_result(self) -> perl_tidy::FormatResult
+pub fn perl_tidy::TypedFormatResult::clone(&self) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::TypedFormatResult::eq(&self, other: &perl_tidy::TypedFormatResult) -> bool
+pub fn perl_tidy::TypedFormatResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::TypedFormatResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::TypedFormatResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::TypedFormatResult, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_tidy::native::COUNTER_CLOCK_TAG: &str
+pub const perl_tidy::native::COUNTER_SCHEMA_V1: &str
+pub const perl_tidy::native::FORMAT_EDIT_PLAN_SCHEMA: u32
+pub const perl_tidy::native::MAX_NATIVE_INDENT_WIDTH: u32
+pub const perl_tidy::native::MAX_NATIVE_LINE_WIDTH: u32
+pub const perl_tidy::native::MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1: u64
+pub const perl_tidy::native::SCALING_ABSOLUTE_SLACK_V1: u64
+pub const perl_tidy::native::SCALING_RATIO_BOUND_V1: u64
+pub trait perl_tidy::native::PerlFormatter
+pub fn perl_tidy::native::PerlFormatter::format_document(&self, source: &str, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::native::PerlFormatter::format_range(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::NativeFormatter::format_document(&self, source: &str, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::NativeFormatter::format_range(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::native::apply_terminal_sequence_policy(source: &str, policy: perl_tidy::FinalNewlinePolicy, explicit_convention: core::option::Option<perl_tidy::TerminalSequence>) -> perl_tidy::PolicyOutcome
+pub fn perl_tidy::native::exceeds_replacement_envelope_v1(source_bytes: u64, replacement_bytes: u64) -> bool
+pub const fn perl_tidy::native::execution_for_requested_native_target(target: &perl_tidy::FormatRequestTarget) -> perl_tidy::FormatExecutionStrategy
+pub fn perl_tidy::native::inferred_line_ending(source: &str) -> &'static str
+pub fn perl_tidy::native::inferred_line_ending_at(source: &str, offset: usize) -> &'static str
+pub fn perl_tidy::native::native_config_fingerprint(config: &perl_tidy::FormatConfig) -> alloc::string::String
+pub fn perl_tidy::native::source_convention(source: &str) -> core::option::Option<perl_tidy::TerminalSequence>
+pub fn perl_tidy::native::trailing_run(source: &str) -> perl_tidy::TerminalRun
+pub type perl_tidy::native::FormatConfig = perl_tidy::NativeFormatConfig
+pub type perl_tidy::native::FormatterSelection = perl_tidy::FormatterMode
+pub enum perl_tidy::BracePlacement
+pub perl_tidy::BracePlacement::NextLine
+pub perl_tidy::BracePlacement::SameLine
+pub fn perl_tidy::BracePlacement::clone(&self) -> perl_tidy::BracePlacement
+pub fn perl_tidy::BracePlacement::eq(&self, other: &perl_tidy::BracePlacement) -> bool
+pub fn perl_tidy::BracePlacement::default() -> perl_tidy::BracePlacement
+pub fn perl_tidy::BracePlacement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::BracePlacement::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::BracePlacement::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::BracePlacement, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::EditPlanError
+pub perl_tidy::EditPlanError::DuplicateEdit
+pub perl_tidy::EditPlanError::InvalidCoverage
+pub perl_tidy::EditPlanError::InvalidOutcome
+pub perl_tidy::EditPlanError::InvalidWidening
+pub perl_tidy::EditPlanError::MissingPlan
+pub perl_tidy::EditPlanError::MixedSource
+pub perl_tidy::EditPlanError::NotCharacterBoundary
+pub perl_tidy::EditPlanError::OutOfBounds
+pub perl_tidy::EditPlanError::OutsideTarget
+pub perl_tidy::EditPlanError::OverlappingEdits
+pub perl_tidy::EditPlanError::RenderedMismatch
+pub perl_tidy::EditPlanError::ReversedRange
+pub perl_tidy::EditPlanError::StaleSource
+pub perl_tidy::EditPlanError::UnsupportedSchema
+pub fn perl_tidy::EditPlanError::clone(&self) -> perl_tidy::EditPlanError
+pub fn perl_tidy::EditPlanError::eq(&self, other: &perl_tidy::EditPlanError) -> bool
+pub fn perl_tidy::EditPlanError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::EditPlanError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::EditPlanError::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::EditPlanError::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::EditPlanError, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::ElsePlacement
+pub perl_tidy::ElsePlacement::Cuddled
+pub perl_tidy::ElsePlacement::SeparateLine
+pub fn perl_tidy::ElsePlacement::clone(&self) -> perl_tidy::ElsePlacement
+pub fn perl_tidy::ElsePlacement::eq(&self, other: &perl_tidy::ElsePlacement) -> bool
+pub fn perl_tidy::ElsePlacement::default() -> perl_tidy::ElsePlacement
+pub fn perl_tidy::ElsePlacement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::ElsePlacement::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::ElsePlacement::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::ElsePlacement, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::FinalNewline
+pub perl_tidy::FinalNewline::Insert
+pub perl_tidy::FinalNewline::Preserve
+pub perl_tidy::FinalNewline::Trim
+pub fn perl_tidy::FinalNewline::clone(&self) -> perl_tidy::FinalNewline
+pub fn perl_tidy::FinalNewline::eq(&self, other: &perl_tidy::FinalNewline) -> bool
+pub fn perl_tidy::FinalNewline::default() -> perl_tidy::FinalNewline
+pub fn perl_tidy::FinalNewline::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FinalNewline::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FinalNewline::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FinalNewline, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::FormatDiagnosticSeverity
+pub perl_tidy::FormatDiagnosticSeverity::Error
+pub perl_tidy::FormatDiagnosticSeverity::Info
+pub perl_tidy::FormatDiagnosticSeverity::Warning
+pub fn perl_tidy::FormatDiagnosticSeverity::clone(&self) -> perl_tidy::FormatDiagnosticSeverity
+pub fn perl_tidy::FormatDiagnosticSeverity::eq(&self, other: &perl_tidy::FormatDiagnosticSeverity) -> bool
+pub fn perl_tidy::FormatDiagnosticSeverity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatDiagnosticSeverity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatDiagnosticSeverity::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatDiagnosticSeverity, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::FormatDisposition
+pub perl_tidy::FormatDisposition::Applied
+pub perl_tidy::FormatDisposition::FailedOrNotProven
+pub perl_tidy::FormatDisposition::NoChange
+pub perl_tidy::FormatDisposition::Refused
+pub fn perl_tidy::FormatDisposition::clone(&self) -> perl_tidy::FormatDisposition
+pub fn perl_tidy::FormatDisposition::eq(&self, other: &perl_tidy::FormatDisposition) -> bool
+pub fn perl_tidy::FormatDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatDisposition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_tidy::FormatDoc
+pub perl_tidy::FormatDoc::Group(alloc::vec::Vec<perl_tidy::FormatDoc>)
+pub perl_tidy::FormatDoc::HardLine
+pub perl_tidy::FormatDoc::IfBreak
+pub perl_tidy::FormatDoc::IfBreak::broken: alloc::boxed::Box<perl_tidy::FormatDoc>
+pub perl_tidy::FormatDoc::IfBreak::flat: alloc::boxed::Box<perl_tidy::FormatDoc>
+pub perl_tidy::FormatDoc::Indent(alloc::vec::Vec<perl_tidy::FormatDoc>)
+pub perl_tidy::FormatDoc::Line
+pub perl_tidy::FormatDoc::LiteralPreserve(alloc::string::String)
+pub perl_tidy::FormatDoc::SoftLine
+pub perl_tidy::FormatDoc::Space
+pub perl_tidy::FormatDoc::Text(alloc::string::String)
+pub fn perl_tidy::FormatDoc::group(parts: impl core::convert::Into<alloc::vec::Vec<perl_tidy::FormatDoc>>) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::if_break(broken: perl_tidy::FormatDoc, flat: perl_tidy::FormatDoc) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::indent(parts: impl core::convert::Into<alloc::vec::Vec<perl_tidy::FormatDoc>>) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::literal_preserve(value: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::render(&self, config: &perl_tidy::FormatConfig) -> alloc::string::String
+pub fn perl_tidy::FormatDoc::text(value: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::clone(&self) -> perl_tidy::FormatDoc
+pub fn perl_tidy::FormatDoc::eq(&self, other: &perl_tidy::FormatDoc) -> bool
+pub fn perl_tidy::FormatDoc::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_tidy::FormatEngine
+pub perl_tidy::FormatEngine::Disabled
+pub perl_tidy::FormatEngine::ExternalLegacy
+pub perl_tidy::FormatEngine::Native
+pub perl_tidy::FormatEngine::Unknown
+pub fn perl_tidy::FormatEngine::clone(&self) -> perl_tidy::FormatEngine
+pub fn perl_tidy::FormatEngine::eq(&self, other: &perl_tidy::FormatEngine) -> bool
+pub fn perl_tidy::FormatEngine::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatEngine::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatEngine::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatEngine, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::FormatEvidenceState
+pub perl_tidy::FormatEvidenceState::Failed
+pub perl_tidy::FormatEvidenceState::NotApplicable
+pub perl_tidy::FormatEvidenceState::NotRun
+pub perl_tidy::FormatEvidenceState::PreservedPartially
+pub perl_tidy::FormatEvidenceState::Proven
+pub perl_tidy::FormatEvidenceState::Refused
+pub fn perl_tidy::FormatEvidenceState::clone(&self) -> perl_tidy::FormatEvidenceState
+pub fn perl_tidy::FormatEvidenceState::eq(&self, other: &perl_tidy::FormatEvidenceState) -> bool
+pub fn perl_tidy::FormatEvidenceState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatEvidenceState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatEvidenceState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatEvidenceState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::FormatExecutionStrategy
+pub perl_tidy::FormatExecutionStrategy::BoundedOnTypeIndentation
+pub perl_tidy::FormatExecutionStrategy::Disabled
+pub perl_tidy::FormatExecutionStrategy::ExternalPartialUnsupported
+pub perl_tidy::FormatExecutionStrategy::ExternalWholeDocument
+pub perl_tidy::FormatExecutionStrategy::NativeDocument
+pub perl_tidy::FormatExecutionStrategy::NativeMultiRangePlan
+pub perl_tidy::FormatExecutionStrategy::NativeRangeOrIsland
+pub perl_tidy::FormatExecutionStrategy::NotStarted
+pub fn perl_tidy::FormatExecutionStrategy::clone(&self) -> perl_tidy::FormatExecutionStrategy
+pub fn perl_tidy::FormatExecutionStrategy::eq(&self, other: &perl_tidy::FormatExecutionStrategy) -> bool
+pub fn perl_tidy::FormatExecutionStrategy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatExecutionStrategy::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatExecutionStrategy::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatExecutionStrategy, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::FormatLineEndingDisposition
+pub perl_tidy::FormatLineEndingDisposition::ChangedByFormatter
+pub perl_tidy::FormatLineEndingDisposition::NotChecked
+pub perl_tidy::FormatLineEndingDisposition::Preserved
+pub fn perl_tidy::FormatLineEndingDisposition::clone(&self) -> perl_tidy::FormatLineEndingDisposition
+pub fn perl_tidy::FormatLineEndingDisposition::eq(&self, other: &perl_tidy::FormatLineEndingDisposition) -> bool
+pub fn perl_tidy::FormatLineEndingDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatLineEndingDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatLineEndingDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatLineEndingDisposition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::FormatReasonCode
+pub perl_tidy::FormatReasonCode::AlreadyFormatted
+pub perl_tidy::FormatReasonCode::AlreadyFormattedPreservingLiterals
+pub perl_tidy::FormatReasonCode::Applied
+pub perl_tidy::FormatReasonCode::AppliedPreservingLiterals
+pub perl_tidy::FormatReasonCode::FormattedOutputParseError
+pub perl_tidy::FormatReasonCode::FormatterDisabled
+pub perl_tidy::FormatReasonCode::InstrumentFailure
+pub perl_tidy::FormatReasonCode::InvalidConfiguration
+pub perl_tidy::FormatReasonCode::LiteralPreservationUnsupported
+pub perl_tidy::FormatReasonCode::SourceParseError
+pub perl_tidy::FormatReasonCode::StaleSource
+pub perl_tidy::FormatReasonCode::UnsafeRange
+pub perl_tidy::FormatReasonCode::UnsupportedSyntax
+pub fn perl_tidy::FormatReasonCode::clone(&self) -> perl_tidy::FormatReasonCode
+pub fn perl_tidy::FormatReasonCode::eq(&self, other: &perl_tidy::FormatReasonCode) -> bool
+pub fn perl_tidy::FormatReasonCode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatReasonCode::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatReasonCode::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatReasonCode, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::FormatRequestTarget
+pub perl_tidy::FormatRequestTarget::Document
+pub perl_tidy::FormatRequestTarget::Range
+pub perl_tidy::FormatRequestTarget::Range::range: perl_tidy::SourceByteRange
+pub perl_tidy::FormatRequestTarget::UnadmittedRange
+pub fn perl_tidy::FormatRequestTarget::clone(&self) -> perl_tidy::FormatRequestTarget
+pub fn perl_tidy::FormatRequestTarget::eq(&self, other: &perl_tidy::FormatRequestTarget) -> bool
+pub fn perl_tidy::FormatRequestTarget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatRequestTarget::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatRequestTarget::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatRequestTarget, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::FormatterMode
+pub perl_tidy::FormatterMode::ExternalLegacy
+pub perl_tidy::FormatterMode::Native
+pub perl_tidy::FormatterMode::Off
+pub fn perl_tidy::FormatterMode::clone(&self) -> perl_tidy::FormatterMode
+pub fn perl_tidy::FormatterMode::eq(&self, other: &perl_tidy::FormatterMode) -> bool
+pub fn perl_tidy::FormatterMode::default() -> perl_tidy::FormatterMode
+pub fn perl_tidy::FormatterMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatterMode::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatterMode::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatterMode, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::KeywordSpacing
+pub perl_tidy::KeywordSpacing::Compact
+pub perl_tidy::KeywordSpacing::Space
+pub fn perl_tidy::KeywordSpacing::clone(&self) -> perl_tidy::KeywordSpacing
+pub fn perl_tidy::KeywordSpacing::eq(&self, other: &perl_tidy::KeywordSpacing) -> bool
+pub fn perl_tidy::KeywordSpacing::default() -> perl_tidy::KeywordSpacing
+pub fn perl_tidy::KeywordSpacing::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::KeywordSpacing::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::KeywordSpacing::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::KeywordSpacing, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::NativeConfigError
+pub perl_tidy::NativeConfigError::IndentWidth
+pub perl_tidy::NativeConfigError::LineWidth
+pub fn perl_tidy::NativeConfigError::clone(&self) -> perl_tidy::NativeConfigError
+pub fn perl_tidy::NativeConfigError::eq(&self, other: &perl_tidy::NativeConfigError) -> bool
+pub fn perl_tidy::NativeConfigError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativeConfigError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativeConfigError::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::NativeConfigError::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::NativeConfigError, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_tidy::TerminalChange
+pub perl_tidy::TerminalChange::Inserted
+pub perl_tidy::TerminalChange::LeftUnterminated
+pub perl_tidy::TerminalChange::Trimmed
+pub perl_tidy::TerminalChange::Unchanged
+pub fn perl_tidy::TerminalChange::clone(&self) -> perl_tidy::TerminalChange
+pub fn perl_tidy::TerminalChange::eq(&self, other: &perl_tidy::TerminalChange) -> bool
+pub fn perl_tidy::TerminalChange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_tidy::TerminalSequence
+pub perl_tidy::TerminalSequence::Cr
+pub perl_tidy::TerminalSequence::CrLf
+pub perl_tidy::TerminalSequence::Lf
+pub const fn perl_tidy::TerminalSequence::as_str(self) -> &'static str
+pub const fn perl_tidy::TerminalSequence::len_bytes(self) -> usize
+pub fn perl_tidy::TerminalSequence::clone(&self) -> perl_tidy::TerminalSequence
+pub fn perl_tidy::TerminalSequence::eq(&self, other: &perl_tidy::TerminalSequence) -> bool
+pub fn perl_tidy::TerminalSequence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::TerminalSequence::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_tidy::TrailingComma
+pub perl_tidy::TrailingComma::AddWhenWrapped
+pub perl_tidy::TrailingComma::Preserve
+pub fn perl_tidy::TrailingComma::clone(&self) -> perl_tidy::TrailingComma
+pub fn perl_tidy::TrailingComma::eq(&self, other: &perl_tidy::TrailingComma) -> bool
+pub fn perl_tidy::TrailingComma::default() -> perl_tidy::TrailingComma
+pub fn perl_tidy::TrailingComma::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::TrailingComma::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::TrailingComma::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::TrailingComma, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::ExactSource<'a>
+pub fn perl_tidy::ExactSource<'a>::identity(&self) -> &perl_tidy::FormatSourceIdentity
+pub fn perl_tidy::ExactSource<'a>::new(text: &'a str) -> perl_tidy::ExactSource<'a>
+pub fn perl_tidy::ExactSource<'a>::text(&self) -> &'a str
+pub fn perl_tidy::ExactSource<'a>::whole_document(&self) -> perl_tidy::SourceByteRange
+pub fn perl_tidy::ExactSource<'a>::with_identity(text: &'a str, identity: perl_tidy::FormatSourceIdentity) -> core::result::Result<perl_tidy::ExactSource<'a>, perl_tidy::EditPlanError>
+pub fn perl_tidy::ExactSource<'a>::clone(&self) -> perl_tidy::ExactSource<'a>
+pub fn perl_tidy::ExactSource<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::FinalNewlinePolicy
+pub perl_tidy::FinalNewlinePolicy::insert_final_newline: bool
+pub perl_tidy::FinalNewlinePolicy::trim_final_newlines: bool
+pub fn perl_tidy::FinalNewlinePolicy::clone(&self) -> perl_tidy::FinalNewlinePolicy
+pub fn perl_tidy::FinalNewlinePolicy::eq(&self, other: &perl_tidy::FinalNewlinePolicy) -> bool
+pub fn perl_tidy::FinalNewlinePolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::FormatChangeSummary
+pub perl_tidy::FormatChangeSummary::changed_lines: usize
+pub perl_tidy::FormatChangeSummary::edit_count: usize
+pub perl_tidy::FormatChangeSummary::rendered_bytes_changed: usize
+pub perl_tidy::FormatChangeSummary::source_bytes_changed: usize
+pub fn perl_tidy::FormatChangeSummary::clone(&self) -> perl_tidy::FormatChangeSummary
+pub fn perl_tidy::FormatChangeSummary::eq(&self, other: &perl_tidy::FormatChangeSummary) -> bool
+pub fn perl_tidy::FormatChangeSummary::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatChangeSummary::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatChangeSummary::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatChangeSummary, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatContext
+pub perl_tidy::FormatContext::source_generation: core::option::Option<u64>
+pub perl_tidy::FormatContext::source_id: core::option::Option<alloc::string::String>
+pub fn perl_tidy::FormatContext::new(source_id: core::option::Option<alloc::string::String>, source_generation: core::option::Option<u64>) -> perl_tidy::FormatContext
+pub fn perl_tidy::FormatContext::clone(&self) -> perl_tidy::FormatContext
+pub fn perl_tidy::FormatContext::eq(&self, other: &perl_tidy::FormatContext) -> bool
+pub fn perl_tidy::FormatContext::default() -> perl_tidy::FormatContext
+pub fn perl_tidy::FormatContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatContext::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatContext::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatContext, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatDiagnostic
+pub perl_tidy::FormatDiagnostic::code: alloc::string::String
+pub perl_tidy::FormatDiagnostic::message: alloc::string::String
+pub perl_tidy::FormatDiagnostic::range: core::option::Option<perl_tidy::SourceByteRange>
+pub perl_tidy::FormatDiagnostic::severity: perl_tidy::FormatDiagnosticSeverity
+pub fn perl_tidy::FormatDiagnostic::new(code: impl core::convert::Into<alloc::string::String>, severity: perl_tidy::FormatDiagnosticSeverity, range: core::option::Option<perl_tidy::SourceByteRange>, message: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatDiagnostic
+pub fn perl_tidy::FormatDiagnostic::clone(&self) -> perl_tidy::FormatDiagnostic
+pub fn perl_tidy::FormatDiagnostic::eq(&self, other: &perl_tidy::FormatDiagnostic) -> bool
+pub fn perl_tidy::FormatDiagnostic::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatDiagnostic::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatDiagnostic::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatDiagnostic, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatEdit
+pub perl_tidy::FormatEdit::new_text: alloc::string::String
+pub perl_tidy::FormatEdit::range: perl_tidy::SourceByteRange
+pub fn perl_tidy::FormatEdit::new(range: perl_tidy::SourceByteRange, new_text: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatEdit
+pub fn perl_tidy::FormatEdit::clone(&self) -> perl_tidy::FormatEdit
+pub fn perl_tidy::FormatEdit::eq(&self, other: &perl_tidy::FormatEdit) -> bool
+pub fn perl_tidy::FormatEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatEdit::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatEdit::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatEdit, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatEditPlan
+pub fn perl_tidy::FormatEditPlan::apply(&self, source: &perl_tidy::ExactSource<'_>) -> core::result::Result<alloc::string::String, perl_tidy::EditPlanError>
+pub fn perl_tidy::FormatEditPlan::coverage(&self) -> &[perl_tidy::SourceByteRange]
+pub fn perl_tidy::FormatEditPlan::edits(&self) -> &[perl_tidy::FormatEdit]
+pub const fn perl_tidy::FormatEditPlan::execution(&self) -> perl_tidy::FormatExecutionStrategy
+pub fn perl_tidy::FormatEditPlan::new(source: &perl_tidy::ExactSource<'_>, request: perl_tidy::FormatRequest, execution: perl_tidy::FormatExecutionStrategy, edits: alloc::vec::Vec<perl_tidy::FormatEdit>, rendered: &str) -> core::result::Result<perl_tidy::FormatEditPlan, perl_tidy::EditPlanError>
+pub fn perl_tidy::FormatEditPlan::predecessor(&self) -> &perl_tidy::FormatSourceIdentity
+pub fn perl_tidy::FormatEditPlan::rendered_digest(&self) -> &perl_source_identity::digest::ContentDigest
+pub fn perl_tidy::FormatEditPlan::request(&self) -> &perl_tidy::FormatRequest
+pub fn perl_tidy::FormatEditPlan::clone(&self) -> perl_tidy::FormatEditPlan
+pub fn perl_tidy::FormatEditPlan::eq(&self, other: &perl_tidy::FormatEditPlan) -> bool
+pub fn perl_tidy::FormatEditPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatEditPlan::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatEditPlan::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatEditPlan, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatIdentity
+pub perl_tidy::FormatIdentity::actual_engine: perl_tidy::FormatEngine
+pub perl_tidy::FormatIdentity::config_fingerprint: alloc::string::String
+pub perl_tidy::FormatIdentity::content_digest: alloc::string::String
+pub perl_tidy::FormatIdentity::requested_mode: perl_tidy::FormatterMode
+pub perl_tidy::FormatIdentity::source_generation: core::option::Option<u64>
+pub perl_tidy::FormatIdentity::source_id: core::option::Option<alloc::string::String>
+pub fn perl_tidy::FormatIdentity::clone(&self) -> perl_tidy::FormatIdentity
+pub fn perl_tidy::FormatIdentity::eq(&self, other: &perl_tidy::FormatIdentity) -> bool
+pub fn perl_tidy::FormatIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatIdentity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatIdentity::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatIdentity, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatOutcome
+pub perl_tidy::FormatOutcome::admitted: core::option::Option<perl_tidy::SourceByteRange>
+pub perl_tidy::FormatOutcome::change: perl_tidy::FormatChangeSummary
+pub perl_tidy::FormatOutcome::coverage: alloc::vec::Vec<perl_tidy::SourceByteRange>
+pub perl_tidy::FormatOutcome::disposition: perl_tidy::FormatDisposition
+pub perl_tidy::FormatOutcome::execution: perl_tidy::FormatExecutionStrategy
+pub perl_tidy::FormatOutcome::identity: perl_tidy::FormatIdentity
+pub perl_tidy::FormatOutcome::next_action: core::option::Option<alloc::string::String>
+pub perl_tidy::FormatOutcome::reason: perl_tidy::FormatReasonCode
+pub perl_tidy::FormatOutcome::safety: perl_tidy::FormatSafetyEvidence
+pub perl_tidy::FormatOutcome::source: perl_tidy::FormatSourceIdentity
+pub perl_tidy::FormatOutcome::target: perl_tidy::FormatRequestTarget
+pub perl_tidy::FormatOutcome::widening: core::option::Option<perl_tidy::TargetWidening>
+pub fn perl_tidy::FormatOutcome::clone(&self) -> perl_tidy::FormatOutcome
+pub fn perl_tidy::FormatOutcome::eq(&self, other: &perl_tidy::FormatOutcome) -> bool
+pub fn perl_tidy::FormatOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatOutcome::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatOutcome::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatOutcome, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatRequest
+pub perl_tidy::FormatRequest::admitted: perl_tidy::SourceByteRange
+pub perl_tidy::FormatRequest::requested: perl_tidy::FormatRequestTarget
+pub perl_tidy::FormatRequest::widening: core::option::Option<perl_tidy::TargetWidening>
+pub fn perl_tidy::FormatRequest::document(source: &perl_tidy::ExactSource<'_>) -> perl_tidy::FormatRequest
+pub fn perl_tidy::FormatRequest::range(source: &perl_tidy::ExactSource<'_>, range: perl_tidy::SourceByteRange) -> core::result::Result<perl_tidy::FormatRequest, perl_tidy::EditPlanError>
+pub fn perl_tidy::FormatRequest::validate(&self, source: &perl_tidy::ExactSource<'_>) -> core::result::Result<(), perl_tidy::EditPlanError>
+pub fn perl_tidy::FormatRequest::clone(&self) -> perl_tidy::FormatRequest
+pub fn perl_tidy::FormatRequest::eq(&self, other: &perl_tidy::FormatRequest) -> bool
+pub fn perl_tidy::FormatRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatRequest::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatRequest::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatRequest, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatResult
+pub perl_tidy::FormatResult::changed: bool
+pub perl_tidy::FormatResult::diagnostics: alloc::vec::Vec<perl_tidy::FormatDiagnostic>
+pub perl_tidy::FormatResult::edits: alloc::vec::Vec<perl_tidy::FormatEdit>
+pub perl_tidy::FormatResult::formatted: alloc::string::String
+pub fn perl_tidy::FormatResult::replace_document(source: &str, formatted: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatResult
+pub fn perl_tidy::FormatResult::unchanged(source: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatResult
+pub fn perl_tidy::FormatResult::unsafe_to_format(source: impl core::convert::Into<alloc::string::String>, code: impl core::convert::Into<alloc::string::String>, message: impl core::convert::Into<alloc::string::String>) -> perl_tidy::FormatResult
+pub fn perl_tidy::FormatResult::clone(&self) -> perl_tidy::FormatResult
+pub fn perl_tidy::FormatResult::eq(&self, other: &perl_tidy::FormatResult) -> bool
+pub fn perl_tidy::FormatResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatResult, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatSafetyEvidence
+pub perl_tidy::FormatSafetyEvidence::line_endings: perl_tidy::FormatLineEndingDisposition
+pub perl_tidy::FormatSafetyEvidence::literal_preservation: perl_tidy::FormatEvidenceState
+pub perl_tidy::FormatSafetyEvidence::parse_after: perl_tidy::FormatEvidenceState
+pub perl_tidy::FormatSafetyEvidence::parse_before: perl_tidy::FormatEvidenceState
+pub perl_tidy::FormatSafetyEvidence::utf8: perl_tidy::FormatEvidenceState
+pub fn perl_tidy::FormatSafetyEvidence::clone(&self) -> perl_tidy::FormatSafetyEvidence
+pub fn perl_tidy::FormatSafetyEvidence::eq(&self, other: &perl_tidy::FormatSafetyEvidence) -> bool
+pub fn perl_tidy::FormatSafetyEvidence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatSafetyEvidence::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatSafetyEvidence::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatSafetyEvidence, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::FormatSourceIdentity
+pub perl_tidy::FormatSourceIdentity::content: perl_source_identity::digest::ContentDigest
+pub perl_tidy::FormatSourceIdentity::generation: perl_source_identity::generation::SourceGeneration
+pub perl_tidy::FormatSourceIdentity::logical_source: core::option::Option<perl_source_identity::ids::LogicalSourceId>
+pub fn perl_tidy::FormatSourceIdentity::content_only(source: &str) -> perl_tidy::FormatSourceIdentity
+pub fn perl_tidy::FormatSourceIdentity::revision(&self) -> core::option::Option<perl_source_identity::generation::ContentRevision>
+pub fn perl_tidy::FormatSourceIdentity::clone(&self) -> perl_tidy::FormatSourceIdentity
+pub fn perl_tidy::FormatSourceIdentity::eq(&self, other: &perl_tidy::FormatSourceIdentity) -> bool
+pub fn perl_tidy::FormatSourceIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::FormatSourceIdentity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::FormatSourceIdentity::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::FormatSourceIdentity, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::NativeFormatConfig
+pub perl_tidy::NativeFormatConfig::brace_placement: perl_tidy::BracePlacement
+pub perl_tidy::NativeFormatConfig::else_placement: perl_tidy::ElsePlacement
+pub perl_tidy::NativeFormatConfig::final_newline: perl_tidy::FinalNewline
+pub perl_tidy::NativeFormatConfig::indent_width: u32
+pub perl_tidy::NativeFormatConfig::keyword_spacing: perl_tidy::KeywordSpacing
+pub perl_tidy::NativeFormatConfig::line_width: u32
+pub perl_tidy::NativeFormatConfig::trailing_comma: perl_tidy::TrailingComma
+pub perl_tidy::NativeFormatConfig::use_tabs: bool
+pub fn perl_tidy::NativeFormatConfig::validate(&self) -> core::result::Result<(), perl_tidy::NativeConfigError>
+pub fn perl_tidy::NativeFormatConfig::clone(&self) -> perl_tidy::NativeFormatConfig
+pub fn perl_tidy::NativeFormatConfig::eq(&self, other: &perl_tidy::NativeFormatConfig) -> bool
+pub fn perl_tidy::NativeFormatConfig::default() -> perl_tidy::NativeFormatConfig
+pub fn perl_tidy::NativeFormatConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativeFormatConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::NativeFormatConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::NativeFormatConfig, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::NativeFormatter
+pub fn perl_tidy::NativeFormatter::format(&self, source: &perl_tidy::ExactSource<'_>, request: &perl_tidy::FormatRequest, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_document_typed(&self, source: &str, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_document_typed_with_counters(&self, source: &str, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext, counters: &mut perl_tidy::NativePipelineCounters) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_range_typed(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_range_typed_with_counters(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext, counters: &mut perl_tidy::NativePipelineCounters) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::format_with_counters(&self, source: &perl_tidy::ExactSource<'_>, request: &perl_tidy::FormatRequest, config: &perl_tidy::FormatConfig, context: &perl_tidy::FormatContext, counters: &mut perl_tidy::NativePipelineCounters) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::NativeFormatter::new() -> perl_tidy::NativeFormatter
+pub fn perl_tidy::NativeFormatter::clone(&self) -> perl_tidy::NativeFormatter
+pub fn perl_tidy::NativeFormatter::default() -> perl_tidy::NativeFormatter
+pub fn perl_tidy::NativeFormatter::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativeFormatter::format_document(&self, source: &str, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::NativeFormatter::format_range(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub struct perl_tidy::NativePipelineCounters
+pub perl_tidy::NativePipelineCounters::edits_derived: u64
+pub perl_tidy::NativePipelineCounters::elapsed: core::time::Duration
+pub perl_tidy::NativePipelineCounters::formatted_output_parse_gate_invocations: u64
+pub perl_tidy::NativePipelineCounters::gate_nodes_observed: u64
+pub perl_tidy::NativePipelineCounters::layout_groups_fitted: u64
+pub perl_tidy::NativePipelineCounters::lines_processed: u64
+pub perl_tidy::NativePipelineCounters::parse_gate_invocations: u64
+pub perl_tidy::NativePipelineCounters::peak_depth: u64
+pub perl_tidy::NativePipelineCounters::pipeline_invocations: u64
+pub perl_tidy::NativePipelineCounters::replacement_bytes: u64
+pub perl_tidy::NativePipelineCounters::source_parse_gate_invocations: u64
+pub const fn perl_tidy::NativePipelineCounters::clock_tag(&self) -> &'static str
+pub const fn perl_tidy::NativePipelineCounters::schema(&self) -> &'static str
+pub fn perl_tidy::NativePipelineCounters::clone(&self) -> perl_tidy::NativePipelineCounters
+pub fn perl_tidy::NativePipelineCounters::eq(&self, other: &perl_tidy::NativePipelineCounters) -> bool
+pub fn perl_tidy::NativePipelineCounters::default() -> perl_tidy::NativePipelineCounters
+pub fn perl_tidy::NativePipelineCounters::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::NativePipelineCounters::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::NativePipelineCounters::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::NativePipelineCounters, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::PipelineCollectorScope
+pub fn perl_tidy::PipelineCollectorScope::install() -> perl_tidy::PipelineCollectorScope
+pub fn perl_tidy::PipelineCollectorScope::merge_into(self, counters: &mut perl_tidy::NativePipelineCounters)
+pub fn perl_tidy::PipelineCollectorScope::drop(&mut self)
+pub struct perl_tidy::PolicyOutcome
+pub perl_tidy::PolicyOutcome::bytes: alloc::string::String
+pub perl_tidy::PolicyOutcome::evidence: perl_tidy::TerminalNewlineEvidence
+pub fn perl_tidy::PolicyOutcome::clone(&self) -> perl_tidy::PolicyOutcome
+pub fn perl_tidy::PolicyOutcome::eq(&self, other: &perl_tidy::PolicyOutcome) -> bool
+pub fn perl_tidy::PolicyOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::SourceByteRange
+pub fn perl_tidy::SourceByteRange::contains(&self, other: &perl_tidy::SourceByteRange) -> bool
+pub const fn perl_tidy::SourceByteRange::end(&self) -> usize
+pub const fn perl_tidy::SourceByteRange::is_empty(&self) -> bool
+pub fn perl_tidy::SourceByteRange::new(source: &perl_tidy::ExactSource<'_>, start: usize, end: usize) -> core::result::Result<perl_tidy::SourceByteRange, perl_tidy::EditPlanError>
+pub fn perl_tidy::SourceByteRange::source(&self) -> &perl_tidy::FormatSourceIdentity
+pub const fn perl_tidy::SourceByteRange::start(&self) -> usize
+pub fn perl_tidy::SourceByteRange::validate(&self, source: &perl_tidy::ExactSource<'_>) -> core::result::Result<(), perl_tidy::EditPlanError>
+pub fn perl_tidy::SourceByteRange::clone(&self) -> perl_tidy::SourceByteRange
+pub fn perl_tidy::SourceByteRange::eq(&self, other: &perl_tidy::SourceByteRange) -> bool
+pub fn perl_tidy::SourceByteRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::SourceByteRange::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::SourceByteRange::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::SourceByteRange, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::TargetWidening
+pub perl_tidy::TargetWidening::owner: alloc::string::String
+pub perl_tidy::TargetWidening::reason: alloc::string::String
+pub fn perl_tidy::TargetWidening::clone(&self) -> perl_tidy::TargetWidening
+pub fn perl_tidy::TargetWidening::eq(&self, other: &perl_tidy::TargetWidening) -> bool
+pub fn perl_tidy::TargetWidening::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::TargetWidening::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::TargetWidening::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::TargetWidening, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_tidy::TerminalNewlineEvidence
+pub perl_tidy::TerminalNewlineEvidence::change: perl_tidy::TerminalChange
+pub perl_tidy::TerminalNewlineEvidence::final_run: perl_tidy::TerminalRun
+pub perl_tidy::TerminalNewlineEvidence::inserted: core::option::Option<perl_tidy::TerminalSequence>
+pub perl_tidy::TerminalNewlineEvidence::predecessor: perl_tidy::TerminalRun
+pub perl_tidy::TerminalNewlineEvidence::removed_count: usize
+pub fn perl_tidy::TerminalNewlineEvidence::is_consistent(&self) -> bool
+pub fn perl_tidy::TerminalNewlineEvidence::is_no_change(&self) -> bool
+pub fn perl_tidy::TerminalNewlineEvidence::clone(&self) -> perl_tidy::TerminalNewlineEvidence
+pub fn perl_tidy::TerminalNewlineEvidence::eq(&self, other: &perl_tidy::TerminalNewlineEvidence) -> bool
+pub fn perl_tidy::TerminalNewlineEvidence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::TerminalRun
+pub fn perl_tidy::TerminalRun::final_sequence(&self) -> core::option::Option<perl_tidy::TerminalSequence>
+pub fn perl_tidy::TerminalRun::is_empty(&self) -> bool
+pub fn perl_tidy::TerminalRun::len(&self) -> usize
+pub fn perl_tidy::TerminalRun::sequences(&self) -> &[perl_tidy::TerminalSequence]
+pub fn perl_tidy::TerminalRun::clone(&self) -> perl_tidy::TerminalRun
+pub fn perl_tidy::TerminalRun::eq(&self, other: &perl_tidy::TerminalRun) -> bool
+pub fn perl_tidy::TerminalRun::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_tidy::TypedFormatResult
+pub perl_tidy::TypedFormatResult::outcome: perl_tidy::FormatOutcome
+pub perl_tidy::TypedFormatResult::plan: core::option::Option<perl_tidy::FormatEditPlan>
+pub perl_tidy::TypedFormatResult::result: perl_tidy::FormatResult
+pub fn perl_tidy::TypedFormatResult::apply_exact(&self, source: &perl_tidy::ExactSource<'_>) -> core::result::Result<alloc::string::String, perl_tidy::EditPlanError>
+pub fn perl_tidy::TypedFormatResult::apply_to(&self, source: &str) -> core::result::Result<alloc::string::String, perl_tidy::EditPlanError>
+pub fn perl_tidy::TypedFormatResult::into_result(self) -> perl_tidy::FormatResult
+pub fn perl_tidy::TypedFormatResult::clone(&self) -> perl_tidy::TypedFormatResult
+pub fn perl_tidy::TypedFormatResult::eq(&self, other: &perl_tidy::TypedFormatResult) -> bool
+pub fn perl_tidy::TypedFormatResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_tidy::TypedFormatResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_tidy::TypedFormatResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_tidy::TypedFormatResult, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_tidy::COUNTER_CLOCK_TAG: &str
+pub const perl_tidy::COUNTER_SCHEMA_V1: &str
+pub const perl_tidy::FORMAT_EDIT_PLAN_SCHEMA: u32
+pub const perl_tidy::MAX_NATIVE_INDENT_WIDTH: u32
+pub const perl_tidy::MAX_NATIVE_LINE_WIDTH: u32
+pub const perl_tidy::MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1: u64
+pub const perl_tidy::SCALING_ABSOLUTE_SLACK_V1: u64
+pub const perl_tidy::SCALING_RATIO_BOUND_V1: u64
+pub const perl_tidy::VERSION: &str
+pub trait perl_tidy::PerlFormatter
+pub fn perl_tidy::PerlFormatter::format_document(&self, source: &str, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::PerlFormatter::format_range(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::NativeFormatter::format_document(&self, source: &str, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::NativeFormatter::format_range(&self, source: &str, range: perl_tidy::SourceByteRange, config: &perl_tidy::FormatConfig) -> perl_tidy::FormatResult
+pub fn perl_tidy::apply_terminal_sequence_policy(source: &str, policy: perl_tidy::FinalNewlinePolicy, explicit_convention: core::option::Option<perl_tidy::TerminalSequence>) -> perl_tidy::PolicyOutcome
+pub fn perl_tidy::exceeds_replacement_envelope_v1(source_bytes: u64, replacement_bytes: u64) -> bool
+pub const fn perl_tidy::execution_for_requested_native_target(target: &perl_tidy::FormatRequestTarget) -> perl_tidy::FormatExecutionStrategy
+pub fn perl_tidy::inferred_line_ending(source: &str) -> &'static str
+pub fn perl_tidy::inferred_line_ending_at(source: &str, offset: usize) -> &'static str
+pub fn perl_tidy::native_config_fingerprint(config: &perl_tidy::FormatConfig) -> alloc::string::String
+pub fn perl_tidy::source_convention(source: &str) -> core::option::Option<perl_tidy::TerminalSequence>
+pub fn perl_tidy::trailing_run(source: &str) -> perl_tidy::TerminalRun
+pub type perl_tidy::FormatConfig = perl_tidy::NativeFormatConfig
+pub type perl_tidy::FormatterSelection = perl_tidy::FormatterMode

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // These targets prove the intentionally retained compatibility API.
 //! Offline proof for the #8048 independent edit-application oracle.
 //!
 //! The oracle must reject reversed, unreachable, overlapping, and

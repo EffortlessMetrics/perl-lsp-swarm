@@ -18,7 +18,7 @@ ROW_SCHEMA = "native-pipeline-counters-v1"
 _COUNTERS_SOURCE = (
     Path(__file__).resolve().parents[2]
     / "crates"
-    / "perl-lsp-perltidy"
+    / "perl-tidy"
     / "src"
     / "native"
     / "counters.rs"

@@ -1637,6 +1637,19 @@ fn default_provider_decision_explanation(
             Some("docs/project/status/provider_confidence_matrix.md#diagnostics"),
             Some("ux_scenario_31_mojolicious_diagnostics_quality"),
         ),
+        ProviderDecisionProvider::Formatting => (
+            // Policy defaults cannot attest to a formatting execution. The
+            // runtime's retained request receipt carries the actual outcome.
+            ProviderDecisionOutcome::Blocked,
+            ProviderDecisionReason::MissingFact,
+            ProviderDecisionFactSource::Unknown,
+            ProviderDecisionConfidence::Low,
+            ProviderDecisionFreshness::Unknown,
+            false,
+            ProviderDecisionFallback::NoEdit,
+            None,
+            None,
+        ),
         ProviderDecisionProvider::Rename => (
             ProviderDecisionOutcome::Fallback,
             ProviderDecisionReason::FallbackPolicy,
