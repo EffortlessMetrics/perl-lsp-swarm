@@ -1,9 +1,9 @@
 name: CI
 
-# Tiered CI for perl-lsp (see tests/TAXONOMY.md)
-# - PR smoke: fast feedback on every push (~1-2 min)
-# - Merge gate: full validation on every PR push and push to main (~5-10 min)
-# Cost: ~$0.05 per PR (smoke + merge gate; see #4675 for rationale)
+# Tiered CI for perl-lsp (see tests/TAXONOMY.md).
+# One automatic pr-fast lane retains scoped integration and all-target lint
+# proof. Its guarded comparison is manual-only. Hosted gate shards share one
+# same-run xtask executable without changing their selected proof.
 
 on:
   pull_request:
@@ -18,6 +18,11 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
     inputs:
+      run_pr_fast:
+        description: Also run the guarded PR Smoke comparison
+        required: false
+        default: false
+        type: boolean
       base_sha:
         description: Exact base commit SHA for the dispatched subject
         required: true
@@ -266,7 +271,7 @@ jobs:
               echo "::notice::Docs/assets-only PR detected — running the policy shard for generated-inventory freshness"
             else
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
-              echo "::notice::Non-draft PR with code/config changes — running merge-gate (pr-smoke, conflict-markers, shards, UX tests); supersede protection via preflight-latest-check (#1484)"
+              echo "::notice::Non-draft PR with code/config changes — running PR Fast, conflict-markers, shards and UX tests; supersede protection via preflight-latest-check (#1484)"
             fi
           fi
 
@@ -777,18 +782,11 @@ jobs:
         # (#14607 list authority; #17208 truthful step outcome on detection).
         run: bash scripts/ci/semver_pr_check.sh
 
-  # ── PR Smoke: advisory fast feedback for every PR ────────────────────
-  # ADVISORY (continue-on-error): this lane runs the `pr-fast` xtask tier, whose
-  # gates (fmt, conflict markers, publish/layer checks, and unit_routed_full)
-  # overlap hosted shards. Hosted formatter authority is dedicated
-  # `Rust formatting` plus required Rust Small (#9959/#9127); PR Smoke `fmt`
-  # remains advisory overlap owned by #9166. Because pr-fast runs the unit tests
-  # in one combined `unit_routed_full` lane, it is the flakier of the two and has
-  # false-reddened green PRs (e.g. PR #3321: unit_routed_full exit 101 while all
-  # seven CI Gate shards passed). It is not a required check and no longer gates
-  # the CI Gate aggregate (removed from merge-gate `needs`). Kept advisory for its
-  # combined-run signal + Codecov test-results upload; full removal is tracked in
-  # the CI lean-down consolidation issue.
+  # ── PR Smoke: explicit advisory rehearsal ───────────────────────────
+  # The automatic revival below runs the same `pr-fast` tier and retains its
+  # unique scoped integration/all-target lint proof plus test-result reporting.
+  # Keep this guarded sibling available only for explicit disk-policy comparison.
+  # Both jobs remain advisory and outside the CI Gate aggregate's dependencies.
   pr-smoke:
     name: PR Smoke (Fast Feedback, advisory)
     runs-on: ubuntu-24.04
@@ -800,16 +798,16 @@ jobs:
     # sub-gates green. 60m covers the observed healthy upper bound with
     # headroom while staying inside the 75m GitHub job envelope (15m left for
     # setup plus always-run receipt/telemetry). unit_routed_full stays in the
-    # pr-fast envelope because no required merge-gate shard executes the
-    # scope-aware --tests proof (shards run --lib only); splitting it out
-    # without a new required lane would drop required coverage.
+    # pr-fast envelope because the shard portfolio does not replace the
+    # scope-aware --tests proof. The automatic revival sibling below retains
+    # that execution when this guarded comparison is not requested.
     timeout-minutes: 75
     # Advisory: a pr-fast flake must not present as a hard red on an otherwise
     # green PR. The deterministic base (CI Gate shards + the two required lanes)
     # is the real gate.
     continue-on-error: true
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.run_pr_fast == true && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     # #11943 bound arm: the tier's single CARGO_TARGET_DIR measured 83 GiB on
     # cold-cache branches (runs 32697324730 / 32697144932) against ~83-84 GiB of
     # starting headroom, filling /dev/root to 100% mid-link (ENOSPC -> ld
@@ -914,9 +912,9 @@ jobs:
       # both jobs saving under one key would nondeterministically overwrite
       # each other's newest main entry. A stable shared key (no lockfile hash —
       # rust-cache already folds the lockfile into its internal keying,
-      # docs/ci/cache-policy.md) lets the push-to-main run of this job seed
-      # matching line-tables-only artifacts that PR and merge-group runs
-      # restore. Save authority is unchanged: candidate events restore only.
+      # docs/ci/cache-policy.md) lets a manual dispatch on main seed matching
+      # line-tables-only artifacts for later comparisons. Save authority is
+      # unchanged: candidate branches restore only.
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
@@ -1262,36 +1260,14 @@ jobs:
             echo "::warning title=pr-fast summary::summarize_pr_fast_gates.py is not present on this checkout; skipping PR-fast gate summary (rebase onto current main to restore it; issue #16375)."
           fi
 
-      - name: Convert PR-fast receipt to JUnit
-        if: always() && hashFiles('target/receipts/receipt.json') != ''
-        run: |
-          python3 scripts/ci/receipts-to-junit.py \
-            --input target/receipts/receipt.json \
-            --output target/test-results/pr-fast-junit.xml \
-            --suite-name pr-fast
-
-      - name: Upload PR-fast test results to Codecov
-        if: always() && hashFiles('target/receipts/receipt.json') != '' && env.CODECOV_TOKEN != ''
-        continue-on-error: true
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
-        with:
-          report_type: test_results
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: target/test-results/pr-fast-junit.xml
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-
       # Note: workspace-wide integration-test compilation is covered by the
       # parallel check-all-targets job (just check-all-targets), which runs
       # cargo check --workspace --all-targets --locked independently of pr-smoke.
       # Adding a redundant fallback here would duplicate that work without gain.
 
-  # ── Source-commit API ledger on the evaluated combined/landed tree (#15965)
-  # The meta shard already runs `source_commit_api_check`, but PR-head
-  # evaluation can stay green while the post-merge tree drifts the
-  # `compatibility_baseline` count (d7d4c5143 / #16011, #17212). This job
-  # reuses that same checker on merge_group (queue combined tree) and push
-  # to main/master (landed tree). It is not a new required GitHub context.
+  # Automatic PR-fast retains the scoped integration and all-target lint
+  # obligations that the shard portfolio does not replace. The guarded
+  # PR Smoke sibling above is a manual disk-policy comparison only.
   pr-fast-unblocked:
     name: PR Fast (unblocked revival, advisory)
     runs-on: ubuntu-24.04
@@ -1304,7 +1280,8 @@ jobs:
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     # #19045: sibling of pr-smoke that runs the pr_fast tier without the
     # fatal pre-flight floor, so the tier emits verdicts again. pr-smoke
-    # keeps its fatal guard for comparison; revert is deleting this job.
+    # keeps its fatal guard for explicit comparison. Retiring this automatic
+    # producer requires preserving its scoped runtime and lint obligations.
     # No change to any required context; not in merge-gate needs.
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -1380,9 +1357,9 @@ jobs:
       # artifacts never fingerprint-match this lane's line-tables-only env, and
       # both jobs saving under one key would nondeterministically overwrite
       # each other's newest main entry. This lane uses its own shared key
-      # (same shape, separate family): on main pushes pr-smoke fails fast at
-      # its guard yet still saves first, which would pin the shared key to a
-      # compile-free entry and starve this lane's seed (#19229 review).
+      # (same shape, separate family): the formerly automatic guarded pr-smoke
+      # could fail before compilation yet save first, pinning a shared key to a
+      # compile-free entry and starving this lane's seed (#19229 review).
       # A stable shared key (no lockfile hash —
       # rust-cache already folds the lockfile into its internal keying,
       # docs/ci/cache-policy.md) lets the push-to-main run of this job seed
@@ -1753,6 +1730,23 @@ jobs:
             --output target/test-results/pr-fast-junit.xml \
             --suite-name pr-fast
 
+      - name: Upload PR-fast test results to Codecov
+        if: always() && hashFiles('target/receipts/receipt.json') != '' && env.CODECOV_TOKEN != ''
+        continue-on-error: true
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
+        with:
+          report_type: test_results
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/test-results/pr-fast-junit.xml
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── Source-commit API ledger on the evaluated combined/landed tree (#15965)
+  # The meta shard already runs `source_commit_api_check`, but PR-head
+  # evaluation can stay green while the post-merge tree drifts the
+  # `compatibility_baseline` count (d7d4c5143 / #16011, #17212). This job
+  # reuses that same checker on merge_group (queue combined tree) and push
+  # to main/master (landed tree). It is not a new required GitHub context.
   source-commit-api-ledger:
     name: Source-commit API ledger (combined tree)
     runs-on: ubuntu-24.04
@@ -1785,6 +1779,74 @@ jobs:
             exit "$status"
           fi
 
+  # Build only the runner once, on the same integration SHA as every shard.
+  # Each shard receives an immutable executable, not another job's Cargo
+  # target tree or receipts. Nested Cargo commands remain independent and may
+  # compile xtask again; this removes the eight unconditional warm-up builds.
+  ci-xtask:
+    name: Build shared CI xtask
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: [draft-pr-check, conflict-markers, preflight-latest-check, rust-formatting]
+    # PR formatting proves head H; this producer proves the integration tree
+    # G. Only queue, push and dispatch share the formatter's exact subject.
+    # The explicit status function avoids default needs-success suppressing
+    # the PR integration build when that separate H formatter fails.
+    if: >-
+      !cancelled() &&
+      needs.draft-pr-check.result == 'success' &&
+      needs.preflight-latest-check.result == 'success' &&
+      needs.draft-pr-check.outputs.run_ci == 'true' &&
+      needs.preflight-latest-check.outputs.is_latest == 'true' &&
+      needs.conflict-markers.result == 'success' &&
+      (github.event_name == 'pull_request' || needs.rust-formatting.result == 'success')
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify shared xtask handoff
+        run: python3 -m unittest scripts/ci/test_xtask_artifact.py
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
+        with:
+          toolchain: 1.100.0
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ci-gate-${{ hashFiles('Cargo.lock') }}
+          # Shards own this cache family. A producer saving first would seed
+          # a smaller target tree and prevent their richer entries from saving.
+          save-if: false
+
+      - name: Warm xtask
+        run: cargo build -p xtask --bin xtask --locked
+
+      - name: Verify shared xtask execution
+        run: python3 scripts/ci/verify_shared_xtask_execution.py --xtask target/debug/xtask
+
+      - name: Bind shared xtask
+        run: python3 scripts/ci/xtask_artifact.py pack --artifact-dir "$RUNNER_TEMP/ci-xtask-artifact"
+
+      - name: Upload shared xtask
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: ci-xtask-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/ci-xtask-artifact/
+          if-no-files-found: error
+          retention-days: 7
+
   # ── Merge Gate shards: bounded validation lanes for every PR/push ────
   merge-gate-shards:
     name: CI Gate shard (${{ matrix.name }})
@@ -1812,7 +1874,7 @@ jobs:
     timeout-minutes: 40
     # No functional dependency on pr-smoke output; run in parallel after preflight
     # + conflict guard to reduce end-to-end merge-gate wall time.
-    needs: [draft-pr-check, conflict-markers, preflight-latest-check]
+    needs: [draft-pr-check, conflict-markers, preflight-latest-check, ci-xtask]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     strategy:
       fail-fast: false
@@ -1940,10 +2002,31 @@ jobs:
             target/policy/non-rust-inventory.json \
             target/policy/non-rust-inventory-subject.json
 
-      # The shard adapter consumes this runner. Gates select helper binaries
-      # explicitly; required all-target/integration proof remains separate.
+      # An empty artifact-ids input means download-all in the action. Refuse
+      # missing producer output before the action can broaden its selection.
+      - name: Validate shared xtask artifact ID
+        shell: bash
+        env:
+          XTASK_ARTIFACT_ID: ${{ needs.ci-xtask.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$XTASK_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::shared xtask producer did not return one exact artifact ID"
+            exit 1
+          fi
+
+      - name: Download shared xtask
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          artifact-ids: ${{ needs.ci-xtask.outputs.artifact_id }}
+          path: ${{ runner.temp }}/ci-xtask-download
+          merge-multiple: true
+
+      # Installation binds this run, integration SHA, workspace and toolchain.
+      # A failed-shard rerun may use its successful earlier producer's exact
+      # artifact ID; a future attempt or another run is never accepted.
       - name: Warm xtask
-        run: cargo build -p xtask --bin xtask --locked
+        run: python3 scripts/ci/xtask_artifact.py install --artifact-dir "$RUNNER_TEMP/ci-xtask-download" --destination "$RUNNER_TEMP/ci-xtask-verified"
 
       - name: Verify candidate meta self-tests
         if: matrix.name == 'meta'
@@ -2047,7 +2130,7 @@ jobs:
           mkdir -p target/receipts/shards target/receipts/shard-summaries
           timeout --signal=TERM --kill-after=30s 1800s \
             python3 scripts/ci/run_gate_shard.py \
-              --xtask target/debug/xtask \
+              --xtask "$CI_XTASK" \
               --gate-policy .ci/gate-policy.yaml \
               --receipt-dir target/receipts/shards \
               --summary "target/receipts/shard-summaries/${SHARD_NAME}.json" \
@@ -2290,7 +2373,7 @@ jobs:
             echo "no shard summary at $summary; nothing to explain"
             exit 0
           fi
-          target/debug/xtask gate-failure-digest \
+          "$CI_XTASK" gate-failure-digest \
             --summary "$summary" \
             --logs target/receipts/logs \
             --out target/receipts/gate-failure-digest.md
@@ -2303,8 +2386,8 @@ jobs:
   # organization-ruleset workflow is a separate follow-up. Keep the exact
   # historical name for continuity with existing advisory consumers.
   # `.ci/policies/required-checks.toml` records this advisory truth.
-  # `pr-smoke` remains intentionally outside `needs`: it is advisory, flaky, and
-  # redundant with the deterministic shard base (see the pr-smoke job).
+  # Both PR-fast jobs remain outside `needs`; their advisory runtime/lint
+  # evidence remains separate from this aggregate's shard and guard verdicts.
   merge-gate:
     name: CI Gate (Advisory Aggregate)
     runs-on: ubuntu-24.04
@@ -2703,9 +2786,27 @@ jobs:
     # for the grown contract tail.
     # Same shape as #5425: raise the knob when runners/base outgrow it.
     timeout-minutes: 35
-    needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    needs: [draft-pr-check, preflight-latest-check, conflict-markers, rust-formatting]
+    # Keep the required context running when a cheap prerequisite fails:
+    # GitHub treats a skipped dependent job as successful for protection.
+    # Respect workflow cancellation so expensive compilation can still stop.
+    if: ${{ !cancelled() && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true' }}
     steps:
+      - name: Require cheap prerequisite proof
+        shell: bash
+        env:
+          CONFLICT_RESULT: ${{ needs.conflict-markers.result }}
+          FORMAT_RESULT: ${{ needs.rust-formatting.result }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # The PR-head formatter is a separate subject from this merge tree.
+          # Other events use the same SHA for both jobs and may fail early.
+          if [[ "$CONFLICT_RESULT" != success || ( "$EVENT_NAME" != pull_request && "$FORMAT_RESULT" != success ) ]]; then
+            echo "::error::compile proof blocked by conflict guard=$CONFLICT_RESULT, rust-formatting=$FORMAT_RESULT"
+            exit 1
+          fi
+
       # INTENTIONAL: no `ref:` override here — see #9594.
       #
       # For a pull_request event the workflow *definition* comes from the base

@@ -43,6 +43,16 @@ ci_exec_xtask() {
   repo_root="$(ci_repo_root)"
   ci_resolve_cargo "$repo_root"
   cd "$repo_root"
+  # The hosted shard's verified executable lives outside Cargo's target tree.
+  # Keep wrapper setup and argument handling; refuse a broken present handoff.
+  if [[ "${CI_XTASK+x}" == x ]]; then
+    if [[ ! -f "$CI_XTASK" || ! -x "$CI_XTASK" || -L "$CI_XTASK" ]]; then
+      echo "Invalid verified CI_XTASK executable: $CI_XTASK" >&2
+      return 1
+    fi
+    printf 'Using verified CI_XTASK: %s\n' "$CI_XTASK" >&2
+    exec "$CI_XTASK" "$@"
+  fi
   exec "${CI_CARGO_CMD[@]}" xtask "$@"
 }
 
