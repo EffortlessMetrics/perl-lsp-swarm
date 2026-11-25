@@ -1,0 +1,12 @@
+project: product
+component: Developer experience
+kind: Added
+body: >-
+  xtask gains a build-executor measurement protocol that records canonical
+  per-cell build identity, segments, and reconciliation, so Cargo workload
+  footprint claims carry measured evidence instead of estimates (#11639).
+time: 2026-11-15T00:00:00Z
+custom:
+  Issue: "11639"
+  Slug: build-executor-measurement
+  Breaking: "no"
