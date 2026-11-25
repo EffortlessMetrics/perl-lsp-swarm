@@ -443,3 +443,54 @@ fn callable_definition_must_share_the_receiver_package() {
         labels(&completions)
     );
 }
+
+/// #8951: unrelated packages in one document must not contribute exact method
+/// candidates for a resolved receiver (`Dog` must not see `Cat::meow`).
+const MULTI_PACKAGE_DOG_CAT_SOURCE: &str = r#"package Dog;
+sub new { bless {}, shift }
+sub bark {}
+
+package Cat;
+sub meow {}
+
+package main;
+my $dog = Dog->new;
+$dog->me"#;
+
+/// #8951: same-label methods in different packages stay distinct for completion.
+const MULTI_PACKAGE_SHARED_NAME_SOURCE: &str = r#"package Dog;
+sub new { bless {}, shift }
+sub run {}
+
+package Cat;
+sub run {}
+
+package main;
+my $dog = Dog->new;
+$dog->ru"#;
+
+#[test]
+fn multi_package_receiver_does_not_offer_unrelated_package_methods() {
+    let completions = completions_for(MULTI_PACKAGE_DOG_CAT_SOURCE, empty_index());
+    assert!(
+        !completions.iter().any(|item| item.label == "meow"),
+        "Cat::meow must not be an exact candidate for a Dog receiver in the same file; got {:?}",
+        labels(&completions)
+    );
+}
+
+#[test]
+fn multi_package_same_label_method_scoped_to_receiver_package() {
+    let completions = completions_for(MULTI_PACKAGE_SHARED_NAME_SOURCE, empty_index());
+    assert!(
+        completions.iter().any(|item| item.label == "run"),
+        "Dog::run must be offered for a Dog receiver; got {:?}",
+        labels(&completions)
+    );
+    assert_eq!(
+        completions.iter().filter(|item| item.label == "run").count(),
+        1,
+        "exact receiver completion must not duplicate Cat::run for the same label; got {:?}",
+        labels(&completions)
+    );
+}
