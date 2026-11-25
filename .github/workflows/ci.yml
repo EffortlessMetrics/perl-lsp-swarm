@@ -512,7 +512,14 @@ jobs:
           status=$?
           set -e
           if [ "$status" -eq 1 ] && [ -f target/receipts/ci-contract.json ]; then
-            contract_status="$(jq -r '.status // empty' target/receipts/ci-contract.json 2>/dev/null || true)"
+            # The receipt's envelope version is checked before any field is
+            # read. A v2 envelope that renames `status` used to read as the
+            # empty string here, so the comparison below fell through and the
+            # step exited non-zero with no diagnostic naming the mismatch
+            # (#15310). An envelope this consumer cannot read must say so.
+            if ! contract_status="$(python3 scripts/ci/ci_contract_receipt_status.py target/receipts/ci-contract.json)"; then
+              exit "$status"
+            fi
             if [ "$contract_status" = "POLICY_FINDING" ]; then
               echo "Repository Contract reported advisory policy findings; receipt is authoritative."
               exit 0
