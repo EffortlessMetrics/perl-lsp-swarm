@@ -58,6 +58,10 @@ RELEASE_BUILD = (
     "cargo build --locked --release -p perllsp --bin perllsp -p perl-dap --bin perl-dap"
 )
 EXACT_CHECKOUT_TEST = 'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"'
+EXACT_DAP_EXPORT = (
+    "printf 'PERL_LSP_DAP_PATH=%s\\n' "
+    '"${DAP_PATH:?exact built debugger path is required}" >> "$GITHUB_ENV"'
+)
 ROW_ARTIFACT_NAME = "rolling-installed-row-${{ matrix.row_id }}"
 ROW_DOWNLOAD_PATTERN = "rolling-installed-row-*"
 FAN_IN_PACKET = "rolling_installed_public_beta_fan_in.json"
@@ -473,7 +477,14 @@ def validate(document: dict[str, Any]) -> None:
     configure = _step_named(
         row, "installed-row", "Configure exact smoke subject and host selector"
     )
-    configure_runs = "\n".join(_executable_lines(configure.get("run")))
+    configure_lines = _executable_lines(configure.get("run"))
+    _require(
+        [line for line in configure_lines if "PERL_LSP_DAP_PATH=" in line]
+        == [EXACT_DAP_EXPORT],
+        "both packaged journeys must receive the exact built debugger path "
+        "from the shared configuration step",
+    )
+    configure_runs = "\n".join(configure_lines)
     for export in (
         "PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1",
         "PERL_LSP_CANDIDATE_ID=",
@@ -624,6 +635,15 @@ def expect_failure(text: str, mutation: str) -> None:
             "PERL_LSP_SERVER_SOURCE_SHA",
             "REMOVED_SERVER_SOURCE_SHA",
         )
+    elif mutation == "omit_debugger_export":
+        mutated = replace_once(text, EXACT_DAP_EXPORT, f"# {EXACT_DAP_EXPORT}", mutation)
+    elif mutation == "wrong_debugger_source":
+        mutated = replace_once(
+            text,
+            EXACT_DAP_EXPORT,
+            EXACT_DAP_EXPORT.replace("DAP_PATH:?", "SERVER_PATH:?"),
+            mutation,
+        )
     elif mutation == "drop_candidate_construction":
         mutated = replace_once(
             text,
@@ -731,6 +751,8 @@ def main() -> int:
             "workspace_build",
             "comment_out_build",
             "drop_server_identity",
+            "omit_debugger_export",
+            "wrong_debugger_source",
             "drop_candidate_construction",
             "lift_candidate_exports",
             "duplicate_candidate_exports_outside_guard",
@@ -751,7 +773,7 @@ def main() -> int:
 
     print(
         "rolling installed workflow: exact main, canonical row tuples, read-only "
-        "permissions, per-row artifact identity, packaged VSIX execution, durable "
+        "permissions, per-row artifact identity, exact packaged debugger input, durable "
         "fan-in, and no-public-mutation boundary verified"
     )
     return 0
