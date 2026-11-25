@@ -6,6 +6,7 @@
 
 mod body;
 mod body_entry;
+mod call_semantics;
 pub mod disposition;
 mod lower;
 mod model;
@@ -21,6 +22,7 @@ pub use body::{
 };
 pub(crate) use body::{hir_quote_kind, strip_string_quotes};
 pub use body_entry::lower_body;
+pub use call_semantics::{adapt_body_hir_call, adapt_flat_hir_call};
 pub use lower::lower_ast;
 pub use model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
