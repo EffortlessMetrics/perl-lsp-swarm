@@ -1518,7 +1518,11 @@ impl LspServer {
         let access = Self::moo_attribute_value(attributes, "is").map(Self::describe_access_mode);
         let required = Self::moo_attribute_value(attributes, "required").map(Self::describe_truthy);
         let predicate = Self::moo_accessor_method_name(name, attributes, "predicate", "has_");
-        let builder = Self::moo_accessor_method_name(name, attributes, "builder", "_build_");
+        let builder = Self::moo_accessor_method_name(name, attributes, "builder", "_build_")
+            .or_else(|| {
+                (Self::moo_attribute_value(attributes, "is") == Some("lazy"))
+                    .then(|| format!("_build_{name}"))
+            });
         let clearer = Self::moo_accessor_method_name(name, attributes, "clearer", "clear_");
         let reader = Self::moo_attribute_value(attributes, "reader");
         let writer = Self::moo_attribute_value(attributes, "writer");
