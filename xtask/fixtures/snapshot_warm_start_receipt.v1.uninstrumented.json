@@ -1,0 +1,118 @@
+{
+  "schema_version": "snapshot_warm_start_receipt.v1",
+  "receipt_id": "fixture-snapshot-warm-start-uninstrumented-001",
+  "subject": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "base": "a05f4820ab9385b261a2993ea9687cf9d7beedfc",
+    "head": "f530d2f1221c516484a3654f01a3ad694ab56969",
+    "binary_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "dirty_tree": false,
+    "runner": {
+      "os": "linux-x86_64",
+      "filesystem": "ext4",
+      "power_profile": "balanced",
+      "toolchain": "1.95.0-x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "features": [
+        "default"
+      ]
+    },
+    "workspace": {
+      "root_digest": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "fixture_id": "medium-workspace-fixture",
+      "source_digest": "2c26b46b68ffc68ff99b453c1d3042690eb24e64a774f167ea9c8348e9989334"
+    },
+    "configuration": {
+      "environment_digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "trust": "workspace",
+      "adapter": "neovim-lsp"
+    },
+    "fact_admission": {
+      "profile": "default",
+      "assembly_profile": "project_model_v1"
+    },
+    "cache_artifact": {
+      "manifest_version": "manifest.v1",
+      "shard_version": "shard.v1",
+      "codec_version": "codec.v1",
+      "project_version": "project.v1",
+      "model_version": "model.v1",
+      "backend": "filesystem",
+      "durability": "durable",
+      "namespace": "workspace-default",
+      "process_policy": "shared_worker"
+    },
+    "rollout_mode": "shadow",
+    "provider_sequence_digest": "4a44dc15364204a80fe80e9039455dc179279698e302a344c92a5a313d3a51ef",
+    "sample_calibration_id": "stable-runner-calibration-fixture-001",
+    "benchmark_identities": {
+      "editor_work": {
+        "schema": "editor_work.v1",
+        "profile": "default"
+      },
+      "stable_runner": {
+        "schema": "stable_runner.v1",
+        "profile": "linux-neovim-medium"
+      },
+      "compiler_pipeline": {
+        "schema": "compiler_pipeline.v1",
+        "profile": "default"
+      }
+    },
+    "comparison": {
+      "status": "comparable",
+      "peer_receipt_id": "fixture-snapshot-warm-start-cold-peer-001"
+    }
+  },
+  "preparation": {
+    "mode": "warm",
+    "identity_digest": "0da42d65a93f9859f9de0df8657f403c2988a1d3c1a5ee0bf0f6cd283e99cac9"
+  },
+  "instrument": {
+    "schema": "snapshot_warm_start_instrument.v1",
+    "completeness": "missing",
+    "status": "not_proven"
+  },
+  "phases": [
+    {
+      "name": "manifest_integrity_load",
+      "plane": "storage",
+      "sample_outcome": "not_proven",
+      "timing": {
+        "status": "not_proven"
+      },
+      "instrumentation": "missing"
+    }
+  ],
+  "work": {
+    "status": "not_proven",
+    "avoidance_evidence": "not_proven"
+  },
+  "correctness": {
+    "status": "not_proven"
+  },
+  "samples": {
+    "total": 1,
+    "non_success": 1,
+    "outcomes": {
+      "success": 0,
+      "failed": 0,
+      "cancelled": 0,
+      "timeout": 0,
+      "corrupt": 0,
+      "busy": 0,
+      "incompatible": 0,
+      "fallback": 0,
+      "not_proven": 1
+    }
+  },
+  "result": {
+    "disposition": "not_proven"
+  },
+  "comparison": {
+    "status": "not_proven"
+  },
+  "limitations": [
+    "Fixture receipt for contract validation only; carries no stable-runner calibration."
+  ]
+}
