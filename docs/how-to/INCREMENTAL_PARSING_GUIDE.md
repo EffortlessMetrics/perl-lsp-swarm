@@ -6,11 +6,24 @@ The LSP server advertises `TextDocumentSyncKind::Full` (value 1) to clients for
 the v0.18 envelope (#8129). That refers to **how document text is transferred**,
 not whether parsing itself is incremental.
 
+This guide describes the current source path, not installed-release
+qualification. The remaining FULL lifecycle and transaction safety work is
+tracked by [#17124](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17124)
+and [#17125](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17125),
+including open-document identity, version admission, and atomic commitment of
+source, version, and revision. Advertising Full does not establish those
+guarantees. Installed acceptance remains a separate obligation under
+[#17126](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17126) and
+[#4346](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4346).
+
 ### What "Full" means here
 
-When a client sends `textDocument/didChange`, each admitted member is a complete
-document replacement (`range` omitted). The server commits the last replacement
-atomically. Ranged incremental edits are protocol violations: they do not mutate
+For an already-open document with a valid, increasing version, each admitted
+`textDocument/didChange` member is a complete document replacement (`range`
+omitted, including no `"range": null`). The admission helper validates the whole
+`contentChanges` array before selecting its last replacement. This array-level
+validation does not establish the broader transaction guarantees above.
+Ranged incremental edits are protocol violations: they do not mutate
 last-good text, and current parse/provider facts become unavailable until an
 accepted full replacement, close/reopen, or restart.
 
