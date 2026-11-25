@@ -16,7 +16,11 @@ from pathlib import Path
 
 
 SOURCE = "a" * 40
-VERSION = "0.17.0"
+# Legacy payloads use the release version as their extension version.
+# Mapped RC cases explicitly test independent release and extension versions.
+VERSION = json.loads(
+    (Path(__file__).resolve().parents[1] / "vscode-extension/package.json").read_text(encoding="utf-8")
+)["version"]
 TARGET = "x86_64-unknown-linux-gnu"
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 
