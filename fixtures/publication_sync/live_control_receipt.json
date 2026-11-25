@@ -1,0 +1,13 @@
+{
+  "control": "branch_rules",
+  "observation_authority": "release/ci publication observer",
+  "observation_method": "gh api repos/EffortlessMetrics/perl-lsp branch_rules readout",
+  "observed_at": "2026-08-30",
+  "observed_state": {
+    "summary": "branch_rules observed for the 0.18.0 public-beta transaction"
+  },
+  "release": "0.18.0",
+  "repository": "EffortlessMetrics/perl-lsp",
+  "result": "proven",
+  "schema_version": "publication_live_control_receipt.v1"
+}
