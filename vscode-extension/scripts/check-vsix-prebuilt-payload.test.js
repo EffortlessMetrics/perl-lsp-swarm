@@ -346,10 +346,10 @@ async function runTests() {
     }
   }
 
-  function runChecker(script, archive, expected) {
+  function runChecker(script, archive, expected, extraArgs = []) {
     const result = spawnSync(
       process.execPath,
-      [script, '--vsix', archive, '--member', 'perllsp.exe', '--sha256', expected],
+      [script, '--vsix', archive, '--member', 'perllsp.exe', '--sha256', expected, ...extraArgs],
       {
         encoding: 'utf8',
         env: { ...process.env, NODE_PATH: path.join(__dirname, '..', 'node_modules') },
@@ -374,6 +374,28 @@ async function runTests() {
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
+  });
+
+  void test('the member CLI checks the whole VSIX and member from the same snapshot', async (t) => {
+    const value = Buffer.from('exact debugger bytes');
+    const fixture = await writeZip([{ name: 'extension/perllsp.exe', value }]);
+    t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+    const checker = path.join(__dirname, 'check-vsix-prebuilt-payload.js');
+    const archiveDigest = sha256(fs.readFileSync(fixture.archive));
+    const wrongArchive = runChecker(checker, fixture.archive, sha256(value), [
+      '--vsix-sha256', 'b'.repeat(64),
+    ]);
+    assert.notEqual(wrongArchive.status, 0);
+    assert.match(wrongArchive.stderr ?? '', /VSIX SHA mismatch before payload verification/);
+    const wrongMember = runChecker(checker, fixture.archive, 'c'.repeat(64), [
+      '--vsix-sha256', archiveDigest,
+    ]);
+    assert.notEqual(wrongMember.status, 0);
+    assert.match(wrongMember.stderr ?? '', /archive payload SHA mismatch/);
+    const exact = runChecker(checker, fixture.archive, sha256(value), [
+      '--vsix-sha256', archiveDigest,
+    ]);
+    assert.equal(exact.status, 0, exact.stderr ?? '');
   });
 
   void test('rejects duplicate payload members', async () => {

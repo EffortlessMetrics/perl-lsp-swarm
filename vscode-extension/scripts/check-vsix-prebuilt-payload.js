@@ -338,6 +338,15 @@ async function main() {
     }
     return;
   }
+  const expectedVsix = argument('--vsix-sha256');
+  if (expectedVsix) {
+    const bytes = fs.readFileSync(vsix);
+    if (crypto.createHash('sha256').update(bytes).digest('hex') !== expectedVsix) {
+      throw new Error('VSIX SHA mismatch before payload verification');
+    }
+    await verifyPayloadMember(bytes, member, expected);
+    return;
+  }
   await verifyPayloadMember(vsix, member, expected);
 }
 
