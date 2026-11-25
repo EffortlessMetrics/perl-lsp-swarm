@@ -391,6 +391,33 @@ impl ProfileExpansion {
 // Expansion
 // ---------------------------------------------------------------------------
 
+/// Named runtime selection includes its census prerequisite; shared by runner
+/// planning and denominator expansion, never a bypass of profile membership.
+pub(super) fn named_gate_ids<'a>(
+    policy: &GatePolicy,
+    gate: &'a str,
+) -> Result<Vec<&'a str>, String> {
+    if gate != "unit_routed_full" {
+        return Ok(vec![gate]);
+    }
+    let runtime = policy
+        .gates
+        .iter()
+        .position(|row| row.name == gate)
+        .ok_or_else(|| "named runtime gate is missing".to_string())?;
+    let build =
+        policy.gates.iter().position(|row| row.name == "unit_routed_full_build").ok_or_else(
+            || "named gate prerequisite unit_routed_full_build is missing".to_string(),
+        )?;
+    if policy.gates[build].tier != policy.gates[runtime].tier {
+        return Err("named gate prerequisite must share the runtime tier".to_string());
+    }
+    if build >= runtime {
+        return Err("named gate prerequisite must precede the runtime".to_string());
+    }
+    Ok(vec!["unit_routed_full_build", gate])
+}
+
 /// Expand the requested profile over the accepted policy into the governed
 /// denominator. Pure: same semantic inputs produce the same fingerprint in
 /// any source order.
@@ -480,8 +507,21 @@ pub fn expand(
                         filter.gate_id, profile
                     ));
                 } else {
-                    let narrowed: BTreeSet<String> =
-                        std::iter::once(filter.gate_id.clone()).collect();
+                    let narrowed: BTreeSet<String> = match named_gate_ids(policy, &filter.gate_id) {
+                        Ok(names) => names.into_iter().map(str::to_string).collect(),
+                        Err(message) => {
+                            resolution = ExpansionResolution::Invalid;
+                            detail = Some(message);
+                            BTreeSet::new()
+                        }
+                    };
+                    if !narrowed.is_subset(&denominator) {
+                        resolution = ExpansionResolution::Invalid;
+                        detail = Some(
+                            "named gate prerequisite is missing or outside the expanded profile"
+                                .to_string(),
+                        );
+                    }
                     for gate_id in denominator.difference(&narrowed) {
                         excluded_gate_ids.push(ExcludedGate {
                             gate_id: gate_id.clone(),
@@ -489,7 +529,7 @@ pub fn expand(
                         });
                     }
                     excluded_gate_ids.sort_by(|left, right| left.gate_id.cmp(&right.gate_id));
-                    denominator = narrowed;
+                    denominator = narrowed.intersection(&denominator).cloned().collect();
                 }
             }
         }

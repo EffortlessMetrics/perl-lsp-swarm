@@ -503,6 +503,29 @@ pub(super) fn observation_from_gate_result(
     // fact or disappear behind an unconditional instrument success (review
     // thread 3871822416).
     let mut receipt_shortfall: Vec<String> = Vec::new();
+    if result.command_started && result.gate_name == "unit_routed_full" {
+        match &result.selected_target_accounting {
+            None => receipt_shortfall.push(
+                "selected-target accounting missing or unreadable for started routed gate".into(),
+            ),
+            Some(accounting)
+                if accounting.selected == 0
+                    || accounting.selected_integration > accounting.selected
+                    || accounting.executed_integration > accounting.executed
+                    || accounting.skipped > accounting.selected
+                    || (accounting.complete
+                        && (accounting.selected != accounting.executed
+                            || accounting.selected_integration
+                                != accounting.executed_integration
+                            || accounting.skipped != 0)) =>
+            {
+                receipt_shortfall
+                    .push("selected-target accounting has invalid census invariants".into());
+            }
+            Some(_) => {}
+        }
+    }
+
     let mut artifacts = project_log_artifact(result, receipt_root, &mut receipt_shortfall);
     artifacts.extend(project_declared_artifacts(result, root, &mut receipt_shortfall));
 
@@ -1109,6 +1132,32 @@ mod fixtures {
     }
 
     #[test]
+    fn missing_routed_census_is_reporting_shortfall_without_rewriting_child_exit() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let receipt_root = dir.path().join("target/receipts");
+        std::fs::create_dir_all(receipt_root.join("logs")).expect("logs");
+        std::fs::write(receipt_root.join("logs/fmt_gate.log"), b"retained").expect("log");
+        let gate = gate_definition_named("unit_routed_full");
+        for exit_code in [0, 101] {
+            let mut result = passing_result();
+            result.gate_name = "unit_routed_full".into();
+            result.status = "fail".into();
+            result.exit_code = Some(exit_code);
+            let observation =
+                observation_from_gate_result(&gate, &result, dir.path(), &receipt_root, None)
+                    .expect("observation");
+            assert_eq!(observation.child.exit_code, Some(exit_code));
+            assert_eq!(observation.runner_status, RoutedReaderGateStatus::Fail);
+            assert!(
+                observation
+                    .receipt_shortfall
+                    .iter()
+                    .any(|text| text.contains("selected-target accounting"))
+            );
+        }
+    }
+
+    #[test]
     fn plan_selection_must_match_the_plan_exactly_before_running() {
         // Both directions refuse before any gate executes (review thread
         // 3871822409): a plan run row the runner did not select, and a
@@ -1323,6 +1372,7 @@ timeout_seconds: 60
             metrics: None,
             artifacts: None,
             first_failure: None,
+            selected_target_accounting: None,
             command_started: true,
         }
     }
@@ -1371,6 +1421,7 @@ timeout_seconds: 60
             metrics: None,
             artifacts: None,
             first_failure: None,
+            selected_target_accounting: None,
             command_started: true,
         }
     }

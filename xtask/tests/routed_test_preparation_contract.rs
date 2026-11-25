@@ -1,4 +1,10 @@
 //! Compilation staging cannot substitute for the routed runtime proof (#17459).
+//!
+//! #17151: the routed sweep must also *run* every selected test target. Cargo
+//! exits after the first failing test executable unless `--no-fail-fast` is
+//! set, so one red target in an alphabetically-earlier crate silently skipped
+//! every later crate's whole `tests/` suite while the receipt still showed
+//! only that first failure.
 use serde_yaml_ng::Value;
 use std::{fs, path::PathBuf};
 
@@ -21,13 +27,26 @@ fn preparation_preserves_runtime_command_and_budget() -> Result<(), Box<dyn std:
     let command = runtime["command"].as_str().ok_or("missing runtime command")?;
     assert_eq!(
         command,
-        "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests {package_args}"
+        // #17151: `--no-fail-fast` is required, not decorative. Without it
+        // cargo exits at the first failing test executable and the routed
+        // sweep silently skips every alphabetically-later crate's `tests/`
+        // suite, so the gate can report a failure while most of its selected
+        // targets never ran. The compile-only sibling carries the same flag so
+        // the two commands stay in lockstep (the `--no-run` suffix is the only
+        // difference between them).
+        "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests {package_args} --no-fail-fast"
     );
     assert_eq!(
         build["command"].as_str().and_then(|value| value.strip_suffix(" --no-run")),
         Some(command)
     );
     assert!(!command.contains("--no-run"));
+    // The abort-on-first-failure override must survive in both the runtime
+    // and the compile-only command; the runtime one is the coverage
+    // guarantee, the compile-only one keeps the two rows identical apart from
+    // `--no-run`.
+    assert!(command.contains("--no-fail-fast"));
+    assert!(build["command"].as_str().unwrap_or_default().contains("--no-fail-fast"));
     for key in ["tier", "required", "quarantine", "planning", "timeout_seconds"] {
         assert_eq!(build[key], runtime[key], "compile and runtime must share {key}");
     }

@@ -350,3 +350,7 @@ cargo test -p xtask --test activation --test activation_check --locked -- --noca
 # required merge surface command 39: Draft PR feedback contract (required merge surface)
 _step_index=$((_step_index + 1))
 cargo test -p xtask --test draft_pr_feedback_contract --locked -- --nocapture
+
+# required merge surface command 40: Routed test sweep control (required merge surface)
+_step_index=$((_step_index + 1))
+cargo test -p xtask --test routed_test_sweep_control --locked -- --nocapture

@@ -36,6 +36,10 @@ use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::ci_scope::{self, ScopeOutput};
 use crate::tasks::git_context::git_stdout_with_worktree_fallback;
 use crate::utils::project_root;
+use xtask::cargo_target_census::{
+    SelectedTargetAccounting, TargetCensus, account_selected_targets,
+    census_test_targets_from_reader,
+};
 
 pub mod disposition;
 mod first_failure;
@@ -514,6 +518,13 @@ pub struct GateResult {
     /// First failing test details for `cargo test`-class gates that exit non-zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_failure: Option<FirstFailure>,
+    /// Selected-target accounting for a routed test sweep (#17151): how many
+    /// test targets the paired compile gate built, how many this gate actually
+    /// executed, and how many were built but never executed. The two censuses
+    /// are cargo's own `Executable`/`Running` reports, so a truncated sweep is
+    /// a countable population in the receipt instead of an invisible absence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_target_accounting: Option<SelectedTargetAccounting>,
     /// Whether the runner observed this gate's command actually start.
     /// In-process dispatches always start their closure; the shell path
     /// knows whether the child spawned before a failure. Consumed by the
@@ -718,6 +729,52 @@ impl Default for GateRunnerConfig {
     }
 }
 
+/// Cooperative exclusion for gates invocations sharing fixed receipt/log paths.
+/// External cleanup tools do not participate; callers must order them separately.
+struct GateInvocationLease {
+    path: PathBuf,
+    token: String,
+}
+
+impl GateInvocationLease {
+    fn acquire(root: &Path) -> Result<Self> {
+        Self::acquire_initialized(root, |file, token| {
+            std::io::Write::write_all(file, token.as_bytes())?;
+            file.as_file().sync_all()?;
+            Ok(())
+        })
+    }
+
+    fn acquire_initialized(
+        root: &Path,
+        initialize: impl FnOnce(&mut tempfile::NamedTempFile, &str) -> Result<()>,
+    ) -> Result<Self> {
+        fs::create_dir_all(root.join("target"))?;
+        let path = root.join("target/.gate-invocation-active");
+        let token = format!(
+            "{}:{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        // Initialize under tempfile's owned identity before atomically claiming
+        // the sentinel. An initialization failure cannot strand an active lease.
+        let mut file = tempfile::NamedTempFile::new_in(root.join("target"))?;
+        initialize(&mut file, &token)?;
+        file.persist_noclobber(&path).map_err(|error| eyre!(
+            "Gate invocation already active or retained for owner verification: {}: {}. Before manual recovery verify ALL owned writers have settled, verify retained owner identity and preserve logs/receipts; PID absence alone is insufficient.", path.display(), error.error))?;
+        Ok(Self { path, token })
+    }
+}
+
+impl Drop for GateInvocationLease {
+    fn drop(&mut self) {
+        // Never reclaim a replacement or an unreadable/stale owner's sentinel.
+        if fs::read_to_string(&self.path).is_ok_and(|token| token == self.token) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Main entry point for gate execution
 pub fn run(config: GateRunnerConfig) -> Result<()> {
     let root = project_root()?;
@@ -774,6 +831,10 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     // ci-scope planning so local `just pr-fast` and CI execute the same lane
     // decisions instead of duplicating shell/YAML logic.
     let plan = plan_gates(&root, &policy, &config)?;
+
+    // Hold through paired census, output and receipt publication, including diff
+    // execution. Read-only list/explain paths above never acquire ownership.
+    let _invocation_lease = GateInvocationLease::acquire(&root)?;
 
     // Handle diff mode
     if let Some(baseline_path) = &config.diff_baseline {
@@ -845,7 +906,15 @@ fn filter_gates(policy: &GatePolicy, config: &GateRunnerConfig) -> Result<Vec<Ga
 
     // Filter by specific gate name
     if let Some(gate_name) = &config.gate_filter {
-        gates.retain(|g| g.name == *gate_name);
+        if !gates.iter().any(|gate| gate.name == *gate_name) {
+            bail!("No gate found with name '{}'", gate_name);
+        }
+        let selected =
+            route_profile::named_gate_ids(policy, gate_name).map_err(|message| eyre!(message))?;
+        if selected.iter().any(|name| !gates.iter().any(|gate| gate.name == *name)) {
+            bail!("Named gate prerequisite missing for '{}'", gate_name);
+        }
+        gates.retain(|g| selected.contains(&g.name.as_str()));
         if gates.is_empty() {
             bail!("No gate found with name '{}'", gate_name);
         }
@@ -921,10 +990,12 @@ fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> R
     // guard's job is only "would this proceed against a commit-tier gate
     // without --staged", not gate-name validation.
     if let Some(gate_name) = &config.gate_filter {
+        let selected =
+            route_profile::named_gate_ids(policy, gate_name).map_err(|message| eyre!(message))?;
         return Ok(policy
             .gates
             .iter()
-            .any(|gate| gate.name == *gate_name && gate.tier == "commit"));
+            .any(|gate| selected.contains(&gate.name.as_str()) && gate.tier == "commit"));
     }
 
     Ok(match config.tier {
@@ -1024,8 +1095,13 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
             // {package_args} unresolved, even with an immutable subject.
             let mut plan =
                 plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base, subject_scope)?;
-            plan.selected.retain(|row| Some(&row.gate.name) == config.gate_filter.as_ref());
-            plan.skipped.retain(|row| Some(&row.name) == config.gate_filter.as_ref());
+            let selected = route_profile::named_gate_ids(
+                policy,
+                config.gate_filter.as_deref().unwrap_or_default(),
+            )
+            .map_err(|message| eyre!(message))?;
+            plan.selected.retain(|row| selected.contains(&row.gate.name.as_str()));
+            plan.skipped.retain(|row| selected.contains(&row.name.as_str()));
             plan.tier = config.tier.clone();
             plan.staged_tree_oid = staged_tree_oid;
             return Ok(plan);
@@ -1724,8 +1800,12 @@ fn run_gate_plan(
             pb.set_message(format!("Running {}...", gate.name));
         }
 
-        let result =
+        let mut result =
             run_single_gate(gate, policy, &log_dir, config, plan.staged_tree_oid.as_deref())?;
+        // #17151: account for every selected test target before the result is
+        // published, so a sweep that stopped early is a countable population in
+        // the receipt rather than an invisible absence.
+        attach_selected_target_accounting(&mut result, &results, &log_dir);
         emit_gate_end(gate, &result);
 
         // One executed planned `run` row -> one normalized result (#9156).
@@ -1821,6 +1901,7 @@ fn run_gate_plan(
                     metrics: None,
                     artifacts: None,
                     first_failure: None,
+                    selected_target_accounting: None,
                     // The retired gate's command never started (#13698).
                     command_started: false,
                 };
@@ -1898,6 +1979,85 @@ fn emit_gate_begin(gate: &GateDefinition) {
         gate.timeout_seconds,
         gate.command.trim()
     );
+}
+
+/// #17151: account for every test target the sweep selected.
+///
+/// The compile-only sibling gate enumerates the test targets cargo built for
+/// this sweep (`Executable` lines) and this gate's log enumerates the ones
+/// cargo actually ran (`Running` lines). Comparing cargo's own two censuses
+/// accounts for every selected target: the difference is the population a
+/// truncated sweep skipped.
+///
+/// A gate that publishes a healthy sweep it did not perform is the masking this
+/// control exists to prevent, so an incomplete sweep that would otherwise be
+/// published as `pass` is published as `fail` with the skipped population
+/// named. An incomplete sweep that is already `fail` keeps its status — there
+/// the accounting adds attribution, not a second verdict.
+fn attach_selected_target_accounting(
+    result: &mut GateResult,
+    completed: &[GateResult],
+    log_dir: &Path,
+) {
+    // Only this routed gate declares the paired census contract. Missing
+    // evidence must not certify a healthy sweep, nor affect unrelated gates.
+    if result.gate_name != "unit_routed_full" || !result.command_started {
+        return;
+    }
+    let accounting = (|| {
+        let build = completed.iter().find(|gate| {
+            gate.gate_name == "unit_routed_full_build"
+                && gate.status == "pass"
+                && gate.command.trim_end().strip_suffix(" --no-run")
+                    == Some(result.command.trim_end())
+        })?;
+        let build_census = read_gate_target_census(log_dir, &build.gate_name)?;
+        let run_census = read_gate_target_census(log_dir, &result.gate_name)?;
+        account_selected_targets(build_census, run_census)
+    })();
+    let Some(accounting) = accounting else {
+        if result.status == "pass" {
+            result.status = "fail".to_string();
+            if let Some(metrics) = result.metrics.as_mut() {
+                metrics.tests_total = None;
+                metrics.tests_passed = None;
+                metrics.tests_failed = None;
+                metrics.tests_ignored = None;
+            }
+            result.output_summary = Some(
+                "selected-target accounting unavailable: missing or invalid paired census"
+                    .to_string(),
+            );
+        }
+        return;
+    };
+    if !accounting.complete && result.status == "pass" {
+        result.status = "fail".to_string();
+        if let Some(metrics) = result.metrics.as_mut() {
+            metrics.tests_total = None;
+            metrics.tests_passed = None;
+            metrics.tests_failed = None;
+            metrics.tests_ignored = None;
+        }
+        result.output_summary = Some(format!(
+            "incomplete test sweep: {}; the gate reported a healthy sweep it did not perform",
+            accounting.summary()
+        ));
+    }
+    result.selected_target_accounting = Some(accounting);
+}
+
+/// Read one gate's cargo test-target census from its complete on-disk log.
+///
+/// The stdout retained for the receipt is truncated to the last
+/// [`MAX_GATE_OUTPUT_BYTES`], so the census is streamed from the whole file:
+/// a truncated log would undercount the executed population and report a
+/// complete sweep as skipped.
+fn read_gate_target_census(log_dir: &Path, gate_name: &str) -> Option<TargetCensus> {
+    let log_path = log_dir.join(format!("{gate_name}.log"));
+    let file = fs::File::open(&log_path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    census_test_targets_from_reader(reader).ok()
 }
 
 fn emit_gate_end(gate: &GateDefinition, result: &GateResult) {
@@ -2291,6 +2451,7 @@ fn run_single_gate(
             metrics: None,
             artifacts: None,
             first_failure: None,
+            selected_target_accounting: None,
             command_started: false,
         });
     }
@@ -2407,8 +2568,22 @@ fn run_single_gate(
             // A retained summary describes only one observed test binary. On failure or
             // timeout, publishing its counts can claim zero failures despite a later
             // failing binary. Keep execution evidence below, not partial numeric totals.
+            //
+            // The parsed evidence comes from the gate's complete on-disk log,
+            // not from the retained stdout tail: `read_gate_output` keeps only
+            // the last 4 MiB, and a routed sweep's log grows with the number of
+            // selected targets (#17151), so the tail can be missing the sweep's
+            // first failure and most of its per-target summaries entirely.
+            let complete_log = if (status == "pass" && gate.tags.contains(&"test".to_string()))
+                || (status == "fail" && is_cargo_test_command(command))
+            {
+                read_complete_gate_log(&log_path)
+            } else {
+                None
+            };
+            let parsed_output = complete_log.as_deref().unwrap_or(&execution.stdout);
             let mut metrics = if status == "pass" && gate.tags.contains(&"test".to_string()) {
-                parse_test_metrics(&execution.stdout)
+                complete_log.as_deref().and_then(parse_test_metrics)
             } else {
                 None
             };
@@ -2432,7 +2607,7 @@ fn run_single_gate(
 
             // For failing cargo test gates, extract the first failure details
             let first_failure = if status == "fail" && is_cargo_test_command(command) {
-                parse_first_failure(&execution.stdout, execution.exit_code)
+                parse_first_failure(parsed_output, execution.exit_code)
             } else {
                 None
             };
@@ -2454,6 +2629,7 @@ fn run_single_gate(
                     Some(gate.artifacts.clone())
                 },
                 first_failure,
+                selected_target_accounting: None,
                 command_started: true,
             })
         }
@@ -2485,6 +2661,7 @@ fn run_single_gate(
                 metrics,
                 artifacts: None,
                 first_failure: None,
+                selected_target_accounting: None,
                 // The shell failure carries whether the child spawned before
                 // the failure, so a post-start error is never published as
                 // never-started (review thread FC-ADAPTER-ERROR-FLATTEN).
@@ -2605,7 +2782,16 @@ fn run_shell_command_with_retries(
                 child_started: true,
             })?;
             execution.stdout.push_str(&trailer);
-            if attempt < total_attempts {
+            // A watchdog does not erase an assertion failure already emitted by
+            // this attempt. Preserve its timeout status/log instead of retrying
+            // into a misleading green receipt. Unreadable evidence also refuses
+            // a retry for Cargo test commands.
+            let retryable = attempt < total_attempts
+                && (!is_cargo_test_command(command)
+                    || read_complete_gate_log(log_path).is_some_and(|output| {
+                        !observed_test_failure(&output, execution.exit_code)
+                    }));
+            if attempt < total_attempts && retryable {
                 eprintln!(
                     "gate {gate_name} timed out after {timeout_secs}s on attempt {attempt}; \
                      retrying ({}/{total_attempts})",
@@ -2639,6 +2825,18 @@ fn run_shell_command_with_retries(
         execution.test_execution_reached_attempts = test_execution_reached_attempts;
         return Ok(execution);
     }
+}
+
+fn observed_test_failure(output: &str, exit_code: i32) -> bool {
+    parse_first_failure(output, exit_code).is_some()
+        || output.lines().any(|line| {
+            let plain = console::strip_ansi_codes(line);
+            let line = plain.trim_start();
+            line.starts_with("error: test failed, to rerun pass")
+                || line.starts_with("error: process didn't exit successfully")
+                || (line.starts_with("test result:")
+                    && extract_number(line, "failed").is_some_and(|count| count > 0))
+        })
 }
 
 fn attempt_reach_evidence(
@@ -2840,6 +3038,22 @@ fn read_gate_output(log_path: &Path) -> String {
     )
 }
 
+/// Read a gate's complete on-disk log.
+///
+/// [`read_gate_output`] deliberately keeps only the last
+/// [`MAX_GATE_OUTPUT_BYTES`], which is the right shape for a *summary*. It is
+/// the wrong shape for the receipt's parsed evidence: a routed sweep's log
+/// grows with the number of selected targets (#17151), so the tail can be
+/// missing the sweep's first failure and most of its per-target summaries.
+///
+/// Undecodable bytes are replaced rather than rejected: a gate log can carry
+/// arbitrary subprocess bytes, and losing the whole log over one bad byte
+/// would publish less evidence than the runner actually observed.
+fn read_complete_gate_log(log_path: &Path) -> Option<String> {
+    let bytes = fs::read(log_path).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 #[cfg(windows)]
 fn shell_command_process(command: &str, _timeout_secs: u64) -> Command {
     let mut cmd = Command::new("cmd");
@@ -2920,6 +3134,7 @@ fn run_internal_xtask_gate(
         metrics: None,
         artifacts: if gate.artifacts.is_empty() { None } else { Some(gate.artifacts.clone()) },
         first_failure: None,
+        selected_target_accounting: None,
         // The in-process closure ran: even a "fail" or "error" outcome here
         // is post-start activity (review thread FC-ADAPTER-ERROR-FLATTEN).
         command_started: true,
@@ -2983,6 +3198,7 @@ fn run_internal_commit_check(
         metrics: None,
         artifacts: if gate.artifacts.is_empty() { None } else { Some(gate.artifacts.clone()) },
         first_failure: None,
+        selected_target_accounting: None,
         // The in-process closure ran: even an "error" outcome here (render
         // failure, check error) is post-start activity (review thread
         // FC-ADAPTER-ERROR-FLATTEN).
@@ -3147,37 +3363,29 @@ fn extract_output_summary(output: &str, max_lines: usize) -> String {
 
 /// Parse test metrics from cargo test output
 fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
-    // Look for "test result: ok. X passed; Y failed; Z ignored"
+    let mut passed = 0u32;
+    let mut failed = 0u32;
+    let mut ignored = 0u32;
+    let mut found = false;
     for line in output.lines() {
-        if line.contains("test result:") {
-            let mut metrics = GateMetrics::default();
-
-            // Parse passed count
-            if let Some(passed) = extract_number(line, "passed") {
-                metrics.tests_passed = Some(passed);
-            }
-
-            // Parse failed count
-            if let Some(failed) = extract_number(line, "failed") {
-                metrics.tests_failed = Some(failed);
-            }
-
-            // Parse ignored count
-            if let Some(ignored) = extract_number(line, "ignored") {
-                metrics.tests_ignored = Some(ignored);
-            }
-
-            // Calculate total
-            let total = metrics.tests_passed.unwrap_or(0)
-                + metrics.tests_failed.unwrap_or(0)
-                + metrics.tests_ignored.unwrap_or(0);
-            if total > 0 {
-                metrics.tests_total = Some(total);
-                return Some(metrics);
-            }
+        let plain = console::strip_ansi_codes(line);
+        if plain.trim_start().starts_with("test result:") {
+            passed = passed.checked_add(extract_number(&plain, "passed")?)?;
+            failed = failed.checked_add(extract_number(&plain, "failed")?)?;
+            ignored = ignored.checked_add(extract_number(&plain, "ignored")?)?;
+            found = true;
         }
     }
-    None
+    if !found {
+        return None;
+    }
+    Some(GateMetrics {
+        tests_total: Some(passed.checked_add(failed)?.checked_add(ignored)?),
+        tests_passed: Some(passed),
+        tests_failed: Some(failed),
+        tests_ignored: Some(ignored),
+        ..GateMetrics::default()
+    })
 }
 
 /// For a `cargo test`-class gate, report whether the captured log ever
@@ -3327,6 +3535,22 @@ fn output_human(receipt: &Receipt) -> Result<()> {
             }
         }
         writeln!(term)?;
+    }
+
+    // #17151: publish the selected-target accounting for every gate that
+    // carries one, so a sweep that skipped targets is visible in the receipt
+    // output and not only in the JSON artifact.
+    for gate in &receipt.gates {
+        let Some(accounting) = gate.selected_target_accounting.as_ref() else {
+            continue;
+        };
+        writeln!(
+            term,
+            "{}: {} — {}",
+            bold.apply_to("Selected targets"),
+            gate.gate_name,
+            accounting.summary()
+        )?;
     }
 
     // Overall status
@@ -3755,18 +3979,19 @@ mod tests {
         DiffResult, FirstFailure, GateDefinition, GateMetrics, GatePlanningConfig,
         GatePlanningRole, GatePolicy, GateResult, GateRunnerConfig, GateTier, GlobalSettings,
         MAX_GATE_OUTPUT_BYTES, MAX_GATE_RETRIES, MetricChange, OutputFormat, PackageTargetIndex,
-        Receipt, TestExecutionAttemptEvidence, VERSION_SYNC_GATE_COMMAND, attempt_reach_evidence,
-        blocking_failure_gate_names, build_agent_receipt, build_pr_fast_plan_from_scope,
+        Receipt, TestExecutionAttemptEvidence, VERSION_SYNC_GATE_COMMAND,
+        attach_selected_target_accounting, attempt_reach_evidence, blocking_failure_gate_names,
+        build_agent_receipt, build_pr_fast_plan_from_scope,
         build_pr_fast_plan_from_scope_with_targets, commit_advisories, compare_receipts,
         determine_overall_status, extend_plan_with_non_pr_fast_static_gates,
         extend_plan_with_static_tiers, extract_output_summary, failure_guidance, filter_gates,
         is_blocking_gate_status, is_cargo_test_command, is_latest_commit,
         load_policy_for_inspection, load_receipt, log_reaches_test_execution, output_diff,
         parse_first_failure, parse_test_execution_reached, parse_test_metrics, plan_gates,
-        read_gate_output, run_gate_plan, run_internal_commit_check, run_internal_xtask_gate,
-        run_shell_command_with_retries, run_shell_command_with_timeout, run_single_gate,
-        selects_commit_tier_gate, shell_command_watchdog_timeout, staged_guard_violation,
-        static_gate_plan, validate_attempt_histories, write_receipt,
+        read_complete_gate_log, read_gate_output, run_gate_plan, run_internal_commit_check,
+        run_internal_xtask_gate, run_shell_command_with_retries, run_shell_command_with_timeout,
+        run_single_gate, selects_commit_tier_gate, shell_command_watchdog_timeout,
+        staged_guard_violation, static_gate_plan, validate_attempt_histories, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -3788,6 +4013,7 @@ mod tests {
             metrics: None,
             artifacts: None,
             first_failure: None,
+            selected_target_accounting: None,
             command_started: status != "skip",
         }
     }
@@ -5005,7 +5231,7 @@ gates:
             fs::write(root.join(changed), "// changed\n")?;
             run_git(root, &["add", "."])?;
             run_git(root, &["commit", "--quiet", "-m", "subject change"])?;
-            let policy = policy_with_gates(vec![
+            let mut policy = policy_with_gates(vec![
                 pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
                 pr_gate(
                     "unit_routed_full_build",
@@ -5023,6 +5249,15 @@ gates:
                     "cargo test --workspace --lib",
                 ),
             ]);
+            policy.tiers.insert(
+                "pr_fast".into(),
+                super::TierDefinition {
+                    description: "fixture".into(),
+                    target_duration_seconds: 30,
+                    enforcement: "required".into(),
+                    trigger: Vec::new(),
+                },
+            );
             let mut config = GateRunnerConfig {
                 tier: GateTier::PrFast,
                 base_ref: Some("origin/main".to_string()),
@@ -5045,6 +5280,82 @@ gates:
             assert_eq!(filtered.package_args, full.package_args, "{scenario}");
             assert_eq!(filtered.fallback_used, full.fallback_used, "{scenario}");
             assert_eq!(filtered.scope_ok, full.scope_ok, "{scenario}");
+            config.gate_filter = Some("unit_routed_full".to_string());
+            let runtime = plan_gates(root, &policy, &config)?;
+            let expansion = super::route_profile::expand(
+                &policy,
+                super::route_profile::RequestedProfile::PrFast,
+                Some("unit_routed_full"),
+            );
+            assert_eq!(expansion.resolution, super::route_profile::ExpansionResolution::Complete);
+            assert_eq!(
+                expansion.denominator,
+                vec!["unit_routed_full".to_string(), "unit_routed_full_build".to_string()]
+            );
+            let mut missing = policy.clone();
+            missing.gates.retain(|gate| gate.name != "unit_routed_full_build");
+            assert!(plan_gates(root, &missing, &config).is_err());
+            let invalid = super::route_profile::expand(
+                &missing,
+                super::route_profile::RequestedProfile::PrFast,
+                Some("unit_routed_full"),
+            );
+            assert_eq!(invalid.resolution, super::route_profile::ExpansionResolution::Invalid);
+            assert!(
+                invalid
+                    .detail
+                    .as_deref()
+                    .is_some_and(|message| message.contains("unit_routed_full_build is missing"))
+            );
+            for case in ["cross-tier", "reversed"] {
+                let mut invalid_policy = policy.clone();
+                if case == "cross-tier" {
+                    invalid_policy.gates[1].tier = "commit".into();
+                } else {
+                    invalid_policy.gates.swap(1, 2);
+                }
+                assert!(plan_gates(root, &invalid_policy, &config).is_err());
+                assert!(super::staged_guard_violation(&invalid_policy, &config).is_err());
+                assert_eq!(
+                    super::route_profile::expand(
+                        &invalid_policy,
+                        super::route_profile::RequestedProfile::PrFast,
+                        Some("unit_routed_full")
+                    )
+                    .resolution,
+                    super::route_profile::ExpansionResolution::Invalid
+                );
+            }
+
+            let expected_pair: Vec<_> = full
+                .selected
+                .iter()
+                .filter(|row| {
+                    matches!(row.gate.name.as_str(), "unit_routed_full_build" | "unit_routed_full")
+                })
+                .map(|row| (&row.gate.name, &row.gate.command))
+                .collect();
+            assert_eq!(
+                runtime
+                    .selected
+                    .iter()
+                    .map(|row| (&row.gate.name, &row.gate.command))
+                    .collect::<Vec<_>>(),
+                expected_pair
+            );
+            assert_eq!(runtime.package_args, full.package_args);
+            if scenario == "code" {
+                assert_eq!(
+                    selected_gate_names(&runtime),
+                    vec!["unit_routed_full_build", "unit_routed_full"]
+                );
+            } else {
+                assert_eq!(
+                    skipped_gate_names(&runtime),
+                    vec!["unit_routed_full_build", "unit_routed_full"]
+                );
+            }
+
             if scenario == "code" {
                 assert_eq!(filtered.package_args, vec!["-p", "smoke-probe"]);
                 assert_eq!(selected_gate_names(&filtered), vec!["unit_routed_full_build"]);
@@ -5888,6 +6199,35 @@ gates:
         Ok(())
     }
 
+    /// #17151: the routed sweep's log grows with its selected-target count, so
+    /// the retained 4 MiB tail can be missing the sweep's *first* failure. The
+    /// receipt's parsed evidence comes from the complete log; the tail remains
+    /// the right shape for a summary.
+    #[test]
+    fn the_first_failure_is_read_from_the_complete_log_not_the_truncated_tail()
+    -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let log_path = tmp.path().join("long.log");
+        let mut contents = b"test first::failure ... FAILED\n".to_vec();
+        contents.extend(vec![b'x'; MAX_GATE_OUTPUT_BYTES as usize]);
+        contents.extend_from_slice(b"\ntail noise\n");
+        fs::write(&log_path, &contents)?;
+
+        let tail = read_gate_output(&log_path);
+        assert!(tail.starts_with("[gate log truncated"), "the tail must be truncated");
+        assert!(
+            parse_first_failure(&tail, 101).is_none(),
+            "the truncated tail must not be able to name the first failure"
+        );
+
+        let complete =
+            must_some_with(read_complete_gate_log(&log_path), "the complete log is readable");
+        let failure =
+            must_some_with(parse_first_failure(&complete, 101), "the complete log names it");
+        assert_eq!(failure.test.as_deref(), Some("first::failure"));
+        Ok(())
+    }
+
     #[test]
     fn gate_output_summary_keeps_tail_lines() {
         let output = (1..=12).map(|idx| format!("line-{idx}")).collect::<Vec<_>>().join("\n");
@@ -5895,6 +6235,22 @@ gates:
         let summary = extract_output_summary(&output, 4);
 
         assert_eq!(summary, "line-9\nline-10\nline-11\nline-12");
+    }
+
+    #[test]
+    fn test_metrics_aggregate_all_summaries_and_refuse_incomplete_or_overflow() {
+        let metrics = required_test_metrics(
+            "test result: ok. 2 passed; 0 failed; 0 ignored\ntest result: ok. 5 passed; 0 failed; 1 ignored\n",
+        );
+        assert_eq!(metrics.tests_total, Some(8));
+        assert_eq!(metrics.tests_passed, Some(7));
+        assert!(
+            parse_test_metrics(
+                "test result: ok. 2 passed; 0 failed; 0 ignored\ntest result: malformed\n"
+            )
+            .is_none()
+        );
+        assert!(parse_test_metrics("test result: ok. 4294967295 passed; 0 failed; 0 ignored\ntest result: ok. 1 passed; 0 failed; 0 ignored\n").is_none());
     }
 
     #[test]
@@ -6893,6 +7249,7 @@ gates:
             metrics: None,
             artifacts: None,
             first_failure: None,
+            selected_target_accounting: None,
             command_started: status != "skip",
         })
     }
@@ -7454,6 +7811,7 @@ gates:
             metrics: Some(metrics),
             artifacts: None,
             first_failure: None,
+            selected_target_accounting: None,
             command_started: true,
         });
         receipt
@@ -7878,6 +8236,7 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
                 message: Some("assertion failed".to_string()),
                 exit_code: 101,
             }),
+            selected_target_accounting: None,
             command_started: true,
         };
         let json = serialize_json(&result, "should serialize");
@@ -8488,13 +8847,309 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
             // #16194: the test step exports the binary the build step just
             // produced; the env-wrapped shape keeps is_cargo_test_command
             // recognition and the ubuntu gate shell intact.
-            "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests {package_args}"
+            //
+            // #17151: `--no-fail-fast` keeps the sweep from exiting at the
+            // first failing test executable, which would silently skip every
+            // alphabetically-later crate's `tests/` suite. The flag is
+            // load-bearing for coverage, so it is pinned here rather than left
+            // to drift out of the command unnoticed.
+            "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests {package_args} --no-fail-fast"
         );
         assert_eq!(cohort_gate.timeout_seconds, 1500);
         assert_eq!(cohort_gate.retry_count, 1);
         assert!(cohort_gate.required);
         assert!(!cohort_gate.short_circuit, "the backstop must never short-circuit");
         Ok(())
+    }
+
+    /// (#17151) The runner accounts for every selected test target: the
+    /// compile-only sibling's `Executable` census selects them and the runtime
+    /// gate's `Running` census says how many actually ran. A truncated sweep is
+    /// therefore a countable population in the receipt, not an invisible
+    /// absence.
+    #[test]
+    fn selected_target_accounting_names_the_skipped_population() -> color_eyre::eyre::Result<()> {
+        let log_dir = tempfile::tempdir()?;
+        fs::write(
+            log_dir.path().join("unit_routed_full_build.log"),
+            "\
+  Executable unittests src/lib.rs (target/debug/deps/xtask-1)
+  Executable tests/routed_test_preparation_contract.rs (target/debug/deps/routed-2)
+  Executable tests/gate_policy_profile_tests.rs (target/debug/deps/gate-3)
+",
+        )?;
+        fs::write(
+            log_dir.path().join("unit_routed_full.log"),
+            "\
+     Running unittests src/lib.rs (target/debug/deps/xtask-1)
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+",
+        )?;
+
+        let build = accounting_gate_result(
+            "unit_routed_full_build",
+            "cargo test --locked --tests -p xtask --no-fail-fast --no-run",
+            "pass",
+        );
+        let mut runtime = accounting_gate_result(
+            "unit_routed_full",
+            "cargo test --locked --tests -p xtask --no-fail-fast",
+            "fail",
+        );
+
+        attach_selected_target_accounting(
+            &mut runtime,
+            std::slice::from_ref(&build),
+            log_dir.path(),
+        );
+
+        let accounting = must_some_with(
+            runtime.selected_target_accounting,
+            "a compile census names the selected targets, so an accounting exists",
+        );
+        assert_eq!(accounting.selected, 3);
+        assert_eq!(accounting.executed, 1);
+        assert_eq!(accounting.skipped, 2);
+        assert_eq!(accounting.selected_integration, 2);
+        assert_eq!(accounting.executed_integration, 0);
+        assert!(!accounting.complete);
+        assert_eq!(
+            runtime.status, "fail",
+            "an already-red sweep keeps its status; the accounting adds attribution, not a \
+             second verdict"
+        );
+        Ok(())
+    }
+
+    /// (#17151) A sweep that reports healthy while skipping selected targets
+    /// is the masking this control exists to prevent, so it is published as a
+    /// failure with the skipped population named.
+    #[test]
+    fn a_healthy_sweep_that_skipped_targets_is_published_as_a_failure()
+    -> color_eyre::eyre::Result<()> {
+        let log_dir = tempfile::tempdir()?;
+        fs::write(
+            log_dir.path().join("unit_routed_full_build.log"),
+            "\
+  Executable unittests src/lib.rs (target/debug/deps/xtask-1)
+  Executable tests/gate_policy_profile_tests.rs (target/debug/deps/gate-3)
+",
+        )?;
+        fs::write(
+            log_dir.path().join("unit_routed_full.log"),
+            "     Running unittests src/lib.rs (target/debug/deps/xtask-1)\n",
+        )?;
+
+        let build = accounting_gate_result(
+            "unit_routed_full_build",
+            "cargo test --locked --tests -p xtask --no-fail-fast --no-run",
+            "pass",
+        );
+        let mut runtime = accounting_gate_result(
+            "unit_routed_full",
+            "cargo test --locked --tests -p xtask --no-fail-fast",
+            "pass",
+        );
+
+        attach_selected_target_accounting(
+            &mut runtime,
+            std::slice::from_ref(&build),
+            log_dir.path(),
+        );
+
+        assert_eq!(
+            runtime.status, "fail",
+            "a gate must not publish a healthy sweep it did not perform"
+        );
+        let summary = runtime.output_summary.unwrap_or_default();
+        assert!(
+            summary.contains("skipped 1"),
+            "the published summary must name the skipped population: {summary}"
+        );
+        Ok(())
+    }
+
+    /// A gate with no compile-only sibling has no selected-target accounting:
+    /// nothing selected the targets, so nothing may be claimed about them.
+    #[test]
+    fn routed_gate_without_a_compile_sibling_cannot_publish_success() -> color_eyre::eyre::Result<()>
+    {
+        let log_dir = tempfile::tempdir()?;
+        fs::write(
+            log_dir.path().join("unit_routed_full.log"),
+            "     Running unittests src/lib.rs (target/debug/deps/xtask-1)\n",
+        )?;
+        let mut runtime = accounting_gate_result(
+            "unit_routed_full",
+            "cargo test --locked --tests -p xtask --no-fail-fast",
+            "pass",
+        );
+
+        attach_selected_target_accounting(&mut runtime, &[], log_dir.path());
+
+        assert!(runtime.selected_target_accounting.is_none());
+        assert_eq!(runtime.status, "fail");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_census_fails_closed_without_rewriting_process_exit_or_red_status()
+    -> color_eyre::eyre::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let build =
+            accounting_gate_result("unit_routed_full_build", "cargo test --tests --no-run", "pass");
+        for status in ["pass", "fail", "timeout", "error"] {
+            let mut run = accounting_gate_result("unit_routed_full", "cargo test --tests", status);
+            run.exit_code = Some(if status == "pass" { 0 } else { 101 });
+            let exit = run.exit_code;
+            run.metrics = Some(GateMetrics {
+                tests_total: Some(7),
+                tests_passed: Some(7),
+                tests_failed: Some(0),
+                tests_ignored: Some(0),
+                test_execution_reached: Some(true),
+                ..GateMetrics::default()
+            });
+            attach_selected_target_accounting(&mut run, std::slice::from_ref(&build), dir.path());
+            assert_eq!(run.status, if status == "pass" { "fail" } else { status });
+            assert_eq!(run.exit_code, exit);
+            assert!(run.selected_target_accounting.is_none());
+            let metrics = run.metrics.as_ref().unwrap();
+            assert_eq!(metrics.test_execution_reached, Some(true));
+            if status == "pass" {
+                assert!(
+                    metrics.tests_total.is_none()
+                        && metrics.tests_passed.is_none()
+                        && metrics.tests_failed.is_none()
+                        && metrics.tests_ignored.is_none()
+                );
+            }
+        }
+        let mut unrelated = accounting_gate_result("other", "cargo test --tests", "pass");
+        attach_selected_target_accounting(&mut unrelated, &[], dir.path());
+        assert_eq!(unrelated.status, "pass");
+        Ok(())
+    }
+
+    #[test]
+    fn invocation_lease_blocks_overlap_without_truncating_logs_and_releases() -> Result<()> {
+        let root = tempdir()?;
+        let logs = root.path().join("target/receipts/logs");
+        fs::create_dir_all(&logs)?;
+        let log = logs.join("unit_routed_full_build.log");
+        fs::write(&log, "owned build evidence")?;
+        {
+            let _owner = super::GateInvocationLease::acquire(root.path())?;
+            assert!(super::GateInvocationLease::acquire(root.path()).is_err());
+            assert_eq!(fs::read_to_string(&log)?, "owned build evidence");
+            fs::write(root.path().join("target/receipts/receipt.json"), "published")?;
+            assert!(super::GateInvocationLease::acquire(root.path()).is_err());
+        }
+        let _next_owner = super::GateInvocationLease::acquire(root.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn lease_initialization_failure_leaves_no_sentinel_or_temporary_owner() -> Result<()> {
+        let root = tempdir()?;
+        let failed = super::GateInvocationLease::acquire_initialized(root.path(), |file, _| {
+            std::io::Write::write_all(file, b"partial")?;
+            bail!("injected initialization failure")
+        });
+        assert!(failed.is_err());
+        assert_eq!(fs::read_dir(root.path().join("target"))?.count(), 0);
+        let _owner = super::GateInvocationLease::acquire(root.path())?;
+        assert!(super::GateInvocationLease::acquire(root.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cargo_target_failure_timeout_is_not_retried_but_clean_timeout_is() -> Result<()> {
+        for failure in [
+            "error: test failed, to rerun pass `-p example --test a`",
+            "\x1b[31merror:\x1b[0m process didn't exit successfully: target/a (signal: 6, SIGABRT)",
+            "",
+        ] {
+            let dir = tempdir()?;
+            let marker = dir.path().join("attempted");
+            // `exit 124` makes the trailing recognized Cargo segment unreachable
+            // even if the watchdog fails; this fixture never builds repository code.
+            let command = format!(
+                r#"if test -f '{}'; then exit 0; fi; touch '{}'; printf '%s\n' "{}"; sleep 3; exit 124; true && cargo test --lib"#,
+                marker.display(),
+                marker.display(),
+                failure.replace('`', "")
+            );
+            assert!(is_cargo_test_command(&command));
+            let execution = run_shell_command_with_retries(
+                &command,
+                &dir.path().join("attempt.log"),
+                1,
+                1,
+                1,
+                "target-timeout",
+            )
+            .map_err(|error| color_eyre::eyre::eyre!("retry probe: {}", error.message))?;
+            assert_eq!(execution.timed_out, !failure.is_empty());
+            assert_eq!(execution.exit_code, if failure.is_empty() { 0 } else { 124 });
+            assert_eq!(
+                execution.test_execution_reached_attempts.len(),
+                if failure.is_empty() { 2 } else { 1 }
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn assertion_failure_before_timeout_is_not_retried_into_green() -> color_eyre::eyre::Result<()>
+    {
+        let dir = tempdir()?;
+        let marker = dir.path().join("attempted");
+        let command = format!(
+            "if test -f '{}'; then exit 0; fi; touch '{}'; printf 'running 1 test\ntest example ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n'; sleep 3; exit 124; true && cargo test --lib",
+            marker.display(),
+            marker.display()
+        );
+        assert!(is_cargo_test_command(&command), "fixture must exercise Cargo retry policy");
+        let execution = run_shell_command_with_retries(
+            &command,
+            &dir.path().join("attempt.log"),
+            1,
+            1,
+            1,
+            "assertion-timeout",
+        )
+        .map_err(|error| color_eyre::eyre::eyre!("retry probe failed: {}", error.message))?;
+        assert!(execution.timed_out);
+        assert_ne!(execution.exit_code, 0);
+        assert_ne!(execution.exit_code, 101);
+        assert_eq!(execution.test_execution_reached_attempts.len(), 1);
+        assert!(
+            fs::read_to_string(dir.path().join("attempt.log"))?.contains("test example ... FAILED")
+        );
+        Ok(())
+    }
+
+    /// Build a minimal gate result for the selected-target accounting tests.
+    fn accounting_gate_result(gate_name: &str, command: &str, status: &str) -> GateResult {
+        GateResult {
+            gate_name: gate_name.to_string(),
+            tier: "pr_fast".to_string(),
+            status: status.to_string(),
+            required: Some(true),
+            duration_ms: 1,
+            command: command.to_string(),
+            exit_code: Some(0),
+            output_summary: None,
+            log_path: Some(format!("logs/{gate_name}.log")),
+            metrics: None,
+            artifacts: None,
+            first_failure: None,
+            selected_target_accounting: None,
+            command_started: true,
+        }
     }
 
     /// (#13698 falsifier 6) A failed required gate that declares
