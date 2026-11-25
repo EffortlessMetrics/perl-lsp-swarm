@@ -26,6 +26,32 @@ broad_globs_require_reason = true
 coverage_required_for_production_surfaces = true
 
 [[allow]]
+id = "non-rust-python-self-tests"
+path = "scripts/ci/python_self_tests.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "release/ci"
+reason = "Local Git-index enumeration and explicit Python execution work without building repository tooling."
+covered_by = ["python3 scripts/ci/test_python_self_tests.py"]
+created = "2026-11-20"
+review_after = "2027-02-20"
+
+[[allow]]
+id = "non-rust-test-python-self-tests"
+path = "scripts/ci/test_python_self_tests.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "release/ci"
+reason = "Disposable Git fixtures verify the inventory and child exit status through the production command."
+covered_by = ["python3 scripts/ci/test_python_self_tests.py"]
+created = "2026-11-20"
+review_after = "2027-02-20"
+
+[[allow]]
 id = "non-rust-xtask-ai-dependency-proof"
 path = "scripts/tests/test_xtask_ai_dependencies.py"
 kind = "ci_tooling"
