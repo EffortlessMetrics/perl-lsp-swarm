@@ -418,8 +418,21 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
         probe = self.workflow[probe_start:evaluate_start]
         self.assertIn("git/ref/heads/main", probe)
         self.assertEqual(probe.count("$(read_main_sha)"), 3)
-        self.assertIn("commits/${MAIN_SHA_BEFORE}/check-runs", probe)
-        self.assertIn("commits/${CANDIDATE_SHA}/check-runs", probe)
+        # #19565: main evidence is read from the canonical ci.yml run's own
+        # check suite for the exact SHA, not from the commit-level census,
+        # which silently evicts the oldest check suites of a long-lived HEAD
+        # and so cannot see main's shard verdicts at all. The reader is fed
+        # main's canonical ci.yml run payload for the exact subject SHA, and
+        # the retired census endpoint must be gone from the probe.
+        self.assertIn("check-suites/{suite_id}/check-runs?per_page=100", probe)
+        self.assertIn('"$probe_dir/main-workflow-runs.json"', probe)
+        self.assertIn('"${MAIN_SHA_BEFORE}"', probe)
+        self.assertNotIn("commits/${MAIN_SHA_BEFORE}/check-runs", probe)
+        # The candidate's evidence comes from the same route, for the exact
+        # candidate subject SHA.
+        self.assertIn('"$probe_dir/candidate-workflow-runs.json"', probe)
+        self.assertIn('"${CANDIDATE_SHA}"', probe)
+        self.assertNotIn("commits/${CANDIDATE_SHA}/check-runs", probe)
         self.assertIn("actions/workflows/ci.yml/runs?head_sha=${MAIN_SHA_BEFORE}", probe)
         self.assertIn("actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}", probe)
         self.assertIn("contents/.github/workflows/ci.yml?ref=$1", probe)
@@ -454,7 +467,14 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
         self.assertNotIn('read_workflow_sha "$CANDIDATE_SHA"', probe)
         self.assertEqual(probe.count('read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE"'), 2)
         self.assertEqual(probe.count('if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then'), 2)
-        self.assertIn("commits/${CANDIDATE_SHA}/check-runs", probe)
+        # #19565: the candidate's evidence is read from the canonical ci.yml
+        # run's own check suite for the exact subject SHA, never from the
+        # commit-level census, which silently evicts the oldest check suites
+        # of a long-lived branch.
+        self.assertIn("check-suites/{suite_id}/check-runs?per_page=100", probe)
+        self.assertIn('"$probe_dir/candidate-workflow-runs.json"', probe)
+        self.assertIn('"${CANDIDATE_SHA}"', probe)
+        self.assertNotIn("commits/${CANDIDATE_SHA}/check-runs", probe)
         self.assertIn("actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}", probe)
 
     def test_final_refusal_is_propagated_to_required_lane(self) -> None:
