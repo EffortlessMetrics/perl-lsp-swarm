@@ -7,6 +7,7 @@ body: >-
   with more than 10 branch points (#17716).
 time: 2026-11-14T00:00:00Z
 custom:
+  PR: "19420"
   Issue: "17716"
   Slug: too-many-branches
   Breaking: "no"

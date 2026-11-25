@@ -2735,6 +2735,10 @@ _semver-check-run:
     for crate in $crates; do
         echo
         echo "Checking ${crate}..."
+        if ! git cat-file -e "${BASELINE}:crates/${crate}/Cargo.toml" 2>/dev/null; then
+            echo "SKIP ${crate}: new since ${BASELINE}, no baseline to compare"
+            continue
+        fi
         cargo semver-checks check-release -p "$crate" --baseline-rev "$BASELINE" || EXIT_CODE=1
     done
     exit "$EXIT_CODE"
@@ -3096,10 +3100,11 @@ publish-dry-run:
 
     echo ""
     echo "Computing topological publish order..."
+    CRATES_JSON="$(mktemp)"
     cargo metadata --format-version=1 --no-deps \
-      | python3 scripts/publish-topo.py > /tmp/publish-dry-run-crates.json
+      | python3 scripts/publish-topo.py > "$CRATES_JSON"
 
-    COUNT=$(python3 -c 'import json; print(len(json.load(open("/tmp/publish-dry-run-crates.json"))))')
+    COUNT=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CRATES_JSON")
     echo "  ${COUNT} crates in publish allowlist"
 
     STRIP_SCRIPT="$(mktemp --suffix=.py)"
@@ -3129,7 +3134,7 @@ publish-dry-run:
     FAILED=""
     CRATES_LIST="$(mktemp)"
     python3 -c \
-      'import json,sys; [print("{} {}".format(c["name"],c["version"])) for c in json.load(open("/tmp/publish-dry-run-crates.json"))]' \
+      'import json,sys; [print("{} {}".format(c["name"],c["version"])) for c in json.load(open(sys.argv[1]))]' "$CRATES_JSON" \
       > "$CRATES_LIST"
 
     while read -r CRATE VERSION; do

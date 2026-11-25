@@ -16,7 +16,7 @@
 
 [package]
 name = "perl-parser-pest"
-version = "0.17.0"
+version = "0.18.0"
 edition = "2024"
 rust-version = "1.100"
 authors = ["Steven Zimmerman, CPA <git@effortlesssteven.com>"]

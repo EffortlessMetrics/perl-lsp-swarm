@@ -836,9 +836,9 @@ checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
 name = "futures-timer"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f288b0a4f20f9a56b5d1da57e2227c661b7b16168e2f72365f57b63326e29b24"
+checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
 
 [[package]]
 name = "futures-util"
@@ -1696,7 +1696,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "perl-ast"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-ast-v2",
  "perl-position-tracking",
@@ -1707,14 +1707,14 @@ dependencies = [
 
 [[package]]
 name = "perl-ast-v2"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-position-tracking",
 ]
 
 [[package]]
 name = "perl-ci-hygiene"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "perl-core-harness"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "chrono",
  "color-eyre",
@@ -1747,7 +1747,7 @@ dependencies = [
 
 [[package]]
 name = "perl-core-harness-types"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "clap",
  "jsonschema",
@@ -1757,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "perl-core-test-runner"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "perl-core-harness-types",
@@ -1768,7 +1768,7 @@ dependencies = [
 
 [[package]]
 name = "perl-corpus"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1789,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "perl-dap"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1823,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "perl-diagnostics"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-test-must",
  "serde",
@@ -1833,7 +1833,7 @@ dependencies = [
 
 [[package]]
 name = "perl-evidence-envelope"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-source-identity",
  "serde",
@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "perl-incremental-parsing"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "criterion",
  "lsp-types",
@@ -1856,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "perl-lexer"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "criterion",
  "memchr",
@@ -1876,14 +1876,14 @@ dependencies = [
 
 [[package]]
 name = "perl-line-index"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "perl-lsp-perltidy"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "criterion",
  "perl-parser-core",
@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "perl-lsp-rs"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "perl-lsp-rs-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2000,7 +2000,7 @@ dependencies = [
 
 [[package]]
 name = "perl-lsp-ux-tests"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2016,7 +2016,7 @@ dependencies = [
 
 [[package]]
 name = "perl-module"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-parser-core",
  "perl-semantic-facts",
@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "perl-operation-trace"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "perl-parser"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -2077,7 +2077,7 @@ dependencies = [
 
 [[package]]
 name = "perl-parser-bench"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-parser",
  "walkdir",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "perl-parser-comparison"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-ast",
  "perl-parser-core",
@@ -2100,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "perl-parser-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-ast",
  "perl-ast-v2",
@@ -2122,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "perl-parser-pest"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "pest",
  "pest_derive",
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "perl-pod"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-test-must",
  "tempfile",
@@ -2146,7 +2146,7 @@ dependencies = [
 
 [[package]]
 name = "perl-position-tracking"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "lsp-types",
  "perl-test-generators",
@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "perl-pragma"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "criterion",
  "perl-ast",
@@ -2170,7 +2170,7 @@ dependencies = [
 
 [[package]]
 name = "perl-regex"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-test-must",
  "proptest",
@@ -2181,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "perl-release-readiness"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2193,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "perl-ripr-facts"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "criterion",
  "jsonschema",
@@ -2206,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "perl-semantic-analyzer"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-module",
  "perl-parser-core",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "perl-semantic-facts"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-test-must",
  "proptest",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "perl-source-identity"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2244,14 +2244,14 @@ dependencies = [
 
 [[package]]
 name = "perl-subprocess-runtime"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-test-must",
 ]
 
 [[package]]
 name = "perl-symbol"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -2266,7 +2266,7 @@ dependencies = [
 
 [[package]]
 name = "perl-tdd-support"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "lsp-types",
@@ -2284,22 +2284,22 @@ dependencies = [
 
 [[package]]
 name = "perl-test-facts"
-version = "0.17.0"
+version = "0.18.0"
 
 [[package]]
 name = "perl-test-generators"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "perl-test-must"
-version = "0.17.0"
+version = "0.18.0"
 
 [[package]]
 name = "perl-token"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "criterion",
  "perl-lexer",
@@ -2311,7 +2311,7 @@ dependencies = [
 
 [[package]]
 name = "perl-tree-sitter-compat"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-parser-core",
  "perl-test-must",
@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "perl-uri"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "percent-encoding",
  "perl-test-must",
@@ -2333,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "perl-workspace"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -2357,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "perl-workspace-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "perl-parser-core",
  "perl-pod",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "perllsp"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "perl-lsp-rs",
@@ -3524,9 +3524,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.11+spec-1.1.0"
+version = "0.25.19+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b59c4d22ed448339746c59b905d24568fcbb3ab65a500494f7b8c3e97739f2b"
+checksum = "dd43688c4858d7264ae1cf9a9f874a67c3feb74a883b1cd7bebd6a4ea8307218"
 dependencies = [
  "indexmap",
  "toml_datetime",
@@ -3655,7 +3655,7 @@ checksum = "d0af592be68c579aa78a16846bd19422978c3c52e438523d45ff5d1bff1f9d4a"
 
 [[package]]
 name = "tree-sitter-perl-c"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "cc",
  "insta",
@@ -3665,7 +3665,7 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-perl-rs"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "insta",
  "perl-ast",
@@ -4245,7 +4245,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
