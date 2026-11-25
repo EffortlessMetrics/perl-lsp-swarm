@@ -1,0 +1,8 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Signature help for same-document explicit positional signatures keeps additional arguments on the declared trailing array or hash parameter, including native methods with omitted invocants."
+time: 2026-10-22T00:00:00Z
+custom:
+  Slug: signature-help-positional-slurpy
+  Breaking: "no"
