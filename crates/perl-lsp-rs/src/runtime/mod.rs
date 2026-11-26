@@ -205,8 +205,7 @@ pub struct LspServer {
     connection_exit: Arc<tokio::sync::Notify>,
     /// Pending `window/logMessage` text to emit once the client has sent the
     /// `initialized` notification (notifications must not be sent before the
-    /// initialize response is delivered). Currently used for the JetBrains
-    /// dynamic-registration override notice (#4630).
+    /// initialize response is delivered).
     pub(crate) pending_startup_log: Arc<Mutex<Option<String>>>,
     /// Index coordinator for workspace-wide features with lifecycle management
     #[cfg(feature = "workspace")]

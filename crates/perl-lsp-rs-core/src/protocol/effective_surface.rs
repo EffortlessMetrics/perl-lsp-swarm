@@ -182,9 +182,6 @@ pub enum KnownException {
     /// OpenCode declares `textDocument.diagnostic` but relies on push
     /// diagnostics; pull gating is suppressed so diagnostics are not lost.
     OpenCodePushDiagnosticsRetention,
-    /// JetBrains-family clients claim dynamic watcher registration but their
-    /// registration flow is unreliable; it is force-disabled (#4630-era).
-    JetBrainsWatcherForceDisable,
 }
 
 impl KnownException {
@@ -195,7 +192,6 @@ impl KnownException {
             Self::OpenCodePushDiagnosticsRetention => {
                 "clientInfo.name =~ /opencode/i && textDocument.diagnostic advertised"
             }
-            Self::JetBrainsWatcherForceDisable => "clientInfo.name =~ /(jetbrains|intellij|idea)/i",
         }
     }
 
@@ -207,10 +203,6 @@ impl KnownException {
                 "OpenCode relies on push publishDiagnostics even while declaring \
                  textDocument.diagnostic; pull gating suppressed to avoid losing diagnostics"
             }
-            Self::JetBrainsWatcherForceDisable => {
-                "dynamic watcher registration flow is unreliable and degrades startup; \
-                 forced off regardless of declaration"
-            }
         }
     }
 
@@ -220,10 +212,6 @@ impl KnownException {
         match self {
             Self::OpenCodePushDiagnosticsRetention => {
                 "revisit under #6735 negotiation matrix when OpenCode consumes pull diagnostics"
-            }
-            Self::JetBrainsWatcherForceDisable => {
-                "until EffectiveLspSurface cutover (S03/S04) retires the runtime override \
-                 with typed compatibility policy (#9665)"
             }
         }
     }
@@ -786,17 +774,12 @@ impl EffectiveLspSurface {
         let opencode_retained = inputs
             .compatibility_exceptions
             .contains(&KnownException::OpenCodePushDiagnosticsRetention);
-        let jetbrains_watcher_off =
-            inputs.compatibility_exceptions.contains(&KnownException::JetBrainsWatcherForceDisable);
         let mut applied: Vec<KnownException> = inputs
             .compatibility_exceptions
             .iter()
             .copied()
             .filter(|exception| match exception {
                 KnownException::OpenCodePushDiagnosticsRetention => true,
-                KnownException::JetBrainsWatcherForceDisable => {
-                    client.dynamic_file_watcher_registration.is_supported()
-                }
             })
             .collect();
         applied.sort();
@@ -922,21 +905,16 @@ impl EffectiveLspSurface {
         let mut registrations = Vec::new();
         let watcher_admitted = client.dynamic_file_watcher_registration.is_supported()
             && flags.workspace_symbol
-            && inputs.runtime.file_watchers_enabled
-            && !jetbrains_watcher_off;
+            && inputs.runtime.file_watchers_enabled;
         let watcher_registration_decision = if watcher_admitted {
             WatcherPlanDecision::Planned
         } else if !client.dynamic_file_watcher_registration.is_supported() {
             WatcherPlanDecision::Withheld(WatcherWithholdReason::ClientUnsupported)
         } else if !flags.workspace_symbol {
             WatcherPlanDecision::Withheld(WatcherWithholdReason::WorkspaceSurfaceInactive)
-        } else if !inputs.runtime.file_watchers_enabled {
+        } else {
             WatcherPlanDecision::Withheld(WatcherWithholdReason::RuntimeUnavailable {
                 input: "runtime_tuning.file_watchers",
-            })
-        } else {
-            WatcherPlanDecision::Withheld(WatcherWithholdReason::CompatibilityException {
-                exception: KnownException::JetBrainsWatcherForceDisable,
             })
         };
         if watcher_admitted {

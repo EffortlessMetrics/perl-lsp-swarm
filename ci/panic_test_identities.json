@@ -3666,7 +3666,7 @@
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs",
-      "enclosing_test_or_function": "watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_exception",
+      "enclosing_test_or_function": "watcher_registration_requires_claimed_support_and_active_workspace_symbol_surface",
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected watcher registration with relative patterns, got {other:?}\"),",
       "selector_identity": "invocation:1b9f3f2f758cdec6:occurrence:1",
