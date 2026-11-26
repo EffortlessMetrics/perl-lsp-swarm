@@ -686,6 +686,7 @@ fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
                 LaunchAuthoritySource::CommandLine,
                 "test: unbounded session",
             )),
+            ..Default::default()
         }),
         "test authority resolution",
     );
