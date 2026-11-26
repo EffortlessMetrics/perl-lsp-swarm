@@ -272,7 +272,7 @@
         "status": {
           "type": "string",
           "description": "Execution result status",
-          "enum": ["pass", "fail", "skip", "timeout", "error"],
+          "enum": ["pass", "fail", "skip", "timeout", "error", "not_evaluated"],
           "examples": ["pass"]
         },
         "required": {

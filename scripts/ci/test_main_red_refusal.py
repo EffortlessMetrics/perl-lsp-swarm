@@ -71,6 +71,41 @@ class MainRedRefusalBehaviorTests(unittest.TestCase):
             candidate_workflow_sha=candidate_workflow_sha,
         )
 
+    def test_green_main_missing_candidate_policy_shard_waits(self) -> None:
+        decision = self.evaluate(
+            main=all_shards("main-sha", conclusion="success"),
+            candidate=[
+                run
+                for run in all_shards("candidate-sha", conclusion="success")
+                if run["name"] != "CI Gate shard (policy)"
+            ],
+            main_workflow_run_ids=set(range(1, 9)),
+            candidate_workflow_run_ids=set(range(1, 9)),
+        )
+        self.assertTrue(decision.waits_for_candidate)
+        self.assertFalse(decision.blocks)
+
+    def test_green_main_red_candidate_policy_shard_blocks(self) -> None:
+        main = all_shards("main-sha", conclusion="success")
+        candidate = all_shards("candidate-sha", conclusion="success")
+        for index, run in enumerate(candidate):
+            if run["name"] == "CI Gate shard (policy)":
+                candidate[index] = {**run, "conclusion": "failure"}
+                break
+        else:
+            self.fail("policy shard missing from SHARD_NAMES fixture")
+        decision = self.evaluate(
+            main=main,
+            candidate=candidate,
+            main_workflow_run_ids=set(range(1, 9)),
+            candidate_workflow_run_ids=set(range(1, 9)),
+        )
+        self.assertTrue(decision.blocks)
+        self.assertTrue(
+            any("CI Gate shard (policy): candidate failure" in b for b in decision.blockers),
+            decision.blockers,
+        )
+
     def test_red_main_and_red_candidate_blocks(self) -> None:
         decision = self.evaluate(
             main=all_shards("main-sha", conclusion="failure"),
@@ -81,19 +116,27 @@ class MainRedRefusalBehaviorTests(unittest.TestCase):
         self.assertTrue(decision.blocks)
         self.assertIn("CI Gate shard (meta)", decision.blockers[0])
 
-    def test_green_main_never_blocks_a_red_candidate(self) -> None:
+    def test_green_main_never_blocks_a_red_candidate_except_policy_routing(self) -> None:
+        candidate = all_shards("candidate-sha", conclusion="failure")
+        for index, run in enumerate(candidate):
+            if run["name"] == "CI Gate shard (policy)":
+                candidate[index] = {**run, "conclusion": "success"}
         decision = self.evaluate(
             main=all_shards("main-sha", conclusion="success"),
-            candidate=all_shards("candidate-sha", conclusion="failure"),
+            candidate=candidate,
             main_workflow_run_ids=set(range(1, 9)),
             candidate_workflow_run_ids=set(range(1, 9)),
         )
         self.assertFalse(decision.blocks)
 
     def test_cancelled_main_is_not_a_recorded_red(self) -> None:
+        candidate = all_shards("candidate-sha", conclusion="failure")
+        for index, run in enumerate(candidate):
+            if run["name"] == "CI Gate shard (policy)":
+                candidate[index] = {**run, "conclusion": "success"}
         decision = self.evaluate(
             main=all_shards("main-sha", conclusion="cancelled"),
-            candidate=all_shards("candidate-sha", conclusion="failure"),
+            candidate=candidate,
         )
         self.assertFalse(decision.blocks)
 
