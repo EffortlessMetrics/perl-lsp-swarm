@@ -8,7 +8,8 @@
 //! - `terminate` with `restart: true`: event body must echo `restart: true`
 //! - `terminate` with no `restart` arg: event body must NOT include `restart`
 //! - `terminate` with empty args (`{}`): event body must NOT include `restart`
-//! - `terminate` twice in succession: both calls succeed and emit events
+//! - `terminate` twice in succession: both calls succeed but only the first
+//!   transition emits a `terminated` event
 //! - `terminate` then `disconnect`: disconnect succeeds without duplicating
 //!   the already-emitted terminal event
 //! - `disconnect` (no session): succeeds without inventing a terminal event
@@ -115,10 +116,10 @@ fn terminate_with_empty_arguments_omits_restart_field() -> TestResult {
 }
 
 #[test]
-fn terminate_twice_in_succession_both_succeed_and_emit_events() -> TestResult {
+fn repeated_terminate_is_idempotent_without_duplicate_terminal_event() -> TestResult {
     let (mut adapter, rx) = create_test_adapter();
 
-    // First terminate
+    // First terminate closes the terminal generation with one event.
     let first = adapter.handle_request(1, "terminate", Some(json!({ "restart": false })));
     assert_response_success(&first, "terminate")?;
     let first_body = must_some(wait_for_event(&rx, "terminated", 200));
@@ -128,15 +129,16 @@ fn terminate_twice_in_succession_both_succeed_and_emit_events() -> TestResult {
         "first terminate must echo restart=false"
     );
 
-    // Second terminate must also succeed; adapter is idempotent.
+    // Second terminate must succeed without a second terminal transition.
     let second = adapter.handle_request(2, "terminate", Some(json!({ "restart": true })));
     assert_response_success(&second, "terminate")?;
-    let second_body = must_some(wait_for_event(&rx, "terminated", 200));
-    assert_eq!(
-        second_body.get("restart").and_then(Value::as_bool),
-        Some(true),
-        "second terminate must echo restart=true, independent of first"
-    );
+    match rx.try_recv() {
+        Err(TryRecvError::Empty) => {}
+        Err(error) => return Err(format!("unexpected event receiver state: {error:?}").into()),
+        Ok(message) => {
+            return Err(format!("repeated terminate duplicated terminal event: {message:?}").into());
+        }
+    }
 
     Ok(())
 }
