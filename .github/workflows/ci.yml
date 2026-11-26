@@ -2297,16 +2297,33 @@ jobs:
           cat target/receipts/gate-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
 
   # ── CI Gate aggregate: roll up the deterministic shard + guard lanes ──
+  # Two jobs, because a check-run conclusion and a verdict are different
+  # claims and GitHub gives a job only one conclusion.
+  #
+  # `merge-gate` (this one) computes the verdict. It always runs, on every
+  # route, and it publishes the verdict it computed as a job output.
+  #
+  # `merge-gate-conclusion` publishes the conclusion, under the exact
+  # historical name "CI Gate (Advisory Aggregate)" so existing advisory
+  # consumers keep reading the same check. It runs only when the route is
+  # applicable, so a scoped no-op — a draft pull request, or a superseded
+  # push — is reported as `skipped` rather than as `success`.
+  #
+  # That distinction is #19036. `success` says the merge-gate tier ran and
+  # passed; on a draft the tier never ran, and a green conclusion claimed
+  # otherwise. The step summary already disclosed it; the conclusion did not,
+  # and the conclusion is what a reader of the check list, a dashboard, or an
+  # agent sees.
+  #
   # This established context is hardened under #12911 but remains advisory.
   # Candidate-controlled pull-request workflow results are not trusted required
   # authority, so do not register this context in ruleset 16664791. The trusted
-  # organization-ruleset workflow is a separate follow-up. Keep the exact
-  # historical name for continuity with existing advisory consumers.
+  # organization-ruleset workflow is a separate follow-up.
   # `.ci/policies/required-checks.toml` records this advisory truth.
   # `pr-smoke` remains intentionally outside `needs`: it is advisory, flaky, and
   # redundant with the deterministic shard base (see the pr-smoke job).
   merge-gate:
-    name: CI Gate (Advisory Aggregate)
+    name: CI Gate Aggregate Verdict
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     # Read-only, and narrower than it looks: `pull-requests` only to read the
@@ -2324,6 +2341,10 @@ jobs:
       contents: read
       pull-requests: read
       actions: read
+    outputs:
+      # The verdict, for the job that publishes the conclusion. This is the
+      # only channel between the two jobs in one run.
+      verdict: ${{ steps.gate.outputs.verdict }}
     needs:
       - draft-pr-check
       - preflight-latest-check
@@ -2446,6 +2467,7 @@ jobs:
           fi
 
       - name: Gate summary
+        id: gate
         if: always()
         shell: bash
         env:
@@ -2453,6 +2475,48 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_DRAFT: ${{ github.event.pull_request.draft }}
         run: python3 scripts/ci/evaluate_ci_gate.py
+
+  # The conclusion, under the historical check name.
+  #
+  # `skipped` is the only conclusion GitHub offers for "this gate did not
+  # apply", and it is reachable only by not running the job. So the gate is
+  # conditioned on the verdict: a scoped no-op does not run it, and the
+  # check-run is recorded as `skipped` — not as the `success` that claims
+  # the merge-gate tier ran and passed (#19036).
+  #
+  # The condition names one verdict, and `PUBLISHED_CONCLUSIONS` in
+  # `scripts/ci/evaluate_ci_gate.py` is the table that says which verdict
+  # publishes which conclusion. `test_evaluate_ci_gate.py` asserts the two
+  # agree, so the workflow cannot drift away from the classifier.
+  #
+  # Read-only, like the job that feeds it: `contents` is here only to read
+  # the publisher script. No write scope is granted, and none may be: a
+  # pull-request-triggered workflow that could write a check run could forge
+  # the conclusion instead of earning it
+  # (`scripts/ci/workflow_security_ratchet.py`).
+  merge-gate-conclusion:
+    name: CI Gate (Advisory Aggregate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    needs:
+      - merge-gate
+    # `always()` so the gate still runs — and reports red — when the verdict
+    # job itself failed or was cancelled. Only a scoped no-op skips it, and
+    # an unresolved verdict is not a scoped no-op.
+    if: always() && needs.merge-gate.outputs.verdict != 'scoped_noop'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Publish aggregate conclusion
+        shell: bash
+        env:
+          # Through the environment, never interpolated into the command:
+          # `workflow_security_ratchet.py` refuses a GitHub expression
+          # embedded in interpreter source.
+          AGGREGATE_VERDICT: ${{ needs.merge-gate.outputs.verdict }}
+        run: python3 scripts/ci/evaluate_ci_gate.py --publish-conclusion
 
   # ── UX Tests: first-5-minutes scenario regression suite ──────────────
   ux-tests:

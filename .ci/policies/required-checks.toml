@@ -284,7 +284,7 @@ enforcement = "neither"
 reason = "UX regression evidence is visible and contributes to the advisory CI aggregate but is not itself protected."
 
 [[checks]]
-name = "CI Gate (Advisory Aggregate)"
+name = "CI Gate Aggregate Verdict"
 producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "merge-gate"
@@ -294,7 +294,20 @@ required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "#12911 hardens this candidate-controlled aggregate for advisory diagnostics only; trusted enforcement requires the separate organization-ruleset workflow plan."
+reason = "#12911 hardens this candidate-controlled aggregate for advisory diagnostics only; trusted enforcement requires the separate organization-ruleset workflow plan. This job classifies the aggregate's dependencies and publishes the verdict; it always runs so the classification is never skipped."
+
+[[checks]]
+name = "CI Gate (Advisory Aggregate)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "merge-gate-conclusion"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "#19036: this is the aggregate's conclusion, under the historical check name. It runs only when the route is applicable, so a scoped no-op (a draft pull request, or a superseded push) is recorded as skipped rather than as the success that would claim the merge-gate tier ran and passed. Advisory only, under #12911; trusted enforcement requires the separate organization-ruleset workflow plan."
 
 [[checks]]
 name = "Gate Enforcement Contract"
