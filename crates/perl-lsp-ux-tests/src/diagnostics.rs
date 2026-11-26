@@ -4,6 +4,7 @@ use crate::LspEvent;
 use crate::WaitEnd;
 use crate::client::EventSource;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// Event-driven helper for diagnostics events in the UX harness queue.
@@ -144,6 +145,38 @@ impl DiagnosticsTracker {
             .find_map(|(version, diagnostics)| {
                 (version == Some(expected_version)).then(|| diagnostics.clone())
             })
+    }
+
+    /// Count duplicate diagnostics publications for `uri` across the sampled
+    /// document versions: every buffered publication beyond the first for a
+    /// listed version is a duplicate push.
+    ///
+    /// One sweep over the whole retained event buffer attributes late
+    /// duplicates too (#17732): a second publication for version N that
+    /// arrives after version N's own arrival wait — while later versions are
+    /// being awaited, or after the final iteration — is still in the buffer
+    /// here, where a scan taken once per version at its arrival undercounts
+    /// it. Publications without a version, for other URIs, and for
+    /// unsampled versions are not counted.
+    pub fn duplicate_pushes_for_versions(
+        events: &[LspEvent],
+        uri: &str,
+        versions: &[i64],
+    ) -> usize {
+        let mut pushes_per_version: HashMap<i64, usize> = HashMap::new();
+        for event in events {
+            if let LspEvent::Diagnostics { uri: event_uri, version: Some(event_version), .. } =
+                event
+                && event_uri == uri
+            {
+                *pushes_per_version.entry(*event_version).or_insert(0) += 1;
+            }
+        }
+        versions
+            .iter()
+            .filter_map(|version| pushes_per_version.get(version))
+            .map(|pushes| pushes.saturating_sub(1))
+            .sum()
     }
 
     /// Wait until a diagnostics publication for `uri` carrying
@@ -598,6 +631,82 @@ mod tests {
         anyhow::ensure!(
             result == Ok(vec![json!({"message": "current"})]),
             "expected the expected-version payload, got {result:?}"
+        );
+        Ok(())
+    }
+
+    /// A decoded diagnostics publication for `uri` carrying `version`, as the
+    /// duplicate sweep observes it in the buffered event stream.
+    fn pushed(uri: &str, version: i64) -> LspEvent {
+        LspEvent::Diagnostics {
+            uri: uri.to_string(),
+            version: Some(version),
+            diagnostics: vec![json!({ "message": format!("v{version}") })],
+        }
+    }
+
+    /// The #17732 falsifier: a duplicate publication for an earlier version
+    /// that arrives after that version's own scan must still be attributed.
+    /// A per-version scan taken once at each arrival counts 0 duplicates on
+    /// this stream; the end-of-lane sweep must count both late duplicates.
+    #[test]
+    fn duplicate_pushes_attribute_late_arrivals() -> anyhow::Result<()> {
+        let uri = "file:///a.pl";
+        let events =
+            vec![pushed(uri, 2), pushed(uri, 4), pushed(uri, 2), pushed(uri, 6), pushed(uri, 4)];
+
+        let duplicates =
+            DiagnosticsTracker::duplicate_pushes_for_versions(&events, uri, &[2, 4, 6]);
+        anyhow::ensure!(
+            duplicates == 2,
+            "both late duplicates for versions 2 and 4 must be counted, got {duplicates}"
+        );
+        Ok(())
+    }
+
+    /// Each sampled version's first publication is free; only pushes beyond
+    /// the first count.
+    #[test]
+    fn duplicate_pushes_count_only_beyond_the_first() -> anyhow::Result<()> {
+        let uri = "file:///a.pl";
+        let events = vec![pushed(uri, 2), pushed(uri, 4), pushed(uri, 6)];
+
+        let duplicates =
+            DiagnosticsTracker::duplicate_pushes_for_versions(&events, uri, &[2, 4, 6]);
+        anyhow::ensure!(
+            duplicates == 0,
+            "one push per sampled version is not a duplicate, got {duplicates}"
+        );
+        Ok(())
+    }
+
+    /// Publications for other URIs, unsampled versions, and events without a
+    /// document version are outside the duplicate metric.
+    #[test]
+    fn duplicate_pushes_ignore_out_of_scope_traffic() -> anyhow::Result<()> {
+        let uri = "file:///a.pl";
+        let events = vec![
+            // The didOpen publication (version 1) is not a sampled edit.
+            pushed(uri, 1),
+            // Sampled edits, one push each.
+            pushed(uri, 2),
+            pushed(uri, 4),
+            // Duplicates — but for another URI and an unsampled version.
+            pushed("file:///other.pl", 2),
+            pushed(uri, 3),
+            pushed(uri, 3),
+            // A version-less publication is not attributable to any edit.
+            LspEvent::Diagnostics {
+                uri: uri.to_string(),
+                version: None,
+                diagnostics: vec![json!({"message": "version-less"})],
+            },
+        ];
+
+        let duplicates = DiagnosticsTracker::duplicate_pushes_for_versions(&events, uri, &[2, 4]);
+        anyhow::ensure!(
+            duplicates == 0,
+            "out-of-scope traffic must not be counted as duplicates, got {duplicates}"
         );
         Ok(())
     }
