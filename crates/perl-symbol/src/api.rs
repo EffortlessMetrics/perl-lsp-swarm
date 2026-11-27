@@ -23,6 +23,11 @@ pub use crate::cursor::{
 // index — full public surface
 pub use crate::index::SymbolIndex;
 
+// framework — shared object-framework activation mapping
+pub use crate::framework::{
+    FrameworkKind, classify_framework_module, namespace_symbol_kind_for_framework,
+};
+
 // surface — full public surface
 pub use crate::surface::{
     SymbolDecl, SymbolDeclSemanticFacts, SymbolRef, SymbolRefKind, SymbolRefSemanticFacts,
