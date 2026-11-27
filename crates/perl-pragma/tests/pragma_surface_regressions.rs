@@ -144,7 +144,7 @@ fn no_builtin_qw_floor_preserves_selected_import() -> Result<(), Box<dyn std::er
 fn no_if_builtin_qw_true_preserves_target_import() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["qw(true floor)"], 0, 27),
-        no_node("if", &["$cond", "builtin", "qw(true)"], 28, 58),
+        no_node("if", &["1", "builtin", "qw(true)"], 28, 58),
     ]);
     let map = PragmaTracker::build(&ast);
 
@@ -156,7 +156,7 @@ fn no_if_builtin_qw_true_preserves_target_import() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-fn no_unless_feature_bundle_disables_bundle_entries() {
+fn no_unless_feature_bundle_is_not_builtin_conditional() {
     let ast = program(vec![
         use_node("feature", &["':5.36'"], 0, 20),
         no_node("unless", &["$cond", "feature", "':5.36'"], 21, 55),
@@ -164,15 +164,15 @@ fn no_unless_feature_bundle_disables_bundle_entries() {
     let map = PragmaTracker::build(&ast);
 
     let state = PragmaTracker::state_for_offset(&map, 45);
-    assert!(!state.has_feature("say"));
-    assert!(!state.has_feature("isa"));
+    assert!(state.has_feature("say"));
+    assert!(state.has_feature("isa"));
 }
 
 #[test]
 fn no_if_locale_scope_clears_locale_state() {
     let ast = program(vec![
         use_node("locale", &["':not_characters'"], 0, 28),
-        no_node("if", &["$cond", "locale", "':not_characters'"], 29, 68),
+        no_node("if", &["1", "locale", "':not_characters'"], 29, 68),
     ]);
     let map = PragmaTracker::build(&ast);
 
@@ -380,7 +380,7 @@ fn use_if_strict_qw_enables_only_requested_categories_conditionally()
     // by routing through `set_strict_categories` which calls `pragma_arg_items`.
     // This test would pass on master for the DIRECT use-strict path (which already
     // called pragma_arg_items) but the conditional path was broken.
-    let ast = program(vec![use_node("if", &["$cond", "strict", "qw(vars refs)"], 0, 38)]);
+    let ast = program(vec![use_node("if", &["1", "strict", "qw(vars refs)"], 0, 38)]);
     let map = PragmaTracker::build(&ast);
 
     let state = PragmaTracker::state_for_offset(&map, 20);
@@ -398,7 +398,7 @@ fn no_if_strict_qw_disables_only_requested_categories_conditionally()
     // which could not expand qw lists; this test pins the fixed behavior.
     let ast = program(vec![
         use_node("strict", &[], 0, 10),
-        no_node("if", &["$cond", "strict", "qw(vars)"], 11, 44),
+        no_node("if", &["1", "strict", "qw(vars)"], 11, 44),
     ]);
     let map = PragmaTracker::build(&ast);
 

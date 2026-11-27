@@ -78,7 +78,7 @@ fn dummy_node(start: usize, end: usize) -> Node {
 #[test]
 fn use_if_utf8_conditionally_enables_utf8() -> Result<(), Box<dyn std::error::Error>> {
     // `use if $cond, 'utf8'`
-    let ast = program(vec![use_node("if", &["$cond", "'utf8'"], 0, 22)]);
+    let ast = program(vec![use_node("if", &["1", "'utf8'"], 0, 22)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 10);
     assert!(state.utf8, "use if with utf8 target must enable utf8");
@@ -88,8 +88,7 @@ fn use_if_utf8_conditionally_enables_utf8() -> Result<(), Box<dyn std::error::Er
 #[test]
 fn no_if_utf8_conditionally_disables_utf8() -> Result<(), Box<dyn std::error::Error>> {
     // `use utf8; no if $cond, 'utf8'`
-    let ast =
-        program(vec![use_node("utf8", &[], 0, 9), no_node("if", &["$cond", "'utf8'"], 10, 30)]);
+    let ast = program(vec![use_node("utf8", &[], 0, 9), no_node("if", &["1", "'utf8'"], 10, 30)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 25);
     assert!(!state.utf8, "no if with utf8 target must disable utf8");
@@ -105,7 +104,7 @@ fn no_if_encoding_conditionally_clears_encoding() -> Result<(), Box<dyn std::err
     // `use encoding 'utf8'; no if $cond, encoding, 'utf8'`
     let ast = program(vec![
         use_node("encoding", &["'utf8'"], 0, 18),
-        no_node("if", &["$cond", "encoding", "'utf8'"], 19, 50),
+        no_node("if", &["1", "encoding", "'utf8'"], 19, 50),
     ]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 35);
@@ -151,7 +150,7 @@ fn no_if_warnings_category_disables_specific_category() -> Result<(), Box<dyn st
     // `use warnings; no if $cond, warnings, 'uninitialized'`
     let ast = program(vec![
         use_node("warnings", &[], 0, 15),
-        no_node("if", &["$cond", "warnings", "'uninitialized'"], 16, 55),
+        no_node("if", &["1", "warnings", "'uninitialized'"], 16, 55),
     ]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 35);
@@ -660,14 +659,13 @@ fn use_if_strict_with_invalid_qw_item_is_noop() -> Result<(), Box<dyn std::error
 
 #[test]
 fn use_if_strict_rejects_extra_following_target_token() -> Result<(), Box<dyn std::error::Error>> {
-    // `warnings` after the strict argument list is not a strict category. The
-    // conditional scanner may continue looking for a later valid target, but it
-    // must not apply a partial `strict vars` update before doing so.
-    let ast = program(vec![use_node("if", &["$cond", "strict", "vars", "warnings"], 0, 42)]);
+    // `warnings` after the strict argument list is not a strict category. Fail-closed
+    // resolution must not partially apply strict or scan for a later recognized token.
+    let ast = program(vec![use_node("if", &["1", "strict", "vars", "warnings"], 0, 42)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 20);
     assert!(!state.strict_vars, "invalid strict tail must not partially enable vars");
-    assert!(state.warnings, "later valid warnings target should still be discoverable");
+    assert!(!state.warnings, "must not discover warnings by scanning condition text");
     Ok(())
 }
 
@@ -692,8 +690,7 @@ fn no_if_version_target_is_noop() -> Result<(), Box<dyn std::error::Error>> {
     // `no if $cond, v5.36` can be recognized as a conditional target, but the
     // no-directive path does not disable version-implied semantics. Existing
     // state from an earlier version pragma must remain intact.
-    let ast =
-        program(vec![use_node("v5.36", &[], 0, 10), no_node("if", &["$cond", "v5.36"], 11, 32)]);
+    let ast = program(vec![use_node("v5.36", &[], 0, 10), no_node("if", &["1", "v5.36"], 11, 32)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 20);
     assert!(state.strict_vars, "no-if version target must preserve version-implied strict");
@@ -715,31 +712,26 @@ fn use_if_encoding_with_extra_arg_is_noop() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn use_unless_locale_with_quoted_scope_is_normalized() -> Result<(), Box<dyn std::error::Error>> {
-    // Conditional `unless` shares target normalization with `if`; quoted locale
-    // scopes should be trimmed before being stored.
+fn use_unless_locale_is_not_builtin_conditional() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("unless", &["$cond", "locale", "'not_characters'"], 0, 48)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 24);
-    assert!(state.locale, "use-unless locale must enable locale tracking");
-    assert_eq!(state.locale_scope.as_deref(), Some("not_characters"));
+    assert!(!state.locale, "use unless must not enter the built-in conditional path");
+    assert!(state.locale_scope.is_none());
     Ok(())
 }
 
 #[test]
-fn no_unless_warnings_qw_disables_each_category() -> Result<(), Box<dyn std::error::Error>> {
-    // Warning category normalization should split qw-lists even on the
-    // conditional no/unless path.
+fn no_unless_warnings_is_not_builtin_conditional() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("warnings", &[], 0, 13),
         no_node("unless", &["$cond", "warnings", "qw(uninitialized numeric)"], 14, 68),
     ]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 40);
-    assert!(state.warnings, "category-specific no warnings keeps global warnings enabled");
-    assert!(!state.is_warning_active("uninitialized"));
-    assert!(!state.is_warning_active("numeric"));
-    assert!(state.is_warning_active("once"));
+    assert!(state.warnings, "unless must not disable warning categories without a contract");
+    assert!(state.is_warning_active("uninitialized"));
+    assert!(state.is_warning_active("numeric"));
     Ok(())
 }
 
@@ -748,7 +740,7 @@ fn use_if_builtin_ignores_empty_qw_and_imports_later_name() -> Result<(), Box<dy
 {
     // Builtin target validation should tolerate empty normalized args when a
     // later arg contains at least one real import name.
-    let ast = program(vec![use_node("if", &["$cond", "builtin", "qw()", "'true'"], 0, 43)]);
+    let ast = program(vec![use_node("if", &["1", "builtin", "qw()", "'true'"], 0, 43)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 24);
     assert!(state.has_builtin_import("true"), "later valid builtin name must be imported");
@@ -956,7 +948,7 @@ fn use_if_locale_with_scope_conditionally_enables_locale() -> Result<(), Box<dyn
 {
     // `use if $cond, locale, ':not_characters'`
     // This exercises the locale arm of apply_conditional_use_target
-    let ast = program(vec![use_node("if", &["$cond", "locale", "':not_characters'"], 0, 44)]);
+    let ast = program(vec![use_node("if", &["1", "locale", "':not_characters'"], 0, 44)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 22);
     assert!(state.locale, "use if locale must set locale=true");
@@ -969,16 +961,15 @@ fn use_if_locale_with_scope_conditionally_enables_locale() -> Result<(), Box<dyn
 }
 
 #[test]
-fn no_unless_locale_conditionally_clears_locale() -> Result<(), Box<dyn std::error::Error>> {
-    // `use locale ':not_characters'; no unless $cond, locale`
+fn no_unless_locale_is_not_builtin_conditional() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("locale", &["':not_characters'"], 0, 28),
         no_node("unless", &["$cond", "locale"], 29, 55),
     ]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 45);
-    assert!(!state.locale, "no unless locale must clear locale");
-    assert!(state.locale_scope.is_none(), "no unless locale must clear locale_scope");
+    assert!(state.locale, "unless must not clear locale without a contract");
+    assert!(state.locale_scope.is_some());
     Ok(())
 }
 
