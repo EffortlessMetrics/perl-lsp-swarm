@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub mod doctest_enforcement;
+pub(crate) mod doctest_feature_reachability;
 pub mod version_sync;
 
 /// Cargo package name for this crate, used to locate its build artifacts and source tree.
