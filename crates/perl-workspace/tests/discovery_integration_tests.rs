@@ -191,6 +191,25 @@ fn discovers_extensionless_perl_shebang_via_walkdir() -> TestResult {
     Ok(())
 }
 
+/// #1771 acceptance: a workspace symlink to an external tree is skipped unless explicitly included.
+#[cfg(unix)]
+#[test]
+fn discovery_skips_symlink_whose_target_is_outside_workspace() -> TestResult {
+    let root_tmp = TempDir::new()?;
+    let external_tmp = TempDir::new()?;
+    let root = root_tmp.path();
+    create_file(external_tmp.path(), "Outside/Module.pm")?;
+    fs::create_dir_all(root.join("lib"))?;
+    std::os::unix::fs::symlink(external_tmp.path().join("Outside"), root.join("lib/escape_link"))?;
+
+    let result = discover_perl_files(root);
+    assert!(
+        !result.files.iter().any(|path| path.ends_with("lib/escape_link/Module.pm")),
+        "outside symlink targets must not be discovered by default"
+    );
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn external_symlink_requires_explicit_include_path() -> TestResult {
