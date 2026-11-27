@@ -8,6 +8,7 @@ on:
       - 'install.ps1'
       - 'scripts/tests/test-installer-checksum-required.sh'
       - 'scripts/tests/test-installer-archive-safety.sh'
+      - 'scripts/tests/test-installer-fsync-classification.sh'
       - 'scripts/tests/test-installer-product-unit-promotion.sh'
       - 'scripts/tests/test-installer-verify-install.sh'
       - 'scripts/tests/lib/standalone_archive_fixtures.py'
@@ -21,6 +22,7 @@ on:
       - 'install.ps1'
       - 'scripts/tests/test-installer-checksum-required.sh'
       - 'scripts/tests/test-installer-archive-safety.sh'
+      - 'scripts/tests/test-installer-fsync-classification.sh'
       - 'scripts/tests/test-installer-product-unit-promotion.sh'
       - 'scripts/tests/test-installer-verify-install.sh'
       - 'scripts/tests/lib/standalone_archive_fixtures.py'
@@ -52,10 +54,18 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Parse shell sources
-        run: bash -n scripts/install.sh scripts/tests/test-installer-checksum-required.sh scripts/tests/test-installer-archive-safety.sh scripts/tests/test-installer-product-unit-promotion.sh scripts/tests/test-installer-verify-install.sh
+        run: bash -n scripts/install.sh scripts/tests/test-installer-checksum-required.sh scripts/tests/test-installer-archive-safety.sh scripts/tests/test-installer-fsync-classification.sh scripts/tests/test-installer-product-unit-promotion.sh scripts/tests/test-installer-verify-install.sh
 
       - name: Run checksum negative controls
         run: bash scripts/tests/test-installer-checksum-required.sh
+
+      # The durability receipt is only as honest as the status fsync_path
+      # reports (#16711): these controls inject every POSIX/IO::Handle
+      # primitive shape so the flushed/host_unsupported/sync_failed
+      # classification is proven on every runner, not inferred from whatever
+      # the runner happens to support.
+      - name: Run fsync classification controls
+        run: bash scripts/tests/test-installer-fsync-classification.sh
 
       # Without these the archive-safety run reports the bsdtar and BusyBox
       # profiles NOT PROVEN and only GNU tar is covered. BusyBox tar is the
