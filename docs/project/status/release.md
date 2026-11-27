@@ -8,7 +8,7 @@
 **Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta
 **Release track**: Public beta; this is not a stable/GA claim
 **Workspace version line**: `v0.17.0`
-**Published crate surface**: 34 crates
+**Published crate surface**: 35 crates
 **Release target**: `v0.18.0` is the next public-beta train. A product-inert `0.18.0-rc.1` preparation exists on `release/0.18` at [`f4e32500b639f858470499ae6104c04e92a3cd3d`](https://github.com/EffortlessMetrics/perl-lsp-swarm/commit/f4e32500b639f858470499ae6104c04e92a3cd3d) from [PR #12426](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/12426), but that prepared branch subject is historical and non-promotable under [#13768](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13768) (`old_preparation_disposition: invalidated_non_promotable`): it is not projected, qualified or publishable, tagged, or published, and it decides no public version
 **Authority**: development `perl-lsp-swarm/main`; release lineage and publication `perl-lsp/master`
 

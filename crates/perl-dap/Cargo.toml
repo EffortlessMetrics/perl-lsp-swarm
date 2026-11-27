@@ -31,6 +31,7 @@ name = "perl_dap"
 path = "src/lib.rs"
 
 [dependencies]
+perl-interpreter.workspace = true
 # JSON serialization
 serde = { workspace = true }
 serde_json.workspace = true

@@ -124,6 +124,7 @@ entrypoints:
 | LSP integration | `crates/perl-lsp-rs/` | Server integration and higher-level behavior |
 | LSP executable | `crates/perllsp/` | User-facing language-server binary |
 | DAP | `crates/perl-dap/` | Debug Adapter Protocol implementation |
+| Interpreter discovery | `crates/perl-interpreter/` | Shared interpreter resolution and cached discovery; no application dependency |
 | Corpus and compatibility | `crates/perl-corpus/`, `crates/perl-core-harness/` | Real-Perl and upstream compatibility evidence |
 | Repository tooling | `xtask/`, `scripts/`, `.ci/` | Gates, generators, policy, and proof routing |
 | VS Code extension | `vscode-extension/` | Installed editor experience |

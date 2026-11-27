@@ -1979,7 +1979,7 @@ struct CommandExistsCacheEntry {
 /// Memoized tool-presence answers keyed on [`CommandExistsCacheKey`].
 ///
 /// Same shape as the DAP-side interpreter-discovery cache
-/// (`perl_dap::platform::PERL_INTERPRETER_CACHE`): a check-then-compute-then-
+/// (`perl_interpreter::find_perl_interpreter_cached`): a check-then-compute-then-
 /// store pattern with two lock acquisitions. Two concurrent callers racing on
 /// a cold entry will both run the probe and the second write wins; the
 /// invariant is that callers always receive an answer for the current

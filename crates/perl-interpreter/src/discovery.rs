@@ -1,0 +1,794 @@
+//! Configured/toolchain/PATH/OS-fallback discovery and its process-local cache.
+//!
+//! Discovery observes filesystem candidates; it does not execute the selected
+//! interpreter or authorize a later launch.
+
+use crate::{detect_perlbrew_perl, detect_plenv_perl};
+use std::env;
+use std::ffi::{OsStr, OsString};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
+
+#[cfg(windows)]
+const PATH_SEPARATOR: char = ';';
+#[cfg(not(windows))]
+const PATH_SEPARATOR: char = ':';
+
+#[cfg(windows)]
+const PERL_EXECUTABLE: &str = "perl.exe";
+#[cfg(not(windows))]
+const PERL_EXECUTABLE: &str = "perl";
+
+/// The result of Perl interpreter discovery.
+///
+/// Separates the "found on PATH" case from the "found via OS fallback" case
+/// so callers can log or surface different messages to users.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PerlInterpreterResult {
+    /// Perl was found at the explicitly configured interpreter path.
+    ///
+    /// Deliberately does not name an editor setting: no such language-server
+    /// setting exists (#5034), and DAP callers supply this through `launch.json`'s
+    /// `perlPath` rather than through client configuration.
+    ConfiguredPath(PathBuf),
+    /// Perl was found on PATH (the normal case).
+    FoundOnPath(PathBuf),
+    /// Perl was NOT on PATH but was found at a well-known OS install location.
+    FoundViaFallback {
+        /// Absolute path to the Perl interpreter found at the fallback location.
+        path: PathBuf,
+        /// Human-readable label for the fallback source (e.g. `"Strawberry Perl"`).
+        label: String,
+    },
+    /// No Perl interpreter found anywhere.
+    NotFound {
+        /// Ordered list of locations that were searched, for use in error messages.
+        searched: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct PerlDiscoveryCacheKey {
+    configured_path: Option<OsString>,
+    path_env: OsString,
+    perlbrew_perl: OsString,
+    perlbrew_root: OsString,
+    plenv_root: OsString,
+    plenv_version: OsString,
+    home: OsString,
+    userprofile: OsString,
+    prefix: OsString,
+    #[cfg(windows)]
+    program_files: OsString,
+}
+
+fn perl_discovery_cache_key(configured_path: Option<&str>) -> PerlDiscoveryCacheKey {
+    let path_env = env::var_os("PATH").unwrap_or_default();
+    let perlbrew_perl = env::var_os("PERLBREW_PERL").unwrap_or_default();
+    let perlbrew_root = env::var_os("PERLBREW_ROOT").unwrap_or_default();
+    let plenv_root = env::var_os("PLENV_ROOT").unwrap_or_default();
+    let plenv_version = env::var_os("PLENV_VERSION").unwrap_or_default();
+    // HOME (Unix) and USERPROFILE (Windows) are both checked by home_dir() in
+    // resolution when PERLBREW_ROOT/PLENV_ROOT are absent.
+    let home = env::var_os("HOME").unwrap_or_default();
+    let userprofile = env::var_os("USERPROFILE").unwrap_or_default();
+    // PREFIX is used by resolve_perl_path() for Termux detection.
+    let prefix = env::var_os("PREFIX").unwrap_or_default();
+    #[cfg(windows)]
+    let program_files = env::var_os("ProgramFiles").unwrap_or_default();
+
+    PerlDiscoveryCacheKey {
+        configured_path: configured_path
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(OsString::from),
+        path_env,
+        perlbrew_perl,
+        perlbrew_root,
+        plenv_root,
+        plenv_version,
+        home,
+        userprofile,
+        prefix,
+        #[cfg(windows)]
+        program_files,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FilesystemProbeFingerprint {
+    path: PathBuf,
+    exists: bool,
+    is_file: bool,
+    len: Option<u64>,
+    modified: Option<SystemTime>,
+    readonly: Option<bool>,
+    #[cfg(unix)]
+    mode: Option<u32>,
+}
+
+fn filesystem_probe_fingerprint(path: &Path) -> FilesystemProbeFingerprint {
+    match std::fs::metadata(path) {
+        Ok(metadata) => FilesystemProbeFingerprint {
+            path: path.to_path_buf(),
+            exists: true,
+            is_file: metadata.is_file(),
+            len: Some(metadata.len()),
+            modified: metadata.modified().ok(),
+            readonly: Some(metadata.permissions().readonly()),
+            #[cfg(unix)]
+            mode: Some(metadata.mode()),
+        },
+        Err(_) => FilesystemProbeFingerprint {
+            path: path.to_path_buf(),
+            exists: false,
+            is_file: false,
+            len: None,
+            modified: None,
+            readonly: None,
+            #[cfg(unix)]
+            mode: None,
+        },
+    }
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+/// Match `std::env::var`'s usable-value semantics for the canonical resolver.
+///
+/// The cache key intentionally preserves raw environment values so a change in
+/// invalid Unicode still invalidates an entry.  Filesystem fingerprints must
+/// nevertheless follow the resolver: `env::var` ignores invalid-Unicode and
+/// empty values, then falls back to the next configured location.
+fn usable_environment_value(value: &OsString) -> Option<&str> {
+    value.to_str().filter(|value| !value.is_empty())
+}
+
+fn perl_discovery_candidate_paths(key: &PerlDiscoveryCacheKey) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(configured_path) = &key.configured_path {
+        push_unique_path(&mut candidates, PathBuf::from(configured_path));
+    }
+
+    if let Some(path_env) = usable_environment_value(&key.path_env) {
+        for directory in env::split_paths(OsStr::new(path_env)) {
+            push_unique_path(&mut candidates, directory.join(PERL_EXECUTABLE));
+        }
+    }
+
+    let home = usable_environment_value(&key.home)
+        .or_else(|| usable_environment_value(&key.userprofile))
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir);
+
+    if let Some(version) = usable_environment_value(&key.perlbrew_perl) {
+        let root = usable_environment_value(&key.perlbrew_root)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("perl5").join("perlbrew"));
+        push_unique_path(
+            &mut candidates,
+            root.join("perls").join(version).join("bin").join(PERL_EXECUTABLE),
+        );
+    }
+
+    if let Some(version) = usable_environment_value(&key.plenv_version) {
+        let root = usable_environment_value(&key.plenv_root)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".plenv"));
+        push_unique_path(
+            &mut candidates,
+            root.join("versions").join(version).join("bin").join(PERL_EXECUTABLE),
+        );
+    }
+
+    candidates.extend(fallback_perl_paths().into_iter().map(|(path, _)| path));
+    candidates
+}
+
+fn perl_discovery_filesystem_state(key: &PerlDiscoveryCacheKey) -> Vec<FilesystemProbeFingerprint> {
+    let mut paths = Vec::new();
+    for candidate in perl_discovery_candidate_paths(key) {
+        if let Some(parent) = candidate.parent() {
+            push_unique_path(&mut paths, parent.to_path_buf());
+        }
+        push_unique_path(&mut paths, candidate);
+    }
+
+    paths.into_iter().map(|path| filesystem_probe_fingerprint(&path)).collect()
+}
+
+struct PerlInterpreterCacheEntry {
+    key: PerlDiscoveryCacheKey,
+    filesystem_state: Vec<FilesystemProbeFingerprint>,
+    result: PerlInterpreterResult,
+}
+
+static PERL_INTERPRETER_CACHE: LazyLock<Mutex<Option<PerlInterpreterCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Rank a Perl binary path for preference on Windows.
+///
+/// Returns a lower score for higher-priority interpreters.
+/// Strawberry Perl ranks best (1), then ActiveState (2), then msys/Git Bash (100).
+#[cfg(windows)]
+fn windows_perl_rank(path: &std::path::Path) -> u8 {
+    let s = path.to_string_lossy().to_ascii_lowercase();
+    if s.contains("strawberry") {
+        1
+    } else if s.contains("perl64") || s.contains("activestate") || s.contains("activeperl") {
+        2
+    } else if s.contains(r"\git\usr\bin") || s.contains("/git/usr/bin") || s.contains("msys") {
+        100
+    } else {
+        50
+    }
+}
+
+/// Collect all Perl executables found on PATH, ranked for Windows preference.
+///
+/// On Windows, returns all matches sorted by [`windows_perl_rank`] so the caller
+/// can pick the best one. On non-Windows, returns candidates in PATH order (no ranking).
+fn find_all_perl_on_path(path_env: &str) -> Vec<PathBuf> {
+    #[allow(unused_mut)]
+    let mut found: Vec<PathBuf> = path_env
+        .split(PATH_SEPARATOR)
+        .filter_map(normalize_path_entry)
+        .map(|dir| dir.join(PERL_EXECUTABLE))
+        .filter(|p| p.exists() && p.is_file())
+        .collect();
+
+    #[cfg(windows)]
+    found.sort_by_key(|p| windows_perl_rank(p));
+
+    found
+}
+
+/// Normalize a single PATH segment by trimming whitespace/quotes and dropping empties.
+fn normalize_path_entry(entry: &str) -> Option<PathBuf> {
+    let trimmed = entry.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(PathBuf::from(trimmed))
+}
+
+/// Canonical OS-specific fallback paths to probe when Perl is not on PATH.
+///
+/// Returns `(path, label)` pairs. Probed in order; first existing file wins.
+fn fallback_perl_paths() -> Vec<(PathBuf, &'static str)> {
+    #[cfg(windows)]
+    {
+        vec![
+            (PathBuf::from(r"C:\Strawberry\perl\bin\perl.exe"), "Strawberry Perl"),
+            (PathBuf::from(r"C:\Perl64\bin\perl.exe"), "ActiveState Perl (64-bit)"),
+            (
+                {
+                    let pf = env::var("ProgramFiles")
+                        .unwrap_or_else(|_| r"C:\Program Files".to_string());
+                    PathBuf::from(pf).join(r"Strawberry\perl\bin\perl.exe")
+                },
+                "Strawberry Perl (Program Files)",
+            ),
+        ]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            (PathBuf::from("/opt/homebrew/bin/perl"), "Homebrew Perl (Apple Silicon)"),
+            (PathBuf::from("/usr/local/bin/perl"), "Homebrew Perl (Intel)"),
+            (PathBuf::from("/usr/bin/perl"), "macOS system Perl"),
+        ]
+    }
+    #[cfg(target_os = "android")]
+    {
+        // Android (Termux)
+        vec![
+            (PathBuf::from("/data/data/com.termux/files/usr/bin/perl"), "Termux Perl"),
+            (PathBuf::from("/data/user/0/com.termux/files/usr/bin/perl"), "Termux Perl"),
+        ]
+    }
+    #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "android")))]
+    {
+        // Linux and others
+        vec![
+            (PathBuf::from("/usr/bin/perl"), "system Perl"),
+            (PathBuf::from("/usr/local/bin/perl"), "local Perl"),
+        ]
+    }
+}
+
+/// Find the best available Perl interpreter with full cross-platform detection.
+///
+/// Detection order:
+/// 1. If `configured_path` is `Some` and non-empty, validate and return
+///    [`PerlInterpreterResult::ConfiguredPath`] (or [`PerlInterpreterResult::NotFound`]
+///    if the configured path is broken). Does **not** fall back silently.
+/// 2. Check toolchain managers (perlbrew, plenv) before PATH.
+/// 3. Walk PATH; on Windows, prefer Strawberry/ActiveState over msys/Git Bash perls.
+/// 4. If not on PATH, probe canonical OS install locations as a last resort.
+/// 5. If still not found, return [`PerlInterpreterResult::NotFound`] with searched paths.
+pub fn find_perl_interpreter(configured_path: Option<&str>) -> PerlInterpreterResult {
+    // 1. Honour explicit config path — validate it exists, never silently fall back.
+    if let Some(cfg) = configured_path.map(str::trim).filter(|s| !s.is_empty()) {
+        let p = PathBuf::from(cfg);
+        if p.exists() && p.is_file() {
+            return PerlInterpreterResult::ConfiguredPath(p);
+        } else {
+            return PerlInterpreterResult::NotFound {
+                searched: vec![format!("configured path: {cfg}")],
+            };
+        }
+    }
+
+    let mut searched: Vec<String> = vec!["PATH".to_string()];
+
+    // 2. Check toolchain managers (perlbrew, plenv) first.
+    if let Some(path) = detect_perlbrew_perl() {
+        return PerlInterpreterResult::FoundOnPath(path);
+    }
+    if let Some(path) = detect_plenv_perl() {
+        return PerlInterpreterResult::FoundOnPath(path);
+    }
+
+    // 3. Walk PATH, ranking results on Windows.
+    if let Ok(path_env) = env::var("PATH") {
+        let ranked = find_all_perl_on_path(&path_env);
+        if let Some(best) = ranked.into_iter().next() {
+            return PerlInterpreterResult::FoundOnPath(best);
+        }
+    }
+
+    // 4. Probe OS-specific fallback paths.
+    for (path, label) in fallback_perl_paths() {
+        searched.push(path.to_string_lossy().to_string());
+        if path.exists() && path.is_file() {
+            return PerlInterpreterResult::FoundViaFallback { path, label: label.to_string() };
+        }
+    }
+
+    PerlInterpreterResult::NotFound { searched }
+}
+
+/// Cached variant of [`find_perl_interpreter`].
+///
+/// This avoids repeated PATH/toolchain scans during repeated launch failures in
+/// the same environment while still invalidating when key discovery inputs
+/// (PATH, toolchain environment, configured path) change.
+///
+/// # Concurrency
+///
+/// The cache uses a simple check-then-compute-then-store pattern with two
+/// separate lock acquisitions. Two concurrent callers racing on a cold cache
+/// will both run [`find_perl_interpreter`] and the second write wins. This is
+/// intentional: the correctness invariant is that callers always receive a
+/// valid result for the current environment, not that exactly one subprocess
+/// is spawned per cache entry. A condvar/OnceLock approach would complicate the
+/// API without measurable benefit for the low-frequency DAP launch path.
+pub fn find_perl_interpreter_cached(configured_path: Option<&str>) -> PerlInterpreterResult {
+    let cache_key = perl_discovery_cache_key(configured_path);
+    let filesystem_state = perl_discovery_filesystem_state(&cache_key);
+
+    if let Ok(cache) = PERL_INTERPRETER_CACHE.lock()
+        && let Some(entry) = cache.as_ref()
+        && entry.key == cache_key
+        && entry.filesystem_state == filesystem_state
+    {
+        return entry.result.clone();
+    }
+
+    let resolved = find_perl_interpreter(configured_path);
+    let filesystem_state = perl_discovery_filesystem_state(&cache_key);
+    if let Ok(mut cache) = PERL_INTERPRETER_CACHE.lock() {
+        *cache = Some(PerlInterpreterCacheEntry {
+            key: cache_key,
+            filesystem_state,
+            result: resolved.clone(),
+        });
+    }
+    resolved
+}
+
+#[cfg(test)]
+fn resolve_perl_path_from_path_env(path_env: &str) -> anyhow::Result<PathBuf> {
+    for path_dir in path_env.split(PATH_SEPARATOR).filter_map(normalize_path_entry) {
+        let perl_path = path_dir.join(PERL_EXECUTABLE);
+        if perl_path.exists() && perl_path.is_file() {
+            return Ok(perl_path);
+        }
+    }
+
+    anyhow::bail!(perl_not_found_install_message())
+}
+
+#[cfg(test)]
+/// End-user remediation guidance shown when no Perl interpreter is available.
+fn perl_not_found_install_message() -> &'static str {
+    "perl binary not found on PATH. Install Perl via https://strawberryperl.com (Windows), \
+`brew install perl` (macOS), `pkg install perl` in Termux (Android), or your distro package manager, then add it to PATH."
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::resolve_perl_path;
+    use perl_test_must::{must, must_err};
+
+    #[test]
+    fn test_resolve_perl_path() {
+        if let Ok(path) = resolve_perl_path() {
+            assert!(path.exists());
+            assert!(path.is_file());
+        }
+    }
+
+    #[test]
+    fn resolve_from_path_env_finds_perl_in_first_dir() {
+        use std::fs;
+        let tempdir = must(tempfile::tempdir());
+        let bin = tempdir.path().join(PERL_EXECUTABLE);
+        must(fs::write(&bin, ""));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = must(fs::metadata(&bin)).permissions();
+            perms.set_mode(0o755);
+            must(fs::set_permissions(&bin, perms));
+        }
+        let path_str = tempdir.path().to_string_lossy().to_string();
+        let result = resolve_perl_path_from_path_env(&path_str);
+        assert_eq!(must(result), bin);
+    }
+
+    #[test]
+    fn resolve_from_path_env_empty_path_returns_error() {
+        let result = resolve_perl_path_from_path_env("");
+        assert!(result.is_err());
+        let msg = format!("{}", must_err(result));
+        assert!(
+            msg.contains("perl") || msg.contains("PATH"),
+            "error should mention perl/PATH: {msg}"
+        );
+        assert!(msg.contains("strawberryperl.com"), "error should include install guidance: {msg}");
+    }
+
+    #[test]
+    fn resolve_from_path_env_no_perl_on_path_returns_error() {
+        let tempdir = must(tempfile::tempdir());
+        let path_str = tempdir.path().to_string_lossy().to_string();
+        let result = resolve_perl_path_from_path_env(&path_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_from_path_env_handles_quoted_path_segment() {
+        use std::fs;
+        let tempdir = must(tempfile::tempdir());
+        let bin = tempdir.path().join(PERL_EXECUTABLE);
+        must(fs::write(&bin, ""));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = must(fs::metadata(&bin)).permissions();
+            perms.set_mode(0o755);
+            must(fs::set_permissions(&bin, perms));
+        }
+        let quoted_path = format!("\"{}\"", tempdir.path().to_string_lossy());
+        let result = resolve_perl_path_from_path_env(&quoted_path);
+        assert_eq!(must(result), bin);
+    }
+
+    #[test]
+    fn normalize_path_entry_trims_whitespace_and_quotes() {
+        let raw = "  \"/tmp/perl path\"  ";
+        let normalized = normalize_path_entry(raw);
+        assert_eq!(normalized, Some(PathBuf::from("/tmp/perl path")));
+    }
+
+    #[test]
+    fn normalize_path_entry_rejects_empty_segments() {
+        assert_eq!(normalize_path_entry(""), None);
+        assert_eq!(normalize_path_entry("   "), None);
+        assert_eq!(normalize_path_entry("\"\""), None);
+    }
+
+    // ── find_perl_interpreter tests ────────────────────────────────────────
+
+    #[test]
+    fn find_perl_interpreter_configured_path_valid_returns_configured() {
+        use std::fs;
+        let tempdir = must(tempfile::tempdir());
+        let fake_perl = tempdir.path().join(PERL_EXECUTABLE);
+        must(fs::write(&fake_perl, ""));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = must(fs::metadata(&fake_perl)).permissions();
+            perms.set_mode(0o755);
+            must(fs::set_permissions(&fake_perl, perms));
+        }
+        let path_str = fake_perl.to_string_lossy().to_string();
+        let result = find_perl_interpreter(Some(&path_str));
+        assert!(
+            matches!(result, PerlInterpreterResult::ConfiguredPath(_)),
+            "expected ConfiguredPath, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn find_perl_interpreter_configured_path_missing_returns_not_found() {
+        let result = find_perl_interpreter(Some("/nonexistent/path/to/perl"));
+        assert!(
+            matches!(result, PerlInterpreterResult::NotFound { .. }),
+            "expected NotFound, got: {result:?}"
+        );
+        let PerlInterpreterResult::NotFound { searched } = result else {
+            return;
+        };
+        assert!(
+            searched.iter().any(|s| s.contains("configured")),
+            "searched list should mention configured path: {searched:?}"
+        );
+    }
+
+    #[test]
+    fn find_perl_interpreter_empty_config_falls_back_to_path_detection() {
+        let result = find_perl_interpreter(Some(""));
+        assert!(
+            !matches!(result, PerlInterpreterResult::ConfiguredPath(_)),
+            "empty config should fall back to path detection"
+        );
+    }
+
+    #[test]
+    fn find_perl_interpreter_whitespace_config_falls_back_to_path_detection() {
+        let result = find_perl_interpreter(Some("   	  "));
+        assert!(
+            !matches!(result, PerlInterpreterResult::ConfiguredPath(_)),
+            "whitespace-only config should fall back to path detection"
+        );
+    }
+
+    #[test]
+    fn find_perl_interpreter_none_config_performs_detection() {
+        let result = find_perl_interpreter(None);
+        assert!(
+            !matches!(result, PerlInterpreterResult::ConfiguredPath(_)),
+            "None config should not return ConfiguredPath"
+        );
+    }
+
+    #[test]
+    fn find_perl_interpreter_not_found_includes_searched_paths() {
+        let result = find_perl_interpreter(Some("/absolutely/not/a/real/path/perl"));
+        if let PerlInterpreterResult::NotFound { searched } = result {
+            assert!(!searched.is_empty(), "searched list should not be empty");
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "android")]
+    fn fallback_perl_paths_include_termux_locations() {
+        let paths = fallback_perl_paths();
+        let path_strings: Vec<String> =
+            paths.into_iter().map(|(path, _)| path.to_string_lossy().to_string()).collect();
+
+        assert!(
+            path_strings.iter().any(|p| p == "/data/data/com.termux/files/usr/bin/perl"),
+            "expected /data/data/com.termux/files/usr/bin/perl in fallback paths"
+        );
+        assert!(
+            path_strings.iter().any(|p| p == "/data/user/0/com.termux/files/usr/bin/perl"),
+            "expected /data/user/0/com.termux/files/usr/bin/perl in fallback paths"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_perl_rank_strawberry_is_best() {
+        let strawberry = std::path::Path::new(r"C:\Strawberry\perl\bin\perl.exe");
+        let msys = std::path::Path::new(r"C:\Program Files\Git\usr\bin\perl.exe");
+        assert!(
+            windows_perl_rank(strawberry) < windows_perl_rank(msys),
+            "Strawberry should rank better than msys perl"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_perl_rank_activestate_beats_msys() {
+        let active = std::path::Path::new(r"C:\Perl64\bin\perl.exe");
+        let msys = std::path::Path::new(r"C:\Program Files\Git\usr\bin\perl.exe");
+        assert!(
+            windows_perl_rank(active) < windows_perl_rank(msys),
+            "ActiveState should rank better than msys perl"
+        );
+    }
+
+    /// Verify that USERPROFILE and PREFIX changes produce different cache keys.
+    ///
+    /// On Windows, HOME is typically absent and home_dir() falls back to
+    /// USERPROFILE to resolve the perlbrew/plenv default root.  The PREFIX
+    /// variable is used by the Termux path resolver.  Both must appear in the
+    /// cache key so that a changed user profile or Termux prefix invalidates
+    /// a stale cached result. Compared structurally (never asserting on live
+    /// values) so the test is hermetic on every host.
+    #[test]
+    fn discovery_cache_key_contains_userprofile_and_prefix() {
+        let base = perl_discovery_cache_key(Some(""));
+        let with_profile =
+            PerlDiscoveryCacheKey { userprofile: OsString::from("C_Users_alice"), ..base.clone() };
+        let with_prefix = PerlDiscoveryCacheKey {
+            prefix: OsString::from("/data/data/com.termux/files/usr"),
+            ..base.clone()
+        };
+        assert_ne!(base, with_profile, "key must differ when userprofile changes");
+        assert_ne!(base, with_prefix, "key must differ when prefix changes");
+    }
+
+    fn discovery_key_with_path_env(path_env: &str) -> PerlDiscoveryCacheKey {
+        PerlDiscoveryCacheKey {
+            configured_path: None,
+            path_env: OsString::from(path_env),
+            perlbrew_perl: OsString::new(),
+            perlbrew_root: OsString::new(),
+            plenv_root: OsString::new(),
+            plenv_version: OsString::new(),
+            home: OsString::from("/home/test"),
+            userprofile: OsString::new(),
+            prefix: OsString::new(),
+            #[cfg(windows)]
+            program_files: OsString::new(),
+        }
+    }
+
+    /// Path-boundary discriminators for the discovery walk: prefix-adjacent
+    /// directories (`/x/bin` vs `/x/binary`) must keep separate candidates —
+    /// dedup is component-equality, so adjacent spellings can never swallow
+    /// each other's entries. The separator is platform-defined
+    /// (`split_paths`), so each leg pins its own spelling.
+    #[cfg(unix)]
+    #[test]
+    fn discovery_candidate_paths_keep_prefix_adjacent_entries_distinct() {
+        let candidates =
+            perl_discovery_candidate_paths(&discovery_key_with_path_env("/x/bin:/x/binary"));
+        assert!(
+            candidates.contains(&PathBuf::from("/x/bin").join(PERL_EXECUTABLE)),
+            "prefix-adjacent /x/bin entry must keep its candidate: {candidates:?}"
+        );
+        assert!(
+            candidates.contains(&PathBuf::from("/x/binary").join(PERL_EXECUTABLE)),
+            "prefix-adjacent /x/binary entry must keep its candidate: {candidates:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn discovery_candidate_paths_keep_prefix_adjacent_entries_distinct() {
+        let candidates =
+            perl_discovery_candidate_paths(&discovery_key_with_path_env(r"C:\x\bin;C:\x\binary"));
+        assert!(
+            candidates.contains(&PathBuf::from(r"C:\x\bin").join(PERL_EXECUTABLE)),
+            "prefix-adjacent bin entry must keep its candidate: {candidates:?}"
+        );
+        assert!(
+            candidates.contains(&PathBuf::from(r"C:\x\binary").join(PERL_EXECUTABLE)),
+            "prefix-adjacent binary entry must keep its candidate: {candidates:?}"
+        );
+    }
+
+    /// Exact duplicates collapse; trailing-slash spellings collapse too
+    /// because they hold no extra path component (`Path` equality compares
+    /// components). Pinning the boundary so a future normalization change is
+    /// a deliberate diff, not silent drift.
+    #[test]
+    fn push_unique_path_dedups_component_equal_paths() {
+        let mut paths = Vec::new();
+        push_unique_path(&mut paths, PathBuf::from("/x/bin"));
+        push_unique_path(&mut paths, PathBuf::from("/x/bin"));
+        assert_eq!(paths.len(), 1, "exact duplicates must collapse");
+        push_unique_path(&mut paths, PathBuf::from("/x/bin/"));
+        assert_eq!(
+            paths.len(),
+            1,
+            "trailing-slash spellings hold no extra component and must collapse too"
+        );
+        push_unique_path(&mut paths, PathBuf::from("/x/binary"));
+        assert_eq!(paths.len(), 2, "genuinely different directories must stay distinct");
+    }
+
+    /// An empty `PATH` contributes no PATH-derived candidates (the resolver
+    /// skips unusable values), while a populated one derives exactly its
+    /// entries — the empty/non-empty boundary the fingerprint walk prices.
+    #[test]
+    fn empty_path_env_contributes_no_path_derived_candidates() {
+        let empty = perl_discovery_candidate_paths(&discovery_key_with_path_env(""));
+        assert!(
+            !empty.iter().any(|candidate| candidate == Path::new(PERL_EXECUTABLE)),
+            "empty PATH must not contribute a bare relative candidate: {empty:?}"
+        );
+        let populated = perl_discovery_candidate_paths(&discovery_key_with_path_env("/x/bin"));
+        assert!(
+            populated.contains(&PathBuf::from("/x/bin").join(PERL_EXECUTABLE)),
+            "populated PATH must derive its candidate: {populated:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_cache_key_preserves_invalid_unicode_environment() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid_path = OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xff]);
+        let key = PerlDiscoveryCacheKey {
+            path_env: invalid_path.clone(),
+            ..perl_discovery_cache_key(None)
+        };
+        assert_eq!(key.path_env, invalid_path);
+    }
+
+    #[test]
+    fn discovery_candidates_follow_resolver_fallbacks_for_invalid_unicode() {
+        let invalid_root = invalid_environment_value();
+        let invalid_home = invalid_environment_value();
+        let key = PerlDiscoveryCacheKey {
+            configured_path: None,
+            path_env: OsString::new(),
+            perlbrew_perl: OsString::from("perl-5.38.0"),
+            perlbrew_root: invalid_root.clone(),
+            plenv_root: OsString::new(),
+            plenv_version: OsString::new(),
+            home: invalid_home,
+            userprofile: OsString::from("/tmp/profile"),
+            prefix: OsString::new(),
+            #[cfg(windows)]
+            program_files: OsString::new(),
+        };
+
+        let candidates = perl_discovery_candidate_paths(&key);
+        let expected = PathBuf::from("/tmp/profile")
+            .join("perl5")
+            .join("perlbrew")
+            .join("perls")
+            .join("perl-5.38.0")
+            .join("bin")
+            .join(PERL_EXECUTABLE);
+        let invalid = PathBuf::from(&invalid_root)
+            .join("perls")
+            .join("perl-5.38.0")
+            .join("bin")
+            .join(PERL_EXECUTABLE);
+
+        assert!(
+            candidates.contains(&expected),
+            "resolver fallback candidate missing: {candidates:?}"
+        );
+        assert!(
+            !candidates.contains(&invalid),
+            "invalid root must not be fingerprinted: {candidates:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn invalid_environment_value() -> OsString {
+        use std::os::unix::ffi::OsStringExt;
+
+        OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xff])
+    }
+
+    #[cfg(windows)]
+    fn invalid_environment_value() -> OsString {
+        use std::os::windows::ffi::OsStringExt;
+
+        OsString::from_wide(&[b'/' as u16, 0xd800])
+    }
+}
