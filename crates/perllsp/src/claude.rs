@@ -317,8 +317,8 @@ fn run_install<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visible:
                 PLUGIN_PATH,
             ],
         );
-        if !result {
-            render_operation_failure("claude_marketplace_add_failed", json_output);
+        if let Err(failure) = result {
+            render_operation_failure("claude_marketplace_add_failed", json_output, Some(&failure));
             return 1;
         }
     }
@@ -330,14 +330,26 @@ fn run_install<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visible:
 
     match plugin.state {
         ResourceState::Absent => {
-            if !run_mutation(runner, &["plugin", "install", PLUGIN_ID, "--scope", "user"]) {
-                render_operation_failure("claude_plugin_install_failed", json_output);
+            if let Err(failure) =
+                run_mutation(runner, &["plugin", "install", PLUGIN_ID, "--scope", "user"])
+            {
+                render_operation_failure(
+                    "claude_plugin_install_failed",
+                    json_output,
+                    Some(&failure),
+                );
                 return 1;
             }
         }
         ResourceState::Present if plugin.enabled == Some(false) => {
-            if !run_mutation(runner, &["plugin", "enable", PLUGIN_ID, "--scope", "user"]) {
-                render_operation_failure("claude_plugin_enable_failed", json_output);
+            if let Err(failure) =
+                run_mutation(runner, &["plugin", "enable", PLUGIN_ID, "--scope", "user"])
+            {
+                render_operation_failure(
+                    "claude_plugin_enable_failed",
+                    json_output,
+                    Some(&failure),
+                );
                 return 1;
             }
         }
@@ -367,12 +379,15 @@ fn run_update<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visible: 
         return 2;
     }
 
-    if !run_mutation(runner, &["plugin", "marketplace", "update", MARKETPLACE_NAME]) {
-        render_operation_failure("claude_marketplace_update_failed", json_output);
+    if let Err(failure) =
+        run_mutation(runner, &["plugin", "marketplace", "update", MARKETPLACE_NAME])
+    {
+        render_operation_failure("claude_marketplace_update_failed", json_output, Some(&failure));
         return 1;
     }
-    if !run_mutation(runner, &["plugin", "update", PLUGIN_ID, "--scope", "user"]) {
-        render_operation_failure("claude_plugin_update_failed", json_output);
+    if let Err(failure) = run_mutation(runner, &["plugin", "update", PLUGIN_ID, "--scope", "user"])
+    {
+        render_operation_failure("claude_plugin_update_failed", json_output, Some(&failure));
         return 1;
     }
 
@@ -397,8 +412,14 @@ fn run_uninstall<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visibl
             0
         }
         ResourceState::Present => {
-            if !run_mutation(runner, &["plugin", "uninstall", PLUGIN_ID, "--scope", "user"]) {
-                render_operation_failure("claude_plugin_uninstall_failed", json_output);
+            if let Err(failure) =
+                run_mutation(runner, &["plugin", "uninstall", PLUGIN_ID, "--scope", "user"])
+            {
+                render_operation_failure(
+                    "claude_plugin_uninstall_failed",
+                    json_output,
+                    Some(&failure),
+                );
                 return 1;
             }
             render_operation_result("uninstalled", json_output);
@@ -423,8 +444,76 @@ fn mutation_preconditions_met(status: &IntegrationStatus) -> bool {
         && !matches!(status.plugin.state, ResourceState::Unsupported | ResourceState::Error)
 }
 
-fn run_mutation<R: ClaudeRunner>(runner: &mut R, args: &[&str]) -> bool {
-    matches!(runner.run(args), Ok(result) if result.success)
+fn run_mutation<R: ClaudeRunner>(runner: &mut R, args: &[&str]) -> Result<(), CommandResult> {
+    match runner.run(args) {
+        Ok(result) if result.success => Ok(()),
+        Ok(result) => Err(result),
+        Err(_) => {
+            Err(CommandResult { success: false, stdout: String::new(), stderr: String::new() })
+        }
+    }
+}
+
+const OPERATION_FAILURE_DETAIL_MAX_BYTES: usize = 4096;
+const OPERATION_FAILURE_DETAIL_MAX_LINES: usize = 20;
+
+fn child_output_for_failure_detail(result: &CommandResult) -> String {
+    match (result.stderr.is_empty(), result.stdout.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => result.stderr.clone(),
+        (true, false) => result.stdout.clone(),
+        (false, false) => {
+            let stderr = result.stderr.trim_end();
+            let stdout = result.stdout.trim_end();
+            if stdout.is_empty() { stderr.to_string() } else { format!("{stderr}\n{stdout}") }
+        }
+    }
+}
+
+fn bounded_operation_failure_detail(result: &CommandResult) -> Option<String> {
+    let raw = child_output_for_failure_detail(result);
+    if raw.is_empty() {
+        return None;
+    }
+    Some(bounded_output_tail(
+        &raw,
+        OPERATION_FAILURE_DETAIL_MAX_BYTES,
+        OPERATION_FAILURE_DETAIL_MAX_LINES,
+    ))
+}
+
+fn bounded_output_tail(text: &str, max_bytes: usize, max_lines: usize) -> String {
+    let line_start = text.lines().count().saturating_sub(max_lines);
+    let mut tail = text.lines().skip(line_start).collect::<Vec<_>>().join("\n");
+    if tail.len() <= max_bytes {
+        return tail;
+    }
+    let mut byte_start = tail.len().saturating_sub(max_bytes);
+    while byte_start < tail.len() && !tail.is_char_boundary(byte_start) {
+        byte_start += 1;
+    }
+    tail = tail[byte_start..].to_string();
+    tail
+}
+
+fn operation_failure_json_value(reason: &'static str, detail: Option<&str>) -> Value {
+    let mut fields = Map::new();
+    fields.insert("schema_version".into(), json!(OPERATION_SCHEMA_VERSION));
+    fields.insert("operation_result".into(), json!("failed"));
+    fields.insert("reason".into(), json!(reason));
+    if let Some(detail) = detail.filter(|value| !value.is_empty()) {
+        fields.insert("detail".into(), json!(detail));
+    }
+    Value::Object(fields)
+}
+
+fn format_operation_failure_human(reason: &'static str, detail: Option<&str>) -> String {
+    let mut rendered = format!("Claude integration operation failed: {reason}");
+    if let Some(detail) = detail.filter(|value| !value.is_empty()) {
+        rendered.push('\n');
+        rendered.push_str(detail);
+    }
+    rendered
 }
 
 fn collect_status<R: ClaudeRunner>(runner: &mut R, path_visible: bool) -> IntegrationStatus {
@@ -830,18 +919,20 @@ fn render_status(status: &IntegrationStatus, json_output: bool) {
     }
 }
 
-fn render_operation_failure(reason: &'static str, json_output: bool) {
+fn render_operation_failure(
+    reason: &'static str,
+    json_output: bool,
+    failure: Option<&CommandResult>,
+) {
+    let detail = failure.and_then(bounded_operation_failure_detail);
     if json_output {
-        println!(
-            "{}",
-            json!({
-                "schema_version": OPERATION_SCHEMA_VERSION,
-                "operation_result": "failed",
-                "reason": reason,
-            })
-        );
+        match serde_json::to_string_pretty(&operation_failure_json_value(reason, detail.as_deref()))
+        {
+            Ok(rendered) => println!("{rendered}"),
+            Err(_) => eprintln!("failed to render perllsp Claude operation failure JSON"),
+        }
     } else {
-        eprintln!("Claude integration operation failed: {reason}");
+        eprintln!("{}", format_operation_failure_human(reason, detail.as_deref()));
     }
 }
 
@@ -911,6 +1002,91 @@ mod tests {
             args.iter().map(|value| (*value).to_string()).collect(),
             Ok(CommandResult { success: true, stdout: stdout.to_string(), stderr: String::new() }),
         )
+    }
+
+    fn failed_command(args: &[&str], stderr: &str) -> (Vec<String>, io::Result<CommandResult>) {
+        (
+            args.iter().map(|value| (*value).to_string()).collect(),
+            Ok(CommandResult { success: false, stdout: String::new(), stderr: stderr.to_string() }),
+        )
+    }
+
+    #[test]
+    fn operation_failure_detail_prefers_stderr_and_bounds_tail() {
+        let mut lines = String::new();
+        for index in 0..25 {
+            lines.push_str(&format!("line-{index}\n"));
+        }
+        let result = CommandResult {
+            success: false,
+            stdout: "stdout should not win over stderr\n".to_string(),
+            stderr: lines,
+        };
+
+        let detail = bounded_operation_failure_detail(&result).expect("expected stderr detail");
+        assert!(!detail.contains("line-0"), "detail should keep only the last lines");
+        assert!(detail.contains("line-24"), "detail should include the final stderr line");
+        assert!(detail.lines().count() <= OPERATION_FAILURE_DETAIL_MAX_LINES);
+        assert!(detail.len() <= OPERATION_FAILURE_DETAIL_MAX_BYTES);
+    }
+
+    #[test]
+    fn operation_failure_json_and_human_include_reason_and_detail() {
+        let failure = CommandResult {
+            success: false,
+            stdout: String::new(),
+            stderr: "marketplace add rejected: bad sparse path\n".to_string(),
+        };
+        let detail = bounded_operation_failure_detail(&failure).expect("expected detail");
+
+        let json = operation_failure_json_value("claude_marketplace_add_failed", Some(&detail));
+        assert_eq!(json["reason"], "claude_marketplace_add_failed");
+        assert_eq!(json["detail"], detail);
+        assert_eq!(json["operation_result"], "failed");
+
+        let human = format_operation_failure_human("claude_marketplace_add_failed", Some(&detail));
+        assert!(
+            human.contains("Claude integration operation failed: claude_marketplace_add_failed")
+        );
+        assert!(human.contains("marketplace add rejected: bad sparse path"));
+    }
+
+    #[test]
+    fn install_marketplace_add_failure_surfaces_fake_runner_stderr() {
+        let mut runner = FakeRunner::new(vec![
+            command(&["--version"], "2.1.231 (Claude Code)\n"),
+            command(&["plugin", "marketplace", "list", "--json"], "[]"),
+            command(&["plugin", "list", "--json"], "[]"),
+            failed_command(
+                &[
+                    "plugin",
+                    "marketplace",
+                    "add",
+                    MARKETPLACE_SOURCE,
+                    "--scope",
+                    "user",
+                    "--sparse",
+                    ".claude-plugin",
+                    PLUGIN_PATH,
+                ],
+                "child stderr: marketplace add failed",
+            ),
+        ]);
+
+        let code = run_install(&mut runner, true, true);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn install_marketplace_add_failure_human_render_contains_stderr_tail() {
+        let failure = CommandResult {
+            success: false,
+            stdout: String::new(),
+            stderr: "child stderr: marketplace add failed\n".to_string(),
+        };
+        let detail = bounded_operation_failure_detail(&failure).expect("expected detail");
+        let human = format_operation_failure_human("claude_marketplace_add_failed", Some(&detail));
+        assert!(human.contains("child stderr: marketplace add failed"));
     }
 
     #[test]
