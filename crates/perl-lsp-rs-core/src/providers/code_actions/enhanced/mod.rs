@@ -185,6 +185,9 @@ impl EnhancedCodeActionsProvider {
             NodeKind::Subroutine { body, .. } => {
                 self.collect_signature_actions(body, ast_root, range, actions);
             }
+            NodeKind::Package { block: Some(blk), .. } => {
+                self.collect_signature_actions(blk, ast_root, range, actions);
+            }
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
                 self.collect_signature_actions(condition, ast_root, range, actions);
                 self.collect_signature_actions(then_branch, ast_root, range, actions);
