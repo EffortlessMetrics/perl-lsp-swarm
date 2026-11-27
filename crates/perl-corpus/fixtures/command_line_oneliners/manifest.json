@@ -1,0 +1,1529 @@
+{
+  "$schema": "../../../schemas/command_line_oneliner_corpus.v1.schema.json",
+  "schema_version": "command_line_oneliner_corpus.v1",
+  "manifest": "licensed-command-line-oneliner-fixtures",
+  "owner": "perl-lsp maintainers (#13676)",
+  "status": "seed-corpus",
+  "updated": "2026-11-02",
+  "runner": "none",
+  "default_claim_boundary": "Hermetic parser/static corpus metadata only. No Perl execution, no unbounded oracle, and no LSP/editor claim unless proof_layer says so.",
+  "ratchet_generation": 1,
+  "falsifier_matrix": [
+    "wrong_fragment_joining",
+    "lost_provenance",
+    "ignored_double_dash",
+    "switch_bundle_mistake",
+    "utf16_mapping_error"
+  ],
+  "coverage_dimensions": [
+    "switch",
+    "idiom",
+    "proof_layer",
+    "fixture_kind",
+    "falsifier_tag",
+    "parser_outcome"
+  ],
+  "fixtures": [
+    {
+      "id": "e_print_literal",
+      "purpose": "Parser-body corpus row linked to `e_print_literal` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print \"hello\\n\";"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "switch_e"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "e_print_literal",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "ne_implicit_topic_match",
+      "purpose": "Parser-body corpus row linked to `ne_implicit_topic_match` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-ne"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print if /needle/;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_read_loop"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "ne_implicit_topic_match",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "pe_implicit_topic_substitution",
+      "purpose": "Parser-body corpus row linked to `pe_implicit_topic_substitution` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-pe"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "s/foo/bar/g;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_print_loop"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "pe_implicit_topic_substitution",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "pe_implicit_topic_transliteration",
+      "purpose": "Parser-body corpus row linked to `pe_implicit_topic_transliteration` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-pe"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "tr/a-z/A-Z/;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_print_loop"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "pe_implicit_topic_transliteration",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "ne_skip_blank_lines",
+      "purpose": "Parser-body corpus row linked to `ne_skip_blank_lines` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-ne"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "next unless /\\S/; print;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_read_loop"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "ne_skip_blank_lines",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "lane_first_autosplit_field",
+      "purpose": "Parser-body corpus row linked to `lane_first_autosplit_field` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-lane"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print $F[0];"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "autosplit",
+        "implicit_read_loop",
+        "record_separator_chomp"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "lane_first_autosplit_field",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "lane_join_autosplit_fields",
+      "purpose": "Parser-body corpus row linked to `lane_join_autosplit_fields` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-lane"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print join \"\\t\", @F;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "autosplit",
+        "implicit_read_loop",
+        "implicit_topic",
+        "record_separator_chomp"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "lane_join_autosplit_fields",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "e_grep_diamond_input",
+      "purpose": "Parser-body corpus row linked to `e_grep_diamond_input` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print grep /needle/, <>;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "diamond_input",
+        "implicit_topic",
+        "switch_e"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "e_grep_diamond_input",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "e_map_diamond_input",
+      "purpose": "Parser-body corpus row linked to `e_map_diamond_input` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print map { chomp; \"$_\\n\" } <>;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "diamond_input",
+        "implicit_topic",
+        "switch_e"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "e_map_diamond_input",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "ne_end_phase_counter",
+      "purpose": "Parser-body corpus row linked to `ne_end_phase_counter` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-ne"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "$count++ if /needle/; END { print \"$count\\n\"; }"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_read_loop"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "ne_end_phase_counter",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "ne_argv_and_input_line_number",
+      "purpose": "Parser-body corpus row linked to `ne_argv_and_input_line_number` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-ne"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print \"$ARGV:$.:$_\" if /needle/;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_read_loop",
+        "implicit_topic"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "ne_argv_and_input_line_number",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "e_explicit_diamond_loop",
+      "purpose": "Parser-body corpus row linked to `e_explicit_diamond_loop` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "while (<>) { print if /needle/; }"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "diamond_input",
+        "switch_e"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "e_explicit_diamond_loop",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "e_sort_diamond_with_for_modifier",
+      "purpose": "Parser-body corpus row linked to `e_sort_diamond_with_for_modifier` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print for sort <>;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "diamond_input",
+        "implicit_topic",
+        "switch_e"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "e_sort_diamond_with_for_modifier",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "e_parenthesized_split_slice",
+      "purpose": "Parser-body corpus row linked to `e_parenthesized_split_slice` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print +(split)[0];"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "switch_e"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "e_parenthesized_split_slice",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "ne_capture_group",
+      "purpose": "Parser-body corpus row linked to `ne_capture_group` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-ne"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print \"$1\\n\" if /^(\\w+)/;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_read_loop"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "ne_capture_group",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "pe_trim_whitespace",
+      "purpose": "Parser-body corpus row linked to `pe_trim_whitespace` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-pe"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "s/^\\s+|\\s+$//g;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_print_loop"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "pe_trim_whitespace",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "e_printf_special_variables",
+      "purpose": "Parser-body corpus row linked to `e_printf_special_variables` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "printf \"%s:%d\\n\", $ARGV, $.;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "switch_e"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "e_printf_special_variables",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "e_while_diamond_modifier",
+      "purpose": "Parser-body corpus row linked to `e_while_diamond_modifier` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print while <>;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "diamond_input",
+        "implicit_topic",
+        "switch_e"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "e_while_diamond_modifier",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "ne_bare_capture_variable",
+      "purpose": "Parser-body corpus row linked to `ne_bare_capture_variable` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-ne"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print($1) if /^(\\w+)/;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_read_loop"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "ne_bare_capture_variable",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "ne_begin_phase_input_record_separator",
+      "purpose": "Parser-body corpus row linked to `ne_begin_phase_input_record_separator` in command_line_oneliners.rs.",
+      "argv": {
+        "switch_tokens": [
+          "-ne"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "BEGIN { $/ = undef; } print length;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "crates/perl-parser-core/tests/command_line_oneliners.rs",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "implicit_read_loop"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "parse_clean",
+      "expected_parser_outcome": {
+        "disposition": "clean_parse",
+        "source_map_anchors": [
+          "body"
+        ]
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "static_parse",
+        "static_diagnostics"
+      ],
+      "fixture_kind": "positive",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "parser_corpus_test": "ne_begin_phase_input_record_separator",
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_switch_uppercase_e",
+      "purpose": "Track -E feature-enablement separately from -e.",
+      "argv": {
+        "switch_tokens": [
+          "-E"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "say 1"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "structured_argv",
+      "features_exercised": [
+        "switch_E"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_repeated_e_fragments",
+      "purpose": "Repeated -e fragments must preserve order and provenance.",
+      "argv": {
+        "switch_tokens": [
+          "-e",
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print 1;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "fragment_provenance_mapping",
+      "features_exercised": [
+        "repeated_fragments"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [
+        "wrong_fragment_joining"
+      ],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_double_dash_script",
+      "purpose": "Operands after -- are script paths, not switches.",
+      "argv": {
+        "switch_tokens": [
+          "--"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": ""
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "structured_argv",
+      "features_exercised": [
+        "double_dash",
+        "script_path"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [
+        "ignored_double_dash"
+      ],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_stdin_redirect",
+      "purpose": "Stdin-fed invocation form (declaration only).",
+      "argv": {
+        "switch_tokens": [],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print <>;"
+          }
+        ],
+        "stdin_mode": "explicit_redirect"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "structured_argv",
+      "features_exercised": [
+        "stdin_form"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_switch_bundle_lane_negative",
+      "purpose": "Near-neighbor control for switch-bundle decoding (-lane vs -l -a -n -e).",
+      "argv": {
+        "switch_tokens": [
+          "-l",
+          "-a",
+          "-n",
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print $F[0];"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "structured_argv",
+      "features_exercised": [
+        "switch_bundle"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "near_neighbor",
+      "falsifier_tags": [
+        "switch_bundle_mistake"
+      ],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_utf16_mapping_negative",
+      "purpose": "UTF-16 command coordinate mapping must not collapse surrogate pairs.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print 1;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "fragment_provenance_mapping",
+      "features_exercised": [
+        "utf16_mapping"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "negative",
+      "falsifier_tags": [
+        "utf16_mapping_error"
+      ],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_lost_provenance_negative",
+      "purpose": "Fragment provenance must survive composition.",
+      "argv": {
+        "switch_tokens": [
+          "-e",
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print 2;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "fragment_provenance_mapping",
+      "features_exercised": [
+        "provenance"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "negative",
+      "falsifier_tags": [
+        "lost_provenance"
+      ],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_unsupported_switch_z",
+      "purpose": "Unknown switch must not parse as valid invocation.",
+      "argv": {
+        "switch_tokens": [
+          "-Z"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print 1;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "structured_argv",
+      "features_exercised": [
+        "unsupported_switch"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "unsupported_switch",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_malformed_syntax",
+      "purpose": "Malformed body syntax is a negative parser control.",
+      "argv": {
+        "switch_tokens": [
+          "-e"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print if;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "parser_result_diagnostics",
+      "features_exercised": [
+        "malformed_syntax"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "expected_syntax_error",
+      "expected_parser_outcome": {
+        "disposition": "blocking_error"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "negative",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_switch_0_record_sep",
+      "purpose": "Record separator -0 (declaration).",
+      "argv": {
+        "switch_tokens": [
+          "-0"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "structured_argv",
+      "features_exercised": [
+        "switch_0"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_switch_0777_slurp",
+      "purpose": "Slurp record separator -0777 (declaration).",
+      "argv": {
+        "switch_tokens": [
+          "-0777"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "structured_argv",
+      "features_exercised": [
+        "switch_0777"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_switch_f_autosplit",
+      "purpose": "-F pattern autosplit setup (declaration).",
+      "argv": {
+        "switch_tokens": [
+          "-F",
+          "/:/"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print $F[0];"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "structured_argv",
+      "features_exercised": [
+        "switch_F"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_switch_i_include",
+      "purpose": "-I include path compile context (declaration).",
+      "argv": {
+        "switch_tokens": [
+          "-I",
+          "/tmp/lib"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print 1;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "switch_compile_runtime_context",
+      "features_exercised": [
+        "switch_I"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_switch_m_module",
+      "purpose": "-M module import compile context (declaration).",
+      "argv": {
+        "switch_tokens": [
+          "-M",
+          "strict"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print 1;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "switch_compile_runtime_context",
+      "features_exercised": [
+        "switch_M"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_switch_m_minus_module",
+      "purpose": "-m minus import compile context (declaration).",
+      "argv": {
+        "switch_tokens": [
+          "-m",
+          "-strict"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print 1;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "switch_compile_runtime_context",
+      "features_exercised": [
+        "switch_m"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    },
+    {
+      "id": "seed_switch_l_chomp",
+      "purpose": "-l line ending handling (declaration).",
+      "argv": {
+        "switch_tokens": [
+          "-l"
+        ],
+        "fragments": [
+          {
+            "fragment_id": "body",
+            "text": "print;"
+          }
+        ],
+        "stdin_mode": "none"
+      },
+      "provenance": {
+        "origin": "repo-authored seed (#13676)",
+        "license_status": "repo_authored"
+      },
+      "proof_layer": "structured_argv",
+      "features_exercised": [
+        "switch_l"
+      ],
+      "operators_exercised": [],
+      "expected_invocation_disposition": "declaration_only",
+      "expected_parser_outcome": {
+        "disposition": "not_applicable"
+      },
+      "target_perl_profile": "5.38-default",
+      "execution_risk_class": "static_only",
+      "allowed_evidence_modes": [
+        "declaration_only"
+      ],
+      "fixture_kind": "boundary_control",
+      "falsifier_tags": [],
+      "expectation_tier": 1,
+      "oracle_disposition": "forbidden"
+    }
+  ]
+}
