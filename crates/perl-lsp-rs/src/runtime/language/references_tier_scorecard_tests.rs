@@ -2579,6 +2579,145 @@ use warnings;
         Ok(tier == "semantic_source_backed")
     }
 
+    /// Preserve the existing bounded text candidates without inferring the
+    /// unknown receiver's class. The replay's count-only row cannot distinguish
+    /// these locations from two unrelated same-file semantic results (#18128).
+    #[test]
+    fn references_dancer2_dispatch_retains_text_candidates_with_ready_index()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = create_server();
+        let project = "dancer2_skeleton";
+        let files = open_project(&server, project)?;
+        let runner_file = "lib/Dancer2/Core/Runner.pm";
+        let app_file = "lib/Dancer2/Core/App.pm";
+        let runner_uri = project_uri(project, runner_file);
+        let app_uri = project_uri(project, app_file);
+        let runner = fixture_content(&files, runner_file)?;
+
+        // Rule out lifecycle and missing-shard explanations before querying.
+        if !crate::runtime::routing::route_index_access(server.coordinator()).is_full() {
+            return Err("fixture index must be Full before querying".into());
+        }
+        if server.workspace_index_stale_for_any_open_document() {
+            return Err("fixture index must be current before querying".into());
+        }
+        let index = server.workspace_index().ok_or("missing workspace index")?;
+        for uri in [&runner_uri, &app_uri] {
+            if index.with_semantic_queries_for_uri(uri, |_, _| true) != Some(true) {
+                return Err(format!("fixture must have queryable semantic facts for {uri}").into());
+            }
+        }
+
+        let (line, character) = occurrence_position(runner, "dispatch", 0)?;
+        let result = server.test_handle_references(Some(json!({
+            "textDocument": {"uri": runner_uri},
+            "position": {"line": line, "character": character},
+            "context": {"includeDeclaration": true}
+        })))?;
+        let explanation = explain_provider_decision(&server, "references")?;
+        let receipt = &explanation["request_receipt"];
+        if receipt["index_state"] != "full" {
+            return Err(format!("expected Full receipt: {receipt}").into());
+        }
+        if receipt["source_backed"] != false {
+            return Err(format!("text query must not claim source identity: {receipt}").into());
+        }
+
+        // Independently curated token ranges in the committed ASCII fixtures:
+        // App.pm's declaration and Runner.pm's call, not receiver/type identity.
+        let expected = [(app_uri, 33, 4), (runner_uri, 31, 32)];
+        let mut expected_locations = expected
+            .into_iter()
+            .map(|(uri, line, character)| {
+                json!({
+                    "uri": uri,
+                    "range": {
+                        "start": {"line": line, "character": character},
+                        "end": {"line": line, "character": character + 8}
+                    }
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>();
+        let mut actual_locations = result
+            .as_ref()
+            .and_then(Value::as_array)
+            .ok_or("references must return a locations array")?
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>();
+        expected_locations.sort();
+        actual_locations.sort();
+        if actual_locations != expected_locations {
+            return Err(format!("ready-index dispatch lookup lost or replaced bounded text candidates; actual={actual_locations:?}; expected={expected_locations:?}; receipt={receipt}").into());
+        }
+        if receipt["answering_tier"] != "workspace_text" {
+            return Err(format!("expected text-tier receipt: {receipt}").into());
+        }
+        if receipt["index_result_count"] != 0 {
+            return Err(format!("unknown receiver must not query identity index: {receipt}").into());
+        }
+        if receipt["text_result_count"] != 2 {
+            return Err(format!("expected two text results: {receipt}").into());
+        }
+
+        // Preserve the existing method-cursor boundary convention as well:
+        // immediately after the method name still names that method, not its arguments.
+        let method_end_character =
+            character.checked_add(8).ok_or("method-end character overflow")?;
+        let at_method_end = server.test_handle_references(Some(json!({
+            "textDocument": {"uri": project_uri(project, runner_file)},
+            "position": {"line": line, "character": method_end_character},
+            "context": {"includeDeclaration": true}
+        })))?;
+        let mut end_locations = at_method_end
+            .as_ref()
+            .and_then(Value::as_array)
+            .ok_or("method-end references must be a locations array")?
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>();
+        end_locations.sort();
+        if end_locations != expected_locations {
+            return Err(format!("method-end cursor lost bounded text tokens: actual={end_locations:?}; expected={expected_locations:?}").into());
+        }
+
+        let runner_uri = project_uri(project, runner_file);
+        let without_declaration = server.test_handle_references(Some(json!({
+            "textDocument": {"uri": runner_uri},
+            "position": {"line": line, "character": character},
+            "context": {"includeDeclaration": false}
+        })))?;
+        let expected_without_declaration = Some(json!([{
+            "uri": runner_uri,
+            "range": {
+                "start": {"line": 31, "character": 32},
+                "end": {"line": 31, "character": 40}
+            }
+        }]));
+        if without_declaration != expected_without_declaration {
+            return Err(format!("excluding declarations must retain only the method token: actual={without_declaration:?}; expected={expected_without_declaration:?}").into());
+        }
+        let explanation = explain_provider_decision(&server, "references")?;
+        let receipt = &explanation["request_receipt"];
+        if receipt["index_state"] != "full" {
+            return Err(format!("expected Full receipt: {receipt}").into());
+        }
+        if receipt["source_backed"] != false {
+            return Err(format!("text query must not claim source identity: {receipt}").into());
+        }
+        if receipt["answering_tier"] != "workspace_text" {
+            return Err(format!("expected text-tier receipt: {receipt}").into());
+        }
+        if receipt["index_result_count"] != 0 {
+            return Err(format!("unknown receiver must not query identity index: {receipt}").into());
+        }
+        if receipt["text_result_count"] != 1 {
+            return Err(format!("expected one text result: {receipt}").into());
+        }
+        Ok(())
+    }
+
     /// Representative-workspace replay for #2674 PR-3 (references measurement,
     /// no live provider behavior change). Fires every request in
     /// `REPLAY_MANIFEST` + `EMPTY_POSITION_MANIFEST` against three real,
