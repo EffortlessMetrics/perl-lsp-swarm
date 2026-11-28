@@ -8,6 +8,7 @@
 
 pub mod framing;
 pub mod incoming;
+mod incoming_error;
 
 pub use framing::{
     ContentLengthFramer, FramingError, MAX_FRAME_SIZE, frame, log_response, write_message,

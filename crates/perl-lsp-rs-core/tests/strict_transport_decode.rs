@@ -11,7 +11,6 @@ use perl_lsp_rs_core::transport::{
     ContentLengthMessageReader, FramingError, IncomingMessageError, IncomingMessageStage,
     MAX_FRAME_SIZE, decode_incoming_body, read_message, read_message_outcome,
 };
-use perl_parser_core::{ErrorCategory, ErrorClass};
 use std::io::{self, BufReader, Cursor, Write};
 
 const SECRET: &str = "SECRET_BODY_TOKEN_7596";
@@ -622,28 +621,36 @@ fn oversized_frame_then_eof_preserves_typed_error_before_eof() -> io::Result<()>
 }
 
 #[test]
-fn incoming_error_classes_stay_protocol_except_frame_too_large() {
+fn incoming_errors_keep_typed_stage_size_and_framing_source() {
+    // #19395 removes the parser taxonomy from the transport error. Preserve
+    // the mechanism facts instead of requiring the removed trait in this
+    // generic decoder suite. Application category projection has its own tests.
+    let encoding = IncomingMessageError::InvalidUtf8 { payload_bytes: 3, valid_up_to: 1 };
+    assert_eq!(encoding.stage(), IncomingMessageStage::Encoding);
+    assert_eq!(encoding.payload_bytes(), Some(3));
+    assert!(std::error::Error::source(&encoding).is_none());
+
+    let cause = FramingError::FrameTooLarge { len: MAX_FRAME_SIZE + 1 };
+    let oversized = IncomingMessageError::Framing(cause.clone());
+    assert_eq!(oversized.stage(), IncomingMessageStage::Framing);
+    assert_eq!(oversized.payload_bytes(), Some(MAX_FRAME_SIZE + 1));
     assert_eq!(
-        IncomingMessageError::InvalidUtf8 { payload_bytes: 3, valid_up_to: 1 }.error_class(),
-        ErrorCategory::Protocol
-    );
-    assert_eq!(
-        IncomingMessageError::Framing(FramingError::FrameTooLarge { len: MAX_FRAME_SIZE + 1 })
-            .error_class(),
-        ErrorCategory::ResourceLimit
+        std::error::Error::source(&oversized)
+            .and_then(|source| source.downcast_ref::<FramingError>()),
+        Some(&cause)
     );
 }
 
 #[test]
 fn incoming_source_does_not_use_lossy_utf8_or_body_preview() {
-    let incoming = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/transport/incoming.rs"));
+    let incoming = include_str!("../src/transport/incoming.rs");
     assert!(
         !incoming.contains("from_utf8_lossy"),
         "incoming decode must not use String::from_utf8_lossy"
     );
     assert!(!incoming.contains("body_preview"), "incoming decode must not log a body preview");
 
-    let framing = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/transport/framing.rs"));
+    let framing = include_str!("../src/transport/framing.rs");
     let production = framing.split("#[cfg(test)]").next().unwrap_or(framing);
     assert!(
         !production.contains("from_utf8_lossy"),
