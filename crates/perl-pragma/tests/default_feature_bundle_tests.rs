@@ -158,6 +158,7 @@ fn all_strict_boundary_discriminator_input_that_hits_the_boundary_strict_refs_tr
         locale: false,
         locale_scope: None,
         disabled_warning_categories: Vec::new(),
+        enabled_warning_categories: Vec::new(),
         signatures_strict: false,
         features: DEFAULT_BUNDLE.to_vec(),
         builtin_imports: Vec::new(),

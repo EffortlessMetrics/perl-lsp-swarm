@@ -28,8 +28,8 @@ pub use version::{
 };
 
 pub(crate) use args::{
-    add_disabled_warning_category, apply_builtin_imports_if_changed, builtin_import_names,
-    normalized_pragma_token, pragma_arg_items,
+    add_disabled_warning_category, add_enabled_warning_category, apply_builtin_imports_if_changed,
+    builtin_import_names, normalized_pragma_token, pragma_arg_items,
 };
 pub(crate) use conditional::conditional_pragma_target;
 pub(crate) use features::{apply_feature_state, canonical_feature_query};
@@ -78,6 +78,13 @@ pub struct PragmaState {
     /// and the disabled categories are recorded here. Only bare `no warnings`
     /// (no arguments) clears the global `warnings` flag.
     pub disabled_warning_categories: Vec<String>,
+    /// Warning categories enabled by positive subset forms such as
+    /// `use warnings 'uninitialized'` when global/all warnings are not active.
+    ///
+    /// While this list is non-empty and [`Self::warnings`] is `false`, only
+    /// listed categories are considered active. Final hierarchical policy is
+    /// owned by #8219.
+    pub(crate) enabled_warning_categories: Vec<String>,
     /// Whether explicit `use feature 'signatures'` currently implies strictness.
     ///
     /// This is tracked separately from the raw strict flags so `no feature
@@ -122,6 +129,7 @@ impl Default for PragmaState {
             locale: false,
             locale_scope: None,
             disabled_warning_categories: Vec::new(),
+            enabled_warning_categories: Vec::new(),
             signatures_strict: false,
             features: version::DEFAULT_FEATURES.to_vec(),
             builtin_imports: Vec::new(),
@@ -168,7 +176,10 @@ impl PragmaSnapshot {
         self.state.strict_vars && self.state.strict_subs && self.state.strict_refs
     }
 
-    /// Whether warnings are globally active in this snapshot.
+    /// Whether bare/`all` warnings are globally active in this snapshot.
+    ///
+    /// Positive subset forms (`use warnings 'uninitialized'`) do not set this
+    /// flag; query individual categories with [`Self::is_warning_active`].
     #[must_use]
     pub fn warnings_enabled(&self) -> bool {
         self.state.warnings
@@ -211,16 +222,17 @@ impl PragmaState {
 
     /// Returns `true` if warnings are active for the given category.
     ///
-    /// Warnings for a category are active when:
-    /// - The global `warnings` flag is `true`, **and**
-    /// - The category is not listed in `disabled_warning_categories`.
-    ///
-    /// If the global `warnings` flag is `false` (i.e. `no warnings` with no
-    /// arguments was used), all categories are considered inactive regardless of
-    /// the `disabled_warning_categories` list.
+    /// In global/all mode ([`Self::warnings`] is `true`), a category is active
+    /// when it is not listed in [`Self::disabled_warning_categories`]. In
+    /// positive-subset mode ([`Self::enabled_warning_categories`] is non-empty
+    /// and global warnings are off), only explicitly listed categories are
+    /// active. Hierarchical warning policy remains owned by #8219.
     #[must_use]
     pub fn is_warning_active(&self, category: &str) -> bool {
-        self.warnings && !self.disabled_warning_categories.iter().any(|c| c == category)
+        if self.warnings {
+            return !self.disabled_warning_categories.iter().any(|c| c == category);
+        }
+        self.enabled_warning_categories.iter().any(|c| c == category)
     }
 
     /// Returns `true` if the given feature name is currently enabled.
